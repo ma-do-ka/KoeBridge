@@ -1,5 +1,7 @@
 # KoeBridge 🎙️
 
+![KoeBridge｜Mac用軽量音声入力アプリのトップイラスト](docs/images/koebridge-hero.webp)
+
 **Google AI Proなどの特典で、利用可能なGoogle Cloudクレジットが余っている人にも。**  
 macOSのための、**超軽量を目指したオープンソース音声入力アプリ**です。
 

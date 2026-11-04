@@ -1,0 +1,24 @@
+name: macOS Swift build and unit tests
+on:
+  push:
+  pull_request:
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tool versions
+        run: |
+          xcodebuild -version
+          swift --version
+      - name: Unit tests
+        run: swift test --parallel
+      - name: Swift release build
+        run: swift build -c release
+      - name: Build signed macOS app bundle
+        run: KOEBRIDGE_ALLOW_ADHOC=1 ./scripts/build_app.sh
+      - name: Verify app bundle
+        run: |
+          test -x dist/KoeBridge.app/Contents/MacOS/KoeBridge
+          plutil -lint dist/KoeBridge.app/Contents/Info.plist
+          codesign --verify --deep --strict dist/KoeBridge.app

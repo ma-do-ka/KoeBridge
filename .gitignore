@@ -1,0 +1,36 @@
+# Build products / local environment
+.build/
+dist/
+.swiftpm/
+DerivedData/
+.DS_Store
+*.xcuserstate
+*.xcuserdatad/
+__pycache__/
+*.pyc
+
+# Authentication / signing material (never commit)
+.env
+.env.*
+!.env.example
+*.pem
+*.p8
+*.p12
+*.pfx
+*.key
+*.keystore
+*.mobileprovision
+*.provisionprofile
+*credentials*.json
+*service-account*.json
+google-services.json
+GoogleService-Info.plist
+signing-identity.sha1
+
+# Dictation content / private diagnostics and state
+KoeBridge.log*
+recent-transcripts.json
+*.log
+*.sqlite
+*.db
+Library/
