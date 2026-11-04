@@ -301,7 +301,7 @@ struct SettingsView: View {
                 .tabItem { Label("Gemini", systemImage: "sparkles") }
                 .tag(SettingsPage.gemini)
             UsageMonitorView(controller: controller)
-                .tabItem { Label("ステータスモニター", systemImage: "chart.bar.fill") }
+                .tabItem { Label("利用統計", systemImage: "chart.bar.fill") }
                 .tag(SettingsPage.monitor)
             privacyPage
                 .tabItem { Label("履歴・診断", systemImage: "lock.shield") }
