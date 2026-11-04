@@ -16,7 +16,7 @@ jobs:
       - name: Swift release build
         run: swift build -c release
       - name: Build signed macOS app bundle
-        run: KOEBRIDGE_ALLOW_ADHOC=1 ./scripts/build_app.sh
+        run: KOEBRIDGE_ALLOW_ADHOC=1 bash ./scripts/build_app.sh
       - name: Verify app bundle
         run: |
           test -x dist/KoeBridge.app/Contents/MacOS/KoeBridge
