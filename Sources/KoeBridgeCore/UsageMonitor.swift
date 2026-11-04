@@ -99,6 +99,12 @@ public struct UsageMonitorArchive {
                                      maximum: Self.maximumEngineEvents, now: Date())
             tokenEvents = Self.trim(decoded.tokenEvents, date: { $0.at },
                                     maximum: Self.maximumTokenEvents, now: Date())
+            // Retention applies to the on-disk file too, even when the user
+            // has not recorded another dictation for more than 30 days.
+            if engineEvents.count != decoded.engineEvents.count ||
+               tokenEvents.count != decoded.tokenEvents.count {
+                try persist(Snapshot(engineEvents: engineEvents, tokenEvents: tokenEvents))
+            }
         } else {
             engineEvents = []
             tokenEvents = []
