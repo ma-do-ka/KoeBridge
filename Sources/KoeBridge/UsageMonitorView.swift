@@ -108,7 +108,7 @@ struct UsageMonitorView: View {
             VStack(alignment: .leading, spacing: 15) {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("ステータスモニター")
+                        Text("利用統計")
                             .font(.system(size: 20, weight: .semibold))
                         Text("認識エンジンとGemini APIの使用実績をMac内で集計します。")
                             .font(.callout).foregroundStyle(.secondary)
@@ -235,7 +235,7 @@ struct UsageMonitorView: View {
             .padding(18)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .alert("ステータスモニターの利用統計を削除しますか？", isPresented: $confirmDelete) {
+        .alert("利用統計を削除しますか？", isPresented: $confirmDelete) {
             Button("削除", role: .destructive) { controller.clearUsageMonitor() }
             Button("キャンセル", role: .cancel) {}
         } message: {
