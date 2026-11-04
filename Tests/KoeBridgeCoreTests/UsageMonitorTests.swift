@@ -74,7 +74,7 @@ struct UsageMonitorTests {
         #expect(usage?.promptTokens == 120)
         #expect(usage?.responseTokens == 30)
         #expect(usage?.totalTokens == 150)
-        #expect(GeminiWire.parse(raw) == [.turnComplete])
+        #expect(try GeminiWire.parse(raw) == [.turnComplete])
         #expect(GeminiWire.parseTokenUsage(#"{"serverContent":{"turnComplete":true}}"#) == nil)
         #expect(GeminiWire.parseTokenUsage(#"{"usageMetadata":{"totalTokenCount":-1}}"#) == nil)
         #expect(GeminiWire.parseTokenUsage("bad json") == nil)
