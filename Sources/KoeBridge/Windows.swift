@@ -275,7 +275,7 @@ struct HistoryView: View {
     }
 }
 
-/// Four focused settings pages replace the old tall Form, which clipped its
+/// Five focused settings pages replace the old tall Form, which clipped its
 /// labels in a fixed-size 540x665 window. All existing preferences are reused.
 struct SettingsView: View {
     @ObservedObject var controller: VoiceController
@@ -289,7 +289,7 @@ struct SettingsView: View {
     @State private var tab: SettingsPage = .voice
 
     private enum SettingsPage: Hashable {
-        case voice, gemini, privacy, permissions
+        case voice, gemini, monitor, privacy, permissions
     }
 
     var body: some View {
@@ -300,6 +300,9 @@ struct SettingsView: View {
             geminiPage
                 .tabItem { Label("Gemini", systemImage: "sparkles") }
                 .tag(SettingsPage.gemini)
+            UsageMonitorView(controller: controller)
+                .tabItem { Label("ステータスモニター", systemImage: "chart.bar.fill") }
+                .tag(SettingsPage.monitor)
             privacyPage
                 .tabItem { Label("履歴・診断", systemImage: "lock.shield") }
                 .tag(SettingsPage.privacy)

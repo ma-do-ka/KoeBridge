@@ -33,6 +33,13 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
     var local: AppleLocalTranscriber?
     var audioIntegrity = AudioIntegrityState()
     var audioBackup = Data()
+    var geminiAttempted = false
+    var appleAttempted = false
+    var fellBackToApple = false
+    var geminiStartedAt: Date?
+    var appleStartedAt: Date?
+    var appleAudioBytes = 0
+    var successfulEngine: RecognitionMode?
     var partialText = ""
     var startedAt: Date?
     var stoppingAt: Date?
@@ -102,6 +109,9 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
     @Published private(set) var usedMode = ""
     @Published private(set) var history: [TranscriptRecord] = []
     @Published private(set) var historyProblem = ""
+    @Published private(set) var monitorEvents: [EngineUsageSample] = []
+    @Published private(set) var monitorTokens: [GeminiTokenSample] = []
+    @Published private(set) var monitorProblem = ""
     @Published private(set) var shortcutChoice: RecordingShortcut = .controlOptionSpace
     @Published private(set) var shortcutProblem = ""
     var onShortcutChange: ((RecordingShortcut) -> Bool)?
@@ -112,6 +122,7 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
     var onShowPermissions: (() -> Void)?
 
     private var archive: RecentTranscriptArchive?
+    private var usageArchive: UsageMonitorArchive?
     private var active: DictationTake?
     private var inFlight: [UUID: DictationTake] = [:]
     private var finished = OrderedResultBuffer<Completion>(maximumPending: 8)
@@ -137,6 +148,14 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
             history = saved.entries
         } catch {
             historyProblem = "履歴を読み込めません（元のファイルは保持しています）：\(error.localizedDescription)"
+        }
+        do {
+            let stored = try UsageMonitorArchive()
+            usageArchive = stored
+            monitorEvents = stored.engineEvents
+            monitorTokens = stored.tokenEvents
+        } catch {
+            monitorProblem = "利用統計を読み込めません。元のデータは保持しています：\(error.localizedDescription)"
         }
     }
 
@@ -275,6 +294,9 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
         if actual == .gemini {
             if let key = KeychainStore.load() {
                 let candidate = GeminiLiveConnection()
+                take.geminiAttempted = true
+                take.geminiStartedAt = Date()
+                take.cloud = candidate
                 do {
                     try await candidate.connect(apiKey: key,
                                                 vocabulary: take.vocabulary,
@@ -305,15 +327,19 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
                 } catch {
                     candidate.cancel()
                     DiagnosticLog.record("gemini setup failed; using local for THIS take")
+                    take.fellBackToApple = true
                     actual = .local
                 }
             } else {
                 DiagnosticLog.record("gemini key unavailable; using local for THIS take")
+                take.fellBackToApple = true
                 actual = .local
             }
         }
         if actual == .local {
             let recognizer = AppleLocalTranscriber()
+            take.appleAttempted = true
+            take.appleStartedAt = Date()
             try await recognizer.start()
             guard !take.finished, !Task.isCancelled else {
                 recognizer.cancel()
@@ -409,6 +435,9 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
         }
         let local = AppleLocalTranscriber()
         take.local = local
+        take.fellBackToApple = true
+        take.appleAttempted = true
+        take.appleStartedAt = Date()
         try await local.start()
         try Task.checkCancellation()
         let length = take.audioBackup.count
@@ -417,6 +446,7 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
             try Task.checkCancellation()
             let end = min(offset + 3_200, length)
             try local.appendPCM16(take.audioBackup.subdata(in: offset..<end))
+            take.appleAudioBytes += end - offset
             offset = end
         }
         let result = try await local.endAudioAndAwaitFinal()
@@ -439,6 +469,7 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
                 } else {
                     guard let recognizer = take.local else { throw AppError.connectionLost }
                     try recognizer.appendPCM16(chunk)
+                    take.appleAudioBytes += chunk.count
                 }
             }
             guard !take.finished, !Task.isCancelled else { return }
@@ -449,15 +480,18 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
                 try await remote.endAudio()
                 do {
                     result = try await remote.awaitFinal()
+                    take.successfulEngine = .gemini
                 } catch {
                     // No transcript despite valid audio: local ASR may recover
                     // the text. A failed local attempt stays an explicit error.
                     DiagnosticLog.record("gemini final failed; attempting Apple on-device recovery")
                     result = try await retryLocally(take)
+                    take.successfulEngine = .local
                 }
             } else {
                 guard let recognizer = take.local else { throw AppError.connectionLost }
                 result = try await recognizer.endAudioAndAwaitFinal()
+                take.successfulEngine = .local
             }
             guard !take.finished, !Task.isCancelled else { return }
             guard !result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -487,10 +521,58 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
             onHidePreview?()
             previewText = ""
         }
+        recordUsage(take, succeeded: text?.isEmpty == false, cancelled: reason == "録音をキャンセルしました")
         take.releaseResources()
         let accepted = finished.finish(take.id, result: Completion(text: text, reason: reason, partial: partial))
         DiagnosticLog.record("session resolved; success=\(text?.isEmpty == false) accepted=\(accepted) pending=\(finished.count)")
         deliverOrderedResults()
+    }
+
+    /// Called exactly once per take, including failures and fallback.
+    /// No transcript, audio, credentials, or platform error messages are stored.
+    private func recordUsage(_ take: DictationTake, succeeded: Bool, cancelled: Bool) {
+        let fallbackTime = take.startedAt ?? Date()
+        func outcome(for mode: RecognitionMode) -> UsageOutcome {
+            if succeeded && take.successfulEngine == mode { return .success }
+            return cancelled ? .cancelled : .failure
+        }
+        var rows: [EngineUsageSample] = []
+        if take.geminiAttempted {
+            rows.append(EngineUsageSample(
+                at: take.geminiStartedAt ?? fallbackTime, engine: .gemini,
+                audioSeconds: Double(take.cloud?.sentAudioBytes ?? 0) / 32_000,
+                outcome: outcome(for: .gemini)))
+        }
+        if take.appleAttempted {
+            rows.append(EngineUsageSample(
+                at: take.appleStartedAt ?? fallbackTime, engine: .apple,
+                audioSeconds: Double(take.appleAudioBytes) / 32_000,
+                outcome: outcome(for: .local), fallback: take.fellBackToApple))
+        }
+        let tokens = take.cloud?.tokenSamples ?? []
+        guard !rows.isEmpty || !tokens.isEmpty else { return }
+        if var store = usageArchive {
+            do {
+                try store.append(engineEvents: rows, tokenEvents: tokens)
+                usageArchive = store
+                monitorEvents = store.engineEvents
+                monitorTokens = store.tokenEvents
+                monitorProblem = ""
+            } catch {
+                monitorProblem = "利用統計を保存できません。元のファイルは保持しています：\(error.localizedDescription)"
+                monitorEvents.append(contentsOf: rows)
+                monitorTokens.append(contentsOf: tokens)
+            }
+        } else {
+            monitorEvents.append(contentsOf: rows)
+            monitorTokens.append(contentsOf: tokens)
+        }
+        if monitorEvents.count > UsageMonitorArchive.maximumEngineEvents {
+            monitorEvents = Array(monitorEvents.suffix(UsageMonitorArchive.maximumEngineEvents))
+        }
+        if monitorTokens.count > UsageMonitorArchive.maximumTokenEvents {
+            monitorTokens = Array(monitorTokens.suffix(UsageMonitorArchive.maximumTokenEvents))
+        }
     }
 
     private func deliverOrderedResults() {
@@ -678,6 +760,22 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
         catch { historyProblem = "履歴の全削除に失敗しました：\(error.localizedDescription)" }
         archive = store
         history = store.entries
+    }
+
+    func clearUsageMonitor() {
+        guard var store = usageArchive else {
+            monitorProblem = "統計ファイルを読み込めないため、既存ファイルを安全に削除できません"
+            return
+        }
+        do {
+            try store.deleteAll()
+            usageArchive = store
+            monitorEvents = []
+            monitorTokens = []
+            monitorProblem = ""
+        } catch {
+            monitorProblem = "利用統計を削除できません：\(error.localizedDescription)"
+        }
     }
 
     func saveKey(_ key: String) throws {
