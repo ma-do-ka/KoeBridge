@@ -93,6 +93,12 @@ struct UsageMonitorView: View {
             .sorted { $0.bucket < $1.bucket }
     }
 
+    private func outcomeCount(_ engine: UsageEngine, _ outcome: UsageOutcome) -> Int {
+        controller.monitorEvents.filter {
+            $0.at >= startOfRange && $0.engine == engine && $0.outcome == outcome
+        }.count
+    }
+
     private var last24Hours: [EngineUsageSample] {
         controller.monitorEvents.filter { $0.at >= Date().addingTimeInterval(-86_400) }
     }
@@ -125,7 +131,7 @@ struct UsageMonitorView: View {
                                 "\(last24Hours.filter { $0.engine == .apple }.count)回")
                     summaryTile("Appleへ切替",
                                 "\(last24Hours.filter { $0.fallback }.count)回")
-                    summaryTile("認識失敗",
+                    summaryTile("試行失敗",
                                 "\(last24Hours.filter { $0.outcome == .failure }.count)回")
                 }
 
@@ -159,6 +165,12 @@ struct UsageMonitorView: View {
                             ])
                             .frame(height: 145)
                         }
+                        HStack(spacing: 12) {
+                            Text("Gemini：\(outcomeCount(.gemini, .success))成功 / \(outcomeCount(.gemini, .failure))失敗")
+                            Text("Apple：\(outcomeCount(.apple, .success))成功 / \(outcomeCount(.apple, .failure))失敗")
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     }
                     .padding(7)
                 }
