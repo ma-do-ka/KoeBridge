@@ -26,7 +26,7 @@ extension SettingsSection {
         case .history: return "文字起こし履歴の確認と、不具合調査用の動作記録を管理します。"
         case .permissions: return "録音と文字入力に必要なmacOSの許可状態を確認します。許可はmacOSが管理します。"
         case .help: return "使い方と、うまく動作しないときの確認先です。"
-        case .about: return "KoeBridgeのバージョンと公開ソースコードです。"
+        case .about: return "バージョン、公式リポジトリ、アップデートの確認と設定です。"
         }
     }
 }
