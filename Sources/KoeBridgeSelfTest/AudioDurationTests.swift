@@ -14,6 +14,8 @@ struct AudioDurationTests {
             seconds: 0.08, pcmBytes: 100, peak: 0, hasText: false, audioDropped: true))
         check(!QuickNoInputPolicy.shouldSkipRecognition(
             seconds: 1.2, pcmBytes: 40_000, peak: 0, hasText: false, audioDropped: false))
+        check(!QuickNoInputPolicy.shouldSkipRecognition(
+            seconds: 1.2, pcmBytes: 0, peak: 0, hasText: false, audioDropped: false))
     }
 
     func immediateSecondPressDoesNotWaitForCloudFinal() {
