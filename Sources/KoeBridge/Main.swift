@@ -135,6 +135,7 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
     private let controller = VoiceController.shared
     private var workspaceObservers: [NSObjectProtocol] = []
     private var windowKeyMonitor: Any?
+    private var updateCheckTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -193,6 +194,13 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
         // Only checks signed-off stable release metadata; never installs
         // code in the background or interrupts a dictation session.
         KoeBridgeUpdateManager.shared.checkIfDue()
+        // A persistent menu-bar app may stay open for days; revisit the
+        // 24-hour due check hourly without polling GitHub every hour.
+        updateCheckTimer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { _ in
+            Task { @MainActor in
+                KoeBridgeUpdateManager.shared.checkIfDue()
+            }
+        }
     }
 
     // User consent is required: show the initial setup window rather than
@@ -225,6 +233,8 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        updateCheckTimer?.invalidate()
+        updateCheckTimer = nil
         let center = NSWorkspace.shared.notificationCenter
         workspaceObservers.forEach { center.removeObserver($0) }
         workspaceObservers.removeAll()
