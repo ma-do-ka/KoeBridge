@@ -412,7 +412,7 @@ struct SettingsView: View {
         _ section: SettingsSection, @ViewBuilder content: @escaping () -> Content
     ) -> some View {
         ScrollViewReader { proxy in
-            ScrollView { content() }
+            SettingsIndicatedScrollView { content() }
                 .onAppear { scrollToSearchResult(proxy, section: section) }
                 .onChange(of: searchTarget) { _, _ in scrollToSearchResult(proxy, section: section) }
         }
@@ -474,7 +474,7 @@ struct SettingsView: View {
             .padding(.horizontal, 13)
             .padding(.bottom, 18)
 
-            ScrollView {
+            SettingsIndicatedScrollView {
                 VStack(alignment: .leading, spacing: 17) {
                     if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         sidebarGroup("基本", pages: [.general, .voice, .gemini, .usage])
@@ -582,7 +582,7 @@ struct SettingsView: View {
     }
 
     private var generalPage: some View {
-        ScrollView {
+        SettingsIndicatedScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 GroupBox {
                     VStack(spacing: 0) {
@@ -597,12 +597,14 @@ struct SettingsView: View {
                         }
                         Divider()
                         settingsRow("Gemini APIキー",
-                                    description: controller.hasKey ? "Macのキーチェーンに登録済みです。" : "未登録です。Apple認識はキーなしで使用できます。") {
+                                    description: controller.hasKey ? "Macのキーチェーンに登録済みです。" : "未登録です。Apple認識はキーなしで使用できます。",
+                                    icon: "key.horizontal") {
                             Button("設定する") { go(.gemini) }
                         }
                         Divider()
                         settingsRow("アプリの利用許可",
-                                    description: "録音と自動入力に必要なmacOSの権限を確認します。") {
+                                    description: "録音と自動入力に必要なmacOSの権限を確認します。",
+                                    icon: "checkmark.shield") {
                             Button("確認する") { go(.permissions) }
                         }
                     }
@@ -615,19 +617,21 @@ struct SettingsView: View {
                         Text("録音キーを押してからマイクが使えるまでと、録音終了後に入力を送信するまでの実測時間を表示します。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        HStack {
+                        HStack(alignment: .center) {
                             Label("録音開始まで", systemImage: "mic")
                             Spacer()
                             Text(controller.lastStartupSeconds.map { String(format: "%.2f秒", $0) } ?? "未計測")
                                 .monospacedDigit()
                         }
+                        .frame(minHeight: 34)
                         Divider()
-                        HStack {
+                        HStack(alignment: .center) {
                             Label("録音停止から入力送信まで", systemImage: "arrow.up.circle")
                             Spacer()
                             Text(controller.lastStopToInputSeconds.map { String(format: "%.2f秒", $0) } ?? "未計測")
                                 .monospacedDigit()
                         }
+                        .frame(minHeight: 34)
                         Text("端末や接続環境により変動します。送信時間には相手アプリでの受理確認は含みません。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -657,7 +661,7 @@ struct SettingsView: View {
     }
 
     private var helpPage: some View {
-        ScrollView {
+        SettingsIndicatedScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 GroupBox {
                     VStack(alignment: .leading, spacing: 10) {
@@ -700,7 +704,7 @@ struct SettingsView: View {
     }
 
     private var aboutPage: some View {
-        ScrollView {
+        SettingsIndicatedScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 GroupBox {
                     VStack(alignment: .leading, spacing: 12) {
@@ -732,21 +736,27 @@ struct SettingsView: View {
                 Image(systemName: icon)
                     .font(.system(size: 17))
                     .foregroundStyle(.secondary)
-                    .frame(width: 24)
+                    .frame(width: 28, height: 28)
+                    .accessibilityHidden(true)
+            } else {
+                Color.clear
+                    .frame(width: 28, height: 28)
                     .accessibilityHidden(true)
             }
             VStack(alignment: .leading, spacing: 4) {
-                Text(title).font(.system(size: 14, weight: .medium))
+                Text(title).font(.system(size: 14, weight: .semibold))
                 Text(description)
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
+                    .lineSpacing(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             accessory()
+                .frame(minWidth: 126, alignment: .trailing)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, minHeight: 72, alignment: .center)
+        .padding(.vertical, 7)
     }
 
     private var voicePage: some View {
