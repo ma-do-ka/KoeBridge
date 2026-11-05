@@ -11,6 +11,8 @@ jobs:
         run: |
           xcodebuild -version
           swift --version
+      - name: Verify published files and icon assets
+        run: python3 scripts/audit_public_release.py
       - name: Unit tests
         run: swift test --parallel
       - name: Swift release build
