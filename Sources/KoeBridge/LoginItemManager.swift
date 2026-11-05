@@ -38,7 +38,7 @@ import KoeBridgeCore
         case .enabled: return "登録済み・自動起動ON"
         case .notRegistered: return "未登録"
         case .requiresApproval: return "登録済み・macOSの承認待ち"
-        case .notFound: return "macOSで登録情報を確認できません（登録を試せます）"
+        case .notFound: return "未確認（ONで登録を試行）"
         @unknown default: return "状態を確認できません"
         }
     }
