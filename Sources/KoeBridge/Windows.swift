@@ -374,7 +374,7 @@ struct SettingsView: View {
 
     /// Search navigates to the correct real setting and scrolls it into view.
     private func scrollablePage<Content: View>(
-        _ section: SettingsSection, @ViewBuilder content: () -> Content
+        _ section: SettingsSection, @ViewBuilder content: @escaping () -> Content
     ) -> some View {
         ScrollViewReader { proxy in
             ScrollView { content() }
