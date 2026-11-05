@@ -247,7 +247,7 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
         guard active === take, phase == .preparing, !take.finished else { return }
 
         let (stream, continuation) = AsyncStream<Data>.makeStream(
-            of: Data.self, bufferingPolicy: .bufferingOldest(240))
+            of: Data.self, bufferingPolicy: .bufferingOldest(480))
         take.continuation = continuation
         take.worker = Task { [weak self, weak take] in
             guard let self, let take else { return }
