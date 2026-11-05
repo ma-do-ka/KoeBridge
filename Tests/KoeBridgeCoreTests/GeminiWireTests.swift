@@ -45,6 +45,20 @@ struct GeminiWireTests {
         #expect(a.displayText == "おはようございますGitHub APIを使う")
     }
 
+    @Test func recoveryRetainsUncommittedInstructionsWithoutAutotypingThem() {
+        var assembler = TranscriptAssembler()
+        assembler.apply(.final("GitHubのIssueを確認する。"))
+        assembler.apply(.interim("続いてテストし、PRを作成する。"))
+        #expect(assembler.committedText == "GitHubのIssueを確認する。")
+        #expect(assembler.recoveryText == "GitHubのIssueを確認する。続いてテストし、PRを作成する。")
+        // A cumulative interim must not duplicate the committed prefix.
+        assembler.apply(.interim("GitHubのIssueを確認する。続いてテストし、PRを作成する。"))
+        #expect(assembler.recoveryText == "GitHubのIssueを確認する。続いてテストし、PRを作成する。")
+        // Final-only input is unchanged.
+        assembler.apply(.final("GitHubのIssueを確認する。続いてテストし、PRを作成する。"))
+        #expect(assembler.recoveryText == assembler.committedText)
+    }
+
     @Test func assemblerCumulativeFinal() {
         var a = TranscriptAssembler()
         a.apply(.final("今日は"))
