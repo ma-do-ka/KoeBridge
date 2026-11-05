@@ -18,7 +18,8 @@ import KoeBridgeCore
     private var firstAudioSentAt: Date?
     private var lastTranscriptionAt: Date?
     private var sentAudioChunks = 0
-    private var sentAudioBytes = 0
+    private(set) var sentAudioBytes = 0
+    private(set) var tokenSamples: [GeminiTokenSample] = []
     private var interimEvents = 0
     private var finalEvents = 0
     private var duplicateFinalEvents = 0
@@ -48,7 +49,9 @@ import KoeBridgeCore
             let message: URLSessionWebSocketTask.Message
             do { message = try await ws.receive() }
             catch { throw ConnectionError.setup(error.localizedDescription) }
-            for event in try GeminiWire.parse(Self.string(message)) {
+            let raw = Self.string(message)
+            captureUsage(raw)
+            for event in try GeminiWire.parse(raw) {
                 if case .error(let reason) = event { throw ConnectionError.setup(reason) }
                 if case .setupComplete = event { ready = true }
                 if case .final = event { handle(event) }
@@ -67,8 +70,10 @@ import KoeBridgeCore
             do {
                 let msg = try await ws.receive()
                 receivedFrames += 1
-                let events = try GeminiWire.parse(Self.string(msg))
-                if events.isEmpty {
+                let raw = Self.string(msg)
+                let gotUsage = captureUsage(raw)
+                let events = try GeminiWire.parse(raw)
+                if events.isEmpty && !gotUsage {
                     unrecognizedFrames += 1
                     // Log schema categories only, NEVER contents or secrets.
                     if unrecognizedFrames <= 3 {
@@ -86,6 +91,18 @@ import KoeBridgeCore
                 break
             }
         }
+    }
+
+    @discardableResult
+    private func captureUsage(_ raw: String) -> Bool {
+        guard let usage = GeminiWire.parseTokenUsage(raw) else { return false }
+        // A separate usageMetadata message is a separate report, even when
+        // two turns happen to have equal values. Do not infer cost or estimate
+        // unavailable counts. Cap transient per-session observations.
+        if tokenSamples.count < 1_024 {
+            tokenSamples.append(GeminiTokenSample(at: Date(), usage: usage))
+        }
+        return true
     }
 
     private func handle(_ event: TranscribeEvent) {

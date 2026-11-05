@@ -186,10 +186,10 @@ struct HistoryView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("直近の文字起こし：\(controller.history.count) / 10件")
+                Text("保存した文章：\(controller.history.count) / 10件")
                     .font(.headline)
                 Spacer()
-                Text("音声データ・APIキーは保存しません")
+                Text("直近10件を保存。音声データ・APIキーは保存しません")
                     .font(.caption).foregroundStyle(.secondary)
             }
             if !controller.historyProblem.isEmpty {
@@ -244,8 +244,8 @@ struct HistoryView: View {
                             }
                             HStack {
                                 Spacer()
-                                Button("この文章をコピー") { controller.copyRecord(selected) }
-                                Button("この履歴を削除", role: .destructive) {
+                                Button("文章をコピー") { controller.copyRecord(selected) }
+                                Button("この文章を削除", role: .destructive) {
                                     let removing = selected.id
                                     controller.deleteRecord(removing)
                                     selectedID = controller.history.first?.id
@@ -257,10 +257,10 @@ struct HistoryView: View {
                 }
             }
             HStack {
-                Text("自動入力の受理確認はできません。失敗時はここからコピーしてください。")
+                Text("自動入力が相手のアプリで受け付けられたかは確認できません。必要に応じて文章をコピーしてください。")
                     .font(.caption2).foregroundStyle(.secondary)
                 Spacer()
-                Button("すべて削除", role: .destructive) { confirmDeleteAll = true }
+                Button("履歴をすべて削除", role: .destructive) { confirmDeleteAll = true }
                     .disabled(controller.history.isEmpty)
             }
         }
@@ -275,7 +275,7 @@ struct HistoryView: View {
     }
 }
 
-/// Four focused settings pages replace the old tall Form, which clipped its
+/// Five focused settings pages replace the old tall Form, which clipped its
 /// labels in a fixed-size 540x665 window. All existing preferences are reused.
 struct SettingsView: View {
     @ObservedObject var controller: VoiceController
@@ -289,7 +289,7 @@ struct SettingsView: View {
     @State private var tab: SettingsPage = .voice
 
     private enum SettingsPage: Hashable {
-        case voice, gemini, privacy, permissions
+        case voice, gemini, monitor, privacy, permissions
     }
 
     var body: some View {
@@ -300,28 +300,31 @@ struct SettingsView: View {
             geminiPage
                 .tabItem { Label("Gemini", systemImage: "sparkles") }
                 .tag(SettingsPage.gemini)
+            UsageMonitorView(controller: controller)
+                .tabItem { Label("利用統計", systemImage: "chart.bar.fill") }
+                .tag(SettingsPage.monitor)
             privacyPage
-                .tabItem { Label("履歴・診断", systemImage: "lock.shield") }
+                .tabItem { Label("履歴・記録", systemImage: "lock.shield") }
                 .tag(SettingsPage.privacy)
             permissionsPage
-                .tabItem { Label("権限", systemImage: "checkmark.shield") }
+                .tabItem { Label("利用許可", systemImage: "checkmark.shield") }
                 .tag(SettingsPage.permissions)
         }
         .padding(.horizontal, 16)
         .padding(.bottom, 12)
         .frame(minWidth: 675, minHeight: 475)
-        .alert("診断ログを削除しますか？", isPresented: $confirmDeleteLog) {
+        .alert("動作記録を削除しますか？", isPresented: $confirmDeleteLog) {
             Button("削除", role: .destructive) {
                 do {
                     try DiagnosticLog.deleteExistingFiles()
-                    logNotice = "診断ログを削除しました"
+                    logNotice = "動作記録を削除しました"
                 } catch {
-                    logNotice = "ログを削除できません：\(error.localizedDescription)"
+                    logNotice = "動作記録を削除できません：\(error.localizedDescription)"
                 }
             }
             Button("キャンセル", role: .cancel) {}
         } message: {
-            Text("KoeBridge.log と古いログ1件を削除します。認識履歴や設定は削除されません。")
+            Text("KoeBridge.log と古いログ1件を削除します。文字起こし履歴や設定は削除されません。")
         }
         .alert("Gemini APIキーを削除しますか？", isPresented: $confirmDeleteKey) {
             Button("削除", role: .destructive) {
@@ -331,14 +334,33 @@ struct SettingsView: View {
             }
             Button("キャンセル", role: .cancel) {}
         } message: {
-            Text("macOSキーチェーン内のKoeBridge用APIキーを削除します。")
+            Text("macOSのキーチェーン内に保存したKoeBridge用APIキーを削除します。")
         }
+    }
+
+    /// Each setting has a plain-language label and a short secondary explanation.
+    private func settingsRow<Accessory: View>(
+        _ title: String, description: String,
+        @ViewBuilder accessory: () -> Accessory
+    ) -> some View {
+        HStack(alignment: .center, spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title).font(.system(size: 14, weight: .medium))
+                Text(description)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            accessory()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 8)
     }
 
     private func headline(_ title: String, detail: String) -> some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text(title)
-                .font(.system(size: 20, weight: .semibold))
+            Text(title).font(.system(size: 20, weight: .semibold))
             Text(detail)
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -350,24 +372,23 @@ struct SettingsView: View {
     private var voicePage: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                headline("音声入力", detail: "録音方法と文字入力の動作を設定します。")
+                headline("音声入力", detail: "音声を文字に変える方法と、録音・文字入力の操作を設定します。")
                 GroupBox {
-                    VStack(alignment: .leading, spacing: 14) {
-                        HStack(spacing: 12) {
-                            Text("認識エンジン")
-                                .frame(width: 112, alignment: .leading)
-                            Picker("認識エンジン", selection: $controller.requestedMode) {
+                    VStack(spacing: 0) {
+                        settingsRow("文字起こしの方法",
+                                    description: "音声を文字に変換する方法を選びます。GeminiはGoogleのAPIを使用し、AppleはこのMac内で処理します。") {
+                            Picker("文字起こしの方法", selection: $controller.requestedMode) {
                                 ForEach(RecognitionMode.allCases) { mode in
-                                    Text(mode.label).tag(mode)
+                                    Text(mode.settingsLabel).tag(mode)
                                 }
                             }
                             .labelsHidden()
-                            .frame(maxWidth: .infinity)
+                            .frame(width: 250)
                         }
-                        HStack(spacing: 12) {
-                            Text("録音・確定キー")
-                                .frame(width: 112, alignment: .leading)
-                            Picker("録音・確定キー", selection: Binding(
+                        Divider()
+                        settingsRow("録音の開始・終了キー",
+                                    description: "選んだキーで録音を開始し、もう一度押すと終了します。ほかのアプリのキー操作と競合する場合があります。") {
+                            Picker("録音の開始・終了キー", selection: Binding(
                                 get: { controller.shortcutChoice },
                                 set: { controller.selectShortcut($0) }
                             )) {
@@ -376,39 +397,44 @@ struct SettingsView: View {
                                 }
                             }
                             .labelsHidden()
-                            .frame(maxWidth: .infinity)
+                            .frame(width: 250)
                         }
                         if !controller.shortcutProblem.isEmpty {
-                            Text(controller.shortcutProblem)
-                                .font(.caption)
-                                .foregroundStyle(.red)
-                                .fixedSize(horizontal: false, vertical: true)
-                            Button("録音キーの登録を再試行") { controller.retryShortcutRegistration() }
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(controller.shortcutProblem)
+                                    .font(.caption)
+                                    .foregroundStyle(.red)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                settingsRow("録音キーを再登録",
+                                            description: "設定したキーが反応しない場合に、ショートカットの登録をやり直します。") {
+                                    Button("再登録") { controller.retryShortcutRegistration() }
+                                }
+                            }
                         }
                         Divider()
-                        Toggle("録音停止後に元の入力先へ自動入力", isOn: $controller.automaticPaste)
-                            .toggleStyle(.checkbox)
-                        Text("録音キーを押して開始、もう一度押して確定します。録音パネルは停止と同時に閉じます。")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        settingsRow("認識した文章を自動入力する",
+                                    description: "録音終了後、元の入力欄への入力を試みます。オフの場合は文章を履歴に保存し、あとからコピーできます。") {
+                            Toggle("認識した文章を自動入力する", isOn: $controller.automaticPaste)
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+                        }
                     }
                     .padding(8)
                 } label: {
                     Label("基本設定", systemImage: "slider.horizontal.3")
                 }
                 GroupBox {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("自動入力にはクリップボードを使用せず、Unicodeキーイベントを送信します。")
-                        Text("入力先の変更や権限不足を検出した場合は入力しません。文字起こしは直近10件の履歴からコピーできます。")
-                        Text("右Command等の単独キーには入力監視の許可が必要な場合があります。FnキーはmacOSの割当と競合する場合があります。")
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("クリップボードを使わず、認識した文章をキー入力として送信します。")
+                        Text("入力先の変更や権限不足が検出された場合は自動入力を中止し、文章を直近10件の履歴に保存します。")
+                        Text("右Commandなどの単独キーには入力監視の許可が必要な場合があります。FnキーはmacOSの割当と競合する場合があります。")
                     }
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+                    .font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(8)
                 } label: {
-                    Label("入力の安全性", systemImage: "keyboard")
+                    Label("自動入力の安全確認", systemImage: "keyboard")
                 }
             }
             .padding(18)
@@ -419,18 +445,23 @@ struct SettingsView: View {
     private var geminiPage: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                headline("Gemini API", detail: "Geminiを選んだ場合に使用するキーと認識オプションです。")
+                headline("Gemini API", detail: "Geminiを使うための接続情報と文字起こし方法を設定します。Appleの音声認識には適用されません。")
                 GroupBox {
                     VStack(alignment: .leading, spacing: 12) {
-                        SecureField("Gemini APIキー（保存済みの値は表示しません）", text: $apiKeyDraft)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Gemini APIキー").font(.system(size: 14, weight: .medium))
+                            Text("Google AI Studioで発行したキーを登録します。Macのキーチェーンに保存し、保存済みの値は表示しません。")
+                                .font(.system(size: 12)).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        SecureField("Gemini APIキーを入力", text: $apiKeyDraft)
                             .textFieldStyle(.roundedBorder)
-                        HStack {
+                        HStack(spacing: 10) {
                             Label(controller.hasKey ? "キーチェーンに登録済み" : "APIキー未登録",
                                   systemImage: controller.hasKey ? "checkmark.circle.fill" : "circle.dashed")
-                                .font(.callout)
-                                .foregroundStyle(.secondary)
+                                .font(.callout).foregroundStyle(.secondary)
                             Spacer()
-                            Button("登録・更新") {
+                            Button("APIキーを保存") {
                                 do {
                                     try controller.saveKey(apiKeyDraft)
                                     apiKeyDraft = ""
@@ -440,41 +471,62 @@ struct SettingsView: View {
                                 }
                             }
                             .disabled(apiKeyDraft.isEmpty)
-                            Button("削除", role: .destructive) { confirmDeleteKey = true }
+                            Button("APIキーを削除", role: .destructive) { confirmDeleteKey = true }
                                 .disabled(!controller.hasKey)
                         }
+                        Text("新しいキーを保存すると登録済みのキーを置き換えます。削除後にGeminiを使うには再登録が必要です。")
+                            .font(.system(size: 12)).foregroundStyle(.secondary)
                         if !apiKeyNotice.isEmpty {
                             Text(apiKeyNotice).font(.caption).textSelection(.enabled)
                         }
                     }
                     .padding(8)
                 } label: {
-                    Label("APIキー", systemImage: "key.horizontal")
+                    Label("API接続", systemImage: "key.horizontal")
                 }
                 GroupBox {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Toggle("日本語ヒント（ja-JP）", isOn: $controller.japaneseHint)
-                            .toggleStyle(.checkbox)
-                        Toggle("SMART整形（逐語ではなくなる）", isOn: $controller.smartFormatting)
-                            .toggleStyle(.checkbox)
-                        Text("専門用語辞書（1行に1語・最初の100語を送信）")
-                            .font(.callout).fontWeight(.medium)
-                        TextEditor(text: $controller.vocabulary)
-                            .font(.system(.body, design: .monospaced))
-                            .frame(minHeight: 125)
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 7)
-                                    .strokeBorder(Color.secondary.opacity(0.25))
-                            }
+                    VStack(spacing: 0) {
+                        settingsRow("日本語での認識を優先する",
+                                    description: "日本語を中心に話す場合に有効にしてください。Geminiに日本語の言語設定を送ります。オフでは言語を指定しません。") {
+                            Toggle("日本語での認識を優先する", isOn: $controller.japaneseHint)
+                                .labelsHidden().toggleStyle(.switch)
+                        }
+                        Divider()
+                        settingsRow("話した内容を読みやすく整える",
+                                    description: "言い直しや「えーと」などを整理し、自然な文章への変換を試みます。発言をできるだけそのまま残す場合はオフにしてください。") {
+                            Toggle("話した内容を読みやすく整える", isOn: $controller.smartFormatting)
+                                .labelsHidden().toggleStyle(.switch)
+                        }
+                        Divider()
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("固有名詞・専門用語を登録")
+                                .font(.system(size: 14, weight: .medium))
+                            Text("認識してほしい製品名や技術用語を1行に1語ずつ入力します。重複を除いた最大100語をGeminiに送信します。表記を強制する機能ではありません。")
+                                .font(.system(size: 12)).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            TextEditor(text: $controller.vocabulary)
+                                .font(.system(.body, design: .monospaced))
+                                .frame(minHeight: 125)
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 7)
+                                        .strokeBorder(Color.secondary.opacity(0.25))
+                                }
+                        }
+                        .padding(.vertical, 8)
                     }
                     .padding(8)
                 } label: {
-                    Label("認識精度", systemImage: "text.badge.checkmark")
+                    Label("文字起こしの調整", systemImage: "text.badge.checkmark")
                 }
-                Text("キーはmacOSキーチェーンに保存します。Gemini利用時の音声はGoogleのAPIへ送信され、利用枠・料金はGoogle側の条件に従います。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                GroupBox {
+                    Text("Geminiの利用中は録音した音声がGoogleのAPIへ送信されます。料金や利用制限はGoogle側の契約・課金条件に従います。")
+                        .font(.callout).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(8)
+                } label: {
+                    Label("Gemini利用時のプライバシーと料金", systemImage: "lock.shield")
+                }
             }
             .padding(18)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -484,69 +536,56 @@ struct SettingsView: View {
     private var privacyPage: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                headline("履歴・診断", detail: "文字起こし履歴と、問題調査用ログを管理します。")
+                headline("履歴・記録", detail: "文字起こし履歴の確認と、不具合調査用の動作記録を管理します。")
                 GroupBox {
                     VStack(alignment: .leading, spacing: 10) {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("認識履歴：\(controller.history.count) / 10件")
-                                    .fontWeight(.medium)
-                                Text("認識テキストのみをMac内に保存します。音声やAPIキーは保存しません。")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Button("履歴を表示") { controller.onShowHistory?() }
+                        settingsRow("保存件数：\(controller.history.count) / 10件",
+                                    description: "直近10件の文字起こし結果をMacに保存します。音声やAPIキーは保存しません。") {
+                            Button("保存した文章を見る") { controller.onShowHistory?() }
                         }
-                        Text("~/Library/Application Support/KoeBridge/recent-transcripts.json")
+                        Text("保存先：~/Library/Application Support/KoeBridge/recent-transcripts.json")
                             .font(.system(.caption, design: .monospaced))
                             .foregroundStyle(.secondary)
                             .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(8)
                 } label: {
-                    Label("認識履歴", systemImage: "clock.arrow.circlepath")
+                    Label("文字起こし履歴", systemImage: "clock.arrow.circlepath")
                 }
                 GroupBox {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Toggle(isOn: $diagnosticsEnabled) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("診断ログを保存する")
-                                    .fontWeight(.medium)
-                                Text("開発・問題調査時のみONにしてください。通常はOFFで、ログは追加されません。")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        .toggleStyle(.checkbox)
-                        .onChange(of: diagnosticsEnabled) { _, enabled in
-                            if enabled {
-                                let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
-                                DiagnosticLog.record("diagnostics enabled; version=\(version)")
-                            }
+                    VStack(alignment: .leading, spacing: 9) {
+                        settingsRow("問題調査用の記録を残す",
+                                    description: "不具合調査に役立つ動作情報を保存します。通常はオフで問題ありません。認識した文章・音声・APIキーは記録しません。") {
+                            Toggle("問題調査用の記録を残す", isOn: $diagnosticsEnabled)
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+                                .onChange(of: diagnosticsEnabled) { _, enabled in
+                                    if enabled {
+                                        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
+                                        DiagnosticLog.record("diagnostics enabled; version=\(version)")
+                                    }
+                                }
                         }
                         Divider()
-                        Text("記録先：~/Library/Logs/KoeBridge.log")
+                        settingsRow("動作記録を削除",
+                                    description: "保存済みの動作記録だけを削除します。文字起こし履歴や設定は変更されません。") {
+                            Button("削除", role: .destructive) { confirmDeleteLog = true }
+                        }
+                        Text("保存先：~/Library/Logs/KoeBridge.log")
                             .font(.system(.caption, design: .monospaced))
                             .foregroundStyle(.secondary)
                             .textSelection(.enabled)
-                        Text("1ファイル192KB、世代1件を含め最大約384KB。認識本文・音声・APIキーは記録しません。OFFにしても既存ログは保持されます。")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        Text("1ファイル192KB、古いログ1件を含め最大約384KB。記録をオフにしても以前のログは残ります。")
+                            .font(.system(size: 12)).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
-                        HStack {
-                            Button("既存ログを削除", role: .destructive) { confirmDeleteLog = true }
-                            Spacer()
-                            if !logNotice.isEmpty {
-                                Text(logNotice).font(.caption).foregroundStyle(.secondary)
-                            }
+                        if !logNotice.isEmpty {
+                            Text(logNotice).font(.caption).foregroundStyle(.secondary)
                         }
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(8)
                 } label: {
-                    Label("診断ログ", systemImage: "stethoscope")
+                    Label("動作記録", systemImage: "stethoscope")
                 }
             }
             .padding(18)
@@ -557,22 +596,28 @@ struct SettingsView: View {
     private var permissionsPage: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                headline("macOSの利用許可", detail: "許可状態はmacOSが管理します。未許可の場合のみ、ここから要求できます。")
+                headline("利用許可", detail: "録音と文字入力に必要なmacOSの許可状態を確認します。許可はmacOSが管理します。")
                 GroupBox {
                     VStack(spacing: 0) {
-                        permissionRow("入力先の制御", icon: "hand.raised.fill",
+                        permissionRow("入力先へのアクセスを許可",
+                                      description: "文字を入力する場所を確認し、意図しない入力を防ぐために必要です。macOSのアクセシビリティ機能を利用します。",
+                                      icon: "hand.raised.fill",
                                       isGranted: guide.accessibilityGranted,
                                       canRequest: !guide.accessibilityGranted) {
                             guide.requestAccessibility()
                         }
-                        Divider().padding(.vertical, 7)
-                        permissionRow("入力イベントの送信", icon: "keyboard.fill",
+                        Divider().padding(.vertical, 6)
+                        permissionRow("文字の入力操作を許可",
+                                      description: "認識した文章を、ほかのアプリへキーボード入力として送信するために必要です。",
+                                      icon: "keyboard.fill",
                                       isGranted: guide.postEventGranted,
                                       canRequest: !guide.postEventGranted && guide.accessibilityGranted) {
                             guide.requestPostEvent()
                         }
-                        Divider().padding(.vertical, 7)
-                        permissionRow("マイク入力", icon: "mic.fill",
+                        Divider().padding(.vertical, 6)
+                        permissionRow("マイクの使用を許可",
+                                      description: "音声を録音して文字起こしするために必要です。音声は選択した認識方法に従って処理されます。",
+                                      icon: "mic.fill",
                                       isGranted: guide.microphoneStatus == .authorized,
                                       canRequest: guide.microphoneStatus != .authorized && !guide.microphoneRequestInProgress) {
                             guide.requestMicrophone()
@@ -580,22 +625,31 @@ struct SettingsView: View {
                     }
                     .padding(8)
                 } label: {
-                    Label("現在の状態", systemImage: "checkmark.shield")
+                    Label("アプリの利用許可", systemImage: "checkmark.shield")
                 }
                 if !guide.message.isEmpty {
                     Text(guide.message)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
+                        .font(.callout).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                HStack {
-                    Button("状態を更新") { guide.refresh() }
-                    Button("初期設定・権限画面を開く") { controller.onShowPermissions?() }
-                    Spacer()
+                GroupBox {
+                    VStack(spacing: 0) {
+                        settingsRow("許可状態を再確認",
+                                    description: "macOSで変更した許可状態を読み直します。") {
+                            Button("再確認") { guide.refresh() }
+                        }
+                        Divider()
+                        settingsRow("利用許可の案内を開く",
+                                    description: "必要な許可と設定方法をまとめて確認できます。") {
+                            Button("案内を開く") { controller.onShowPermissions?() }
+                        }
+                    }
+                    .padding(8)
+                } label: {
+                    Label("許可の操作", systemImage: "arrow.clockwise")
                 }
-                Text("macOSで拒否済みの場合、再要求してもダイアログが出ないことがあります。システム設定の「プライバシーとセキュリティ」でKoeBridgeの許可を確認してください。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Text("一度拒否した許可は、再要求してもダイアログが表示されない場合があります。macOSのシステム設定「プライバシーとセキュリティ」で確認してください。")
+                    .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .padding(18)
@@ -604,22 +658,33 @@ struct SettingsView: View {
         .onAppear { guide.refresh() }
     }
 
-    private func permissionRow(_ title: String, icon: String,
-                               isGranted: Bool, canRequest: Bool,
-                               action: @escaping () -> Void) -> some View {
-        HStack(spacing: 12) {
+    private func permissionRow(
+        _ title: String, description: String, icon: String,
+        isGranted: Bool, canRequest: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        HStack(alignment: .center, spacing: 12) {
             Image(systemName: icon)
-                .frame(width: 25)
+                .frame(width: 24)
                 .foregroundStyle(.secondary)
-            Text(title)
-            Spacer()
-            Label(isGranted ? "許可済み" : "未許可",
-                  systemImage: isGranted ? "checkmark.circle.fill" : "exclamationmark.circle")
-                .foregroundStyle(isGranted ? Color.green : Color.orange)
-                .font(.callout)
-            Button("許可を要求", action: action)
-                .disabled(!canRequest)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title).font(.system(size: 14, weight: .medium))
+                Text(description)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .trailing, spacing: 6) {
+                Label(isGranted ? "許可済み" : "未許可",
+                      systemImage: isGranted ? "checkmark.circle.fill" : "exclamationmark.circle")
+                    .foregroundStyle(isGranted ? Color.green : Color.orange)
+                    .font(.caption)
+                Button("許可を求める", action: action)
+                    .disabled(!canRequest)
+            }
         }
+        .padding(.vertical, 8)
     }
 }
 
@@ -657,14 +722,14 @@ struct SettingsView: View {
     func requestPostEvent() {
         refresh()
         guard accessibilityGranted else {
-            message = "まず『入力先の制御』への許可が必要です。"
+            message = "まず『入力先へのアクセスを許可』の設定が必要です。"
             return
         }
         _ = TextInsertion.requestPostEventAccess()
         refresh()
         message = postEventGranted
             ? "入力イベントの送信が許可されました。"
-            : "入力イベント送信は未許可です。macOSが再度ダイアログを出さない場合、プライバシー設定でKoeBridgeを確認してください。"
+            : "文字の入力操作は未許可です。macOSが再度ダイアログを出さない場合、プライバシー設定でKoeBridgeを確認してください。"
     }
 
     func requestMicrophone() {
@@ -715,68 +780,86 @@ struct PermissionSetupView: View {
     @ObservedObject var guide: PermissionGuide
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("音声入力の利用許可")
-                .font(.title2).fontWeight(.semibold)
-            Text("録音はマイク、文字入力はアクセシビリティと入力イベント送信の許可が必要です。いずれもmacOSが管理します。")
-                .font(.caption).foregroundStyle(.secondary)
-            HStack {
-                Image(systemName: "hand.raised.fill")
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("入力先の制御（アクセシビリティ）")
-                    Text(guide.accessibilityGranted ? "許可済み" : "未許可")
-                        .foregroundStyle(guide.accessibilityGranted ? Color.green : Color.orange)
-                }
-                Spacer()
-                Button("許可を要求") { guide.requestAccessibility() }
-                    .disabled(guide.accessibilityGranted)
-            }
-            Divider()
-            HStack {
-                Image(systemName: "keyboard.fill")
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("入力イベントの送信（PostEvent）")
-                    Text(guide.postEventGranted ? "許可済み" : "未許可")
-                        .foregroundStyle(guide.postEventGranted ? Color.green : Color.orange)
-                }
-                Spacer()
-                Button("許可を要求") { guide.requestPostEvent() }
-                    .disabled(guide.postEventGranted || !guide.accessibilityGranted)
-            }
-            Divider()
-            HStack {
-                Image(systemName: "mic.fill")
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("マイク入力")
-                    Text(guide.microphoneStatus == .authorized ? "許可済み" : "未許可")
-                        .foregroundStyle(guide.microphoneStatus == .authorized ? Color.green : Color.orange)
-                }
-                Spacer()
-                Button("許可を要求") { guide.requestMicrophone() }
-                    .disabled(guide.microphoneStatus == .authorized || guide.microphoneRequestInProgress)
-            }
-            Text("macOS 27以降：プライバシーとセキュリティ → デバイスの制御とデータへのアクセス／マイク。アクセシビリティがONでも入力イベント送信が未許可ならキー入力できません。")
-                .font(.caption).foregroundStyle(.secondary)
-            if !guide.message.isEmpty {
-                Text(guide.message).font(.caption).foregroundStyle(.secondary)
-            }
-            if !guide.needsAttention {
-                Text("許可は確認済みです。『閉じる』で設定画面を閉じ、入力したい欄をクリックしてから録音してください。")
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("音声入力に必要な許可")
+                    .font(.title2).fontWeight(.semibold)
+                Text("マイクによる録音と、ほかのアプリへの文字入力のためにmacOSの利用許可が必要です。")
                     .font(.caption).foregroundStyle(.secondary)
-            }
-            HStack {
-                Button("状態を更新") {
-                    guide.refresh()
-                    // Do not keep KoeBridge's settings window as the focused
-                    // app after onboarding; dictation must start in an editor.
-                    if !guide.needsAttention { NSApp.keyWindow?.performClose(nil) }
+                permissionHelpRow(
+                    "入力先へのアクセスを許可",
+                    description: "入力先を確認し、意図しない場所への入力を防ぐために必要です。",
+                    icon: "hand.raised.fill",
+                    isGranted: guide.accessibilityGranted,
+                    canRequest: !guide.accessibilityGranted
+                ) { guide.requestAccessibility() }
+                Divider()
+                permissionHelpRow(
+                    "文字の入力操作を許可",
+                    description: "認識した文字を、ほかのアプリへ入力するために必要です。",
+                    icon: "keyboard.fill",
+                    isGranted: guide.postEventGranted,
+                    canRequest: !guide.postEventGranted && guide.accessibilityGranted
+                ) { guide.requestPostEvent() }
+                Divider()
+                permissionHelpRow(
+                    "マイクの使用を許可",
+                    description: "音声を録音して文字に変換するために必要です。",
+                    icon: "mic.fill",
+                    isGranted: guide.microphoneStatus == .authorized,
+                    canRequest: guide.microphoneStatus != .authorized && !guide.microphoneRequestInProgress
+                ) { guide.requestMicrophone() }
+                Text("一度拒否した許可はmacOSのシステム設定「プライバシーとセキュリティ」から変更してください。入力先へのアクセスが許可済みでも、文字の入力操作が未許可の場合は入力できません。")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if !guide.message.isEmpty {
+                    Text(guide.message)
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                Spacer()
-                Button("閉じる") { NSApp.keyWindow?.performClose(nil) }
+                if !guide.needsAttention {
+                    Text("必要な許可は確認済みです。「閉じる」で案内を閉じ、入力したい欄をクリックしてから録音してください。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                HStack {
+                    Button("許可状態を再確認") {
+                        guide.refresh()
+                        if !guide.needsAttention { NSApp.keyWindow?.performClose(nil) }
+                    }
+                    Spacer()
+                    Button("閉じる") { NSApp.keyWindow?.performClose(nil) }
+                }
+            }
+            .padding(22)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(width: 510, height: 440)
+    }
+
+    private func permissionHelpRow(
+        _ title: String, description: String, icon: String,
+        isGranted: Bool, canRequest: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        HStack(alignment: .center, spacing: 10) {
+            Image(systemName: icon)
+                .frame(width: 23)
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title).font(.system(size: 14, weight: .medium))
+                Text(description)
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            VStack(alignment: .trailing, spacing: 5) {
+                Text(isGranted ? "許可済み" : "未許可")
+                    .font(.caption)
+                    .foregroundStyle(isGranted ? Color.green : Color.orange)
+                Button("許可を求める", action: action)
+                    .disabled(!canRequest)
             }
         }
-        .padding(22)
-        .frame(width: 510, height: 440)
     }
 }
 #endif

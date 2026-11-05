@@ -79,6 +79,22 @@ public enum GeminiWire {
         return events
     }
 
+    /// The server may send usageMetadata alongside other messages, including
+    /// transcription events. Reported counts are not synthesized from audio length.
+    public static func parseTokenUsage(_ raw: String) -> GeminiTokenUsage? {
+        guard let data = raw.data(using: .utf8),
+              let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let metadata = root["usageMetadata"] as? [String: Any],
+              let total = metadata["totalTokenCount"] as? Int, total >= 0 else { return nil }
+        func valid(_ key: String) -> Int? {
+            guard let value = metadata[key] as? Int, value >= 0 else { return nil }
+            return value
+        }
+        return GeminiTokenUsage(promptTokens: valid("promptTokenCount"),
+                                responseTokens: valid("candidatesTokenCount"),
+                                totalTokens: total)
+    }
+
     /// Diagnostic-only schema category. Never logs received transcript or
     /// API error bodies, which may contain private data.
     public static func frameKind(_ raw: String) -> String {
@@ -87,6 +103,7 @@ public enum GeminiWire {
             return "invalid_json"
         }
         if root["setupComplete"] != nil { return "setupComplete" }
+        if root["usageMetadata"] != nil && root["serverContent"] == nil { return "usageMetadata" }
         if root["error"] != nil { return "error" }
         if root["goAway"] != nil { return "goAway" }
         if root["sessionResumptionUpdate"] != nil { return "sessionResumptionUpdate" }
