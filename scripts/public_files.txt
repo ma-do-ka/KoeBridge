@@ -28,6 +28,7 @@ Sources/KoeBridgeCore/InsertionFocusPolicy.swift
 Sources/KoeBridgeCore/ModifierToggleDetector.swift
 Sources/KoeBridgeCore/OrderedResultBuffer.swift
 Sources/KoeBridgeCore/PermissionSetupPolicy.swift
+Sources/KoeBridgeCore/QuickNoInputPolicy.swift
 Sources/KoeBridgeCore/RecentTranscriptArchive.swift
 Sources/KoeBridgeCore/SessionTransitions.swift
 Sources/KoeBridgeCore/TranscriptAssembler.swift
