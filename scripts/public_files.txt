@@ -84,6 +84,7 @@ scripts/verify_and_build.sh
 Resources/KoeBridge_AppIcon.icns
 Resources/KoeBridge_AppIcon_1024.png
 Sources/KoeBridge/SettingsAppearance.swift
+Sources/KoeBridge/SettingsView.swift
 Sources/KoeBridge/UsageMonitorView.swift
 Sources/KoeBridgeCore/OverlayFeedback.swift
 Sources/KoeBridgeCore/SettingsNavigation.swift
