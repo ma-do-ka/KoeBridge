@@ -59,7 +59,11 @@ public struct TranscriptAssembler {
     }
 
     public var committedText: String { finalized }
-    public var recoveryText: String { finalized.isEmpty ? interim : finalized }
+
+    /// Failed recognition is saved as *partial* history, never auto-inserted.
+    /// Preserve the pending suffix too; the previous implementation silently
+    /// dropped interim instructions whenever a finalized prefix existed.
+    public var recoveryText: String { displayText }
 
     private func join(_ a: String, _ b: String) -> String {
         guard !a.isEmpty else { return b }
