@@ -297,6 +297,17 @@ struct HistoryView: View {
 struct SettingsView: View {
     @ObservedObject var controller: VoiceController
     @ObservedObject var guide: PermissionGuide
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var dark: Bool { colorScheme == .dark }
+    private var pageBackground: Color {
+        dark ? Color(red: 0.079, green: 0.083, blue: 0.107)
+             : Color(red: 0.955, green: 0.962, blue: 0.975)
+    }
+    private var sidebarBackground: Color {
+        dark ? Color(red: 0.117, green: 0.120, blue: 0.145)
+             : Color(red: 0.916, green: 0.932, blue: 0.955)
+    }
     @AppStorage("diagnosticsEnabled") private var diagnosticsEnabled = false
     @State private var apiKeyDraft = ""
     @State private var apiKeyNotice = ""
@@ -311,7 +322,7 @@ struct SettingsView: View {
         HStack(spacing: 0) {
             sidebar
                 .frame(width: 247)
-                .background(Color(nsColor: .controlBackgroundColor).opacity(0.80))
+                .background(sidebarBackground)
             Divider()
             VStack(spacing: 0) {
                 HStack(spacing: 10) {
@@ -338,10 +349,16 @@ struct SettingsView: View {
                 .padding(.horizontal, 22)
                 .padding(.vertical, 14)
                 Divider()
+                settingsPageHeading
+                    .padding(.horizontal, 24)
+                    .padding(.top, 22)
+                    .padding(.bottom, 8)
                 displayedPage
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+            .background(pageBackground)
         }
+        .groupBoxStyle(ContrastSettingsGroupBoxStyle(dark: dark))
         .frame(minWidth: 820, minHeight: 570)
         .alert("動作記録を削除しますか？", isPresented: $confirmDeleteLog) {
             Button("削除", role: .destructive) {
@@ -366,6 +383,23 @@ struct SettingsView: View {
         } message: {
             Text("macOSのキーチェーン内に保存したKoeBridge用APIキーを削除します。")
         }
+    }
+
+    private var settingsPageHeading: some View {
+        HStack(spacing: 15) {
+            SettingsCategoryIcon(section: navigation.selected, size: 62)
+            VStack(alignment: .leading, spacing: 5) {
+                Text(navigation.selected.title)
+                    .font(.system(size: 23, weight: .semibold))
+                Text(navigation.selected.pageDescription)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
     }
 
     private func go(_ section: SettingsSection) {
@@ -429,8 +463,14 @@ struct SettingsView: View {
                 }
             }
             .padding(9)
-            .background(Color(nsColor: .textBackgroundColor).opacity(0.6),
+            .background(dark ? Color(red: 0.185, green: 0.19, blue: 0.225)
+                             : Color.white,
                         in: RoundedRectangle(cornerRadius: 9))
+            .overlay {
+                RoundedRectangle(cornerRadius: 9)
+                    .strokeBorder(dark ? Color.white.opacity(0.10)
+                                       : Color.black.opacity(0.07))
+            }
             .padding(.horizontal, 13)
             .padding(.bottom, 18)
 
