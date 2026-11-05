@@ -428,7 +428,7 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
                     if lostAudio {
                         self.resolve(take, text: nil, reason: "マイクの音声チャンクが欠落しました")
                     } else if QuickNoInputPolicy.shouldSkipRecognition(
-                        seconds: seconds, pcmBytes: pcmBytes, peak: peak,
+                        seconds: recordedSeconds, pcmBytes: pcmBytes, peak: peak,
                         hasText: !take.recoverableText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                         audioDropped: lostAudio
                     ) {
