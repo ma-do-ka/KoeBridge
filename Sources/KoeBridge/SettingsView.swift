@@ -2,6 +2,7 @@
 import AppKit
 import AVFoundation
 import ApplicationServices
+import Speech
 import SwiftUI
 import KoeBridgeCore
 
@@ -11,6 +12,7 @@ struct SettingsView: View {
     @ObservedObject var controller: VoiceController
     @ObservedObject var guide: PermissionGuide
     @StateObject private var loginItem = LoginItemManager()
+    @ObservedObject private var updater = KoeBridgeUpdateManager.shared
     @Environment(\.colorScheme) private var colorScheme
 
     private var dark: Bool { colorScheme == .dark }
@@ -33,6 +35,7 @@ struct SettingsView: View {
     @State private var searchTarget: String?
     @State private var permissionRefreshFeedback: SettingsPermissionRefreshFeedback = .idle
     @State private var permissionRefreshSequence = 0
+    @State private var generalPermissionCheckedAt: Date?
 
     var body: some View {
         HStack(spacing: 0) {
@@ -98,6 +101,11 @@ struct SettingsView: View {
             Button("キャンセル", role: .cancel) {}
         } message: {
             Text("macOSのキーチェーン内に保存したKoeBridge用APIキーを削除します。")
+        }
+        .onReceive(updater.$requestedUpdatePage) { request in
+            guard request > 0 else { return }
+            go(.about)
+            updater.consumedUpdatePageRequest()
         }
     }
 
@@ -339,34 +347,8 @@ struct SettingsView: View {
     private var generalPage: some View {
         SettingsIndicatedScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                GroupBox {
-                    VStack(spacing: 0) {
-                        settingsRow("文字起こしの方法",
-                                    description: "現在の選択：\(controller.requestedMode.settingsLabel)", icon: "waveform") {
-                            SettingsRowActionButton("変更する") { go(.voice) }
-                        }
-                        Divider()
-                        settingsRow("録音の開始・終了キー",
-                                    description: "現在の選択：\(controller.shortcutChoice.label)", icon: "keyboard") {
-                            SettingsRowActionButton("変更する") { go(.voice) }
-                        }
-                        Divider()
-                        settingsRow("Gemini APIキー",
-                                    description: controller.hasKey ? "Macのキーチェーンに登録済みです。" : "未登録です。Apple認識はキーなしで使用できます。",
-                                    icon: "key.horizontal") {
-                            SettingsRowActionButton("設定する") { go(.gemini) }
-                        }
-                        Divider()
-                        settingsRow("アプリの利用許可",
-                                    description: "録音と自動入力に必要なmacOSの権限を確認します。",
-                                    icon: "checkmark.shield") {
-                            SettingsRowActionButton("確認する") { go(.permissions) }
-                        }
-                    }
-                    .padding(8)
-                } label: {
-                    Label("現在の設定", systemImage: "gearshape")
-                }
+                generalControlsCard
+                generalReadinessCard
                 GroupBox {
                     VStack(alignment: .leading, spacing: 9) {
                         settingsRow("ログイン時に自動起動",
@@ -420,6 +402,7 @@ struct SettingsView: View {
                 } label: {
                     Label("起動と常駐", systemImage: "power")
                 }
+                generalUpdatesCard
                 GroupBox {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("録音キーを押してからマイクが使えるまでと、録音終了後に入力を送信するまでの実測時間を表示します。")
@@ -451,9 +434,15 @@ struct SettingsView: View {
                 }
                 GroupBox {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("KoeBridgeはメニューバーから操作します。録音キーを押すと準備を始め、録音中にもう一度押すと文字起こしを確定します。")
-                        Text("自動入力ができなかった場合は、履歴の文章をコピーできます。")
-                        Button("使い方を確認する") { go(.help) }
+                        Label("1. 入力したい欄をクリック", systemImage: "cursorarrow.click.2")
+                        Label("2. \(controller.shortcutChoice.label) で録音開始", systemImage: "mic")
+                        Label("3. 同じキーでもう一度押して確定", systemImage: "checkmark.circle")
+                        HStack(spacing: 12) {
+                            Button("使い方を確認") { go(.help) }
+                            Button("保存した文章を見る") { controller.onShowHistory?() }
+                        }
+                        Text("入力できなかった文章は「認識履歴（直近10件）」で確認できます。")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -466,9 +455,175 @@ struct SettingsView: View {
             .padding(18)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .onAppear { loginItem.refresh() }
+        .onAppear {
+            loginItem.refresh()
+            guide.refresh()
+            updater.checkIfDue()
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             loginItem.refresh()
+            guide.refresh()
+        }
+    }
+
+    /// Primary controls are editable here. The Voice/Gemini pages remain
+    /// available for detailed descriptions, rather than being the only route.
+    private var generalControlsCard: some View {
+        GroupBox {
+            VStack(spacing: 0) {
+                settingsRow("文字起こしの方法",
+                            description: "Gemini API またはMac内でのApple認識を選択します。",
+                            icon: "waveform") {
+                    Picker("認識方法", selection: $controller.requestedMode) {
+                        Text("Gemini API").tag(RecognitionMode.gemini)
+                        Text("Apple（Mac内）").tag(RecognitionMode.local)
+                    }
+                    .labelsHidden()
+                    .frame(width: 168)
+                }
+                Divider()
+                settingsRow("録音の開始・終了キー",
+                            description: "今の設定：\(controller.shortcutChoice.label)。もう一度押すと確定します。",
+                            icon: "keyboard") {
+                    Picker("録音キー", selection: Binding(
+                        get: { controller.shortcutChoice },
+                        set: { controller.selectShortcut($0) }
+                    )) {
+                        ForEach(RecordingShortcut.allCases) { shortcut in
+                            Text(shortcut.label).tag(shortcut)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 198)
+                }
+                if !controller.shortcutProblem.isEmpty {
+                    HStack {
+                        Text(controller.shortcutProblem)
+                            .font(.caption).foregroundStyle(.red)
+                        Spacer()
+                        Button("再登録") { controller.retryShortcutRegistration() }
+                    }
+                }
+                Divider()
+                settingsRow("認識した文章を自動入力",
+                            description: "OFFの場合、結果は履歴に保存して後からコピーできます。",
+                            icon: "text.cursor") {
+                    Toggle("自動入力", isOn: $controller.automaticPaste)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                }
+                if controller.requestedMode == .gemini {
+                    Divider()
+                    settingsRow("文字起こしスタイル",
+                                description: controller.transcriptionStyle.explanation,
+                                icon: "text.alignleft") {
+                        Picker("スタイル", selection: $controller.transcriptionStyle) {
+                            ForEach(TranscriptionStyle.allCases) { style in
+                                Text(style.title).tag(style)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 192)
+                    }
+                }
+            }
+            .padding(8)
+        } label: {
+            Label("音声入力をすぐ使う", systemImage: "mic.fill")
+        }
+    }
+
+    private var generalReadinessCard: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 12) {
+                if guide.microphoneStatus != .authorized {
+                    Label("マイクの許可が必要です", systemImage: "exclamationmark.circle.fill")
+                        .foregroundStyle(.orange)
+                } else if controller.requestedMode == .gemini && !controller.hasKey {
+                    Label("Gemini APIキーが未登録です。Apple認識への切替が必要な場合があります。",
+                          systemImage: "exclamationmark.circle.fill")
+                        .foregroundStyle(.orange)
+                } else if controller.requestedMode == .local &&
+                            SFSpeechRecognizer.authorizationStatus() != .authorized {
+                    Label("Appleの音声認識への許可を確認してください。マイク許可とは別に管理されます。",
+                          systemImage: "exclamationmark.circle.fill")
+                        .foregroundStyle(.orange)
+                } else if controller.automaticPaste &&
+                            (!guide.accessibilityGranted || !guide.postEventGranted) {
+                    Label("自動入力に必要なmacOSの許可を確認してください。",
+                          systemImage: "exclamationmark.circle.fill")
+                        .foregroundStyle(.orange)
+                } else if !controller.automaticPaste {
+                    Label("文字起こしの準備を確認しました（自動入力はOFF・履歴保存）",
+                          systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                } else {
+                    Label("音声入力に必要な基本設定を確認できました",
+                          systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                }
+                HStack(spacing: 12) {
+                    Label(guide.microphoneStatus == .authorized ? "マイク許可済み" : "マイク要確認",
+                          systemImage: "mic")
+                    Label(!controller.automaticPaste ? "自動入力OFF"
+                          : (guide.accessibilityGranted && guide.postEventGranted
+                             ? "入力操作許可済み" : "入力操作要確認"),
+                          systemImage: "keyboard")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                HStack(spacing: 10) {
+                    if controller.requestedMode == .gemini {
+                        Label(controller.hasKey ? "Geminiキー登録済み" : "Geminiキー未登録",
+                              systemImage: "key")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Button("APIキー設定") { go(.gemini) }
+                    }
+                    Spacer()
+                    Button("許可を再確認") {
+                        guide.refreshFromSettings()
+                        generalPermissionCheckedAt = Date()
+                    }
+                    Button("対処方法") { go(.permissions) }
+                }
+                .controlSize(.small)
+                if let checked = generalPermissionCheckedAt {
+                    Text("許可状態を確認しました：\(checked.formatted(date: .omitted, time: .shortened))")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Text("許可状態はmacOSが管理します。KoeBridgeから強制的にONにはできません。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(8)
+        } label: {
+            Label("準備状況と困ったとき", systemImage: "checkmark.shield")
+        }
+    }
+
+    private var generalUpdatesCard: some View {
+        GroupBox {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("現在：v\(updater.installedLabel)（Stable）")
+                        .font(.system(size: 14, weight: .semibold))
+                    Text(updater.statusMessage)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 12)
+                Button("更新を確認") {
+                    updater.requestUpdatePage()
+                    Task { await updater.checkNow() }
+                }
+                .disabled(updater.state == .checking)
+            }
+            .padding(8)
+        } label: {
+            Label("アップデート", systemImage: "arrow.triangle.2.circlepath")
         }
     }
 
@@ -516,26 +671,132 @@ struct SettingsView: View {
     }
 
     private var aboutPage: some View {
-        SettingsIndicatedScrollView {
+        scrollablePage(.about) {
             VStack(alignment: .leading, spacing: 18) {
                 GroupBox {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Label("KoeBridge", systemImage: "waveform")
-                            .font(.title2.weight(.semibold))
-                        Text("バージョン：\(Bundle.main.object(forInfoDictionaryKey: "KoeBridgeReleaseLabel") as? String ?? (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "未取得"))")
-                        Text("ビルド：\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "未取得")")
-                        Text("macOS向けの軽量音声入力アプリ。ソースコードはMITライセンスで公開されています。")
-                            .font(.caption).foregroundStyle(.secondary)
-                        Link("公式GitHubリポジトリを開く",
-                             destination: URL(string: "https://github.com/ma-do-ka/KoeBridge")!)
+                    HStack(alignment: .center, spacing: 18) {
+                        Group {
+                            if let url = Bundle.main.url(forResource: "KoeBridge_AppIcon", withExtension: "icns"),
+                               let img = NSImage(contentsOf: url) {
+                                Image(nsImage: img)
+                                    .resizable()
+                                    .scaledToFit()
+                            } else {
+                                Image(systemName: "waveform")
+                                    .resizable()
+                                    .scaledToFit()
+                                    .padding(18)
+                            }
+                        }
+                        .frame(width: 96, height: 96)
+                        .accessibilityHidden(true)
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("KoeBridge")
+                                .font(.system(size: 22, weight: .semibold))
+                            Text("バージョン \(updater.installedLabel)")
+                                .font(.headline)
+                            Text("ビルド：\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "未取得")")
+                                .foregroundStyle(.secondary)
+                            Text("macOS用音声入力アプリ / MIT License")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Link("公式GitHubリポジトリ",
+                                 destination: URL(string: "https://github.com/ma-do-ka/KoeBridge")!)
+                        }
+                        Spacer(minLength: 0)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(8)
-                } label: { Label("アプリについて", systemImage: "info.circle") }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                } label: {
+                    Label("アプリについて", systemImage: "info.circle")
+                }
+
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 0) {
+                        settingsRow("アップデートを自動的に確認",
+                                    description: "1日1回を上限に、GitHubの正式リリースを確認します。",
+                                    icon: "arrow.clockwise") {
+                            Toggle("自動更新確認", isOn: $updater.automaticChecksEnabled)
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+                        }
+                        Divider()
+                        settingsRow("アップデートを自動的にダウンロードしてインストール",
+                                    description: "現在はソースコード配布のみのため未対応です。安全に配布できる署名済み更新パッケージの準備後に提供します。",
+                                    icon: "square.and.arrow.down") {
+                            Toggle("自動ダウンロードとインストール", isOn: .constant(false))
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+                                .disabled(true)
+                                .help("公証済みアプリと安全な更新署名の準備が必要です")
+                        }
+                        Divider()
+                        settingsRow("アップデートチャンネル",
+                                    description: "現在は正式版（Stable）のみが対象です。",
+                                    icon: "checkmark.seal") {
+                            Text(updater.channelName)
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundStyle(.secondary)
+                                .frame(minWidth: 100, alignment: .trailing)
+                        }
+                        Divider()
+                        HStack(alignment: .center, spacing: 14) {
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text("現在：v\(updater.installedLabel)")
+                                    .font(.system(size: 14, weight: .semibold))
+                                Text(updater.statusMessage)
+                                    .font(.caption)
+                                    .foregroundStyle(updater.state == .failed ? Color.orange : Color.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            Spacer(minLength: 8)
+                            if updater.state == .checking {
+                                ProgressView()
+                                    .controlSize(.small)
+                            }
+                            Button("アップデートを確認…") {
+                                Task { await updater.checkNow() }
+                            }
+                            .disabled(updater.state == .checking)
+                        }
+                        .padding(.vertical, 12)
+                        if updater.state == .available {
+                            HStack(spacing: 10) {
+                                Label("新しい正式版が利用できます", systemImage: "arrow.down.circle.fill")
+                                    .foregroundStyle(Color.green)
+                                Spacer()
+                                Button("リリースを見る") { updater.openLatestRelease() }
+                                Button("更新コマンドをコピー") {
+                                    _ = updater.copyUpdateCommand()
+                                }
+                            }
+                            .font(.caption)
+                            .padding(.bottom, 8)
+                            Text("KoeBridgeを終了して、コピーしたコマンドをターミナルで実行してください。ビルド・署名・アプリの再起動を行います。")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text("自動インストールには対応していません。新しい正式版が出た場合、更新方法をここから案内します。")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        if let checked = updater.lastCheckedAt {
+                            Text("最終確認：\(checked.formatted(date: .abbreviated, time: .shortened))")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .padding(.top, 8)
+                        }
+                    }
+                    .padding(8)
+                } label: {
+                    Label("アップデート", systemImage: "arrow.triangle.2.circlepath")
+                }
+                .id("updates")
             }
             .padding(18)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .onAppear { updater.checkIfDue() }
     }
 
     /// Each setting has a plain-language label and a short secondary explanation.

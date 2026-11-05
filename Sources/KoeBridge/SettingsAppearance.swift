@@ -19,14 +19,14 @@ extension SettingsSection {
 
     var pageDescription: String {
         switch self {
-        case .general: return "現在の利用状態と、よく使う設定への入口です。"
+        case .general: return "録音・文字入力の操作、利用許可、起動状態をまとめて確認できます。"
         case .voice: return "話した内容を文字に変換し、元の入力欄への入力を試みます。"
         case .gemini: return "Geminiを使うための接続情報と文字起こし方法を設定します。Appleの音声認識には適用されません。"
         case .usage: return "GeminiとAppleの使用回数、処理した音声の長さ、APIの利用状況を確認できます。"
         case .history: return "文字起こし履歴の確認と、不具合調査用の動作記録を管理します。"
         case .permissions: return "録音と文字入力に必要なmacOSの許可状態を確認します。許可はmacOSが管理します。"
         case .help: return "使い方と、うまく動作しないときの確認先です。"
-        case .about: return "KoeBridgeのバージョンと公開ソースコードです。"
+        case .about: return "バージョン、公式リポジトリ、アップデートの確認と設定です。"
         }
     }
 }

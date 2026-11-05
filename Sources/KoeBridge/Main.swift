@@ -135,6 +135,7 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
     private let controller = VoiceController.shared
     private var workspaceObservers: [NSObjectProtocol] = []
     private var windowKeyMonitor: Any?
+    private var updateCheckTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -190,6 +191,16 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
             windows.showPermissions()
             PermissionGuide.shared.promptOnFirstLaunch()
         }
+        // Only checks signed-off stable release metadata; never installs
+        // code in the background or interrupts a dictation session.
+        KoeBridgeUpdateManager.shared.checkIfDue()
+        // A persistent menu-bar app may stay open for days; revisit the
+        // 24-hour due check hourly without polling GitHub every hour.
+        updateCheckTimer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { _ in
+            Task { @MainActor in
+                KoeBridgeUpdateManager.shared.checkIfDue()
+            }
+        }
     }
 
     // User consent is required: show the initial setup window rather than
@@ -222,6 +233,8 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        updateCheckTimer?.invalidate()
+        updateCheckTimer = nil
         let center = NSWorkspace.shared.notificationCenter
         workspaceObservers.forEach { center.removeObserver($0) }
         workspaceObservers.removeAll()
@@ -235,6 +248,7 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
         add(menu, title, #selector(toggle))
         add(menu, "認識履歴（直近10件）…", #selector(showHistory))
         add(menu, "設定…", #selector(showSettings))
+        add(menu, "アップデートを確認…", #selector(checkForUpdates))
         add(menu, "マイク・自動入力の権限…", #selector(showPermissions))
         if controller.busy { add(menu, "録音を破棄", #selector(discard)) }
         menu.addItem(.separator())
@@ -248,6 +262,12 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
     @objc private func toggle() { controller.toggle() }
     @objc private func showHistory() { windows.showHistory() }
     @objc private func showSettings() { windows.showSettings() }
+    @objc private func checkForUpdates() {
+        windows.showSettings()
+        let updater = KoeBridgeUpdateManager.shared
+        updater.requestUpdatePage()
+        Task { await updater.checkNow() }
+    }
     @objc private func showPermissions() { windows.showPermissions() }
     @objc private func discard() { controller.discard() }
     @objc private func quit() { controller.discard(); NSApp.terminate(nil) }
