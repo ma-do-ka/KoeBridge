@@ -501,8 +501,7 @@ struct SettingsView: View {
                                     searchTarget = result.id
                                 } label: {
                                     HStack(spacing: 10) {
-                                        Image(systemName: result.section.symbol)
-                                            .frame(width: 20)
+                                        SettingsCategoryIcon(section: result.section, size: 27)
                                         VStack(alignment: .leading, spacing: 3) {
                                             Text(result.title).font(.subheadline)
                                                 .fixedSize(horizontal: false, vertical: true)
@@ -538,21 +537,31 @@ struct SettingsView: View {
             ForEach(pages, id: \.self) { page in
                 Button { go(page) } label: {
                     HStack(spacing: 12) {
-                        Image(systemName: page.symbol)
-                            .font(.system(size: 15))
-                            .frame(width: 20)
+                        SettingsCategoryIcon(section: page, size: 34)
                         Text(page.title)
                             .font(.system(size: 14, weight: navigation.selected == page ? .semibold : .regular))
                         Spacer(minLength: 0)
                     }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .foregroundStyle(navigation.selected == page ? Color.white : Color.primary)
-                    .background(navigation.selected == page ? Color.accentColor : Color.clear,
-                                in: RoundedRectangle(cornerRadius: 9))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .foregroundStyle(navigation.selected == page && dark ? Color.white : Color.primary)
+                    .background(
+                        navigation.selected == page
+                            ? (dark ? Color(red: 0.13, green: 0.28, blue: 0.50)
+                                    : Color(red: 0.77, green: 0.86, blue: 0.99))
+                            : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    )
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 11, style: .continuous)
+                            .strokeBorder(navigation.selected == page
+                                          ? Color.blue.opacity(dark ? 0.54 : 0.23)
+                                          : Color.clear, lineWidth: 1)
+                    }
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("\(page.title)を開く")
                 .accessibilityAddTraits(navigation.selected == page ? [.isSelected] : [])
                 .padding(.horizontal, 10)
             }
@@ -575,7 +584,6 @@ struct SettingsView: View {
     private var generalPage: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                headline("一般", detail: "現在の利用状態と、よく使う設定への入口です。")
                 GroupBox {
                     VStack(spacing: 0) {
                         settingsRow("文字起こしの方法",
@@ -651,7 +659,6 @@ struct SettingsView: View {
     private var helpPage: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                headline("ヘルプ", detail: "使い方と、うまく動作しないときの確認先です。")
                 GroupBox {
                     VStack(alignment: .leading, spacing: 10) {
                         Label("1. 文字を入力したいアプリの入力欄を選びます。", systemImage: "cursorarrow.click.2")
@@ -695,7 +702,6 @@ struct SettingsView: View {
     private var aboutPage: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                headline("情報", detail: "KoeBridgeのバージョンと公開ソースコードです。")
                 GroupBox {
                     VStack(alignment: .leading, spacing: 12) {
                         Label("KoeBridge", systemImage: "waveform")
@@ -743,35 +749,9 @@ struct SettingsView: View {
         .padding(.vertical, 8)
     }
 
-    private func headline(_ title: String, detail: String) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(title).font(.system(size: 20, weight: .semibold))
-            Text(detail)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
     private var voicePage: some View {
         scrollablePage(.voice) {
             VStack(alignment: .leading, spacing: 18) {
-                HStack(spacing: 14) {
-                    Image(systemName: "mic.fill")
-                        .font(.system(size: 27, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .frame(width: 60, height: 60)
-                        .background(.blue.gradient, in: RoundedRectangle(cornerRadius: 14))
-                        .accessibilityHidden(true)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("音声入力").font(.title2.weight(.semibold))
-                        Text("話した内容を文字に変換し、元の入力欄への入力を試みます。")
-                            .font(.callout).foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-                .padding(.bottom, 6)
                 GroupBox {
                     VStack(spacing: 0) {
                         settingsRow("文字起こしの方法",
@@ -847,7 +827,6 @@ struct SettingsView: View {
     private var geminiPage: some View {
         scrollablePage(.gemini) {
             VStack(alignment: .leading, spacing: 18) {
-                headline("Gemini API", detail: "Geminiを使うための接続情報と文字起こし方法を設定します。Appleの音声認識には適用されません。")
                 GroupBox {
                     VStack(alignment: .leading, spacing: 12) {
                         VStack(alignment: .leading, spacing: 4) {
@@ -942,7 +921,6 @@ struct SettingsView: View {
     private var privacyPage: some View {
         scrollablePage(.history) {
             VStack(alignment: .leading, spacing: 18) {
-                headline("履歴・記録", detail: "文字起こし履歴の確認と、不具合調査用の動作記録を管理します。")
                 GroupBox {
                     VStack(alignment: .leading, spacing: 10) {
                         settingsRow("保存件数：\(controller.history.count) / 10件",
@@ -1004,7 +982,6 @@ struct SettingsView: View {
     private var permissionsPage: some View {
         scrollablePage(.permissions) {
             VStack(alignment: .leading, spacing: 18) {
-                headline("利用許可", detail: "録音と文字入力に必要なmacOSの許可状態を確認します。許可はmacOSが管理します。")
                 GroupBox {
                     VStack(spacing: 0) {
                         permissionRow("入力先へのアクセスを許可",
