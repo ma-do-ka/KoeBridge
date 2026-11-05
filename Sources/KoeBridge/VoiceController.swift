@@ -17,6 +17,7 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
 /// A completed recording can therefore finalize while another is capturing.
 @MainActor private final class DictationTake {
     let id = UUID()
+    let requestedAt = Date()
     let preferred: RecognitionMode
     let smart: Bool
     let japaneseHint: Bool
@@ -92,6 +93,9 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
     @Published var status = "待機中"
     @Published var previewText = ""
     @Published var isRecording = false
+    @Published private(set) var overlayFeedback: OverlayFeedback = .hidden
+    @Published private(set) var lastStartupSeconds: TimeInterval?
+    @Published private(set) var lastStopToInputSeconds: TimeInterval?
     @Published var requestedMode: RecognitionMode {
         didSet { UserDefaults.standard.set(requestedMode.rawValue, forKey: "engine") }
     }
@@ -129,6 +133,8 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
     private var inFlight: [UUID: DictationTake] = [:]
     private var finished = OrderedResultBuffer<Completion>(maximumPending: 8)
     private var localRecoveryBusy = false
+    private var overlayOwner: UUID?
+    private var overlayDismissal: Task<Void, Never>?
 
     private struct Completion {
         let text: String?
@@ -195,6 +201,10 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
         guard finished.begin(take.id) else { return }
         inFlight[take.id] = take
         active = take
+        overlayDismissal?.cancel()
+        overlayDismissal = nil
+        overlayOwner = take.id
+        overlayFeedback = .preparing
         phase = .preparing
         previewText = ""
         lastMetrics = ""
@@ -269,8 +279,10 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
             }
             take.mic = capture
             take.startedAt = Date()
+            lastStartupSeconds = take.startedAt?.timeIntervalSince(take.requestedAt)
             phase = .recording
             isRecording = true
+            if overlayOwner == take.id { overlayFeedback = .recording }
             take.permissionTask?.cancel()
             take.permissionTask = nil
             if let t = capture.startTimings {
@@ -378,9 +390,13 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
         isRecording = false
         take.stoppingAt = Date()
         take.recordingTimeout?.cancel()
-        onHidePreview?()
-        previewText = ""
-        status = "前の録音を認識中。F8で次の録音をすぐ開始できます"
+        // Keep the non-activating panel visible while finalizing.
+        // This never delays the next shortcut; it only changes feedback.
+        if overlayOwner == take.id {
+            overlayFeedback = .processing
+            previewText = ""
+        }
+        status = "文字起こしを確定中。録音キーでもう一度押すと次の録音を開始できます"
         DiagnosticLog.record("session stopped; UI idle immediately; background finalization; pending=\(finished.count)")
         take.finalizationTimeout = Task { [weak self, weak take] in
             do { try await Task.sleep(for: .seconds(15)) } catch { return }
@@ -520,7 +536,8 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
             active = nil
             phase = .idle
             isRecording = false
-            onHidePreview?()
+            // Preparing was cancelled or capture failed; no pending processing.
+            if overlayOwner == take.id { hideOverlay() }
             previewText = ""
         }
         recordUsage(take, succeeded: text?.isEmpty == false, cancelled: reason == "録音をキャンセルしました")
@@ -610,6 +627,10 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
                     outcome = .automaticPasteDisabled
                 }
                 if let recordID { updateRemembered(recordID, delivery: outcome) }
+                if let stoppedAt = take.stoppingAt {
+                    lastStopToInputSeconds = Date().timeIntervalSince(stoppedAt)
+                }
+                showCompletionFeedback(outcome == .attemptedUnconfirmed ? .sent : .saved, for: id)
                 if active == nil {
                     if outcome == .attemptedUnconfirmed {
                         status = "直接入力を送信しました（受理は未確認）。履歴に保存済み"
@@ -627,9 +648,33 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
                     _ = remember(recovered, isPartial: true, delivery: .recognitionInterrupted, engine: take.usedMode)
                 }
                 DiagnosticLog.record("session failure; id=\(id.uuidString.prefix(8)); reason=\(Self.safeFailureCode(result.reason))")
+                showCompletionFeedback(.failed, for: id)
                 if active == nil { status = result.reason ?? "文字起こしに失敗しました（履歴を確認）" }
             }
         }
+    }
+
+    /// Feedback never claims that the receiving app accepted synthetic key events.
+    /// Completion from an older take cannot replace a newer recording overlay.
+    private func showCompletionFeedback(_ feedback: OverlayFeedback, for id: UUID) {
+        guard OverlayFeedback.mayUpdate(owner: overlayOwner, resolved: id,
+                                        newRecordingActive: active != nil) else { return }
+        overlayFeedback = feedback
+        overlayDismissal?.cancel()
+        overlayDismissal = Task { [weak self] in
+            let hold: Int = feedback == .failed ? 1_000 : 520
+            do { try await Task.sleep(for: .milliseconds(hold)) } catch { return }
+            guard let self, self.overlayOwner == id, self.active == nil else { return }
+            self.hideOverlay()
+        }
+    }
+
+    private func hideOverlay() {
+        overlayDismissal?.cancel()
+        overlayDismissal = nil
+        overlayOwner = nil
+        overlayFeedback = .hidden
+        onHidePreview?()
     }
 
     private static func safeFailureCode(_ reason: String?) -> String {
@@ -654,6 +699,7 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
         for take in outstanding where !take.finished {
             resolve(take, text: nil, reason: reason)
         }
+        hideOverlay()
         status = reason
     }
 
