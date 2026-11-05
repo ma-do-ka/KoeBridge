@@ -87,6 +87,9 @@ import KoeBridgeCore
                 throw UpdateCheckError.http(http.statusCode)
             }
             let release = try KoeBridgeUpdatePolicy.decodeLatest(data)
+            guard KoeBridgeReleaseVersion(installedLabel) != nil else {
+                throw UpdateCheckError.unknownInstalledVersion
+            }
             latestRelease = release
             lastCheckedAt = Date()
             UserDefaults.standard.set(lastCheckedAt, forKey: "lastSuccessfulUpdateCheckAt")
@@ -129,12 +132,14 @@ import KoeBridgeCore
     private enum UpdateCheckError: LocalizedError {
         case invalidResponse
         case rateLimited
+        case unknownInstalledVersion
         case http(Int)
 
         var errorDescription: String? {
             switch self {
             case .invalidResponse: return "応答を読み取れませんでした"
             case .rateLimited: return "GitHubのアクセス制限です。後でもう一度確認してください"
+            case .unknownInstalledVersion: return "現在のアプリバージョンを確認できません"
             case .http(let status): return "GitHubの応答コード \(status)"
             }
         }
