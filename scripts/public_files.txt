@@ -9,6 +9,9 @@ README_EN.md
 SECURITY.md
 Sources/KoeBridge/AppleLocalTranscriber.swift
 Sources/KoeBridge/Diagnostics.swift
+Sources/KoeBridge/DictationTake.swift
+Sources/KoeBridge/HistoryView.swift
+Sources/KoeBridge/PreviewView.swift
 Sources/KoeBridge/GeminiLiveConnection.swift
 Sources/KoeBridge/KeychainStore.swift
 Sources/KoeBridge/Main.swift
