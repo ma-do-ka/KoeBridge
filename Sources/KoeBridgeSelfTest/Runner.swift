@@ -79,6 +79,12 @@ struct KoeBridgeSelfTest {
         await run("DirectTypingPlanTests.doesNotSplitEmojiSurrogates", { DirectTypingPlanTests().doesNotSplitEmojiSurrogates() })
         await run("DirectTypingPlanTests.longMixedTextRoundTrips", { DirectTypingPlanTests().longMixedTextRoundTrips() })
         await run("DirectTypingPlanTests.emptyIsNotTyped", { DirectTypingPlanTests().emptyIsNotTyped() })
+        await run("LoginItemRegistrationPolicyTests.registrationFromNotFoundDoesNotPretendApproval", {
+            LoginItemRegistrationPolicyTests().registrationFromNotFoundDoesNotPretendApproval()
+        })
+        await run("LoginItemRegistrationPolicyTests.unregisterOnlyWhenActuallyRegistered", {
+            LoginItemRegistrationPolicyTests().unregisterOnlyWhenActuallyRegistered()
+        })
         await run("PermissionSetupPolicyTests.neverClaimsSetupDoneWithoutBothGrants", {
             PermissionSetupPolicyTests().neverClaimsSetupDoneWithoutBothGrants()
         })

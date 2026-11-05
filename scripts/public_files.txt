@@ -2,6 +2,7 @@
 .github/workflows/mac-ci.yml
 .github/workflows/release-v1.0.1.yml
 .github/workflows/release-v1.0.1b.yml
+.github/workflows/release-v1.0.1c.yml
 .gitignore
 LICENSE
 Package.swift
@@ -30,6 +31,7 @@ Sources/KoeBridgeCore/FinalizationPolicy.swift
 Sources/KoeBridgeCore/GeminiWire.swift
 Sources/KoeBridgeCore/HotKeyPressGate.swift
 Sources/KoeBridgeCore/InsertionFocusPolicy.swift
+Sources/KoeBridgeCore/LoginItemRegistrationPolicy.swift
 Sources/KoeBridgeCore/ModifierToggleDetector.swift
 Sources/KoeBridgeCore/OrderedResultBuffer.swift
 Sources/KoeBridgeCore/PermissionSetupPolicy.swift
@@ -51,6 +53,7 @@ Sources/KoeBridgeSelfTest/GeminiFinalizationTests.swift
 Sources/KoeBridgeSelfTest/GeminiWireTests.swift
 Sources/KoeBridgeSelfTest/HotKeyRecoveryTests.swift
 Sources/KoeBridgeSelfTest/InsertionSafetyTests.swift
+Sources/KoeBridgeSelfTest/LoginItemRegistrationPolicyTests.swift
 Sources/KoeBridgeSelfTest/ModifierToggleDetectorTests.swift
 Sources/KoeBridgeSelfTest/OrderedResultBufferTests.swift
 Sources/KoeBridgeSelfTest/PermissionSetupPolicyTests.swift
@@ -70,6 +73,7 @@ Tests/KoeBridgeCoreTests/GeminiFinalizationTests.swift
 Tests/KoeBridgeCoreTests/GeminiWireTests.swift
 Tests/KoeBridgeCoreTests/HotKeyRecoveryTests.swift
 Tests/KoeBridgeCoreTests/InsertionSafetyTests.swift
+Tests/KoeBridgeCoreTests/LoginItemRegistrationPolicyTests.swift
 Tests/KoeBridgeCoreTests/ModifierToggleDetectorTests.swift
 Tests/KoeBridgeCoreTests/OrderedResultBufferTests.swift
 Tests/KoeBridgeCoreTests/PermissionSetupPolicyTests.swift
@@ -108,3 +112,4 @@ V101C_STATUS_MONITOR.md
 docs/images/koebridge-hero.webp
 docs/releases/v1.0.1.md
 docs/releases/v1.0.1b.md
+docs/releases/v1.0.1c.md

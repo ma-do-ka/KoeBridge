@@ -20,6 +20,10 @@ The same source release includes **Settings → 一般 → ログイン時に自
 
 [Release notes](docs/releases/v1.0.1b.md).
 
+## v1.0.1c — macOS Login Items registration
+
+In **Settings → 一般 → 起動と常駐**, turning on **ログイン時に自動起動** now attempts to register the main KoeBridge app even when macOS returns `SMAppService.Status.notFound`. If macOS reports `requiresApproval`, the app opens the system Login Items settings for user approval. If macOS still cannot register the app, the UI clearly reports failure and offers to reveal KoeBridge.app in Finder for manual addition. This does not bypass consent, move the app, or register it until the user operates the toggle. User approval is not always required by macOS; registration may enable immediately. See [v1.0.1c notes](docs/releases/v1.0.1c.md).
+
 ## Run from source on a Mac
 
 ```bash

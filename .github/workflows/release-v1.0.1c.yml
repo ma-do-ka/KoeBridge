@@ -1,0 +1,61 @@
+name: Publish KoeBridge v1.0.1c source release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/releases/v1.0.1c.md'
+
+permissions:
+  contents: write
+
+jobs:
+  verify-and-publish:
+    if: github.repository == 'ma-do-ka/KoeBridge'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify version and release notes
+        run: |
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' scripts/Info.plist)" = '1.0.1'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' scripts/Info.plist)" = '22'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :KoeBridgeReleaseLabel' scripts/Info.plist)" = '1.0.1c'
+          test -s docs/releases/v1.0.1c.md
+      - name: Audit public source content
+        run: python3 scripts/audit_public_release.py
+      - name: Swift unit tests
+        run: swift test --parallel
+      - name: Portable regression tests
+        run: swift run -c release KoeBridgeSelfTest
+      - name: Build and verify ad-hoc CI app (not distributable)
+        run: |
+          KOEBRIDGE_ALLOW_ADHOC=1 bash scripts/build_app.sh
+          codesign --verify --deep --strict dist/KoeBridge.app
+          plutil -lint dist/KoeBridge.app/Contents/Info.plist
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' dist/KoeBridge.app/Contents/Info.plist)" = '22'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :KoeBridgeReleaseLabel' dist/KoeBridge.app/Contents/Info.plist)" = '1.0.1c'
+          test -s dist/KoeBridge.app/Contents/Resources/KoeBridge_AppIcon.icns
+      - name: Publish source-only GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/v1.0.1c" >/dev/null 2>&1; then
+            echo 'ERROR: v1.0.1c tag already exists; refusing to overwrite.' >&2
+            exit 1
+          fi
+          if gh release view v1.0.1c >/dev/null 2>&1; then
+            echo 'ERROR: v1.0.1c Release already exists; refusing to overwrite.' >&2
+            exit 1
+          fi
+          gh release create v1.0.1c \
+            --target "$GITHUB_SHA" \
+            --title 'KoeBridge v1.0.1c' \
+            --notes-file docs/releases/v1.0.1c.md \
+            --latest
+          tag_commit="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/v1.0.1c" --jq '.object.sha')"
+          if [ "$tag_commit" != "$GITHUB_SHA" ]; then
+            echo 'ERROR: Published tag differs from verified commit.' >&2
+            exit 1
+          fi
+          gh release view v1.0.1c --json url,tagName,isDraft,isPrerelease
