@@ -10,6 +10,7 @@ import KoeBridgeCore
 struct SettingsView: View {
     @ObservedObject var controller: VoiceController
     @ObservedObject var guide: PermissionGuide
+    @StateObject private var loginItem = LoginItemManager()
     @Environment(\.colorScheme) private var colorScheme
 
     private var dark: Bool { colorScheme == .dark }
@@ -367,6 +368,46 @@ struct SettingsView: View {
                     Label("現在の設定", systemImage: "gearshape")
                 }
                 GroupBox {
+                    VStack(alignment: .leading, spacing: 9) {
+                        settingsRow("ログイン時に自動起動",
+                                    description: "MacにログインするとKoeBridgeをメニューバーで起動します。macOSのログイン項目登録を使用します。",
+                                    icon: "power") {
+                            Toggle("ログイン時に自動起動",
+                                   isOn: Binding(
+                                    get: { loginItem.isRequested },
+                                    set: { loginItem.setRequested($0) }
+                                   ))
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+                                .disabled(!loginItem.canChange)
+                        }
+                        .id("launchAtLogin")
+                        Divider()
+                        HStack(spacing: 10) {
+                            Label("ログイン項目：\(loginItem.statusLabel)",
+                                  systemImage: loginItem.isActive ? "checkmark.circle.fill" : "info.circle")
+                                .font(.caption)
+                                .foregroundStyle(loginItem.isActive ? Color.green : Color.secondary)
+                            Spacer()
+                            Button("状態を再確認") { loginItem.refresh() }
+                                .controlSize(.small)
+                            if loginItem.needsSystemSettings {
+                                Button("システム設定を開く") { loginItem.openSystemSettings() }
+                                    .controlSize(.small)
+                            }
+                        }
+                        if !loginItem.message.isEmpty {
+                            Text(loginItem.message)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .padding(8)
+                } label: {
+                    Label("起動と常駐", systemImage: "power")
+                }
+                GroupBox {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("録音キーを押してからマイクが使えるまでと、録音終了後に入力を送信するまでの実測時間を表示します。")
                             .font(.caption)
@@ -411,6 +452,10 @@ struct SettingsView: View {
             }
             .padding(18)
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .onAppear { loginItem.refresh() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            loginItem.refresh()
         }
     }
 
@@ -464,7 +509,7 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 12) {
                         Label("KoeBridge", systemImage: "waveform")
                             .font(.title2.weight(.semibold))
-                        Text("バージョン：\(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "未取得")")
+                        Text("バージョン：\(Bundle.main.object(forInfoDictionaryKey: "KoeBridgeReleaseLabel") as? String ?? (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "未取得"))")
                         Text("ビルド：\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "未取得")")
                         Text("macOS向けの軽量音声入力アプリ。ソースコードはMITライセンスで公開されています。")
                             .font(.caption).foregroundStyle(.secondary)
