@@ -389,13 +389,14 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
         active = nil
         phase = .idle
         isRecording = false
-        take.stoppingAt = Date()
+        let stoppedAt = Date()
+        take.stoppingAt = stoppedAt
         take.recordingTimeout?.cancel()
         // Rapid stop does not imply a transcription failure. Wait for the
         // microphone's final PCM/peak measurement before classifying a quiet tap.
         // Real speech still enters the normal finalization path.
         let recordedSeconds = take.startedAt.map {
-            take.stoppingAt!.timeIntervalSince($0)
+            stoppedAt.timeIntervalSince($0)
         } ?? .infinity
         let quickExitCandidate = QuickNoInputPolicy.mayBeQuickExit(seconds: recordedSeconds)
         if overlayOwner == take.id {
