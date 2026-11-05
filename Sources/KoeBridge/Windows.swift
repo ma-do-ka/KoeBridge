@@ -134,11 +134,22 @@ struct PreviewView: View {
     @ObservedObject var controller: VoiceController
 
     private var visibleTranscript: String {
+        let stage = controller.overlayFeedback
+        guard stage == .recording else { return stage.message }
         let full = controller.previewText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !full.isEmpty else {
-            return controller.phase == .preparing ? "マイクを準備しています…" : "話してください…"
-        }
+        guard !full.isEmpty else { return stage.message }
         return full.count > 180 ? "…" + String(full.suffix(180)) : full
+    }
+
+    private var feedbackSymbol: String {
+        switch controller.overlayFeedback {
+        case .hidden, .preparing: return "mic"
+        case .recording: return "waveform"
+        case .processing: return "ellipsis"
+        case .sent: return "arrow.up.circle.fill"
+        case .saved: return "clock.arrow.circlepath"
+        case .failed: return "exclamationmark.triangle.fill"
+        }
     }
 
     var body: some View {
@@ -147,10 +158,16 @@ struct PreviewView: View {
                 Circle()
                     .fill(controller.isRecording ? Color.red.opacity(0.15) : Color.secondary.opacity(0.12))
                     .frame(width: 38, height: 38)
-                Image(systemName: controller.isRecording ? "waveform" : "mic.fill")
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(controller.isRecording ? Color.red : Color.secondary)
-                    .accessibilityLabel(controller.isRecording ? "マイク録音中" : "マイク準備中")
+                if controller.overlayFeedback == .processing {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityLabel("文字起こしの確定処理中")
+                } else {
+                    Image(systemName: feedbackSymbol)
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(controller.isRecording ? Color.red : Color.secondary)
+                        .accessibilityHidden(true)
+                }
             }
             Text(visibleTranscript)
                 .font(.system(size: 14, weight: .medium, design: .default))
@@ -523,6 +540,33 @@ struct SettingsView: View {
                     .padding(8)
                 } label: {
                     Label("現在の設定", systemImage: "gearshape")
+                }
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("録音キーを押してからマイクが使えるまでと、録音終了後に入力を送信するまでの実測時間を表示します。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        HStack {
+                            Label("録音開始まで", systemImage: "mic")
+                            Spacer()
+                            Text(controller.lastStartupSeconds.map { String(format: "%.2f秒", $0) } ?? "未計測")
+                                .monospacedDigit()
+                        }
+                        Divider()
+                        HStack {
+                            Label("録音停止から入力送信まで", systemImage: "arrow.up.circle")
+                            Spacer()
+                            Text(controller.lastStopToInputSeconds.map { String(format: "%.2f秒", $0) } ?? "未計測")
+                                .monospacedDigit()
+                        }
+                        Text("端末や接続環境により変動します。送信時間には相手アプリでの受理確認は含みません。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+                } label: {
+                    Label("直近の処理時間", systemImage: "speedometer")
                 }
                 GroupBox {
                     VStack(alignment: .leading, spacing: 8) {
