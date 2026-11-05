@@ -540,11 +540,13 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
             if overlayOwner == take.id { hideOverlay() }
             previewText = ""
         }
-        recordUsage(take, succeeded: text?.isEmpty == false, cancelled: reason == "録音をキャンセルしました")
-        take.releaseResources()
         let accepted = finished.finish(take.id, result: Completion(text: text, reason: reason, partial: partial))
         DiagnosticLog.record("session resolved; success=\(text?.isEmpty == false) accepted=\(accepted) pending=\(finished.count)")
+        // Safety first: persist recoverable text before posting input events.
+        // Usage telemetry is secondary and must not delay those key events.
         deliverOrderedResults()
+        recordUsage(take, succeeded: text?.isEmpty == false, cancelled: reason == "録音をキャンセルしました")
+        take.releaseResources()
     }
 
     /// Called exactly once per take, including failures and fallback.
