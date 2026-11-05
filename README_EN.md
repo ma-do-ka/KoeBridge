@@ -8,6 +8,8 @@ It supports **Gemini 3.5 Transcribe Live** (requires your own Gemini API key) an
 
 **For Google AI Pro subscribers with unused Cloud credits:** This can be an interesting way to use API-eligible credits, but **Google AI Pro does not automatically mean unlimited or free Gemini API calls**. Check credit eligibility, your linked billing project, prepayment conditions, and actual usage in [Google AI Studio](https://aistudio.google.com/) and the [official billing documentation](https://ai.google.dev/gemini-api/docs/billing).
 
+The supplied macOS app icon is packaged from `Resources/KoeBridge_AppIcon.icns` into the signed `.app` bundle; `Resources/KoeBridge_AppIcon_1024.png` is the corresponding source artwork. Finder and the settings brand header use the icon. The menu bar retains a monochrome waveform for legibility.
+
 ## Run from source on a Mac
 
 ```bash
