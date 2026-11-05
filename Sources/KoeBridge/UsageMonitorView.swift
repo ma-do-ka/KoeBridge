@@ -107,7 +107,7 @@ struct UsageMonitorView: View {
 
     var body: some View {
         ScrollViewReader { proxy in
-            ScrollView {
+            SettingsIndicatedScrollView {
                 VStack(alignment: .leading, spacing: 15) {
                 HStack {
                     Spacer()
@@ -269,7 +269,7 @@ struct UsageMonitorView: View {
     }
 
     private func summaryTile(_ label: String, _ value: String, detail: String) -> some View {
-        HStack(alignment: .top, spacing: 12) {
+        HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(label).font(.subheadline.weight(.semibold))
                 Text(detail)
@@ -280,7 +280,7 @@ struct UsageMonitorView: View {
             Spacer(minLength: 4)
             Text(value).font(.title3.weight(.semibold)).monospacedDigit()
         }
-        .frame(maxWidth: .infinity, minHeight: 64, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: 74, alignment: .center)
         .padding(10)
         .background(
             colorScheme == .dark
