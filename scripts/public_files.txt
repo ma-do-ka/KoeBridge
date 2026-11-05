@@ -1,5 +1,6 @@
 # Exact allowlist for scripts/publish_to_github.sh. Approved binaries are hash-pinned in audit_public_release.py.
 .github/workflows/mac-ci.yml
+.github/workflows/release-v1.0.1.yml
 .gitignore
 LICENSE
 Package.swift
@@ -95,3 +96,4 @@ Tests/KoeBridgeCoreTests/UsageMonitorTests.swift
 V101C_SETTINGS_COPY.md
 V101C_STATUS_MONITOR.md
 docs/images/koebridge-hero.webp
+docs/releases/v1.0.1.md
