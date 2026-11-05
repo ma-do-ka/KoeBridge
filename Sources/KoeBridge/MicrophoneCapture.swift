@@ -4,7 +4,16 @@ import AVFoundation
 
 /// Captures audio once; converts to signed 16-bit, 16 kHz, mono, little-endian PCM.
 /// Never perform WebSocket requests on the real-time microphone callback.
-final class MicrophoneCapture {
+///
+/// Concurrency contract:
+/// - AVAudioEngine start/stop and engine ownership use lifecycleQueue.
+/// - All queued PCM conversion, carry, converter and onAudio cleanup finishes
+///   before lifecycleQueue can start the next capture (stop drains with sync).
+/// - Dropped-buffer counts, delivered byte counts and peak are locked.
+/// - The real-time audio tap only copies buffers and enqueues conversion.
+/// Queue confinement is reviewed here; @unchecked Sendable is not a blanket
+/// promise that arbitrary external mutations are safe.
+final class MicrophoneCapture: @unchecked Sendable {
     // A single serial lane prevents overlapping AVAudioEngine start/stop
     // calls when F8 is pressed immediately after finishing a take.
     private static let lifecycleQueue = DispatchQueue(label: "dev.koebridge.microphone-lifecycle", qos: .userInteractive)
@@ -214,7 +223,11 @@ final class MicrophoneCapture {
         engine.stop()
         engine.inputNode.removeTap(onBus: 0)
         self.engine = nil
-        processingQueue.async { [self] in
+        // Drain *all* queued conversion work before releasing lifecycleQueue.
+        // The old async cleanup could run after a new startBlocking(), erase
+        // the new converter/callback, and silently stop audio on rapid toggles.
+        // This is a background serial lane; it does not block AppKit/UI.
+        processingQueue.sync { [self] in
             alive = false
             if !carry.isEmpty {
                 noteAudioDelivered(carry.count)
