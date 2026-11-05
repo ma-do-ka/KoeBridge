@@ -22,6 +22,13 @@ struct SettingsNavigationTests {
         #expect(SettingsSearchCatalog.find("never_present_keyword_123").isEmpty)
     }
 
+    @Test func updateCenterHasExactlyOneRealDestination() {
+        let destinations = SettingsSearchCatalog.entries.filter { $0.id == "updates" }
+        #expect(destinations.count == 1)
+        #expect(destinations.first?.section == .about)
+        #expect(destinations.first?.title == "アップデート")
+    }
+
     @Test func backForwardTruncatesFutureAfterNewChoice() {
         var nav = SettingsNavigation()
         #expect(nav.selected == .voice)

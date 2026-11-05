@@ -30,6 +30,10 @@ The menu bar has **Check for Updates…** and **Settings → 情報 → アッ�
 
 **Settings → 一般** now directly edits the recognition engine, shortcut, auto-typing, and Gemini transcription style, and shows permission/API key readiness without requiring multiple page jumps. Read the [v1.0.1d release notes](docs/releases/v1.0.1d.md).
 
+## v1.0.1e — reliable update navigation
+
+The menu-bar **アップデートを確認…** command now directs the first opening of Settings to the actual Update Center. Subsequent selections refocus the Updates section, even when the Information page is already open. No installer is downloaded automatically; the source-only release and manual update safeguards are unchanged. See [v1.0.1e notes](docs/releases/v1.0.1e.md).
+
 ## Run from source on a Mac
 
 ```bash

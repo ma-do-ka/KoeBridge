@@ -33,6 +33,7 @@ struct SettingsView: View {
     @State private var navigation = SettingsNavigation()
     @State private var searchText = ""
     @State private var searchTarget: String?
+    @State private var updateMenuJumpSequence = 0
     @State private var permissionRefreshFeedback: SettingsPermissionRefreshFeedback = .idle
     @State private var permissionRefreshSequence = 0
     @State private var generalPermissionCheckedAt: Date?
@@ -102,10 +103,15 @@ struct SettingsView: View {
         } message: {
             Text("macOSのキーチェーン内に保存したKoeBridge用APIキーを削除します。")
         }
+        // The menu can open Settings before SwiftUI subscribes.
+        // Handle that pending request on view appearance as well.
+        .onAppear {
+            Task { @MainActor in openPendingUpdatePage() }
+        }
         .onReceive(updater.$requestedUpdatePage) { request in
             guard request > 0 else { return }
-            go(.about)
-            updater.consumedUpdatePageRequest()
+            // @Published publishes in willSet. Defer until storage updates.
+            Task { @MainActor in openPendingUpdatePage() }
         }
     }
 
@@ -159,6 +165,18 @@ struct SettingsView: View {
         navigation.select(section)
     }
 
+    private func openPendingUpdatePage() {
+        guard updater.requestedUpdatePage > 0,
+              let target = SettingsSearchCatalog.entries.first(where: { $0.id == "updates" })
+        else { return }
+        searchText = ""
+        go(target.section)
+        searchTarget = target.id
+        // Refresh the scroll even if the Information page is already shown.
+        updateMenuJumpSequence &+= 1
+        updater.consumedUpdatePageRequest()
+    }
+
     /// Search navigates to the correct real setting and scrolls it into view.
     private func scrollablePage<Content: View>(
         _ section: SettingsSection, @ViewBuilder content: @escaping () -> Content
@@ -167,6 +185,9 @@ struct SettingsView: View {
             SettingsIndicatedScrollView { content() }
                 .onAppear { scrollToSearchResult(proxy, section: section) }
                 .onChange(of: searchTarget) { _, _ in scrollToSearchResult(proxy, section: section) }
+                .onChange(of: updateMenuJumpSequence) { _, _ in
+                    if section == .about { scrollToSearchResult(proxy, section: section) }
+                }
         }
     }
 
