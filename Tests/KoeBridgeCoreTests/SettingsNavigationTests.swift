@@ -16,6 +16,8 @@ struct SettingsNavigationTests {
         #expect(SettingsSearchCatalog.find("F8").first?.section == .voice)
         #expect(SettingsSearchCatalog.find("トークン").first?.section == .usage)
         #expect(SettingsSearchCatalog.find("マイク").contains { $0.section == .permissions })
+        #expect(SettingsSearchCatalog.find("アップデート").contains { $0.section == .about && $0.id == "updates" })
+        #expect(SettingsSearchCatalog.find("自動入力").contains { $0.section == .voice })
         #expect(SettingsSearchCatalog.find("  ").isEmpty)
         #expect(SettingsSearchCatalog.find("never_present_keyword_123").isEmpty)
     }
