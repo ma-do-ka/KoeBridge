@@ -186,10 +186,10 @@ struct HistoryView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("直近の文字起こし：\(controller.history.count) / 10件")
+                Text("保存した文章：\(controller.history.count) / 10件")
                     .font(.headline)
                 Spacer()
-                Text("音声データ・APIキーは保存しません")
+                Text("直近10件を保存。音声データ・APIキーは保存しません")
                     .font(.caption).foregroundStyle(.secondary)
             }
             if !controller.historyProblem.isEmpty {
@@ -244,8 +244,8 @@ struct HistoryView: View {
                             }
                             HStack {
                                 Spacer()
-                                Button("この文章をコピー") { controller.copyRecord(selected) }
-                                Button("この履歴を削除", role: .destructive) {
+                                Button("文章をコピー") { controller.copyRecord(selected) }
+                                Button("この文章を削除", role: .destructive) {
                                     let removing = selected.id
                                     controller.deleteRecord(removing)
                                     selectedID = controller.history.first?.id
@@ -257,10 +257,10 @@ struct HistoryView: View {
                 }
             }
             HStack {
-                Text("自動入力の受理確認はできません。失敗時はここからコピーしてください。")
+                Text("自動入力が相手のアプリで受け付けられたかは確認できません。必要に応じて文章をコピーしてください。")
                     .font(.caption2).foregroundStyle(.secondary)
                 Spacer()
-                Button("すべて削除", role: .destructive) { confirmDeleteAll = true }
+                Button("履歴をすべて削除", role: .destructive) { confirmDeleteAll = true }
                     .disabled(controller.history.isEmpty)
             }
         }
@@ -722,14 +722,14 @@ struct SettingsView: View {
     func requestPostEvent() {
         refresh()
         guard accessibilityGranted else {
-            message = "まず『入力先の制御』への許可が必要です。"
+            message = "まず『入力先へのアクセスを許可』の設定が必要です。"
             return
         }
         _ = TextInsertion.requestPostEventAccess()
         refresh()
         message = postEventGranted
             ? "入力イベントの送信が許可されました。"
-            : "入力イベント送信は未許可です。macOSが再度ダイアログを出さない場合、プライバシー設定でKoeBridgeを確認してください。"
+            : "文字の入力操作は未許可です。macOSが再度ダイアログを出さない場合、プライバシー設定でKoeBridgeを確認してください。"
     }
 
     func requestMicrophone() {
@@ -780,68 +780,86 @@ struct PermissionSetupView: View {
     @ObservedObject var guide: PermissionGuide
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("音声入力の利用許可")
-                .font(.title2).fontWeight(.semibold)
-            Text("録音はマイク、文字入力はアクセシビリティと入力イベント送信の許可が必要です。いずれもmacOSが管理します。")
-                .font(.caption).foregroundStyle(.secondary)
-            HStack {
-                Image(systemName: "hand.raised.fill")
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("入力先の制御（アクセシビリティ）")
-                    Text(guide.accessibilityGranted ? "許可済み" : "未許可")
-                        .foregroundStyle(guide.accessibilityGranted ? Color.green : Color.orange)
-                }
-                Spacer()
-                Button("許可を要求") { guide.requestAccessibility() }
-                    .disabled(guide.accessibilityGranted)
-            }
-            Divider()
-            HStack {
-                Image(systemName: "keyboard.fill")
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("入力イベントの送信（PostEvent）")
-                    Text(guide.postEventGranted ? "許可済み" : "未許可")
-                        .foregroundStyle(guide.postEventGranted ? Color.green : Color.orange)
-                }
-                Spacer()
-                Button("許可を要求") { guide.requestPostEvent() }
-                    .disabled(guide.postEventGranted || !guide.accessibilityGranted)
-            }
-            Divider()
-            HStack {
-                Image(systemName: "mic.fill")
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("マイク入力")
-                    Text(guide.microphoneStatus == .authorized ? "許可済み" : "未許可")
-                        .foregroundStyle(guide.microphoneStatus == .authorized ? Color.green : Color.orange)
-                }
-                Spacer()
-                Button("許可を要求") { guide.requestMicrophone() }
-                    .disabled(guide.microphoneStatus == .authorized || guide.microphoneRequestInProgress)
-            }
-            Text("macOS 27以降：プライバシーとセキュリティ → デバイスの制御とデータへのアクセス／マイク。アクセシビリティがONでも入力イベント送信が未許可ならキー入力できません。")
-                .font(.caption).foregroundStyle(.secondary)
-            if !guide.message.isEmpty {
-                Text(guide.message).font(.caption).foregroundStyle(.secondary)
-            }
-            if !guide.needsAttention {
-                Text("許可は確認済みです。『閉じる』で設定画面を閉じ、入力したい欄をクリックしてから録音してください。")
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("音声入力に必要な許可")
+                    .font(.title2).fontWeight(.semibold)
+                Text("マイクによる録音と、ほかのアプリへの文字入力のためにmacOSの利用許可が必要です。")
                     .font(.caption).foregroundStyle(.secondary)
-            }
-            HStack {
-                Button("状態を更新") {
-                    guide.refresh()
-                    // Do not keep KoeBridge's settings window as the focused
-                    // app after onboarding; dictation must start in an editor.
-                    if !guide.needsAttention { NSApp.keyWindow?.performClose(nil) }
+                permissionHelpRow(
+                    "入力先へのアクセスを許可",
+                    description: "入力先を確認し、意図しない場所への入力を防ぐために必要です。",
+                    icon: "hand.raised.fill",
+                    isGranted: guide.accessibilityGranted,
+                    canRequest: !guide.accessibilityGranted
+                ) { guide.requestAccessibility() }
+                Divider()
+                permissionHelpRow(
+                    "文字の入力操作を許可",
+                    description: "認識した文字を、ほかのアプリへ入力するために必要です。",
+                    icon: "keyboard.fill",
+                    isGranted: guide.postEventGranted,
+                    canRequest: !guide.postEventGranted && guide.accessibilityGranted
+                ) { guide.requestPostEvent() }
+                Divider()
+                permissionHelpRow(
+                    "マイクの使用を許可",
+                    description: "音声を録音して文字に変換するために必要です。",
+                    icon: "mic.fill",
+                    isGranted: guide.microphoneStatus == .authorized,
+                    canRequest: guide.microphoneStatus != .authorized && !guide.microphoneRequestInProgress
+                ) { guide.requestMicrophone() }
+                Text("一度拒否した許可はmacOSのシステム設定「プライバシーとセキュリティ」から変更してください。入力先へのアクセスが許可済みでも、文字の入力操作が未許可の場合は入力できません。")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if !guide.message.isEmpty {
+                    Text(guide.message)
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                Spacer()
-                Button("閉じる") { NSApp.keyWindow?.performClose(nil) }
+                if !guide.needsAttention {
+                    Text("必要な許可は確認済みです。「閉じる」で案内を閉じ、入力したい欄をクリックしてから録音してください。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                HStack {
+                    Button("許可状態を再確認") {
+                        guide.refresh()
+                        if !guide.needsAttention { NSApp.keyWindow?.performClose(nil) }
+                    }
+                    Spacer()
+                    Button("閉じる") { NSApp.keyWindow?.performClose(nil) }
+                }
+            }
+            .padding(22)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(width: 510, height: 440)
+    }
+
+    private func permissionHelpRow(
+        _ title: String, description: String, icon: String,
+        isGranted: Bool, canRequest: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        HStack(alignment: .center, spacing: 10) {
+            Image(systemName: icon)
+                .frame(width: 23)
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title).font(.system(size: 14, weight: .medium))
+                Text(description)
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            VStack(alignment: .trailing, spacing: 5) {
+                Text(isGranted ? "許可済み" : "未許可")
+                    .font(.caption)
+                    .foregroundStyle(isGranted ? Color.green : Color.orange)
+                Button("許可を求める", action: action)
+                    .disabled(!canRequest)
             }
         }
-        .padding(22)
-        .frame(width: 510, height: 440)
     }
 }
 #endif
