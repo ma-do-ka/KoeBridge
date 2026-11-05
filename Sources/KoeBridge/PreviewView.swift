@@ -1,0 +1,71 @@
+#if os(macOS)
+import Foundation
+import SwiftUI
+import KoeBridgeCore
+
+/// A minimal non-interactive floating transcription capsule.
+/// Status, commands, diagnostics and history are intentionally available only
+/// from the menu bar / Settings, never on the dictation overlay itself.
+struct PreviewView: View {
+    @ObservedObject var controller: VoiceController
+
+    private var visibleTranscript: String {
+        let stage = controller.overlayFeedback
+        guard stage == .recording else { return stage.message }
+        let full = controller.previewText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !full.isEmpty else { return stage.message }
+        return full.count > 180 ? "…" + String(full.suffix(180)) : full
+    }
+
+    private var feedbackSymbol: String {
+        switch controller.overlayFeedback {
+        case .hidden, .preparing: return "mic"
+        case .recording: return "waveform"
+        case .ending: return "stop.circle"
+        case .processing: return "ellipsis"
+        case .noInput: return "mic.slash"
+        case .sent: return "arrow.up.circle.fill"
+        case .saved: return "clock.arrow.circlepath"
+        case .failed: return "exclamationmark.triangle.fill"
+        }
+    }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(controller.isRecording ? Color.red.opacity(0.15) : Color.secondary.opacity(0.12))
+                    .frame(width: 38, height: 38)
+                if controller.overlayFeedback == .processing {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityLabel("文字起こしの確定処理中")
+                } else {
+                    Image(systemName: feedbackSymbol)
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(controller.isRecording ? Color.red : Color.secondary)
+                        .accessibilityHidden(true)
+                }
+            }
+            Text(visibleTranscript)
+                .font(.system(size: 14, weight: .medium, design: .default))
+                .foregroundStyle(.primary)
+                .lineLimit(3)
+                .truncationMode(.head)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityLabel(visibleTranscript)
+        }
+        .padding(.horizontal, 17)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.75)
+        }
+        .shadow(color: .black.opacity(0.17), radius: 13, x: 0, y: 5)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 8)
+    }
+}
+#endif

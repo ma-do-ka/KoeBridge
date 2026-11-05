@@ -45,6 +45,16 @@ struct GeminiWireTests {
         check(a.displayText == "おはようございますGitHub APIを使う")
     }
 
+    func recoveryRetainsUncommittedInstructions() {
+        var a = TranscriptAssembler()
+        a.apply(.final("GitHubを確認。"))
+        a.apply(.interim("テストを実行してPRを作成。"))
+        check(a.committedText == "GitHubを確認。")
+        check(a.recoveryText == "GitHubを確認。テストを実行してPRを作成。")
+        a.apply(.interim("GitHubを確認。テストを実行してPRを作成。"))
+        check(a.recoveryText == "GitHubを確認。テストを実行してPRを作成。")
+    }
+
     func assemblerCumulativeFinal() {
         var a = TranscriptAssembler()
         a.apply(.final("今日は"))

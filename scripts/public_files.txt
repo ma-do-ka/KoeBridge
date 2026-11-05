@@ -9,6 +9,9 @@ README_EN.md
 SECURITY.md
 Sources/KoeBridge/AppleLocalTranscriber.swift
 Sources/KoeBridge/Diagnostics.swift
+Sources/KoeBridge/DictationTake.swift
+Sources/KoeBridge/HistoryView.swift
+Sources/KoeBridge/PreviewView.swift
 Sources/KoeBridge/GeminiLiveConnection.swift
 Sources/KoeBridge/KeychainStore.swift
 Sources/KoeBridge/Main.swift
@@ -28,6 +31,7 @@ Sources/KoeBridgeCore/InsertionFocusPolicy.swift
 Sources/KoeBridgeCore/ModifierToggleDetector.swift
 Sources/KoeBridgeCore/OrderedResultBuffer.swift
 Sources/KoeBridgeCore/PermissionSetupPolicy.swift
+Sources/KoeBridgeCore/QuickNoInputPolicy.swift
 Sources/KoeBridgeCore/RecentTranscriptArchive.swift
 Sources/KoeBridgeCore/SessionTransitions.swift
 Sources/KoeBridgeCore/TranscriptAssembler.swift
@@ -84,6 +88,7 @@ scripts/verify_and_build.sh
 Resources/KoeBridge_AppIcon.icns
 Resources/KoeBridge_AppIcon_1024.png
 Sources/KoeBridge/SettingsAppearance.swift
+Sources/KoeBridge/SettingsView.swift
 Sources/KoeBridge/UsageMonitorView.swift
 Sources/KoeBridgeCore/OverlayFeedback.swift
 Sources/KoeBridgeCore/SettingsNavigation.swift

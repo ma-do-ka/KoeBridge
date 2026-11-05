@@ -110,6 +110,7 @@ struct KoeBridgeSelfTest {
         await run("GeminiWireTests.setupComplete", { try GeminiWireTests().setupComplete() })
         await run("GeminiWireTests.assemblerJapaneseSegmentsAndEnglish", { GeminiWireTests().assemblerJapaneseSegmentsAndEnglish() })
         await run("GeminiWireTests.assemblerCumulativeFinal", { GeminiWireTests().assemblerCumulativeFinal() })
+        await run("GeminiWireTests.recoveryRetainsUncommittedInstructions", { GeminiWireTests().recoveryRetainsUncommittedInstructions() })
         await run("HotKeyRecoveryTests.explicitPhysicalReleaseReconcilesMissingCarbonUp", { HotKeyRecoveryTests().explicitPhysicalReleaseReconcilesMissingCarbonUp() })
         await run("HotKeyRecoveryTests.oldRegistrationsCannotAffectNewHotkeys", { HotKeyRecoveryTests().oldRegistrationsCannotAffectNewHotkeys() })
         await run("HotKeyRecoveryTests.missedRightCommandUpCanBeReconciledWithoutDoubleToggle", { HotKeyRecoveryTests().missedRightCommandUpCanBeReconciledWithoutDoubleToggle() })
