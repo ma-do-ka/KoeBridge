@@ -110,7 +110,7 @@ struct UsageMonitorView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("利用統計")
                             .font(.system(size: 20, weight: .semibold))
-                        Text("認識エンジンとGemini APIの使用実績をMac内で集計します。")
+                        Text("GeminiとAppleの使用回数、処理した音声の長さ、APIの利用状況を確認できます。")
                             .font(.callout).foregroundStyle(.secondary)
                     }
                     Spacer()
@@ -124,33 +124,47 @@ struct UsageMonitorView: View {
                         .textSelection(.enabled)
                 }
 
-                HStack(spacing: 9) {
-                    summaryTile("Gemini 試行",
-                                "\(last24Hours.filter { $0.engine == .gemini }.count)回")
-                    summaryTile("Apple 試行",
-                                "\(last24Hours.filter { $0.engine == .apple }.count)回")
-                    summaryTile("Appleへ切替",
-                                "\(last24Hours.filter { $0.fallback }.count)回")
-                    summaryTile("試行失敗",
-                                "\(last24Hours.filter { $0.outcome == .failure }.count)回")
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 10),
+                                    GridItem(.flexible(), spacing: 10)], spacing: 10) {
+                    summaryTile("Geminiの利用回数",
+                                "\(last24Hours.filter { $0.engine == .gemini }.count)回",
+                                detail: "過去24時間にGeminiで認識を試みた回数です。失敗も含まれます。")
+                    summaryTile("Appleの利用回数",
+                                "\(last24Hours.filter { $0.engine == .apple }.count)回",
+                                detail: "過去24時間にAppleで認識を試みた回数です。自動切替も含まれます。")
+                    summaryTile("Appleへの自動切替",
+                                "\(last24Hours.filter { $0.fallback }.count)回",
+                                detail: "Geminiを利用できない場合などにAppleで認識を試みた回数です。")
+                    summaryTile("認識処理の失敗回数",
+                                "\(last24Hours.filter { $0.outcome == .failure }.count)回",
+                                detail: "過去24時間のエンジン別の失敗回数です。Appleで救済できた録音も含まれます。")
                 }
 
-                HStack {
-                    Text("集計間隔").font(.subheadline.weight(.semibold))
-                    Picker("集計間隔", selection: $scale) {
+                HStack(alignment: .center, spacing: 15) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("グラフの表示単位")
+                            .font(.subheadline.weight(.semibold))
+                        Text("分・時間・日単位に切り替えて利用状況を確認できます。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Picker("グラフの表示単位", selection: $scale) {
                         ForEach(Scale.allCases) { value in
                             Text(value.label).tag(value)
                         }
                     }
+                    .labelsHidden()
                     .pickerStyle(.segmented)
-                    .frame(maxWidth: 280)
-                    Spacer()
+                    .frame(width: 210)
                     Text(scale.rangeLabel).font(.caption).foregroundStyle(.secondary)
                 }
 
                 GroupBox {
                     VStack(alignment: .leading, spacing: 7) {
-                        Text("エンジン別の利用回数").font(.subheadline.weight(.semibold))
+                        Text("GeminiとAppleの利用回数")
+                            .font(.subheadline.weight(.semibold))
+                        Text("どの時間帯にどちらの音声認識を試みたかを表示します。自動切替した録音は両方に計上されます。")
+                            .font(.caption).foregroundStyle(.secondary)
                         if engineBars.isEmpty {
                             emptyState("対象期間の利用実績はありません")
                         } else {
@@ -177,8 +191,10 @@ struct UsageMonitorView: View {
 
                 GroupBox {
                     VStack(alignment: .leading, spacing: 7) {
-                        Text("エンジン別の処理音声時間（PCM秒）")
+                        Text("音声の処理時間")
                             .font(.subheadline.weight(.semibold))
+                        Text("各エンジンに送信・投入した音声データの秒数です。無音も含まれます。")
+                            .font(.caption).foregroundStyle(.secondary)
                         if engineBars.isEmpty {
                             emptyState("対象期間の利用実績はありません")
                         } else {
@@ -193,8 +209,7 @@ struct UsageMonitorView: View {
                             ])
                             .frame(height: 145)
                         }
-                        Text("音声データを実際に送信・処理した秒数です。無音区間も含みます。")
-                            .font(.caption).foregroundStyle(.secondary)
+
                     }
                     .padding(7)
                 }
@@ -202,14 +217,14 @@ struct UsageMonitorView: View {
                 GroupBox {
                     VStack(alignment: .leading, spacing: 7) {
                         HStack {
-                            Text("Gemini API：報告されたトークン数")
+                            Text("Gemini APIのトークン使用量")
                                 .font(.subheadline.weight(.semibold))
                             Spacer()
                             Text("計 \(controller.monitorTokens.filter { $0.at >= startOfRange }.reduce(0) { $0 + $1.totalTokens }.formatted())")
                                 .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                         }
                         if tokenBars.isEmpty {
-                            emptyState("APIからトークン情報を取得できていません")
+                            emptyState("トークン情報を取得できていません。APIが使用されていないことを意味するものではありません。")
                         } else {
                             Chart(tokenBars) { item in
                                 BarMark(x: .value("受信時刻", item.bucket, unit: scale.component),
@@ -218,18 +233,18 @@ struct UsageMonitorView: View {
                             }
                             .frame(height: 145)
                         }
-                        Text("API応答の usageMetadata を受信時刻で集計。未報告分は推定・補完せず、Googleの確定請求額とは異なる場合があります。")
+                        Text("Google APIが報告したトークン数を受信時刻で集計します。未取得分は推定しません。請求額とは異なります。")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     .padding(7)
                 }
 
                 HStack {
-                    Text("データはこのMacに最大30日保存。音声・文字起こし・APIキーは記録しません。録音確定後に更新されます。")
+                    Text("利用統計はこのMac内に最大30日保存します。録音音声・認識した文章・APIキーは利用統計には保存しません。")
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer()
-                    Button("利用統計を削除", role: .destructive) { confirmDelete = true }
+                    Button("利用記録を削除", role: .destructive) { confirmDelete = true }
                 }
             }
             .padding(18)
@@ -243,12 +258,19 @@ struct UsageMonitorView: View {
         }
     }
 
-    private func summaryTile(_ label: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(label).font(.caption).foregroundStyle(.secondary)
+    private func summaryTile(_ label: String, _ value: String, detail: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(label).font(.subheadline.weight(.semibold))
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 4)
             Text(value).font(.title3.weight(.semibold)).monospacedDigit()
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, minHeight: 64, alignment: .topLeading)
         .padding(10)
         .background(Color.secondary.opacity(0.07), in: RoundedRectangle(cornerRadius: 10))
     }
