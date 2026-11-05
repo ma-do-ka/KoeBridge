@@ -45,7 +45,9 @@ import KoeBridgeCore
 
     var needsSystemSettings: Bool { status == .requiresApproval || status == .notFound }
 
-    var shouldShowManualAddHelp: Bool { status == .notFound && registrationAttempted }
+    var shouldShowManualAddHelp: Bool {
+        registrationAttempted && (status == .notFound || status == .notRegistered)
+    }
 
     func refresh() {
         status = SMAppService.mainApp.status
@@ -82,9 +84,7 @@ import KoeBridgeCore
                 // registered app. Guide the user to the OS's manual add flow.
                 let detail = registrationError.map { "（\($0)）" } ?? ""
                 message = "自動登録を確認できませんでした\(detail)。ログイン項目の設定でKoeBridge.appを手動追加してください。"
-                if status == .notFound {
-                    SMAppService.openSystemSettingsLoginItems()
-                }
+                SMAppService.openSystemSettingsLoginItems()
             }
         case .unregister:
             do {
