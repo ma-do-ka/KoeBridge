@@ -18,6 +18,7 @@ import KoeBridgeCore
     @Published private(set) var statusMessage = "更新情報を確認できます"
     @Published private(set) var latestRelease: KoeBridgeStableRelease?
     @Published private(set) var lastCheckedAt: Date?
+    private var lastAutomaticAttemptAt: Date?
     @Published private(set) var requestedUpdatePage = 0
     @Published private(set) var copiedCommand = false
     @Published var automaticChecksEnabled: Bool {
@@ -41,6 +42,7 @@ import KoeBridgeCore
         let defaults = UserDefaults.standard
         automaticChecksEnabled = (defaults.object(forKey: "checkUpdatesAutomatically") as? Bool) ?? true
         lastCheckedAt = defaults.object(forKey: "lastSuccessfulUpdateCheckAt") as? Date
+        lastAutomaticAttemptAt = defaults.object(forKey: "lastAutomaticUpdateCheckAttemptAt") as? Date
     }
 
     func requestUpdatePage() {
@@ -52,9 +54,14 @@ import KoeBridgeCore
     }
 
     func checkIfDue() {
+        let now = Date()
+        // A failed request must not hammer the public unauthenticated API:
+        // throttle automatic attempts (including failures) to once per day.
         guard KoeBridgeUpdatePolicy.shouldCheck(
-            automatic: automaticChecksEnabled, lastCheck: lastCheckedAt, now: Date()
+            automatic: automaticChecksEnabled, lastCheck: lastAutomaticAttemptAt, now: now
         ) else { return }
+        lastAutomaticAttemptAt = now
+        UserDefaults.standard.set(now, forKey: "lastAutomaticUpdateCheckAttemptAt")
         Task { await checkNow() }
     }
 
