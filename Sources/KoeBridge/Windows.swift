@@ -13,6 +13,8 @@ import KoeBridgeCore
     private var historyWindow: NSWindow?
     private var permissionWindow: NSWindow?
     private var displayObserver: NSObjectProtocol?
+    private var clipboardFeedbackPanel: NSPanel?
+    private var clipboardFeedbackDismissal: Task<Void, Never>?
 
     init() {
         displayObserver = NotificationCenter.default.addObserver(
@@ -108,6 +110,51 @@ import KoeBridgeCore
         previewPanel?.orderOut(nil)
     }
 
+    /// Transient, non-activating status feedback. Do not steal focus from
+    /// the editor or interfere with the separate dictation preview panel.
+    func showClipboardFeedback(success: Bool, statusButton: NSStatusBarButton?) {
+        clipboardFeedbackDismissal?.cancel()
+        let width: CGFloat = 312
+        let height: CGFloat = 66
+        let panel: NSPanel
+        if let clipboardFeedbackPanel {
+            panel = clipboardFeedbackPanel
+        } else {
+            panel = NSPanel(
+                contentRect: NSRect(x: 0, y: 0, width: width, height: height),
+                styleMask: [.borderless, .nonactivatingPanel],
+                backing: .buffered, defer: false
+            )
+            panel.isOpaque = false
+            panel.backgroundColor = .clear
+            panel.hasShadow = false
+            panel.ignoresMouseEvents = true
+            panel.isFloatingPanel = true
+            panel.level = .floating
+            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+            panel.hidesOnDeactivate = false
+            panel.isReleasedWhenClosed = false
+            clipboardFeedbackPanel = panel
+        }
+        panel.contentView = NSHostingView(rootView: ClipboardFeedbackBubble(success: success))
+        let anchor: NSRect? = statusButton.flatMap { button in
+            guard let window = button.window else { return nil }
+            return window.convertToScreen(button.convert(button.bounds, to: nil))
+        }
+        let visible = (statusButton?.window?.screen ?? NSScreen.screens.first)?.visibleFrame
+            ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let x = min(max((anchor?.midX ?? visible.midX) - width / 2, visible.minX + 8),
+                    max(visible.minX + 8, visible.maxX - width - 8))
+        let y = max(visible.minY + 8,
+                    min((anchor?.minY ?? visible.maxY) - height - 8, visible.maxY - height - 8))
+        panel.setFrame(NSRect(x: x, y: y, width: width, height: height), display: true)
+        panel.orderFrontRegardless()
+        clipboardFeedbackDismissal = Task { @MainActor [weak self] in
+            do { try await Task.sleep(for: .seconds(2.2)) } catch { return }
+            self?.clipboardFeedbackPanel?.orderOut(nil)
+        }
+    }
+
     func showHistory() {
         let window: NSWindow
         if let historyWindow { window = historyWindow }
@@ -124,6 +171,31 @@ import KoeBridgeCore
         }
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
+    }
+}
+
+private struct ClipboardFeedbackBubble: View {
+    let success: Bool
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: success ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                .font(.system(size: 22))
+                .foregroundStyle(success ? Color.green : Color.orange)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(success ? "コピーしました" : "コピーできませんでした")
+                    .font(.system(size: 14, weight: .semibold))
+                Text(success ? "⌘Vで貼り付けできます" : "クリップボードの状態をご確認ください")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 15)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .accessibilityElement(children: .combine)
     }
 }
 
