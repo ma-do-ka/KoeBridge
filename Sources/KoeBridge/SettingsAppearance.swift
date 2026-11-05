@@ -87,6 +87,7 @@ struct ContrastSettingsGroupBoxStyle: GroupBoxStyle {
 /// independent bottom affordance while more content remains below the fold.
 struct SettingsIndicatedScrollView<Content: View>: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var hasMoreBelow = false
     private let content: Content
 
@@ -106,8 +107,12 @@ struct SettingsIndicatedScrollView<Content: View>: View {
                 offsetY: Double(geometry.contentOffset.y)
             )
         } action: { _, hasMore in
-            withAnimation(.easeOut(duration: 0.16)) {
+            if reduceMotion {
                 hasMoreBelow = hasMore
+            } else {
+                withAnimation(.easeOut(duration: 0.16)) {
+                    hasMoreBelow = hasMore
+                }
             }
         }
         .overlay(alignment: .bottom) {
