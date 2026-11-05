@@ -7,15 +7,15 @@ import AVFoundation
 final class MicrophoneCapture {
     // A single serial lane prevents overlapping AVAudioEngine start/stop
     // calls when F8 is pressed immediately after finishing a take.
-    private static let lifecycleQueue = DispatchQueue(label: "dev.koebridge.microphone-lifecycle", qos: .userInitiated)
-    private let processingQueue = DispatchQueue(label: "dev.koebridge.pcm-conversion")
+    private static let lifecycleQueue = DispatchQueue(label: "dev.koebridge.microphone-lifecycle", qos: .userInteractive)
+    private let processingQueue = DispatchQueue(label: "dev.koebridge.pcm-conversion", qos: .userInitiated)
     private let output = AVAudioFormat(commonFormat: .pcmFormatFloat32,
                                         sampleRate: 16_000, channels: 1, interleaved: false)!
     private var converter: AVAudioConverter?
     private var engine: AVAudioEngine?
     private var carry = Data()
     private var onAudio: ((Data) -> Void)?
-    private let chunkBytes = 3_200 // 100 ms at 16kHz 16-bit mono
+    private let chunkBytes = 1_600 // 50 ms at 16kHz 16-bit mono: lower first-result latency
     private var alive = false
     private let workSlots = DispatchSemaphore(value: 16)
     private let healthLock = NSLock()

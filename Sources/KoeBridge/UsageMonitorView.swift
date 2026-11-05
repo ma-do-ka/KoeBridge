@@ -7,6 +7,8 @@ import KoeBridgeCore
 /// Local metadata only; refreshed after a dictation has resolved.
 struct UsageMonitorView: View {
     @ObservedObject var controller: VoiceController
+    @Environment(\.colorScheme) private var colorScheme
+    let focusID: String?
     @State private var scale: Scale = .hour
     @State private var confirmDelete = false
 
@@ -104,15 +106,10 @@ struct UsageMonitorView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 15) {
-                HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("利用統計")
-                            .font(.system(size: 20, weight: .semibold))
-                        Text("GeminiとAppleの使用回数、処理した音声の長さ、APIの利用状況を確認できます。")
-                            .font(.callout).foregroundStyle(.secondary)
-                    }
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 15) {
+                HStack {
                     Spacer()
                     Text("v1.0.1-c  試験機能")
                         .font(.caption).foregroundStyle(.secondary)
@@ -162,6 +159,7 @@ struct UsageMonitorView: View {
                 GroupBox {
                     VStack(alignment: .leading, spacing: 7) {
                         Text("GeminiとAppleの利用回数")
+                            .id("usage")
                             .font(.subheadline.weight(.semibold))
                         Text("どの時間帯にどちらの音声認識を試みたかを表示します。自動切替した録音は両方に計上されます。")
                             .font(.caption).foregroundStyle(.secondary)
@@ -218,6 +216,7 @@ struct UsageMonitorView: View {
                     VStack(alignment: .leading, spacing: 7) {
                         HStack {
                             Text("Gemini APIのトークン使用量")
+                                .id("token")
                                 .font(.subheadline.weight(.semibold))
                             Spacer()
                             Text("計 \(controller.monitorTokens.filter { $0.at >= startOfRange }.reduce(0) { $0 + $1.totalTokens }.formatted())")
@@ -248,7 +247,18 @@ struct UsageMonitorView: View {
                 }
             }
             .padding(18)
-            .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .onAppear {
+                if let focusID { proxy.scrollTo(focusID, anchor: .top) }
+            }
+            .onChange(of: focusID) { _, target in
+                if let target {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        proxy.scrollTo(target, anchor: .top)
+                    }
+                }
+            }
         }
         .alert("利用統計を削除しますか？", isPresented: $confirmDelete) {
             Button("削除", role: .destructive) { controller.clearUsageMonitor() }
@@ -272,7 +282,18 @@ struct UsageMonitorView: View {
         }
         .frame(maxWidth: .infinity, minHeight: 64, alignment: .topLeading)
         .padding(10)
-        .background(Color.secondary.opacity(0.07), in: RoundedRectangle(cornerRadius: 10))
+        .background(
+            colorScheme == .dark
+                ? Color(red: 0.205, green: 0.208, blue: 0.237)
+                : Color.white,
+            in: RoundedRectangle(cornerRadius: 12)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(colorScheme == .dark
+                              ? Color.white.opacity(0.09)
+                              : Color.black.opacity(0.08), lineWidth: 1)
+        }
     }
 
     private func emptyState(_ label: String) -> some View {

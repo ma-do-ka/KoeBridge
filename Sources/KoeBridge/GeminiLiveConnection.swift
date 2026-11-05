@@ -171,7 +171,7 @@ import KoeBridgeCore
                 DiagnosticLog.record("gemini finalized; waitSeconds=\(String(format: "%.3f", Date().timeIntervalSince(endedAt))) finalEvents=\(finalEvents)")
                 return text
             }
-            try await Task.sleep(for: .milliseconds(75))
+            try await Task.sleep(for: .milliseconds(25))
         }
         // Never paste a prefix as if it were the whole utterance. The controller
         // saves the recoverable partial in the ten-entry history instead.
