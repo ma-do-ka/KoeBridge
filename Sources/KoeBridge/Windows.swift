@@ -305,6 +305,7 @@ struct SettingsView: View {
     @State private var confirmDeleteKey = false
     @State private var navigation = SettingsNavigation()
     @State private var searchText = ""
+    @State private var searchTarget: String?
 
     var body: some View {
         HStack(spacing: 0) {
@@ -369,6 +370,24 @@ struct SettingsView: View {
 
     private func go(_ section: SettingsSection) {
         navigation.select(section)
+    }
+
+    /// Search navigates to the correct real setting and scrolls it into view.
+    private func scrollablePage<Content: View>(
+        _ section: SettingsSection, @ViewBuilder content: () -> Content
+    ) -> some View {
+        ScrollViewReader { proxy in
+            ScrollView { content() }
+                .onAppear { scrollToSearchResult(proxy, section: section) }
+                .onChange(of: searchTarget) { _, _ in scrollToSearchResult(proxy, section: section) }
+        }
+    }
+
+    private func scrollToSearchResult(_ proxy: ScrollViewProxy, section: SettingsSection) {
+        guard navigation.selected == section, let searchTarget else { return }
+        withAnimation(.easeInOut(duration: 0.18)) {
+            proxy.scrollTo(searchTarget, anchor: .top)
+        }
     }
 
     private var sidebar: some View {
@@ -438,6 +457,7 @@ struct SettingsView: View {
                                 Button {
                                     go(result.section)
                                     searchText = ""
+                                    searchTarget = result.id
                                 } label: {
                                     HStack(spacing: 10) {
                                         Image(systemName: result.section.symbol)
@@ -503,7 +523,7 @@ struct SettingsView: View {
         case .general: generalPage
         case .voice: voicePage
         case .gemini: geminiPage
-        case .usage: UsageMonitorView(controller: controller)
+        case .usage: UsageMonitorView(controller: controller, focusID: searchTarget)
         case .history: privacyPage
         case .permissions: permissionsPage
         case .help: helpPage
@@ -694,7 +714,7 @@ struct SettingsView: View {
     }
 
     private var voicePage: some View {
-        ScrollView {
+        scrollablePage(.voice) {
             VStack(alignment: .leading, spacing: 18) {
                 HStack(spacing: 14) {
                     Image(systemName: "mic.fill")
@@ -723,6 +743,7 @@ struct SettingsView: View {
                             .pickerStyle(.segmented)
                             .frame(width: 245)
                         }
+                        .id("engine")
                         Divider()
                         settingsRow("録音の開始・終了キー",
                                     description: "選んだキーで録音を開始し、もう一度押すと終了します。ほかのアプリのキー操作と競合する場合があります。") {
@@ -737,6 +758,7 @@ struct SettingsView: View {
                             .labelsHidden()
                             .frame(width: 250)
                         }
+                        .id("shortcut")
                         if !controller.shortcutProblem.isEmpty {
                             VStack(alignment: .leading, spacing: 8) {
                                 Text(controller.shortcutProblem)
@@ -756,6 +778,7 @@ struct SettingsView: View {
                                 .labelsHidden()
                                 .toggleStyle(.switch)
                         }
+                        .id("autopaste")
                     }
                     .padding(8)
                 } label: {
@@ -781,7 +804,7 @@ struct SettingsView: View {
     }
 
     private var geminiPage: some View {
-        ScrollView {
+        scrollablePage(.gemini) {
             VStack(alignment: .leading, spacing: 18) {
                 headline("Gemini API", detail: "Geminiを使うための接続情報と文字起こし方法を設定します。Appleの音声認識には適用されません。")
                 GroupBox {
@@ -794,6 +817,7 @@ struct SettingsView: View {
                         }
                         SecureField("Gemini APIキーを入力", text: $apiKeyDraft)
                             .textFieldStyle(.roundedBorder)
+                            .id("apikey")
                         HStack(spacing: 10) {
                             Label(controller.hasKey ? "キーチェーンに登録済み" : "APIキー未登録",
                                   systemImage: controller.hasKey ? "checkmark.circle.fill" : "circle.dashed")
@@ -829,12 +853,14 @@ struct SettingsView: View {
                             Toggle("日本語での認識を優先する", isOn: $controller.japaneseHint)
                                 .labelsHidden().toggleStyle(.switch)
                         }
+                        .id("japanese")
                         Divider()
                         settingsRow("話した内容を読みやすく整える",
                                     description: "言い直しや「えーと」などを整理し、自然な文章への変換を試みます。発言をできるだけそのまま残す場合はオフにしてください。", icon: "text.alignleft") {
                             Toggle("話した内容を読みやすく整える", isOn: $controller.smartFormatting)
                                 .labelsHidden().toggleStyle(.switch)
                         }
+                        .id("smart")
                         Divider()
                         VStack(alignment: .leading, spacing: 8) {
                             Text("固有名詞・専門用語を登録")
@@ -843,6 +869,7 @@ struct SettingsView: View {
                                 .font(.system(size: 12)).foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
                             TextEditor(text: $controller.vocabulary)
+                                .id("words")
                                 .font(.system(.body, design: .monospaced))
                                 .frame(minHeight: 125)
                                 .overlay {
@@ -872,7 +899,7 @@ struct SettingsView: View {
     }
 
     private var privacyPage: some View {
-        ScrollView {
+        scrollablePage(.history) {
             VStack(alignment: .leading, spacing: 18) {
                 headline("履歴・記録", detail: "文字起こし履歴の確認と、不具合調査用の動作記録を管理します。")
                 GroupBox {
@@ -881,6 +908,7 @@ struct SettingsView: View {
                                     description: "直近10件の文字起こし結果をMacに保存します。音声やAPIキーは保存しません。") {
                             Button("保存した文章を見る") { controller.onShowHistory?() }
                         }
+                        .id("history")
                         Text("保存先：~/Library/Application Support/KoeBridge/recent-transcripts.json")
                             .font(.system(.caption, design: .monospaced))
                             .foregroundStyle(.secondary)
@@ -896,6 +924,7 @@ struct SettingsView: View {
                         settingsRow("問題調査用の記録を残す",
                                     description: "不具合調査に役立つ動作情報を保存します。通常はオフで問題ありません。認識した文章・音声・APIキーは記録しません。", icon: "stethoscope") {
                             Toggle("問題調査用の記録を残す", isOn: $diagnosticsEnabled)
+                                .id("logging")
                                 .labelsHidden()
                                 .toggleStyle(.switch)
                                 .onChange(of: diagnosticsEnabled) { _, enabled in
@@ -932,7 +961,7 @@ struct SettingsView: View {
     }
 
     private var permissionsPage: some View {
-        ScrollView {
+        scrollablePage(.permissions) {
             VStack(alignment: .leading, spacing: 18) {
                 headline("利用許可", detail: "録音と文字入力に必要なmacOSの許可状態を確認します。許可はmacOSが管理します。")
                 GroupBox {
