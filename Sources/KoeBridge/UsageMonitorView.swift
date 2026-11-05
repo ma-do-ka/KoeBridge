@@ -7,6 +7,7 @@ import KoeBridgeCore
 /// Local metadata only; refreshed after a dictation has resolved.
 struct UsageMonitorView: View {
     @ObservedObject var controller: VoiceController
+    let focusID: String?
     @State private var scale: Scale = .hour
     @State private var confirmDelete = false
 
@@ -104,8 +105,9 @@ struct UsageMonitorView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 15) {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 15) {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("利用統計")
@@ -162,6 +164,7 @@ struct UsageMonitorView: View {
                 GroupBox {
                     VStack(alignment: .leading, spacing: 7) {
                         Text("GeminiとAppleの利用回数")
+                            .id("usage")
                             .font(.subheadline.weight(.semibold))
                         Text("どの時間帯にどちらの音声認識を試みたかを表示します。自動切替した録音は両方に計上されます。")
                             .font(.caption).foregroundStyle(.secondary)
@@ -218,6 +221,7 @@ struct UsageMonitorView: View {
                     VStack(alignment: .leading, spacing: 7) {
                         HStack {
                             Text("Gemini APIのトークン使用量")
+                                .id("token")
                                 .font(.subheadline.weight(.semibold))
                             Spacer()
                             Text("計 \(controller.monitorTokens.filter { $0.at >= startOfRange }.reduce(0) { $0 + $1.totalTokens }.formatted())")
@@ -248,7 +252,18 @@ struct UsageMonitorView: View {
                 }
             }
             .padding(18)
-            .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .onAppear {
+                if let focusID { proxy.scrollTo(focusID, anchor: .top) }
+            }
+            .onChange(of: focusID) { _, target in
+                if let target {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        proxy.scrollTo(target, anchor: .top)
+                    }
+                }
+            }
         }
         .alert("利用統計を削除しますか？", isPresented: $confirmDelete) {
             Button("削除", role: .destructive) { controller.clearUsageMonitor() }
