@@ -16,7 +16,7 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
     let id = UUID()
     let requestedAt = Date()
     let preferred: RecognitionMode
-    let smart: Bool
+    let style: TranscriptionStyle
     let japaneseHint: Bool
     let vocabulary: [String]
     let shouldPaste: Bool
@@ -47,10 +47,10 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
     var finished = false
     var automaticDeliverySuppressed = false
 
-    init(preferred: RecognitionMode, smart: Bool, japaneseHint: Bool,
+    init(preferred: RecognitionMode, style: TranscriptionStyle, japaneseHint: Bool,
          vocabulary: [String], shouldPaste: Bool) {
         self.preferred = preferred
-        self.smart = smart
+        self.style = style
         self.japaneseHint = japaneseHint
         self.vocabulary = vocabulary
         self.shouldPaste = shouldPaste
