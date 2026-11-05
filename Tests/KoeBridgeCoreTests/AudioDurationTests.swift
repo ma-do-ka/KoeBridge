@@ -23,6 +23,8 @@ struct AudioDurationTests {
         #expect(!QuickNoInputPolicy.shouldSkipRecognition(
             seconds: 1.2, pcmBytes: 40_000, peak: 0, hasText: false, audioDropped: false))
         #expect(!QuickNoInputPolicy.shouldSkipRecognition(
+            seconds: 1.2, pcmBytes: 0, peak: 0, hasText: false, audioDropped: false))
+        #expect(!QuickNoInputPolicy.shouldSkipRecognition(
             seconds: .nan, pcmBytes: 0, peak: 0, hasText: false, audioDropped: false))
         #expect(!QuickNoInputPolicy.shouldSkipRecognition(
             seconds: 0.2, pcmBytes: 5_000, peak: .nan, hasText: false, audioDropped: false))
