@@ -317,6 +317,8 @@ struct SettingsView: View {
     @State private var navigation = SettingsNavigation()
     @State private var searchText = ""
     @State private var searchTarget: String?
+    @State private var permissionRefreshFeedback: SettingsPermissionRefreshFeedback = .idle
+    @State private var permissionRefreshSequence = 0
 
     var body: some View {
         HStack(spacing: 0) {
@@ -400,6 +402,34 @@ struct SettingsView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
+    }
+
+    private var permissionSnapshot: PermissionStateSnapshot {
+        PermissionStateSnapshot(
+            accessibilityGranted: guide.accessibilityGranted,
+            postEventGranted: guide.postEventGranted,
+            microphoneStatusRaw: guide.microphoneStatus.rawValue
+        )
+    }
+
+    /// OS permission checks are synchronous. Show a short inline result
+    /// without claiming that a permission was newly granted.
+    private func refreshPermissionStatus() {
+        let before = permissionSnapshot
+        permissionRefreshSequence += 1
+        let sequence = permissionRefreshSequence
+        permissionRefreshFeedback = .refreshing
+        Task { @MainActor in
+            await Task.yield()
+            guard permissionRefreshSequence == sequence else { return }
+            guide.refresh()
+            let result = SettingsUXPolicy.refreshResult(before: before, after: permissionSnapshot)
+            permissionRefreshFeedback = result == .changed ? .changed : .unchanged
+            try? await Task.sleep(for: .seconds(3))
+            if permissionRefreshSequence == sequence {
+                permissionRefreshFeedback = .idle
+            }
+        }
     }
 
     private func go(_ section: SettingsSection) {
@@ -588,24 +618,24 @@ struct SettingsView: View {
                     VStack(spacing: 0) {
                         settingsRow("文字起こしの方法",
                                     description: "現在の選択：\(controller.requestedMode.settingsLabel)", icon: "waveform") {
-                            Button("変更する") { go(.voice) }
+                            SettingsRowActionButton("変更する") { go(.voice) }
                         }
                         Divider()
                         settingsRow("録音の開始・終了キー",
                                     description: "現在の選択：\(controller.shortcutChoice.label)", icon: "keyboard") {
-                            Button("変更する") { go(.voice) }
+                            SettingsRowActionButton("変更する") { go(.voice) }
                         }
                         Divider()
                         settingsRow("Gemini APIキー",
                                     description: controller.hasKey ? "Macのキーチェーンに登録済みです。" : "未登録です。Apple認識はキーなしで使用できます。",
                                     icon: "key.horizontal") {
-                            Button("設定する") { go(.gemini) }
+                            SettingsRowActionButton("設定する") { go(.gemini) }
                         }
                         Divider()
                         settingsRow("アプリの利用許可",
                                     description: "録音と自動入力に必要なmacOSの権限を確認します。",
                                     icon: "checkmark.shield") {
-                            Button("確認する") { go(.permissions) }
+                            SettingsRowActionButton("確認する") { go(.permissions) }
                         }
                     }
                     .padding(8)
@@ -798,7 +828,7 @@ struct SettingsView: View {
                                     .fixedSize(horizontal: false, vertical: true)
                                 settingsRow("録音キーを再登録",
                                             description: "設定したキーが反応しない場合に、ショートカットの登録をやり直します。") {
-                                    Button("再登録") { controller.retryShortcutRegistration() }
+                                    SettingsRowActionButton("再登録") { controller.retryShortcutRegistration() }
                                 }
                             }
                         }
@@ -935,7 +965,7 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 10) {
                         settingsRow("保存件数：\(controller.history.count) / 10件",
                                     description: "直近10件の文字起こし結果をMacに保存します。音声やAPIキーは保存しません。") {
-                            Button("保存した文章を見る") { controller.onShowHistory?() }
+                            SettingsRowActionButton("文章を見る") { controller.onShowHistory?() }
                         }
                         .id("history")
                         Text("保存先：~/Library/Application Support/KoeBridge/recent-transcripts.json")
@@ -966,7 +996,7 @@ struct SettingsView: View {
                         Divider()
                         settingsRow("動作記録を削除",
                                     description: "保存済みの動作記録だけを削除します。文字起こし履歴や設定は変更されません。", icon: "trash") {
-                            Button("削除", role: .destructive) { confirmDeleteLog = true }
+                            SettingsRowActionButton("削除", role: .destructive) { confirmDeleteLog = true }
                         }
                         Text("保存先：~/Library/Logs/KoeBridge.log")
                             .font(.system(.caption, design: .monospaced))
@@ -1002,7 +1032,7 @@ struct SettingsView: View {
                             guide.requestAccessibility()
                         }
                         .id("accessibility")
-                        Divider().padding(.vertical, 6)
+                        Divider()
                         permissionRow("文字の入力操作を許可",
                                       description: "認識した文章を、ほかのアプリへキーボード入力として送信するために必要です。",
                                       icon: "keyboard.fill",
@@ -1011,7 +1041,7 @@ struct SettingsView: View {
                             guide.requestPostEvent()
                         }
                         .id("post")
-                        Divider().padding(.vertical, 6)
+                        Divider()
                         permissionRow("マイクの使用を許可",
                                       description: "音声を録音して文字起こしするために必要です。音声は選択した認識方法に従って処理されます。",
                                       icon: "mic.fill",
@@ -1033,13 +1063,29 @@ struct SettingsView: View {
                 GroupBox {
                     VStack(spacing: 0) {
                         settingsRow("許可状態を再確認",
-                                    description: "macOSで変更した許可状態を読み直します。") {
-                            Button("再確認") { guide.refresh() }
+                                    description: "macOSで変更した許可状態を読み直します。",
+                                    icon: "arrow.clockwise") {
+                            HStack(spacing: 10) {
+                                SettingsRowActionButton("再確認") {
+                                    refreshPermissionStatus()
+                                }
+                                .disabled(permissionRefreshFeedback == .refreshing)
+                                if permissionRefreshFeedback != .idle {
+                                    Label(permissionRefreshFeedback.text,
+                                          systemImage: permissionRefreshFeedback.symbol)
+                                        .font(.caption.weight(.medium))
+                                        .foregroundStyle(permissionRefreshFeedback == .refreshing
+                                                         ? Color.secondary : Color.green)
+                                        .fixedSize(horizontal: true, vertical: false)
+                                        .accessibilityLabel("許可状態の確認結果：\(permissionRefreshFeedback.text)")
+                                }
+                            }
                         }
                         Divider()
                         settingsRow("利用許可の案内を開く",
-                                    description: "必要な許可と設定方法をまとめて確認できます。") {
-                            Button("案内を開く") { controller.onShowPermissions?() }
+                                    description: "必要な許可と設定方法をまとめて確認できます。",
+                                    icon: "questionmark.circle") {
+                            SettingsRowActionButton("案内を開く") { controller.onShowPermissions?() }
                         }
                     }
                     .padding(8)
