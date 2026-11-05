@@ -56,7 +56,7 @@ public struct SettingsSearchEntry: Identifiable, Sendable {
 /// Users can search exact setting labels and common synonyms without guesswork.
 public enum SettingsSearchCatalog {
     public static let entries: [SettingsSearchEntry] = [
-        .init(id: "general", section: .general, title: "現在の設定を確認", keywords: "全般 エンジン 録音キー バージョン"),
+        .init(id: "general", section: .general, title: "基本設定・準備状況", keywords: "全般 エンジン 録音キー 自動入力 文字起こしスタイル API キー 許可 トラブル"),
         .init(id: "engine", section: .voice, title: "文字起こしの方法", keywords: "音声入力 認識エンジン Gemini Apple ローカル オンライン"),
         .init(id: "shortcut", section: .voice, title: "録音の開始・終了キー", keywords: "ホットキー ショートカット Command Fn F8"),
         .init(id: "autopaste", section: .voice, title: "認識した文章を自動入力する", keywords: "貼り付け 文字入力 クリップボード"),
@@ -72,7 +72,8 @@ public enum SettingsSearchCatalog {
         .init(id: "post", section: .permissions, title: "文字の入力操作を許可", keywords: "権限 PostEvent キーボード"),
         .init(id: "microphone", section: .permissions, title: "マイクの使用を許可", keywords: "録音 権限 プライバシー"),
         .init(id: "help", section: .help, title: "使い方とトラブル対処", keywords: "操作 よくある質問"),
-        .init(id: "about", section: .about, title: "KoeBridgeについて", keywords: "情報 ライセンス GitHub バージョン")
+        .init(id: "about", section: .about, title: "KoeBridgeについて", keywords: "情報 ライセンス GitHub バージョン"),
+        .init(id: "updates", section: .about, title: "アップデート", keywords: "更新 確認 自動確認 Stable GitHub 最新版 リリース ダウンロード インストール")
     ]
 
     public static func find(_ query: String) -> [SettingsSearchEntry] {
