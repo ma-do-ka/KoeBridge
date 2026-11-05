@@ -370,7 +370,7 @@ struct SettingsView: View {
                 GroupBox {
                     VStack(alignment: .leading, spacing: 9) {
                         settingsRow("ログイン時に自動起動",
-                                    description: "MacにログインするとKoeBridgeをメニューバーで起動します。macOSのログイン項目登録を使用します。",
+                                    description: "ONでKoeBridgeをmacOSのログイン項目に登録します。OS側の承認が必要な場合は、システム設定でユーザーが許可してください。",
                                     icon: "power") {
                             Toggle("ログイン時に自動起動",
                                    isOn: Binding(
@@ -392,9 +392,22 @@ struct SettingsView: View {
                             Button("状態を再確認") { loginItem.refresh() }
                                 .controlSize(.small)
                             if loginItem.needsSystemSettings {
-                                Button("システム設定を開く") { loginItem.openSystemSettings() }
+                                Button("ログイン項目を開く") { loginItem.openSystemSettings() }
                                     .controlSize(.small)
                             }
+                        }
+                        if loginItem.shouldShowManualAddHelp {
+                            VStack(alignment: .leading, spacing: 7) {
+                                Text("macOSがKoeBridgeを自動登録できなかったため、手動での追加が必要です。")
+                                Text("「ログイン項目を開く」でmacOSの設定を表示し、KoeBridge.appを追加・許可してください。")
+                                Button("KoeBridge.appをFinderで表示") {
+                                    loginItem.revealAppInFinder()
+                                }
+                                .controlSize(.small)
+                            }
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         }
                         if !loginItem.message.isEmpty {
                             Text(loginItem.message)
