@@ -1,5 +1,8 @@
 # KoeBridge 🎙️
 
+<img src="Resources/KoeBridge_AppIcon_1024.png" width="108" alt="KoeBridgeの公式アプリアイコン" />
+
+
 ![KoeBridge｜Mac用軽量音声入力アプリのトップイラスト](docs/images/koebridge-hero.webp)
 
 **Google AI Proなどの特典で、利用可能なGoogle Cloudクレジットが余っている人にも。**  
@@ -79,7 +82,7 @@ swift run -c release KoeBridgeSelfTest
 bash scripts/verify_and_build.sh --open
 ```
 
-ビルド後のアプリ：`dist/KoeBridge.app`。`verify_and_build.sh` は署名証明書がない場合、自動的に不安定なアドホック署名へ切り替えず停止します。**証明書がない開発・個人テスト用途のみ**、次を明示的に実行できます。
+ビルド後のアプリ：`dist/KoeBridge.app`。**アップロードされた新アイコン（`Resources/KoeBridge_AppIcon.icns`）をアプリに同梱し、署名前に元ファイルとのSHA-256一致を確認**します。Finderやアプリ切替時のアプリアイコンと設定画面左上のブランドアイコンに反映されます。メニューバーはmacOSの表示に馴染むモノクロの波形アイコンのままです。`verify_and_build.sh` は署名証明書がない場合、自動的に不安定なアドホック署名へ切り替えず停止します。**証明書がない開発・個人テスト用途のみ**、次を明示的に実行できます。
 
 ```bash
 KOEBRIDGE_ALLOW_ADHOC=1 bash scripts/verify_and_build.sh --open

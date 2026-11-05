@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Pre-publish, allowlist-based safety audit. Not a replacement for manual review."""
 from pathlib import Path
+import hashlib
 import os
 import re
 import sys
@@ -17,6 +18,13 @@ SECRET_PATTERNS = {
 }
 RISKY_NAMES = re.compile(r'(?:^\.env(?:\.|$)|\.(?:pem|key|p8|p12|pfx|sqlite|db)$|(?i:credentials|service-account|transcripts|secrets))')
 ALLOWED_EXTRA = {'.DS_Store'}
+# Reviewed binary artwork only. Every accepted byte must match its pinned Git blob.
+# Do not relax the UTF-8 scan for any other file or allow broad binary patterns.
+APPROVED_BINARY_BLOBS = {
+    'Resources/KoeBridge_AppIcon.icns': 'b3c6586c44da783e823d165b4b4fa4f7b885b740',
+    'Resources/KoeBridge_AppIcon_1024.png': 'f5cafb8a82d3496ea3aa8487928b1ebf5e2d7a69',
+    'docs/images/koebridge-hero.webp': '1e021eb97928cdc084b997494f9b30b46b6a9141',
+}
 OMIT_DIRS = {'.git', '.build', 'dist', '.swiftpm', 'DerivedData', '__pycache__'}
 
 
@@ -42,6 +50,13 @@ def main() -> int:
             continue
         try:
             data = file.read_bytes()
+            if name in APPROVED_BINARY_BLOBS:
+                git_blob = hashlib.sha1(
+                    b'blob ' + str(len(data)).encode('ascii') + b'\x00' + data
+                ).hexdigest()
+                if git_blob != APPROVED_BINARY_BLOBS[name]:
+                    errors.append(f'Unapproved binary content: {name}')
+                continue
             if b'\x00' in data or len(data) > 1_500_000:
                 errors.append(f'Binary/oversized file: {name}')
                 continue
@@ -68,7 +83,7 @@ def main() -> int:
             print('FAIL:', msg, file=sys.stderr)
         print('Publication blocked. No secrets have been printed.', file=sys.stderr)
         return 1
-    print(f'PASS: {len(entries)} approved UTF-8 files; no matched secret patterns or unexpected files.')
+    print(f'PASS: {len(entries)} approved files, {len(APPROVED_BINARY_BLOBS)} pinned binary artworks; no matched secret patterns or unexpected files.')
     print('LIMITATION: Manual code review and GitHub history review are still necessary.')
     return 0
 

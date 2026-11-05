@@ -1,4 +1,4 @@
-# Exactly these UTF-8 text files may be published by scripts/publish_to_github.sh
+# Exact allowlist for scripts/publish_to_github.sh. Approved binaries are hash-pinned in audit_public_release.py.
 .github/workflows/mac-ci.yml
 .gitignore
 LICENSE
@@ -78,3 +78,20 @@ scripts/public_files.txt
 scripts/publish_to_github.sh
 scripts/select_signing_identity.sh
 scripts/verify_and_build.sh
+
+# Reviewed artwork and newer source/test files
+Resources/KoeBridge_AppIcon.icns
+Resources/KoeBridge_AppIcon_1024.png
+Sources/KoeBridge/SettingsAppearance.swift
+Sources/KoeBridge/UsageMonitorView.swift
+Sources/KoeBridgeCore/OverlayFeedback.swift
+Sources/KoeBridgeCore/SettingsNavigation.swift
+Sources/KoeBridgeCore/SettingsUXPolicy.swift
+Sources/KoeBridgeCore/UsageMonitor.swift
+Tests/KoeBridgeCoreTests/OverlayFeedbackTests.swift
+Tests/KoeBridgeCoreTests/SettingsNavigationTests.swift
+Tests/KoeBridgeCoreTests/SettingsUXPolicyTests.swift
+Tests/KoeBridgeCoreTests/UsageMonitorTests.swift
+V101C_SETTINGS_COPY.md
+V101C_STATUS_MONITOR.md
+docs/images/koebridge-hero.webp
