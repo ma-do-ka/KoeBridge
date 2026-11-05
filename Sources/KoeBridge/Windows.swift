@@ -1084,14 +1084,24 @@ struct SettingsView: View {
                                     refreshPermissionStatus()
                                 }
                                 .disabled(permissionRefreshFeedback == .refreshing)
-                                if permissionRefreshFeedback != .idle {
+                                .accessibilityHint("macOSの現在の許可状態を読み直し、結果を横に表示します")
+                                if permissionRefreshFeedback == .refreshing {
+                                    HStack(spacing: 6) {
+                                        ProgressView()
+                                            .controlSize(.small)
+                                        Text("確認中…")
+                                    }
+                                    .font(.caption.weight(.medium))
+                                    .foregroundStyle(.secondary)
+                                    .accessibilityLabel("許可状態を確認中")
+                                } else if permissionRefreshFeedback != .idle {
                                     Label(permissionRefreshFeedback.text,
                                           systemImage: permissionRefreshFeedback.symbol)
                                         .font(.caption.weight(.medium))
-                                        .foregroundStyle(permissionRefreshFeedback == .refreshing
-                                                         ? Color.secondary : Color.green)
+                                        .foregroundStyle(Color.green)
                                         .fixedSize(horizontal: true, vertical: false)
                                         .accessibilityLabel("許可状態の確認結果：\(permissionRefreshFeedback.text)")
+                                        .accessibilityAddTraits(.updatesFrequently)
                                 }
                             }
                         }
