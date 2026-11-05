@@ -159,7 +159,7 @@ struct SettingsRowActionButton: View {
     }
 }
 
-enum SettingsPermissionDisplayState {
+enum SettingsPermissionDisplayState: Equatable {
     case granted
     case needsReview
     case prerequisite
