@@ -1,3 +1,16 @@
+# KoeBridge v1.0.1 — release verification scope
+
+- ソース変更：連打による超短時間・ほぼ無音の録音を中立の「音声入力なし」で早期終了。表示は約330msで消える。
+- 真の音声結果、長い録音、音声チャンクの欠落、認識エラーは通常の結果・復旧処理を維持。
+- Swift Testing と `KoeBridgeSelfTest` に、短い無音・短い発話・音声欠落・古い表示の上書き防止テストを追加。
+- CI：`.github/workflows/mac-ci.yml` でmacOS Swiftテスト、Releaseビルド、署名、アイコン検証。
+- GitHub Release専用CI：`.github/workflows/release-v1.0.1.yml` でリリース対象の同一コミットを再検証してからタグとReleaseを作成。
+- Mac実機のマイク入力、音声認識APIの接続、全アプリへの文字入力、連打タイミングのE2E結果はCIでは保証できない。
+- 配布物はGitHubのソースアーカイブ。Apple Developer ID署名・公証済みのインストーラーはありません。アドホック署名の検証ビルドを正式配布バイナリとして扱いません。
+- 実際のワークフロー結果はGitHub Actionsで確認し、未実行の検証をPASSとみなしません。
+
+---
+
 # KoeBridge v1.0.0 — validation report
 
 - 対象：2026-11-04 の `KoeBridge_source_v0.4.4.zip` に対する変更。

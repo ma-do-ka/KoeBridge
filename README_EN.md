@@ -4,11 +4,13 @@
 
 KoeBridge is a **Swift-native, menu-bar dictation tool** for macOS 15+. Press your configured shortcut to record and press it again to finish. It attempts to type the recognized text into the original input field, with a ten-item local recovery history.
 
-It supports **Gemini 3.5 Transcribe Live** (requires your own Gemini API key) and **Apple on-device speech recognition** (where supported). No Electron or always-on web server. Diagnostic file logging defaults to **OFF** and can be enabled in **Settings → 履歴・診断**.
+It supports **Gemini 3.5 Transcribe Live** (requires your own Gemini API key) and **Apple on-device speech recognition** (where supported). No Electron or always-on web server. Diagnostic file logging defaults to **OFF** and can be enabled in **Settings → 履歴と記録**.
 
 **For Google AI Pro subscribers with unused Cloud credits:** This can be an interesting way to use API-eligible credits, but **Google AI Pro does not automatically mean unlimited or free Gemini API calls**. Check credit eligibility, your linked billing project, prepayment conditions, and actual usage in [Google AI Studio](https://aistudio.google.com/) and the [official billing documentation](https://ai.google.dev/gemini-api/docs/billing).
 
 The supplied macOS app icon is packaged from `Resources/KoeBridge_AppIcon.icns` into the signed `.app` bundle; `Resources/KoeBridge_AppIcon_1024.png` is the corresponding source artwork. Finder and the settings brand header use the icon. The menu bar retains a monochrome waveform for legibility.
+
+**v1.0.1 source release:** Accidental rapid, silent shortcut toggles now dismiss as a short, neutral "音声入力なし" notice rather than a transcription failure. Real speech and real hardware/API errors retain their existing paths. See [release notes](docs/releases/v1.0.1.md). There is no notarized installer.
 
 ## Run from source on a Mac
 

@@ -39,7 +39,7 @@ def main() -> int:
     allowed = set(entries)
     for name in entries:
         rel = Path(name)
-        if rel.is_absolute() or '..' in rel.parts or name.startswith('.') and name not in {'.gitignore', '.github/workflows/mac-ci.yml'}:
+        if rel.is_absolute() or '..' in rel.parts or name.startswith('.') and name not in {'.gitignore', '.github/workflows/mac-ci.yml', '.github/workflows/release-v1.0.1.yml'}:
             errors.append(f'Unsafe manifest path: {name}')
             continue
         if RISKY_NAMES.search(rel.name):

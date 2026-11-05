@@ -11,6 +11,13 @@ struct OverlayFeedbackTests {
         #expect(OverlayFeedback.failed.message.contains("できません"))
     }
 
+    @Test func accidentalTapIsNeutralAndNotAnError() {
+        #expect(OverlayFeedback.ending.message.contains("終了"))
+        #expect(OverlayFeedback.noInput.message == "音声入力なし")
+        #expect(!OverlayFeedback.noInput.message.contains("失敗"))
+        #expect(!OverlayFeedback.noInput.message.contains("エラー"))
+    }
+
     @Test func olderFinalizationCannotOverwriteNewRecording() {
         let old = UUID()
         let current = UUID()

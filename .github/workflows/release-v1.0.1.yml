@@ -1,0 +1,59 @@
+name: Publish KoeBridge v1.0.1 source release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/releases/v1.0.1.md'
+
+permissions:
+  contents: write
+
+jobs:
+  verify-and-publish:
+    if: github.repository == 'ma-do-ka/KoeBridge'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate release version
+        run: |
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' scripts/Info.plist)" = '1.0.1'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' scripts/Info.plist)" = '19'
+          test -s docs/releases/v1.0.1.md
+      - name: Audit public source content
+        run: python3 scripts/audit_public_release.py
+      - name: Swift unit tests
+        run: swift test --parallel
+      - name: Portable self-test
+        run: swift run -c release KoeBridgeSelfTest
+      - name: Build and verify app (not distributable signed)
+        run: |
+          KOEBRIDGE_ALLOW_ADHOC=1 bash scripts/build_app.sh
+          codesign --verify --deep --strict dist/KoeBridge.app
+          plutil -lint dist/KoeBridge.app/Contents/Info.plist
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' dist/KoeBridge.app/Contents/Info.plist)" = '1.0.1'
+          test -s dist/KoeBridge.app/Contents/Resources/KoeBridge_AppIcon.icns
+      - name: Publish source-only GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/v1.0.1" >/dev/null 2>&1; then
+            echo 'ERROR: v1.0.1 tag already exists; refusing to overwrite it.' >&2
+            exit 1
+          fi
+          if gh release view v1.0.1 >/dev/null 2>&1; then
+            echo 'ERROR: v1.0.1 Release already exists; refusing to overwrite it.' >&2
+            exit 1
+          fi
+          gh release create v1.0.1 \
+            --target "$GITHUB_SHA" \
+            --title 'KoeBridge v1.0.1' \
+            --notes-file docs/releases/v1.0.1.md \
+            --latest
+          tag_commit="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/v1.0.1" --jq '.object.sha')"
+          if [ "$tag_commit" != "$GITHUB_SHA" ]; then
+            echo "ERROR: Published tag does not point to the verified commit ($tag_commit)." >&2
+            exit 1
+          fi
+          gh release view v1.0.1 --json url,tagName,isDraft,isPrerelease

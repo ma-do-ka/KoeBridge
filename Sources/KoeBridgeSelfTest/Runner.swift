@@ -86,6 +86,7 @@ struct KoeBridgeSelfTest {
             PermissionSetupPolicyTests().directInputRequiresActualProcessPermissionAndTarget()
         })
         await run("AudioDurationTests.immediateSecondPressDoesNotWaitForCloudFinal", { AudioDurationTests().immediateSecondPressDoesNotWaitForCloudFinal() })
+        await run("AudioDurationTests.rapidEmptyInputIsNeutralButSpeechAndLossRemainReal", { AudioDurationTests().rapidEmptyInputIsNeutralButSpeechAndLossRemainReal() })
         await run("FileLockTests.secondHandleCannotAcquireUntilFirstCloses", { try FileLockTests().secondHandleCannotAcquireUntilFirstCloses() })
         await run("GeminiFailureTests.liveAPIErrorReported", { try GeminiFailureTests().liveAPIErrorReported() })
         await run("GeminiFailureTests.liveAPIUnknownMessageIsIgnored", { try GeminiFailureTests().liveAPIUnknownMessageIsIgnored() })
