@@ -9,6 +9,8 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
     case gemini, local
     var id: String { rawValue }
     var label: String { self == .gemini ? "Gemini 3.5 Transcribe Live" : "Apple オンデバイス（無料）" }
+    /// Human-readable picker label only: keep persisted engine identifiers and history names unchanged.
+    var settingsLabel: String { self == .gemini ? "Gemini API（オンライン認識）" : "Apple（Mac内で認識・無料）" }
 }
 
 /// All mutable resources belong to one utterance, not to the UI singleton.
