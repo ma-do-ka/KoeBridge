@@ -458,12 +458,23 @@ struct SettingsView: View {
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 11) {
-                Image(systemName: "waveform")
-                    .font(.system(size: 22, weight: .bold))
-                    .foregroundStyle(.white)
-                    .frame(width: 44, height: 44)
-                    .background(.blue.gradient, in: RoundedRectangle(cornerRadius: 12))
-                    .accessibilityHidden(true)
+                Group {
+                    if let iconURL = Bundle.main.url(forResource: "KoeBridge_AppIcon", withExtension: "icns"),
+                       let iconImage = NSImage(contentsOf: iconURL) {
+                        Image(nsImage: iconImage)
+                            .resizable()
+                            .interpolation(.high)
+                            .scaledToFit()
+                    } else {
+                        Image(systemName: "waveform")
+                            .font(.system(size: 22, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .background(.blue.gradient, in: RoundedRectangle(cornerRadius: 12))
+                    }
+                }
+                .frame(width: 44, height: 44)
+                .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("KoeBridge")
                         .font(.system(size: 17, weight: .bold))
