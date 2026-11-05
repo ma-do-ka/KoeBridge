@@ -2,6 +2,7 @@
 import AppKit
 import AVFoundation
 import ApplicationServices
+import Speech
 import SwiftUI
 import KoeBridgeCore
 
@@ -542,10 +543,20 @@ struct SettingsView: View {
                     Label("Gemini APIキーが未登録です。Apple認識への切替が必要な場合があります。",
                           systemImage: "exclamationmark.circle.fill")
                         .foregroundStyle(.orange)
-                } else if !guide.accessibilityGranted || !guide.postEventGranted {
+                } else if controller.requestedMode == .local &&
+                            SFSpeechRecognizer.authorizationStatus() != .authorized {
+                    Label("Appleの音声認識への許可を確認してください。マイク許可とは別に管理されます。",
+                          systemImage: "exclamationmark.circle.fill")
+                        .foregroundStyle(.orange)
+                } else if controller.automaticPaste &&
+                            (!guide.accessibilityGranted || !guide.postEventGranted) {
                     Label("自動入力に必要なmacOSの許可を確認してください。",
                           systemImage: "exclamationmark.circle.fill")
                         .foregroundStyle(.orange)
+                } else if !controller.automaticPaste {
+                    Label("文字起こしの準備を確認しました（自動入力はOFF・履歴保存）",
+                          systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
                 } else {
                     Label("音声入力に必要な基本設定を確認できました",
                           systemImage: "checkmark.circle.fill")
@@ -554,8 +565,9 @@ struct SettingsView: View {
                 HStack(spacing: 12) {
                     Label(guide.microphoneStatus == .authorized ? "マイク許可済み" : "マイク要確認",
                           systemImage: "mic")
-                    Label(guide.accessibilityGranted && guide.postEventGranted
-                          ? "入力操作許可済み" : "入力操作要確認",
+                    Label(!controller.automaticPaste ? "自動入力OFF"
+                          : (guide.accessibilityGranted && guide.postEventGranted
+                             ? "入力操作許可済み" : "入力操作要確認"),
                           systemImage: "keyboard")
                 }
                 .font(.caption)
