@@ -81,3 +81,158 @@ struct ContrastSettingsGroupBoxStyle: GroupBoxStyle {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
+
+
+/// Use a native visible scroll indicator where the OS permits it, plus an
+/// independent bottom affordance while more content remains below the fold.
+struct SettingsIndicatedScrollView<Content: View>: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var hasMoreBelow = false
+    private let content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        ScrollView(.vertical, showsIndicators: true) {
+            content
+        }
+        .scrollIndicators(.visible)
+        .onScrollGeometryChange(for: Bool.self) { geometry in
+            SettingsUXPolicy.hasMoreBelow(
+                contentHeight: Double(geometry.contentSize.height),
+                viewportHeight: Double(geometry.containerSize.height),
+                offsetY: Double(geometry.contentOffset.y)
+            )
+        } action: { _, hasMore in
+            if reduceMotion {
+                hasMoreBelow = hasMore
+            } else {
+                withAnimation(.easeOut(duration: 0.16)) {
+                    hasMoreBelow = hasMore
+                }
+            }
+        }
+        .overlay(alignment: .bottom) {
+            if hasMoreBelow {
+                ZStack(alignment: .bottomTrailing) {
+                    LinearGradient(
+                        colors: [.clear, (colorScheme == .dark ? Color.black : Color.white).opacity(0.20)],
+                        startPoint: .top, endPoint: .bottom
+                    )
+                    .frame(height: 52)
+                    Label("下に続きがあります", systemImage: "arrow.down.circle")
+                        .font(.system(size: 12, weight: .medium))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                        .background(.regularMaterial, in: Capsule())
+                        .padding(.trailing, 22)
+                        .padding(.bottom, 8)
+                }
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("下に続きがあります。スクロールして表示できます。")
+                .allowsHitTesting(false)
+                .transition(.opacity)
+            }
+        }
+    }
+}
+
+/// Standardize the right-hand actions without affecting sidebar or back buttons.
+struct SettingsRowActionButton: View {
+    let title: String
+    var role: ButtonRole? = nil
+    let action: () -> Void
+
+    init(_ title: String, role: ButtonRole? = nil, action: @escaping () -> Void) {
+        self.title = title
+        self.role = role
+        self.action = action
+    }
+
+    var body: some View {
+        Button(role: role, action: action) {
+            Text(title)
+                .font(.system(size: 13, weight: .medium))
+                .frame(minWidth: 103, minHeight: 26)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.regular)
+    }
+}
+
+enum SettingsPermissionDisplayState: Equatable {
+    case granted
+    case needsReview
+    case prerequisite
+    case denied
+    case restricted
+
+    var text: String {
+        switch self {
+        case .granted: return "許可済み"
+        case .needsReview: return "要確認"
+        case .prerequisite: return "先に設定"
+        case .denied: return "設定で変更"
+        case .restricted: return "利用制限"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .granted: return "checkmark.circle.fill"
+        case .needsReview: return "exclamationmark.circle.fill"
+        case .prerequisite: return "arrow.turn.down.right"
+        case .denied, .restricted: return "xmark.circle.fill"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .granted: return .green
+        case .needsReview: return .orange
+        case .prerequisite: return .secondary
+        case .denied, .restricted: return .red
+        }
+    }
+}
+
+struct SettingsPermissionStatusBadge: View {
+    let status: SettingsPermissionDisplayState
+
+    var body: some View {
+        Label(status.text, systemImage: status.symbol)
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(status.tint)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(status.tint.opacity(0.12), in: Capsule())
+            .accessibilityLabel("現在の許可状態：\(status.text)")
+    }
+}
+
+enum SettingsPermissionRefreshFeedback: Equatable {
+    case idle
+    case refreshing
+    case changed
+    case unchanged
+
+    var text: String {
+        switch self {
+        case .idle: return ""
+        case .refreshing: return "確認中…"
+        case .changed: return "更新完了"
+        case .unchanged: return "変更なし"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .idle, .refreshing: return "arrow.clockwise"
+        case .changed, .unchanged: return "checkmark.circle.fill"
+        }
+    }
+}

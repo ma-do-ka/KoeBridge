@@ -317,6 +317,8 @@ struct SettingsView: View {
     @State private var navigation = SettingsNavigation()
     @State private var searchText = ""
     @State private var searchTarget: String?
+    @State private var permissionRefreshFeedback: SettingsPermissionRefreshFeedback = .idle
+    @State private var permissionRefreshSequence = 0
 
     var body: some View {
         HStack(spacing: 0) {
@@ -402,6 +404,34 @@ struct SettingsView: View {
         .accessibilityElement(children: .combine)
     }
 
+    private var permissionSnapshot: PermissionStateSnapshot {
+        PermissionStateSnapshot(
+            accessibilityGranted: guide.accessibilityGranted,
+            postEventGranted: guide.postEventGranted,
+            microphoneStatusRaw: guide.microphoneStatus.rawValue
+        )
+    }
+
+    /// OS permission checks are synchronous. Show a short inline result
+    /// without claiming that a permission was newly granted.
+    private func refreshPermissionStatus() {
+        let before = permissionSnapshot
+        permissionRefreshSequence += 1
+        let sequence = permissionRefreshSequence
+        permissionRefreshFeedback = .refreshing
+        Task { @MainActor in
+            await Task.yield()
+            guard permissionRefreshSequence == sequence else { return }
+            guide.refreshFromSettings()
+            let result = SettingsUXPolicy.refreshResult(before: before, after: permissionSnapshot)
+            permissionRefreshFeedback = result == .changed ? .changed : .unchanged
+            try? await Task.sleep(for: .seconds(3))
+            if permissionRefreshSequence == sequence {
+                permissionRefreshFeedback = .idle
+            }
+        }
+    }
+
     private func go(_ section: SettingsSection) {
         searchTarget = nil
         navigation.select(section)
@@ -412,7 +442,7 @@ struct SettingsView: View {
         _ section: SettingsSection, @ViewBuilder content: @escaping () -> Content
     ) -> some View {
         ScrollViewReader { proxy in
-            ScrollView { content() }
+            SettingsIndicatedScrollView { content() }
                 .onAppear { scrollToSearchResult(proxy, section: section) }
                 .onChange(of: searchTarget) { _, _ in scrollToSearchResult(proxy, section: section) }
         }
@@ -474,7 +504,7 @@ struct SettingsView: View {
             .padding(.horizontal, 13)
             .padding(.bottom, 18)
 
-            ScrollView {
+            SettingsIndicatedScrollView {
                 VStack(alignment: .leading, spacing: 17) {
                     if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         sidebarGroup("基本", pages: [.general, .voice, .gemini, .usage])
@@ -582,28 +612,30 @@ struct SettingsView: View {
     }
 
     private var generalPage: some View {
-        ScrollView {
+        SettingsIndicatedScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 GroupBox {
                     VStack(spacing: 0) {
                         settingsRow("文字起こしの方法",
                                     description: "現在の選択：\(controller.requestedMode.settingsLabel)", icon: "waveform") {
-                            Button("変更する") { go(.voice) }
+                            SettingsRowActionButton("変更する") { go(.voice) }
                         }
                         Divider()
                         settingsRow("録音の開始・終了キー",
                                     description: "現在の選択：\(controller.shortcutChoice.label)", icon: "keyboard") {
-                            Button("変更する") { go(.voice) }
+                            SettingsRowActionButton("変更する") { go(.voice) }
                         }
                         Divider()
                         settingsRow("Gemini APIキー",
-                                    description: controller.hasKey ? "Macのキーチェーンに登録済みです。" : "未登録です。Apple認識はキーなしで使用できます。") {
-                            Button("設定する") { go(.gemini) }
+                                    description: controller.hasKey ? "Macのキーチェーンに登録済みです。" : "未登録です。Apple認識はキーなしで使用できます。",
+                                    icon: "key.horizontal") {
+                            SettingsRowActionButton("設定する") { go(.gemini) }
                         }
                         Divider()
                         settingsRow("アプリの利用許可",
-                                    description: "録音と自動入力に必要なmacOSの権限を確認します。") {
-                            Button("確認する") { go(.permissions) }
+                                    description: "録音と自動入力に必要なmacOSの権限を確認します。",
+                                    icon: "checkmark.shield") {
+                            SettingsRowActionButton("確認する") { go(.permissions) }
                         }
                     }
                     .padding(8)
@@ -615,19 +647,21 @@ struct SettingsView: View {
                         Text("録音キーを押してからマイクが使えるまでと、録音終了後に入力を送信するまでの実測時間を表示します。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        HStack {
+                        HStack(alignment: .center) {
                             Label("録音開始まで", systemImage: "mic")
                             Spacer()
                             Text(controller.lastStartupSeconds.map { String(format: "%.2f秒", $0) } ?? "未計測")
                                 .monospacedDigit()
                         }
+                        .frame(minHeight: 34)
                         Divider()
-                        HStack {
+                        HStack(alignment: .center) {
                             Label("録音停止から入力送信まで", systemImage: "arrow.up.circle")
                             Spacer()
                             Text(controller.lastStopToInputSeconds.map { String(format: "%.2f秒", $0) } ?? "未計測")
                                 .monospacedDigit()
                         }
+                        .frame(minHeight: 34)
                         Text("端末や接続環境により変動します。送信時間には相手アプリでの受理確認は含みません。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -657,7 +691,7 @@ struct SettingsView: View {
     }
 
     private var helpPage: some View {
-        ScrollView {
+        SettingsIndicatedScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 GroupBox {
                     VStack(alignment: .leading, spacing: 10) {
@@ -700,7 +734,7 @@ struct SettingsView: View {
     }
 
     private var aboutPage: some View {
-        ScrollView {
+        SettingsIndicatedScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 GroupBox {
                     VStack(alignment: .leading, spacing: 12) {
@@ -732,21 +766,27 @@ struct SettingsView: View {
                 Image(systemName: icon)
                     .font(.system(size: 17))
                     .foregroundStyle(.secondary)
-                    .frame(width: 24)
+                    .frame(width: 28, height: 28)
+                    .accessibilityHidden(true)
+            } else {
+                Color.clear
+                    .frame(width: 28, height: 28)
                     .accessibilityHidden(true)
             }
             VStack(alignment: .leading, spacing: 4) {
-                Text(title).font(.system(size: 14, weight: .medium))
+                Text(title).font(.system(size: 14, weight: .semibold))
                 Text(description)
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
+                    .lineSpacing(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             accessory()
+                .frame(minWidth: 126, alignment: .trailing)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, minHeight: 72, alignment: .center)
+        .padding(.vertical, 7)
     }
 
     private var voicePage: some View {
@@ -788,7 +828,7 @@ struct SettingsView: View {
                                     .fixedSize(horizontal: false, vertical: true)
                                 settingsRow("録音キーを再登録",
                                             description: "設定したキーが反応しない場合に、ショートカットの登録をやり直します。") {
-                                    Button("再登録") { controller.retryShortcutRegistration() }
+                                    SettingsRowActionButton("再登録") { controller.retryShortcutRegistration() }
                                 }
                             }
                         }
@@ -925,7 +965,7 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 10) {
                         settingsRow("保存件数：\(controller.history.count) / 10件",
                                     description: "直近10件の文字起こし結果をMacに保存します。音声やAPIキーは保存しません。") {
-                            Button("保存した文章を見る") { controller.onShowHistory?() }
+                            SettingsRowActionButton("文章を見る") { controller.onShowHistory?() }
                         }
                         .id("history")
                         Text("保存先：~/Library/Application Support/KoeBridge/recent-transcripts.json")
@@ -956,7 +996,7 @@ struct SettingsView: View {
                         Divider()
                         settingsRow("動作記録を削除",
                                     description: "保存済みの動作記録だけを削除します。文字起こし履歴や設定は変更されません。", icon: "trash") {
-                            Button("削除", role: .destructive) { confirmDeleteLog = true }
+                            SettingsRowActionButton("削除", role: .destructive) { confirmDeleteLog = true }
                         }
                         Text("保存先：~/Library/Logs/KoeBridge.log")
                             .font(.system(.caption, design: .monospaced))
@@ -987,26 +1027,31 @@ struct SettingsView: View {
                         permissionRow("入力先へのアクセスを許可",
                                       description: "文字を入力する場所を確認し、意図しない入力を防ぐために必要です。macOSのアクセシビリティ機能を利用します。",
                                       icon: "hand.raised.fill",
-                                      isGranted: guide.accessibilityGranted,
+                                      status: guide.accessibilityGranted ? .granted : .needsReview,
                                       canRequest: !guide.accessibilityGranted) {
                             guide.requestAccessibility()
                         }
                         .id("accessibility")
-                        Divider().padding(.vertical, 6)
+                        Divider()
                         permissionRow("文字の入力操作を許可",
                                       description: "認識した文章を、ほかのアプリへキーボード入力として送信するために必要です。",
                                       icon: "keyboard.fill",
-                                      isGranted: guide.postEventGranted,
+                                      status: guide.postEventGranted ? .granted
+                                          : (guide.accessibilityGranted ? .needsReview : .prerequisite),
                                       canRequest: !guide.postEventGranted && guide.accessibilityGranted) {
                             guide.requestPostEvent()
                         }
                         .id("post")
-                        Divider().padding(.vertical, 6)
+                        Divider()
                         permissionRow("マイクの使用を許可",
                                       description: "音声を録音して文字起こしするために必要です。音声は選択した認識方法に従って処理されます。",
                                       icon: "mic.fill",
-                                      isGranted: guide.microphoneStatus == .authorized,
-                                      canRequest: guide.microphoneStatus != .authorized && !guide.microphoneRequestInProgress) {
+                                      status: guide.microphoneStatus == .authorized ? .granted
+                                          : (guide.microphoneStatus == .denied ? .denied
+                                             : (guide.microphoneStatus == .restricted ? .restricted : .needsReview)),
+                                      canRequest: guide.microphoneStatus != .authorized && !guide.microphoneRequestInProgress,
+                                      buttonTitle: guide.microphoneStatus == .notDetermined
+                                          ? "許可を求める" : "対処方法") {
                             guide.requestMicrophone()
                         }
                         .id("microphone")
@@ -1016,20 +1061,55 @@ struct SettingsView: View {
                     Label("アプリの利用許可", systemImage: "checkmark.shield")
                 }
                 if !guide.message.isEmpty {
-                    Text(guide.message)
-                        .font(.callout).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    Label {
+                        Text(guide.message)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } icon: {
+                        Image(systemName: "info.circle.fill")
+                    }
+                    .font(.callout)
+                    .foregroundStyle(.primary)
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(dark ? Color.white.opacity(0.09) : Color.blue.opacity(0.07),
+                                in: RoundedRectangle(cornerRadius: 10))
                 }
                 GroupBox {
                     VStack(spacing: 0) {
                         settingsRow("許可状態を再確認",
-                                    description: "macOSで変更した許可状態を読み直します。") {
-                            Button("再確認") { guide.refresh() }
+                                    description: "macOSで変更した許可状態を読み直します。",
+                                    icon: "arrow.clockwise") {
+                            HStack(spacing: 10) {
+                                SettingsRowActionButton("再確認") {
+                                    refreshPermissionStatus()
+                                }
+                                .disabled(permissionRefreshFeedback == .refreshing)
+                                .accessibilityHint("macOSの現在の許可状態を読み直し、結果を横に表示します")
+                                if permissionRefreshFeedback == .refreshing {
+                                    HStack(spacing: 6) {
+                                        ProgressView()
+                                            .controlSize(.small)
+                                        Text("確認中…")
+                                    }
+                                    .font(.caption.weight(.medium))
+                                    .foregroundStyle(.secondary)
+                                    .accessibilityLabel("許可状態を確認中")
+                                } else if permissionRefreshFeedback != .idle {
+                                    Label(permissionRefreshFeedback.text,
+                                          systemImage: permissionRefreshFeedback.symbol)
+                                        .font(.caption.weight(.medium))
+                                        .foregroundStyle(Color.green)
+                                        .fixedSize(horizontal: true, vertical: false)
+                                        .accessibilityLabel("許可状態の確認結果：\(permissionRefreshFeedback.text)")
+                                        .accessibilityAddTraits(.updatesFrequently)
+                                }
+                            }
                         }
                         Divider()
                         settingsRow("利用許可の案内を開く",
-                                    description: "必要な許可と設定方法をまとめて確認できます。") {
-                            Button("案内を開く") { controller.onShowPermissions?() }
+                                    description: "必要な許可と設定方法をまとめて確認できます。",
+                                    icon: "questionmark.circle") {
+                            SettingsRowActionButton("案内を開く") { controller.onShowPermissions?() }
                         }
                     }
                     .padding(8)
@@ -1044,35 +1124,53 @@ struct SettingsView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .onAppear { guide.refresh() }
+        .onDisappear {
+            permissionRefreshSequence += 1
+            permissionRefreshFeedback = .idle
+        }
     }
 
     private func permissionRow(
         _ title: String, description: String, icon: String,
-        isGranted: Bool, canRequest: Bool,
+        status: SettingsPermissionDisplayState, canRequest: Bool,
+        buttonTitle: String = "許可を求める",
         action: @escaping () -> Void
     ) -> some View {
-        HStack(alignment: .center, spacing: 12) {
+        HStack(alignment: .center, spacing: 14) {
             Image(systemName: icon)
-                .frame(width: 24)
+                .font(.system(size: 17))
+                .frame(width: 28, height: 28)
                 .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 4) {
-                Text(title).font(.system(size: 14, weight: .medium))
+                Text(title).font(.system(size: 14, weight: .semibold))
                 Text(description)
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
+                    .lineSpacing(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            VStack(alignment: .trailing, spacing: 6) {
-                Label(isGranted ? "許可済み" : "未許可",
-                      systemImage: isGranted ? "checkmark.circle.fill" : "exclamationmark.circle")
-                    .foregroundStyle(isGranted ? Color.green : Color.orange)
-                    .font(.caption)
-                Button("許可を求める", action: action)
-                    .disabled(!canRequest)
+            VStack(alignment: .trailing, spacing: 9) {
+                SettingsPermissionStatusBadge(status: status)
+                if status == .granted {
+                    Text("操作不要")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if status == .prerequisite {
+                    Text("上の許可を先に設定")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: true, vertical: false)
+                } else {
+                    SettingsRowActionButton(buttonTitle, action: action)
+                        .disabled(!canRequest)
+                }
             }
+            .frame(minWidth: 138, alignment: .trailing)
         }
-        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, minHeight: 93, alignment: .center)
+        .padding(.vertical, 7)
     }
 }
 
@@ -1097,6 +1195,12 @@ struct SettingsView: View {
         accessibilityGranted = AXIsProcessTrusted()
         postEventGranted = CGPreflightPostEventAccess()
         microphoneStatus = AVCaptureDevice.authorizationStatus(for: .audio)
+    }
+
+    /// Remove old action messages before displaying freshly read OS status.
+    func refreshFromSettings() {
+        message = ""
+        refresh()
     }
 
     func requestAccessibility() {
@@ -1129,11 +1233,15 @@ struct SettingsView: View {
             return
         }
         microphoneRequestInProgress = true
+        message = "マイクの許可結果を確認しています…"
         Task { [weak self] in
             _ = await AVCaptureDevice.requestAccess(for: .audio)
             guard let self else { return }
             self.microphoneRequestInProgress = false
             self.refresh()
+            self.message = self.microphoneStatus == .authorized
+                ? "マイクの使用が許可されました。"
+                : "マイクは未許可です。macOSのプライバシー設定でKoeBridgeのマイクを確認してください。"
         }
     }
 
