@@ -47,6 +47,10 @@ import KoeBridgeCore
         requestedUpdatePage += 1
     }
 
+    func consumedUpdatePageRequest() {
+        requestedUpdatePage = 0
+    }
+
     func checkIfDue() {
         guard KoeBridgeUpdatePolicy.shouldCheck(
             automatic: automaticChecksEnabled, lastCheck: lastCheckedAt, now: Date()
