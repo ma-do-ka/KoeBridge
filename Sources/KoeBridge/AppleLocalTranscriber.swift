@@ -63,7 +63,7 @@ import Speech
         let deadline = Date().addingTimeInterval(5)
         while !isFinal && failure == nil && Date() < deadline {
             try Task.checkCancellation()
-            try await Task.sleep(for: .milliseconds(75))
+            try await Task.sleep(for: .milliseconds(25))
         }
         try Task.checkCancellation()
         if let failure { throw LocalError.recognitionFailure(failure) }
