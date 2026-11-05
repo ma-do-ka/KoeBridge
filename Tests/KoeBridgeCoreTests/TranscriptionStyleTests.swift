@@ -48,6 +48,13 @@ struct TranscriptionStyleTests {
         #expect(formatted.contains("。\n最後に"))
         #expect(formatted.replacingOccurrences(of: "\n", with: "") == spoken)
         #expect(AgentInstructionFormatting.format(formatted) == formatted)
+        // Direct typing deliberately converts newlines into spaces to avoid
+        // accidentally submitting a chat prompt with Enter.
+        let safe = UnicodeTypingPlan.safeText(formatted)
+        #expect(safe.contains("--force"))
+        #expect(safe.contains("src/worker.ts"))
+        #expect(safe.contains("https://example.com/api?v=1.2"))
+        #expect(!safe.contains("\n"))
     }
 
     @Test func vocabularyHonorsUserPriorityAndDeduplicatesWithinCap() {
