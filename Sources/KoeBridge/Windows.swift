@@ -52,13 +52,13 @@ import KoeBridgeCore
         if let settingsWindow { window = settingsWindow }
         else {
             window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 710, height: 560),
+                contentRect: NSRect(x: 0, y: 0, width: 1050, height: 710),
                 styleMask: [.titled, .closable, .miniaturizable, .resizable],
                 backing: .buffered, defer: false)
             window.title = "KoeBridge 設定"
             window.center()
             window.contentView = NSHostingView(rootView: SettingsView(controller: .shared, guide: .shared))
-            window.minSize = NSSize(width: 690, height: 520)
+            window.minSize = NSSize(width: 850, height: 610)
             window.isReleasedWhenClosed = false
             settingsWindow = window
         }
