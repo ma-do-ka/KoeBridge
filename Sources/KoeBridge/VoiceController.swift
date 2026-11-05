@@ -140,6 +140,7 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
         let text: String?
         let reason: String?
         let partial: String
+        let noInput: Bool
     }
 
     private init() {
@@ -390,13 +391,19 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
         isRecording = false
         take.stoppingAt = Date()
         take.recordingTimeout?.cancel()
-        // Keep the non-activating panel visible while finalizing.
-        // This never delays the next shortcut; it only changes feedback.
+        // Rapid stop does not imply a transcription failure. Wait for the
+        // microphone's final PCM/peak measurement before classifying a quiet tap.
+        // Real speech still enters the normal finalization path.
+        let recordedSeconds = take.startedAt.map {
+            take.stoppingAt!.timeIntervalSince($0)
+        } ?? .infinity
+        let quickExitCandidate = QuickNoInputPolicy.mayBeQuickExit(seconds: recordedSeconds)
         if overlayOwner == take.id {
-            overlayFeedback = .processing
+            overlayFeedback = quickExitCandidate ? .ending : .processing
             previewText = ""
         }
-        status = "文字起こしを確定中。録音キーでもう一度押すと次の録音を開始できます"
+        status = quickExitCandidate ? "録音を終了しています…" :
+            "文字起こしを確定中。録音キーでもう一度押すと次の録音を開始できます"
         DiagnosticLog.record("session stopped; UI idle immediately; background finalization; pending=\(finished.count)")
         take.finalizationTimeout = Task { [weak self, weak take] in
             do { try await Task.sleep(for: .seconds(15)) } catch { return }
@@ -414,11 +421,23 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
                     let seconds = Double(pcmBytes) / 32_000
                     let peak = capture.sessionPeakAmplitude
                     DiagnosticLog.record("mic stopped; pcmBytes=\(pcmBytes) audioSeconds=\(String(format: "%.2f", seconds)) peak=\(String(format: "%.4f", peak)) losses=\(losses)")
-                    if !AudioDurationPolicy.hasEnoughAudio(pcmBytes: pcmBytes) {
-                        self.resolve(take, text: nil, reason: "録音が短すぎます（0.1秒未満）")
-                    } else if losses > 0 || take.audioIntegrity.droppedChunks > 0 {
+                    let lostAudio = losses > 0 || take.audioIntegrity.droppedChunks > 0
+                    // Audio-loss errors and real transcribed text are never
+                    // hidden by the accidental-tap UX.
+                    if lostAudio {
                         self.resolve(take, text: nil, reason: "マイクの音声チャンクが欠落しました")
+                    } else if QuickNoInputPolicy.shouldSkipRecognition(
+                        seconds: seconds, pcmBytes: pcmBytes, peak: peak,
+                        hasText: !take.recoverableText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                        audioDropped: lostAudio
+                    ) {
+                        self.resolve(take, text: nil, reason: "音声入力なし", noInput: true)
+                    } else if !AudioDurationPolicy.hasEnoughAudio(pcmBytes: pcmBytes) {
+                        self.resolve(take, text: nil, reason: "録音が短すぎます（0.1秒未満）")
                     } else {
+                        if self.overlayOwner == take.id && self.overlayFeedback == .ending {
+                            self.overlayFeedback = .processing
+                        }
                         take.continuation?.finish()
                     }
                 }
@@ -524,7 +543,8 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
     }
 
     /// Finish only this take. This MUST NOT reset a newer active recording.
-    private func resolve(_ take: DictationTake, text: String?, reason: String?) {
+    private func resolve(_ take: DictationTake, text: String?, reason: String?,
+                         noInput: Bool = false) {
         guard !take.finished else { return }
         let partial = take.recoverableText
         take.finished = true
@@ -537,15 +557,21 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
             phase = .idle
             isRecording = false
             // Preparing was cancelled or capture failed; no pending processing.
-            if overlayOwner == take.id { hideOverlay() }
+            if overlayOwner == take.id && !noInput { hideOverlay() }
             previewText = ""
         }
-        let accepted = finished.finish(take.id, result: Completion(text: text, reason: reason, partial: partial))
-        DiagnosticLog.record("session resolved; success=\(text?.isEmpty == false) accepted=\(accepted) pending=\(finished.count)")
+        let accepted = finished.finish(take.id, result: Completion(
+            text: text, reason: reason, partial: partial, noInput: noInput))
+        DiagnosticLog.record("session resolved; success=\(text?.isEmpty == false) accepted=\(accepted) noInput=\(noInput) pending=\(finished.count)")
+        // Show a brief, neutral acknowledgement immediately, even if an
+        // older take is still finalizing in the ordered delivery buffer.
+        if noInput { showCompletionFeedback(.noInput, for: take.id) }
         // Safety first: persist recoverable text before posting input events.
         // Usage telemetry is secondary and must not delay those key events.
         deliverOrderedResults()
-        recordUsage(take, succeeded: text?.isEmpty == false, cancelled: reason == "録音をキャンセルしました")
+        if noInput && active == nil && overlayOwner == take.id { status = "音声入力なし" }
+        recordUsage(take, succeeded: text?.isEmpty == false,
+                    cancelled: noInput || reason == "録音をキャンセルしました")
         take.releaseResources()
     }
 
@@ -599,6 +625,12 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
     private func deliverOrderedResults() {
         for (id, result) in finished.drain() {
             guard let take = inFlight.removeValue(forKey: id) else { continue }
+            if result.noInput {
+                // No paste, no error toast, no transcript history. The overlay
+                // was already acknowledged by resolve() for this take only.
+                DiagnosticLog.record("empty rapid recording discarded; id=\(id.uuidString.prefix(8))")
+                continue
+            }
             if let text = result.text, !text.isEmpty {
                 let recordID = remember(text, isPartial: false, delivery: .pending, engine: take.usedMode)
                 let outcome: TranscriptRecord.Delivery
@@ -664,7 +696,7 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
         overlayFeedback = feedback
         overlayDismissal?.cancel()
         overlayDismissal = Task { [weak self] in
-            let hold: Int = feedback == .failed ? 1_000 : 520
+            let hold: Int = feedback == .noInput ? 330 : (feedback == .failed ? 1_000 : 520)
             do { try await Task.sleep(for: .milliseconds(hold)) } catch { return }
             guard let self, self.overlayOwner == id, self.active == nil else { return }
             self.hideOverlay()
@@ -687,8 +719,7 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
     func discard() {
         guard let take = active else { return }
         DiagnosticLog.record("session discarded by user")
-        resolve(take, text: nil, reason: "録音をキャンセルしました")
-        status = "録音を破棄しました"
+        resolve(take, text: nil, reason: "音声入力なし", noInput: true)
     }
 
     /// Never paste delayed transcripts after sleep, user switch or shutdown.
