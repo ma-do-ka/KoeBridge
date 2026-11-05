@@ -1143,8 +1143,19 @@ struct SettingsView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             VStack(alignment: .trailing, spacing: 9) {
                 SettingsPermissionStatusBadge(status: status)
-                SettingsRowActionButton(buttonTitle, action: action)
-                    .disabled(!canRequest)
+                if status == .granted {
+                    Text("操作不要")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if status == .prerequisite {
+                    Text("上の許可を先に設定")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: true, vertical: false)
+                } else {
+                    SettingsRowActionButton(buttonTitle, action: action)
+                        .disabled(!canRequest)
+                }
             }
             .frame(minWidth: 138, alignment: .trailing)
         }
