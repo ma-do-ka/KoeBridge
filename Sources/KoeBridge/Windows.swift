@@ -422,7 +422,7 @@ struct SettingsView: View {
         Task { @MainActor in
             await Task.yield()
             guard permissionRefreshSequence == sequence else { return }
-            guide.refresh()
+            guide.refreshFromSettings()
             let result = SettingsUXPolicy.refreshResult(before: before, after: permissionSnapshot)
             permissionRefreshFeedback = result == .changed ? .changed : .unchanged
             try? await Task.sleep(for: .seconds(3))
@@ -1187,6 +1187,12 @@ struct SettingsView: View {
         microphoneStatus = AVCaptureDevice.authorizationStatus(for: .audio)
     }
 
+    /// Remove old action messages before displaying freshly read OS status.
+    func refreshFromSettings() {
+        message = ""
+        refresh()
+    }
+
     func requestAccessibility() {
         _ = TextInsertion.requestAccessibility()
         refresh()
@@ -1217,11 +1223,15 @@ struct SettingsView: View {
             return
         }
         microphoneRequestInProgress = true
+        message = "マイクの許可結果を確認しています…"
         Task { [weak self] in
             _ = await AVCaptureDevice.requestAccess(for: .audio)
             guard let self else { return }
             self.microphoneRequestInProgress = false
             self.refresh()
+            self.message = self.microphoneStatus == .authorized
+                ? "マイクの使用が許可されました。"
+                : "マイクは未許可です。macOSのプライバシー設定でKoeBridgeのマイクを確認してください。"
         }
     }
 
