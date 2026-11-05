@@ -1027,7 +1027,7 @@ struct SettingsView: View {
                         permissionRow("入力先へのアクセスを許可",
                                       description: "文字を入力する場所を確認し、意図しない入力を防ぐために必要です。macOSのアクセシビリティ機能を利用します。",
                                       icon: "hand.raised.fill",
-                                      isGranted: guide.accessibilityGranted,
+                                      status: guide.accessibilityGranted ? .granted : .needsReview,
                                       canRequest: !guide.accessibilityGranted) {
                             guide.requestAccessibility()
                         }
@@ -1036,7 +1036,8 @@ struct SettingsView: View {
                         permissionRow("文字の入力操作を許可",
                                       description: "認識した文章を、ほかのアプリへキーボード入力として送信するために必要です。",
                                       icon: "keyboard.fill",
-                                      isGranted: guide.postEventGranted,
+                                      status: guide.postEventGranted ? .granted
+                                          : (guide.accessibilityGranted ? .needsReview : .prerequisite),
                                       canRequest: !guide.postEventGranted && guide.accessibilityGranted) {
                             guide.requestPostEvent()
                         }
@@ -1045,8 +1046,12 @@ struct SettingsView: View {
                         permissionRow("マイクの使用を許可",
                                       description: "音声を録音して文字起こしするために必要です。音声は選択した認識方法に従って処理されます。",
                                       icon: "mic.fill",
-                                      isGranted: guide.microphoneStatus == .authorized,
-                                      canRequest: guide.microphoneStatus != .authorized && !guide.microphoneRequestInProgress) {
+                                      status: guide.microphoneStatus == .authorized ? .granted
+                                          : (guide.microphoneStatus == .denied ? .denied
+                                             : (guide.microphoneStatus == .restricted ? .restricted : .needsReview)),
+                                      canRequest: guide.microphoneStatus != .authorized && !guide.microphoneRequestInProgress,
+                                      buttonTitle: guide.microphoneStatus == .notDetermined
+                                          ? "許可を求める" : "対処方法") {
                             guide.requestMicrophone()
                         }
                         .id("microphone")
@@ -1056,9 +1061,18 @@ struct SettingsView: View {
                     Label("アプリの利用許可", systemImage: "checkmark.shield")
                 }
                 if !guide.message.isEmpty {
-                    Text(guide.message)
-                        .font(.callout).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    Label {
+                        Text(guide.message)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } icon: {
+                        Image(systemName: "info.circle.fill")
+                    }
+                    .font(.callout)
+                    .foregroundStyle(.primary)
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(dark ? Color.white.opacity(0.09) : Color.blue.opacity(0.07),
+                                in: RoundedRectangle(cornerRadius: 10))
                 }
                 GroupBox {
                     VStack(spacing: 0) {
@@ -1100,35 +1114,42 @@ struct SettingsView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .onAppear { guide.refresh() }
+        .onDisappear {
+            permissionRefreshSequence += 1
+            permissionRefreshFeedback = .idle
+        }
     }
 
     private func permissionRow(
         _ title: String, description: String, icon: String,
-        isGranted: Bool, canRequest: Bool,
+        status: SettingsPermissionDisplayState, canRequest: Bool,
+        buttonTitle: String = "許可を求める",
         action: @escaping () -> Void
     ) -> some View {
-        HStack(alignment: .center, spacing: 12) {
+        HStack(alignment: .center, spacing: 14) {
             Image(systemName: icon)
-                .frame(width: 24)
+                .font(.system(size: 17))
+                .frame(width: 28, height: 28)
                 .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 4) {
-                Text(title).font(.system(size: 14, weight: .medium))
+                Text(title).font(.system(size: 14, weight: .semibold))
                 Text(description)
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
+                    .lineSpacing(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            VStack(alignment: .trailing, spacing: 6) {
-                Label(isGranted ? "許可済み" : "未許可",
-                      systemImage: isGranted ? "checkmark.circle.fill" : "exclamationmark.circle")
-                    .foregroundStyle(isGranted ? Color.green : Color.orange)
-                    .font(.caption)
-                Button("許可を求める", action: action)
+            VStack(alignment: .trailing, spacing: 9) {
+                SettingsPermissionStatusBadge(status: status)
+                SettingsRowActionButton(buttonTitle, action: action)
                     .disabled(!canRequest)
             }
+            .frame(minWidth: 138, alignment: .trailing)
         }
-        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, minHeight: 93, alignment: .center)
+        .padding(.vertical, 7)
     }
 }
 
