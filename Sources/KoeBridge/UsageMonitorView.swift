@@ -7,6 +7,7 @@ import KoeBridgeCore
 /// Local metadata only; refreshed after a dictation has resolved.
 struct UsageMonitorView: View {
     @ObservedObject var controller: VoiceController
+    @Environment(\.colorScheme) private var colorScheme
     let focusID: String?
     @State private var scale: Scale = .hour
     @State private var confirmDelete = false
@@ -108,13 +109,7 @@ struct UsageMonitorView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 15) {
-                HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("利用統計")
-                            .font(.system(size: 20, weight: .semibold))
-                        Text("GeminiとAppleの使用回数、処理した音声の長さ、APIの利用状況を確認できます。")
-                            .font(.callout).foregroundStyle(.secondary)
-                    }
+                HStack {
                     Spacer()
                     Text("v1.0.1-c  試験機能")
                         .font(.caption).foregroundStyle(.secondary)
@@ -287,7 +282,18 @@ struct UsageMonitorView: View {
         }
         .frame(maxWidth: .infinity, minHeight: 64, alignment: .topLeading)
         .padding(10)
-        .background(Color.secondary.opacity(0.07), in: RoundedRectangle(cornerRadius: 10))
+        .background(
+            colorScheme == .dark
+                ? Color(red: 0.205, green: 0.208, blue: 0.237)
+                : Color.white,
+            in: RoundedRectangle(cornerRadius: 12)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(colorScheme == .dark
+                              ? Color.white.opacity(0.09)
+                              : Color.black.opacity(0.08), lineWidth: 1)
+        }
     }
 
     private func emptyState(_ label: String) -> some View {
