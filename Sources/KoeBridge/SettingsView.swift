@@ -659,26 +659,132 @@ struct SettingsView: View {
     }
 
     private var aboutPage: some View {
-        SettingsIndicatedScrollView {
+        scrollablePage(.about) {
             VStack(alignment: .leading, spacing: 18) {
                 GroupBox {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Label("KoeBridge", systemImage: "waveform")
-                            .font(.title2.weight(.semibold))
-                        Text("バージョン：\(Bundle.main.object(forInfoDictionaryKey: "KoeBridgeReleaseLabel") as? String ?? (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "未取得"))")
-                        Text("ビルド：\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "未取得")")
-                        Text("macOS向けの軽量音声入力アプリ。ソースコードはMITライセンスで公開されています。")
-                            .font(.caption).foregroundStyle(.secondary)
-                        Link("公式GitHubリポジトリを開く",
-                             destination: URL(string: "https://github.com/ma-do-ka/KoeBridge")!)
+                    HStack(alignment: .center, spacing: 18) {
+                        Group {
+                            if let url = Bundle.main.url(forResource: "KoeBridge_AppIcon", withExtension: "icns"),
+                               let img = NSImage(contentsOf: url) {
+                                Image(nsImage: img)
+                                    .resizable()
+                                    .scaledToFit()
+                            } else {
+                                Image(systemName: "waveform")
+                                    .resizable()
+                                    .scaledToFit()
+                                    .padding(18)
+                            }
+                        }
+                        .frame(width: 96, height: 96)
+                        .accessibilityHidden(true)
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("KoeBridge")
+                                .font(.system(size: 22, weight: .semibold))
+                            Text("バージョン \(updater.installedLabel)")
+                                .font(.headline)
+                            Text("ビルド：\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "未取得")")
+                                .foregroundStyle(.secondary)
+                            Text("macOS用音声入力アプリ / MIT License")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Link("公式GitHubリポジトリ",
+                                 destination: URL(string: "https://github.com/ma-do-ka/KoeBridge")!)
+                        }
+                        Spacer(minLength: 0)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(8)
-                } label: { Label("アプリについて", systemImage: "info.circle") }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                } label: {
+                    Label("アプリについて", systemImage: "info.circle")
+                }
+
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 0) {
+                        settingsRow("アップデートを自動的に確認",
+                                    description: "1日1回を上限に、GitHubの正式リリースを確認します。",
+                                    icon: "arrow.clockwise") {
+                            Toggle("自動更新確認", isOn: $updater.automaticChecksEnabled)
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+                        }
+                        Divider()
+                        settingsRow("アップデートを自動的にダウンロードしてインストール",
+                                    description: "現在はソースコード配布のみのため未対応です。安全に配布できる署名済み更新パッケージの準備後に提供します。",
+                                    icon: "square.and.arrow.down") {
+                            Toggle("自動ダウンロードとインストール", isOn: .constant(false))
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+                                .disabled(true)
+                                .help("公証済みアプリと安全な更新署名の準備が必要です")
+                        }
+                        Divider()
+                        settingsRow("アップデートチャンネル",
+                                    description: "現在は正式版（Stable）のみが対象です。",
+                                    icon: "checkmark.seal") {
+                            Text(updater.channelName)
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundStyle(.secondary)
+                                .frame(minWidth: 100, alignment: .trailing)
+                        }
+                        Divider()
+                        HStack(alignment: .center, spacing: 14) {
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text("現在：v\(updater.installedLabel)")
+                                    .font(.system(size: 14, weight: .semibold))
+                                Text(updater.statusMessage)
+                                    .font(.caption)
+                                    .foregroundStyle(updater.state == .failed ? Color.orange : Color.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            Spacer(minLength: 8)
+                            if updater.state == .checking {
+                                ProgressView()
+                                    .controlSize(.small)
+                            }
+                            Button("アップデートを確認…") {
+                                Task { await updater.checkNow() }
+                            }
+                            .disabled(updater.state == .checking)
+                        }
+                        .padding(.vertical, 12)
+                        if updater.state == .available {
+                            HStack(spacing: 10) {
+                                Label("新しい正式版が利用できます", systemImage: "arrow.down.circle.fill")
+                                    .foregroundStyle(Color.green)
+                                Spacer()
+                                Button("リリースを見る") { updater.openLatestRelease() }
+                                Button("更新コマンドをコピー") {
+                                    _ = updater.copyUpdateCommand()
+                                }
+                            }
+                            .font(.caption)
+                            .padding(.bottom, 8)
+                            Text("KoeBridgeを終了して、コピーしたコマンドをターミナルで実行してください。ビルド・署名・アプリの再起動を行います。")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text("自動インストールには対応していません。新しい正式版が出た場合、更新方法をここから案内します。")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        if let checked = updater.lastCheckedAt {
+                            Text("最終確認：\(checked.formatted(date: .abbreviated, time: .shortened))")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .padding(.top, 8)
+                        }
+                    }
+                    .padding(8)
+                } label: {
+                    Label("アップデート", systemImage: "arrow.triangle.2.circlepath")
+                }
+                .id("updates")
             }
             .padding(18)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .onAppear { updater.checkIfDue() }
     }
 
     /// Each setting has a plain-language label and a short secondary explanation.
