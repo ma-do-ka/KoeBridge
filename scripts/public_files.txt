@@ -3,6 +3,7 @@
 .github/workflows/release-v1.0.1.yml
 .github/workflows/release-v1.0.1b.yml
 .github/workflows/release-v1.0.1c.yml
+.github/workflows/release-v1.0.1d.yml
 .gitignore
 LICENSE
 Package.swift
@@ -16,6 +17,7 @@ Sources/KoeBridge/HistoryView.swift
 Sources/KoeBridge/PreviewView.swift
 Sources/KoeBridge/GeminiLiveConnection.swift
 Sources/KoeBridge/KeychainStore.swift
+Sources/KoeBridge/KoeBridgeUpdateManager.swift
 Sources/KoeBridge/LoginItemManager.swift
 Sources/KoeBridge/Main.swift
 Sources/KoeBridge/MicrophoneCapture.swift
@@ -36,6 +38,7 @@ Sources/KoeBridgeCore/ModifierToggleDetector.swift
 Sources/KoeBridgeCore/OrderedResultBuffer.swift
 Sources/KoeBridgeCore/PermissionSetupPolicy.swift
 Sources/KoeBridgeCore/QuickNoInputPolicy.swift
+Sources/KoeBridgeCore/ReleaseUpdatePolicy.swift
 Sources/KoeBridgeCore/RecentTranscriptArchive.swift
 Sources/KoeBridgeCore/SessionTransitions.swift
 Sources/KoeBridgeCore/TranscriptAssembler.swift
@@ -58,6 +61,7 @@ Sources/KoeBridgeSelfTest/ModifierToggleDetectorTests.swift
 Sources/KoeBridgeSelfTest/OrderedResultBufferTests.swift
 Sources/KoeBridgeSelfTest/PermissionSetupPolicyTests.swift
 Sources/KoeBridgeSelfTest/RecentTranscriptArchiveTests.swift
+Sources/KoeBridgeSelfTest/ReleaseUpdatePolicySelfTests.swift
 Sources/KoeBridgeSelfTest/ResilienceTests.swift
 Sources/KoeBridgeSelfTest/Runner.swift
 Sources/KoeBridgeSelfTest/SessionTransitionsTests.swift
@@ -78,6 +82,7 @@ Tests/KoeBridgeCoreTests/ModifierToggleDetectorTests.swift
 Tests/KoeBridgeCoreTests/OrderedResultBufferTests.swift
 Tests/KoeBridgeCoreTests/PermissionSetupPolicyTests.swift
 Tests/KoeBridgeCoreTests/RecentTranscriptArchiveTests.swift
+Tests/KoeBridgeCoreTests/ReleaseUpdatePolicyTests.swift
 Tests/KoeBridgeCoreTests/ResilienceTests.swift
 Tests/KoeBridgeCoreTests/SessionTransitionsTests.swift
 Tests/KoeBridgeCoreTests/StressTests.swift
@@ -92,6 +97,7 @@ scripts/public_files.txt
 scripts/publish_to_github.sh
 scripts/select_signing_identity.sh
 scripts/verify_and_build.sh
+scripts/update_from_release.sh
 
 # Reviewed artwork and newer source/test files
 Resources/KoeBridge_AppIcon.icns
@@ -113,3 +119,4 @@ docs/images/koebridge-hero.webp
 docs/releases/v1.0.1.md
 docs/releases/v1.0.1b.md
 docs/releases/v1.0.1c.md
+docs/releases/v1.0.1d.md
