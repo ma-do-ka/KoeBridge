@@ -629,7 +629,7 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
                     outcome = .automaticPasteDisabled
                 }
                 if let recordID { updateRemembered(recordID, delivery: outcome) }
-                if let stoppedAt = take.stoppingAt {
+                if outcome == .attemptedUnconfirmed, let stoppedAt = take.stoppingAt {
                     lastStopToInputSeconds = Date().timeIntervalSince(stoppedAt)
                 }
                 showCompletionFeedback(outcome == .attemptedUnconfirmed ? .sent : .saved, for: id)
