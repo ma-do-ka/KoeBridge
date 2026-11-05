@@ -26,7 +26,7 @@ import KoeBridgeCore
     private var receivedFrames = 0
     private var unrecognizedFrames = 0
 
-    func connect(apiKey: String, vocabulary: [String], smart: Bool, japaneseHint: Bool) async throws {
+    func connect(apiKey: String, vocabulary: [String], style: TranscriptionStyle, japaneseHint: Bool) async throws {
         var components = URLComponents(string: GeminiWire.endpoint)!
         components.queryItems = [URLQueryItem(name: "key", value: apiKey)]
         guard let url = components.url else { throw ConnectionError.badURL }
@@ -35,7 +35,7 @@ import KoeBridgeCore
         socket = ws
         closedByClient = false
         ws.resume()
-        try await ws.send(.string(GeminiWire.setup(vocabulary: vocabulary, smart: smart, japaneseHint: japaneseHint)))
+        try await ws.send(.string(GeminiWire.setup(vocabulary: vocabulary, style: style, japaneseHint: japaneseHint)))
         // A one-shot watchdog interrupts a stuck setup handshake.
         let watchdog = Task { [weak self] in
             do { try await Task.sleep(for: .seconds(10)) }
