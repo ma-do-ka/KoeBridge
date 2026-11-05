@@ -286,33 +286,45 @@ struct SettingsView: View {
     @State private var logNotice = ""
     @State private var confirmDeleteLog = false
     @State private var confirmDeleteKey = false
-    @State private var tab: SettingsPage = .voice
-
-    private enum SettingsPage: Hashable {
-        case voice, gemini, monitor, privacy, permissions
-    }
+    @State private var navigation = SettingsNavigation()
+    @State private var searchText = ""
 
     var body: some View {
-        TabView(selection: $tab) {
-            voicePage
-                .tabItem { Label("音声入力", systemImage: "mic.fill") }
-                .tag(SettingsPage.voice)
-            geminiPage
-                .tabItem { Label("Gemini", systemImage: "sparkles") }
-                .tag(SettingsPage.gemini)
-            UsageMonitorView(controller: controller)
-                .tabItem { Label("利用統計", systemImage: "chart.bar.fill") }
-                .tag(SettingsPage.monitor)
-            privacyPage
-                .tabItem { Label("履歴・記録", systemImage: "lock.shield") }
-                .tag(SettingsPage.privacy)
-            permissionsPage
-                .tabItem { Label("利用許可", systemImage: "checkmark.shield") }
-                .tag(SettingsPage.permissions)
+        HStack(spacing: 0) {
+            sidebar
+                .frame(width: 247)
+                .background(Color(nsColor: .controlBackgroundColor).opacity(0.80))
+            Divider()
+            VStack(spacing: 0) {
+                HStack(spacing: 10) {
+                    HStack(spacing: 0) {
+                        Button { navigation.back() } label: {
+                            Image(systemName: "chevron.left")
+                                .frame(width: 28, height: 28)
+                        }
+                        .disabled(!navigation.canGoBack)
+                        .help("前の設定画面へ戻る")
+                        Divider().frame(height: 18)
+                        Button { navigation.forward() } label: {
+                            Image(systemName: "chevron.right")
+                                .frame(width: 28, height: 28)
+                        }
+                        .disabled(!navigation.canGoForward)
+                        .help("次の設定画面へ進む")
+                    }
+                    .buttonStyle(.borderless)
+                    Text(navigation.selected.title)
+                        .font(.headline)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 22)
+                .padding(.vertical, 14)
+                Divider()
+                displayedPage
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
-        .padding(.horizontal, 16)
-        .padding(.bottom, 12)
-        .frame(minWidth: 675, minHeight: 475)
+        .frame(minWidth: 820, minHeight: 570)
         .alert("動作記録を削除しますか？", isPresented: $confirmDeleteLog) {
             Button("削除", role: .destructive) {
                 do {
@@ -338,12 +350,280 @@ struct SettingsView: View {
         }
     }
 
+    private func go(_ section: SettingsSection) {
+        navigation.select(section)
+    }
+
+    private var sidebar: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 11) {
+                Image(systemName: "waveform")
+                    .font(.system(size: 22, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 44, height: 44)
+                    .background(.blue.gradient, in: RoundedRectangle(cornerRadius: 12))
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("KoeBridge")
+                        .font(.system(size: 17, weight: .bold))
+                    Text("設定")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 15)
+            .padding(.top, 24)
+            .padding(.bottom, 20)
+
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                TextField("設定を検索", text: $searchText)
+                    .textFieldStyle(.plain)
+                    .accessibilityLabel("設定を検索")
+                if !searchText.isEmpty {
+                    Button {
+                        searchText = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("検索をクリア")
+                }
+            }
+            .padding(9)
+            .background(Color(nsColor: .textBackgroundColor).opacity(0.6),
+                        in: RoundedRectangle(cornerRadius: 9))
+            .padding(.horizontal, 13)
+            .padding(.bottom, 18)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 17) {
+                    if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        sidebarGroup("基本", pages: [.general, .voice, .gemini, .usage])
+                        Divider().padding(.horizontal, 16)
+                        sidebarGroup("データと安全", pages: [.history, .permissions])
+                        Divider().padding(.horizontal, 16)
+                        sidebarGroup("サポート", pages: [.help, .about])
+                    } else {
+                        Text("検索結果")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 18)
+                        let results = SettingsSearchCatalog.find(searchText)
+                        if results.isEmpty {
+                            Text("一致する設定がありません")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 16)
+                        } else {
+                            ForEach(results) { result in
+                                Button {
+                                    go(result.section)
+                                    searchText = ""
+                                } label: {
+                                    HStack(spacing: 10) {
+                                        Image(systemName: result.section.symbol)
+                                            .frame(width: 20)
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            Text(result.title).font(.subheadline)
+                                                .fixedSize(horizontal: false, vertical: true)
+                                            Text(result.section.title)
+                                                .font(.caption).foregroundStyle(.secondary)
+                                        }
+                                        Spacer(minLength: 0)
+                                    }
+                                    .padding(.horizontal, 13)
+                                    .padding(.vertical, 7)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("\(result.title)、\(result.section.title)を開く")
+                            }
+                        }
+                    }
+                }
+                .padding(.bottom, 20)
+            }
+        }
+        .frame(maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func sidebarGroup(_ title: String, pages: [SettingsSection]) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 18)
+                .padding(.bottom, 3)
+            ForEach(pages, id: \.self) { page in
+                Button { go(page) } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: page.symbol)
+                            .font(.system(size: 15))
+                            .frame(width: 20)
+                        Text(page.title)
+                            .font(.system(size: 14, weight: navigation.selected == page ? .semibold : .regular))
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .foregroundStyle(navigation.selected == page ? Color.white : Color.primary)
+                    .background(navigation.selected == page ? Color.accentColor : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 9))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(navigation.selected == page ? [.isSelected] : [])
+                .padding(.horizontal, 10)
+            }
+        }
+    }
+
+    @ViewBuilder private var displayedPage: some View {
+        switch navigation.selected {
+        case .general: generalPage
+        case .voice: voicePage
+        case .gemini: geminiPage
+        case .usage: UsageMonitorView(controller: controller)
+        case .history: privacyPage
+        case .permissions: permissionsPage
+        case .help: helpPage
+        case .about: aboutPage
+        }
+    }
+
+    private var generalPage: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                headline("一般", detail: "現在の利用状態と、よく使う設定への入口です。")
+                GroupBox {
+                    VStack(spacing: 0) {
+                        settingsRow("文字起こしの方法",
+                                    description: "現在の選択：\(controller.requestedMode.settingsLabel)", icon: "waveform") {
+                            Button("変更する") { go(.voice) }
+                        }
+                        Divider()
+                        settingsRow("録音の開始・終了キー",
+                                    description: "現在の選択：\(controller.shortcutChoice.label)", icon: "keyboard") {
+                            Button("変更する") { go(.voice) }
+                        }
+                        Divider()
+                        settingsRow("Gemini APIキー",
+                                    description: controller.hasKey ? "Macのキーチェーンに登録済みです。" : "未登録です。Apple認識はキーなしで使用できます。") {
+                            Button("設定する") { go(.gemini) }
+                        }
+                        Divider()
+                        settingsRow("アプリの利用許可",
+                                    description: "録音と自動入力に必要なmacOSの権限を確認します。") {
+                            Button("確認する") { go(.permissions) }
+                        }
+                    }
+                    .padding(8)
+                } label: {
+                    Label("現在の設定", systemImage: "gearshape")
+                }
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("KoeBridgeはメニューバーから操作します。録音キーを押すと準備を始め、録音中にもう一度押すと文字起こしを確定します。")
+                        Text("自動入力ができなかった場合は、履歴の文章をコピーできます。")
+                        Button("使い方を確認する") { go(.help) }
+                    }
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+                } label: {
+                    Label("はじめに", systemImage: "book")
+                }
+            }
+            .padding(18)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var helpPage: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                headline("ヘルプ", detail: "使い方と、うまく動作しないときの確認先です。")
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Label("1. 文字を入力したいアプリの入力欄を選びます。", systemImage: "cursorarrow.click.2")
+                        Label("2. 設定したキーで録音を開始します。", systemImage: "mic")
+                        Label("3. 同じキーで録音を終了し、確定処理が終わると自動入力を試みます。", systemImage: "checkmark.circle")
+                        Text("現在の録音キー：\(controller.shortcutChoice.label)")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+                } label: { Label("基本操作", systemImage: "list.number") }
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("音声入力できないとき")
+                            .font(.headline)
+                        Text("利用許可を確認し、マイクと文字の入力操作が許可されているか確認してください。")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Button("利用許可を確認") { go(.permissions) }
+                        Divider()
+                        Text("自動入力だけができないとき")
+                            .font(.headline)
+                        Text("元の入力欄が選択されたままか確認してください。履歴から文章をコピーすることもできます。")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Button("履歴と記録を開く") { go(.history) }
+                        Divider()
+                        Text("Geminiが使えないとき")
+                            .font(.headline)
+                        Text("APIキーの登録状況やネットワーク接続を確認します。Appleへの自動切替が行われる場合もあります。")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Button("Geminiの設定を開く") { go(.gemini) }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+                } label: { Label("トラブル対処", systemImage: "wrench.and.screwdriver") }
+            }
+            .padding(18)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var aboutPage: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                headline("情報", detail: "KoeBridgeのバージョンと公開ソースコードです。")
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Label("KoeBridge", systemImage: "waveform")
+                            .font(.title2.weight(.semibold))
+                        Text("バージョン：\(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "未取得")")
+                        Text("ビルド：\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "未取得")")
+                        Text("macOS向けの軽量音声入力アプリ。ソースコードはMITライセンスで公開されています。")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Link("公式GitHubリポジトリを開く",
+                             destination: URL(string: "https://github.com/ma-do-ka/KoeBridge")!)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+                } label: { Label("アプリについて", systemImage: "info.circle") }
+            }
+            .padding(18)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
     /// Each setting has a plain-language label and a short secondary explanation.
     private func settingsRow<Accessory: View>(
-        _ title: String, description: String,
+        _ title: String, description: String, icon: String? = nil,
         @ViewBuilder accessory: () -> Accessory
     ) -> some View {
-        HStack(alignment: .center, spacing: 16) {
+        HStack(alignment: .center, spacing: 14) {
+            if let icon {
+                Image(systemName: icon)
+                    .font(.system(size: 17))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 24)
+                    .accessibilityHidden(true)
+            }
             VStack(alignment: .leading, spacing: 4) {
                 Text(title).font(.system(size: 14, weight: .medium))
                 Text(description)
@@ -372,18 +652,32 @@ struct SettingsView: View {
     private var voicePage: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                headline("音声入力", detail: "音声を文字に変える方法と、録音・文字入力の操作を設定します。")
+                HStack(spacing: 14) {
+                    Image(systemName: "mic.fill")
+                        .font(.system(size: 27, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 60, height: 60)
+                        .background(.blue.gradient, in: RoundedRectangle(cornerRadius: 14))
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("音声入力").font(.title2.weight(.semibold))
+                        Text("話した内容を文字に変換し、元の入力欄への入力を試みます。")
+                            .font(.callout).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding(.bottom, 6)
                 GroupBox {
                     VStack(spacing: 0) {
                         settingsRow("文字起こしの方法",
                                     description: "音声を文字に変換する方法を選びます。GeminiはGoogleのAPIを使用し、AppleはこのMac内で処理します。") {
                             Picker("文字起こしの方法", selection: $controller.requestedMode) {
-                                ForEach(RecognitionMode.allCases) { mode in
-                                    Text(mode.settingsLabel).tag(mode)
-                                }
+                                Text("Gemini API").tag(RecognitionMode.gemini)
+                                Text("Apple（Mac内）").tag(RecognitionMode.local)
                             }
                             .labelsHidden()
-                            .frame(width: 250)
+                            .pickerStyle(.segmented)
+                            .frame(width: 245)
                         }
                         Divider()
                         settingsRow("録音の開始・終了キー",
@@ -413,7 +707,7 @@ struct SettingsView: View {
                         }
                         Divider()
                         settingsRow("認識した文章を自動入力する",
-                                    description: "録音終了後、元の入力欄への入力を試みます。オフの場合は文章を履歴に保存し、あとからコピーできます。") {
+                                    description: "録音終了後、元の入力欄への入力を試みます。オフの場合は文章を履歴に保存し、あとからコピーできます。", icon: "text.cursor") {
                             Toggle("認識した文章を自動入力する", isOn: $controller.automaticPaste)
                                 .labelsHidden()
                                 .toggleStyle(.switch)
@@ -421,7 +715,7 @@ struct SettingsView: View {
                     }
                     .padding(8)
                 } label: {
-                    Label("基本設定", systemImage: "slider.horizontal.3")
+                    Label("認識と入力の設定", systemImage: "slider.horizontal.3")
                 }
                 GroupBox {
                     VStack(alignment: .leading, spacing: 5) {
@@ -487,13 +781,13 @@ struct SettingsView: View {
                 GroupBox {
                     VStack(spacing: 0) {
                         settingsRow("日本語での認識を優先する",
-                                    description: "日本語を中心に話す場合に有効にしてください。Geminiに日本語の言語設定を送ります。オフでは言語を指定しません。") {
+                                    description: "日本語を中心に話す場合に有効にしてください。Geminiに日本語の言語設定を送ります。オフでは言語を指定しません。", icon: "character.book.closed") {
                             Toggle("日本語での認識を優先する", isOn: $controller.japaneseHint)
                                 .labelsHidden().toggleStyle(.switch)
                         }
                         Divider()
                         settingsRow("話した内容を読みやすく整える",
-                                    description: "言い直しや「えーと」などを整理し、自然な文章への変換を試みます。発言をできるだけそのまま残す場合はオフにしてください。") {
+                                    description: "言い直しや「えーと」などを整理し、自然な文章への変換を試みます。発言をできるだけそのまま残す場合はオフにしてください。", icon: "text.alignleft") {
                             Toggle("話した内容を読みやすく整える", isOn: $controller.smartFormatting)
                                 .labelsHidden().toggleStyle(.switch)
                         }
@@ -556,7 +850,7 @@ struct SettingsView: View {
                 GroupBox {
                     VStack(alignment: .leading, spacing: 9) {
                         settingsRow("問題調査用の記録を残す",
-                                    description: "不具合調査に役立つ動作情報を保存します。通常はオフで問題ありません。認識した文章・音声・APIキーは記録しません。") {
+                                    description: "不具合調査に役立つ動作情報を保存します。通常はオフで問題ありません。認識した文章・音声・APIキーは記録しません。", icon: "stethoscope") {
                             Toggle("問題調査用の記録を残す", isOn: $diagnosticsEnabled)
                                 .labelsHidden()
                                 .toggleStyle(.switch)
@@ -569,7 +863,7 @@ struct SettingsView: View {
                         }
                         Divider()
                         settingsRow("動作記録を削除",
-                                    description: "保存済みの動作記録だけを削除します。文字起こし履歴や設定は変更されません。") {
+                                    description: "保存済みの動作記録だけを削除します。文字起こし履歴や設定は変更されません。", icon: "trash") {
                             Button("削除", role: .destructive) { confirmDeleteLog = true }
                         }
                         Text("保存先：~/Library/Logs/KoeBridge.log")
