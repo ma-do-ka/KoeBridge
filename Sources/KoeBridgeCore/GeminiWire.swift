@@ -18,20 +18,34 @@ public enum GeminiWire {
     public static let modelID = "gemini-3.5-transcribe-live"
     public static let endpoint = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
 
+    // Backwards-compatible entry point for existing callers and tests.
     public static func setup(vocabulary: [String], smart: Bool, japaneseHint: Bool) throws -> String {
+        try setup(vocabulary: vocabulary, style: smart ? .readable : .verbatim, japaneseHint: japaneseHint)
+    }
+
+    public static func setup(vocabulary: [String], style: TranscriptionStyle,
+                             japaneseHint: Bool) throws -> String {
         var audio: [String: Any] = [
             "languageCodes": japaneseHint ? ["ja-JP"] : [],
-            "mode": smart ? "SMART" : "VERBATIM"
+            // Agent is a KoeBridge presentation mode, not a new Gemini mode.
+            "mode": style.liveMode
         ]
-        let words = Array(Set(vocabulary.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })).sorted()
-        if !words.isEmpty { audio["customVocabulary"] = Array(words.prefix(100)) }
+        let words: [String]
+        if style == .agent {
+            words = AgentVocabulary.terms(user: vocabulary, style: style)
+        } else {
+            // Preserve existing VERBATIM/SMART request normalization.
+            words = Array(Set(vocabulary.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                                        .filter { !$0.isEmpty })).sorted().prefix(100).map { $0 }
+        }
+        if !words.isEmpty { audio["customVocabulary"] = words }
         let setup: [String: Any] = [
             "setup": [
                 "model": "models/\(modelID)",
                 "generationConfig": ["responseModalities": ["TEXT"]],
-            // Auto-VAD detects speech starts; F8 sends audioStreamEnd on stop.
-            // Google's Hybrid VAD path avoids manual activityStart clipping.
-            "inputAudioTranscription": audio
+                // Keep existing automatic VAD. No unsupported instruction
+                // fields, secondary model calls or change to audio streaming.
+                "inputAudioTranscription": audio
             ]
         ]
         return try json(setup)

@@ -10,6 +10,7 @@ import KoeBridgeCore
 struct SettingsView: View {
     @ObservedObject var controller: VoiceController
     @ObservedObject var guide: PermissionGuide
+    @StateObject private var loginItem = LoginItemManager()
     @Environment(\.colorScheme) private var colorScheme
 
     private var dark: Bool { colorScheme == .dark }
@@ -367,6 +368,46 @@ struct SettingsView: View {
                     Label("現在の設定", systemImage: "gearshape")
                 }
                 GroupBox {
+                    VStack(alignment: .leading, spacing: 9) {
+                        settingsRow("ログイン時に自動起動",
+                                    description: "MacにログインするとKoeBridgeをメニューバーで起動します。macOSのログイン項目登録を使用します。",
+                                    icon: "power") {
+                            Toggle("ログイン時に自動起動",
+                                   isOn: Binding(
+                                    get: { loginItem.isRequested },
+                                    set: { loginItem.setRequested($0) }
+                                   ))
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+                                .disabled(!loginItem.canChange)
+                        }
+                        .id("launchAtLogin")
+                        Divider()
+                        HStack(spacing: 10) {
+                            Label("ログイン項目：\(loginItem.statusLabel)",
+                                  systemImage: loginItem.isActive ? "checkmark.circle.fill" : "info.circle")
+                                .font(.caption)
+                                .foregroundStyle(loginItem.isActive ? Color.green : Color.secondary)
+                            Spacer()
+                            Button("状態を再確認") { loginItem.refresh() }
+                                .controlSize(.small)
+                            if loginItem.needsSystemSettings {
+                                Button("システム設定を開く") { loginItem.openSystemSettings() }
+                                    .controlSize(.small)
+                            }
+                        }
+                        if !loginItem.message.isEmpty {
+                            Text(loginItem.message)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .padding(8)
+                } label: {
+                    Label("起動と常駐", systemImage: "power")
+                }
+                GroupBox {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("録音キーを押してからマイクが使えるまでと、録音終了後に入力を送信するまでの実測時間を表示します。")
                             .font(.caption)
@@ -411,6 +452,10 @@ struct SettingsView: View {
             }
             .padding(18)
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .onAppear { loginItem.refresh() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            loginItem.refresh()
         }
     }
 
@@ -464,7 +509,7 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 12) {
                         Label("KoeBridge", systemImage: "waveform")
                             .font(.title2.weight(.semibold))
-                        Text("バージョン：\(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "未取得")")
+                        Text("バージョン：\(Bundle.main.object(forInfoDictionaryKey: "KoeBridgeReleaseLabel") as? String ?? (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "未取得"))")
                         Text("ビルド：\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "未取得")")
                         Text("macOS向けの軽量音声入力アプリ。ソースコードはMITライセンスで公開されています。")
                             .font(.caption).foregroundStyle(.secondary)
@@ -639,17 +684,33 @@ struct SettingsView: View {
                         }
                         .id("japanese")
                         Divider()
-                        settingsRow("話した内容を読みやすく整える",
-                                    description: "言い直しや「えーと」などを整理し、自然な文章への変換を試みます。発言をできるだけそのまま残す場合はオフにしてください。", icon: "text.alignleft") {
-                            Toggle("話した内容を読みやすく整える", isOn: $controller.smartFormatting)
-                                .labelsHidden().toggleStyle(.switch)
+                        settingsRow("文字起こしスタイル",
+                                    description: controller.transcriptionStyle.explanation,
+                                    icon: "text.alignleft") {
+                            Picker("文字起こしスタイル", selection: $controller.transcriptionStyle) {
+                                ForEach(TranscriptionStyle.allCases) { style in
+                                    Text(style.title).tag(style)
+                                }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.menu)
+                            .frame(width: 220)
+                            .accessibilityLabel("文字起こしスタイル")
                         }
                         .id("smart")
+                        if controller.transcriptionStyle == .agent {
+                            Text("AIエージェント指示：Geminiの逐語認識を使い、専門用語の補助と最低限の改行だけを加えます。音声の聞き間違いや文字列の完全一致までは保証できません。")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .padding(.horizontal, 14)
+                                .padding(.bottom, 8)
+                        }
                         Divider()
                         VStack(alignment: .leading, spacing: 8) {
                             Text("固有名詞・専門用語を登録")
                                 .font(.system(size: 14, weight: .medium))
-                            Text("認識してほしい製品名や技術用語を1行に1語ずつ入力します。重複を除いた最大100語をGeminiに送信します。表記を強制する機能ではありません。")
+                            Text("認識してほしい製品名や技術用語を1行に1語ずつ入力します。最大100語をGeminiに送信します。AIエージェント指示では一般的な開発用語も補助辞書に追加します。表記を強制する機能ではありません。")
                                 .font(.system(size: 12)).foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
                             TextEditor(text: $controller.vocabulary)

@@ -12,6 +12,14 @@ The supplied macOS app icon is packaged from `Resources/KoeBridge_AppIcon.icns` 
 
 **v1.0.1 source release:** Accidental rapid, silent shortcut toggles now dismiss as a short, neutral "音声入力なし" notice rather than a transcription failure. Real speech and real hardware/API errors retain their existing paths. See [release notes](docs/releases/v1.0.1.md). There is no notarized installer.
 
+## v1.0.1b agent-instruction mode
+
+Choose **Settings → Gemini → 文字起こしスタイル → AIエージェント指示**. This uses the supported Gemini Live `VERBATIM` transcription with user-preferred developer terminology and a small built-in glossary. Unlike SMART, it prioritizes preserving repetitions, command syntax, file paths, URLs, technical terms, negations, and numeric constraints. It never sends unsupported system-instruction fields or calls a second LLM. Short line breaks may be added to history, but the safe auto-typing path replaces newlines with spaces to prevent accidental submission. Transcription accuracy and exact command spelling are not guaranteed.
+
+The same source release includes **Settings → 一般 → ログイン時に自動起動** using the actual macOS login-item registration. The internal macOS version remains `1.0.1` (build 21), and the in-app release label is `1.0.1b`.
+
+[Release notes](docs/releases/v1.0.1b.md).
+
 ## Run from source on a Mac
 
 ```bash
