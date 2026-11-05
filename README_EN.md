@@ -24,6 +24,12 @@ The same source release includes **Settings → 一般 → ログイン時に自
 
 In **Settings → 一般 → 起動と常駐**, turning on **ログイン時に自動起動** now attempts to register the main KoeBridge app even when macOS returns `SMAppService.Status.notFound`. If macOS reports `requiresApproval`, the app opens the system Login Items settings for user approval. If macOS still cannot register the app, the UI clearly reports failure and offers to reveal KoeBridge.app in Finder for manual addition. This does not bypass consent, move the app, or register it until the user operates the toggle. User approval is not always required by macOS; registration may enable immediately. See [v1.0.1c notes](docs/releases/v1.0.1c.md).
 
+## v1.0.1d — Update Center and actionable General settings
+
+The menu bar has **Check for Updates…** and **Settings → 情報 → アップデート** shows official stable GitHub Releases, version status, the last successful check, and an optional daily automatic check. No executable is downloaded silently. Because KoeBridge currently publishes **source archives only** (no Developer ID signed/notarized appcast or installable app), automatic download and installation is disabled rather than deceptively appearing to work. When a newer stable tag is found, a version-pinned, safety-checked source update command can be copied and run **after quitting KoeBridge**.
+
+**Settings → 一般** now directly edits the recognition engine, shortcut, auto-typing, and Gemini transcription style, and shows permission/API key readiness without requiring multiple page jumps. Read the [v1.0.1d release notes](docs/releases/v1.0.1d.md).
+
 ## Run from source on a Mac
 
 ```bash
