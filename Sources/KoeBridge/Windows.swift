@@ -973,6 +973,7 @@ struct SettingsView: View {
                                       canRequest: !guide.accessibilityGranted) {
                             guide.requestAccessibility()
                         }
+                        .id("accessibility")
                         Divider().padding(.vertical, 6)
                         permissionRow("文字の入力操作を許可",
                                       description: "認識した文章を、ほかのアプリへキーボード入力として送信するために必要です。",
@@ -981,6 +982,7 @@ struct SettingsView: View {
                                       canRequest: !guide.postEventGranted && guide.accessibilityGranted) {
                             guide.requestPostEvent()
                         }
+                        .id("post")
                         Divider().padding(.vertical, 6)
                         permissionRow("マイクの使用を許可",
                                       description: "音声を録音して文字起こしするために必要です。音声は選択した認識方法に従って処理されます。",
@@ -989,6 +991,7 @@ struct SettingsView: View {
                                       canRequest: guide.microphoneStatus != .authorized && !guide.microphoneRequestInProgress) {
                             guide.requestMicrophone()
                         }
+                        .id("microphone")
                     }
                     .padding(8)
                 } label: {
