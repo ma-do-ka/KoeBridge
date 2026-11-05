@@ -72,6 +72,7 @@ public enum AgentVocabulary {
     ]
 
     public static func terms(user: [String], style: TranscriptionStyle, maximum: Int = 100) -> [String] {
+        guard maximum > 0 else { return [] }
         let candidates = style == .agent ? user + defaults : user
         var seen = Set<String>()
         var accepted: [String] = []
