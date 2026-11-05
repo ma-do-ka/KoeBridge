@@ -62,7 +62,7 @@ public enum SettingsSearchCatalog {
         .init(id: "autopaste", section: .voice, title: "認識した文章を自動入力する", keywords: "貼り付け 文字入力 クリップボード"),
         .init(id: "apikey", section: .gemini, title: "Gemini APIキー", keywords: "接続 登録 更新 削除 キーチェーン"),
         .init(id: "japanese", section: .gemini, title: "日本語での認識を優先する", keywords: "日本語ヒント ja-JP 言語"),
-        .init(id: "smart", section: .gemini, title: "話した内容を読みやすく整える", keywords: "SMART 逐語 文章整形"),
+        .init(id: "smart", section: .gemini, title: "文字起こしスタイル", keywords: "SMART VERBATIM 逐語 読みやすく AIエージェント指示 プロンプト 技術用語 命令 文章整形"),
         .init(id: "words", section: .gemini, title: "固有名詞・専門用語を登録", keywords: "辞書 GitHub Python 用語"),
         .init(id: "usage", section: .usage, title: "認識エンジンの利用回数", keywords: "使用統計 グラフ Gemini Apple 失敗 切替"),
         .init(id: "token", section: .usage, title: "Gemini APIのトークン使用量", keywords: "API usageMetadata 料金 回数 秒数"),
