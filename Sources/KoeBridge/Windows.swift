@@ -145,7 +145,9 @@ struct PreviewView: View {
         switch controller.overlayFeedback {
         case .hidden, .preparing: return "mic"
         case .recording: return "waveform"
+        case .ending: return "stop.circle"
         case .processing: return "ellipsis"
+        case .noInput: return "mic.slash"
         case .sent: return "arrow.up.circle.fill"
         case .saved: return "clock.arrow.circlepath"
         case .failed: return "exclamationmark.triangle.fill"
