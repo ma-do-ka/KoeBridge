@@ -4,6 +4,7 @@
 .github/workflows/release-v1.0.1b.yml
 .github/workflows/release-v1.0.1c.yml
 .github/workflows/release-v1.0.1d.yml
+.github/workflows/release-v1.0.1e.yml
 .gitignore
 LICENSE
 Package.swift
@@ -120,3 +121,4 @@ docs/releases/v1.0.1.md
 docs/releases/v1.0.1b.md
 docs/releases/v1.0.1c.md
 docs/releases/v1.0.1d.md
+docs/releases/v1.0.1e.md
