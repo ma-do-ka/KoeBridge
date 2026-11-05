@@ -23,6 +23,16 @@ fi
 
 ROOT="$(pwd -P)"
 DIST="$ROOT/dist"
+ICON_SOURCE="$ROOT/Resources/KoeBridge_AppIcon.icns"
+ICON_SHA256="10186e4ecd7927a0d25c2fc26eed8c83db1f21def23f267f4695ca45f04f10f5"
+if [ ! -s "$ICON_SOURCE" ]; then
+  echo "ERROR: Required KoeBridge icon missing or empty: $ICON_SOURCE" >&2
+  exit 1
+fi
+if [ "$(shasum -a 256 "$ICON_SOURCE" | awk '{print $1}')" != "$ICON_SHA256" ]; then
+  echo "ERROR: App icon bytes differ from the approved icon asset." >&2
+  exit 1
+fi
 DEST="$DIST/KoeBridge.app"
 BACKUP="$DIST/KoeBridge.previous.app"
 # Stable designated requirements allow macOS to recognize later versions as
@@ -48,6 +58,12 @@ APP="$STAGE/KoeBridge.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/KoeBridge"
 cp scripts/Info.plist "$APP/Contents/Info.plist"
+cp "$ICON_SOURCE" "$APP/Contents/Resources/KoeBridge_AppIcon.icns"
+if [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$APP/Contents/Info.plist")" != "KoeBridge_AppIcon.icns" ]; then
+  echo "ERROR: Info.plist CFBundleIconFile does not reference the bundled icon" >&2
+  exit 1
+fi
+test -s "$APP/Contents/Resources/KoeBridge_AppIcon.icns"
 chmod +x "$APP/Contents/MacOS/KoeBridge"
 plutil -lint "$APP/Contents/Info.plist"
 codesign --force --sign "$SIGN_IDENTITY" "$APP"
