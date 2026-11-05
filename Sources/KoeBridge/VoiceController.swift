@@ -18,8 +18,12 @@ import KoeBridgeCore
     @Published var requestedMode: RecognitionMode {
         didSet { UserDefaults.standard.set(requestedMode.rawValue, forKey: "engine") }
     }
-    @Published var smartFormatting: Bool {
-        didSet { UserDefaults.standard.set(smartFormatting, forKey: "smart") }
+    @Published var transcriptionStyle: TranscriptionStyle {
+        didSet {
+            UserDefaults.standard.set(transcriptionStyle.rawValue, forKey: "transcriptionStyle")
+            // Continue maintaining the legacy setting for a safe downgrade.
+            UserDefaults.standard.set(transcriptionStyle == .readable, forKey: "smart")
+        }
     }
     @Published var japaneseHint: Bool {
         didSet { UserDefaults.standard.set(japaneseHint, forKey: "japanese") }
@@ -65,7 +69,10 @@ import KoeBridgeCore
     private init() {
         let d = UserDefaults.standard
         requestedMode = RecognitionMode(rawValue: d.string(forKey: "engine") ?? "gemini") ?? .gemini
-        smartFormatting = d.bool(forKey: "smart")
+        transcriptionStyle = TranscriptionStyle.restoring(
+            storedStyle: d.string(forKey: "transcriptionStyle"),
+            legacySmart: d.bool(forKey: "smart")
+        )
         japaneseHint = d.object(forKey: "japanese") == nil ? true : d.bool(forKey: "japanese")
         automaticPaste = d.object(forKey: "autoPaste") == nil ? true : d.bool(forKey: "autoPaste")
         vocabulary = d.string(forKey: "vocabulary") ?? "GitHub\nn8n\nPython\nDeepSeek\nGemini\nCodex"
@@ -114,7 +121,7 @@ import KoeBridgeCore
             return
         }
         let take = DictationTake(preferred: requestedMode,
-                                smart: smartFormatting,
+                                style: transcriptionStyle,
                                 japaneseHint: japaneseHint,
                                 vocabulary: vocabulary.components(separatedBy: .newlines),
                                 shouldPaste: automaticPaste)
@@ -234,7 +241,7 @@ import KoeBridgeCore
                 do {
                     try await candidate.connect(apiKey: key,
                                                 vocabulary: take.vocabulary,
-                                                smart: take.smart,
+                                                style: take.style,
                                                 japaneseHint: take.japaneseHint)
                     guard !take.finished, !Task.isCancelled else {
                         candidate.cancel()
@@ -454,7 +461,9 @@ import KoeBridgeCore
             guard !result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 throw AppleLocalTranscriber.LocalError.empty(nil)
             }
-            resolve(take, text: result, reason: nil)
+            let output = take.preferred == .gemini && take.style == .agent
+                ? AgentInstructionFormatting.format(result) : result
+            resolve(take, text: output, reason: nil)
         } catch {
             guard !take.finished, !Task.isCancelled else { return }
             DiagnosticLog.record("recognition failure; category=\(Self.failureCategory(error))")
