@@ -369,6 +369,7 @@ struct SettingsView: View {
     }
 
     private func go(_ section: SettingsSection) {
+        searchTarget = nil
         navigation.select(section)
     }
 
