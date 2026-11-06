@@ -283,7 +283,7 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
                 )
                 row.target = self
                 row.representedObject = entry.recordID.uuidString
-                row.toolTip = "選ぶと保存済みの全文をコピーします。⌘Vで貼り付けできます"
+                row.toolTip = entry.copyHelp
                 menu.addItem(row)
             }
         }

@@ -4,8 +4,8 @@ import Combine
 import Foundation
 import KoeBridgeCore
 
-/// UI-only update checking. The repository currently distributes SOURCE
-/// archives, not signed, notarized installable applications. No executable
+/// UI-only update checking. Releases include source and explicitly labelled
+/// unnotarized development builds, not a trusted automatic-update package. No executable
 /// from the network is downloaded or launched by this class.
 @MainActor final class KoeBridgeUpdateManager: ObservableObject {
     static let shared = KoeBridgeUpdateManager()

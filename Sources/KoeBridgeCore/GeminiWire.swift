@@ -11,6 +11,7 @@ public enum TranscribeEvent: Equatable {
     case interim(String)
     case final(String)
     case turnComplete
+    case activityEnd
     case error(String)
 }
 
@@ -30,21 +31,24 @@ public enum GeminiWire {
             // Agent is a KoeBridge presentation mode, not a new Gemini mode.
             "mode": style.liveMode
         ]
-        let words: [String]
-        if style == .agent {
-            words = AgentVocabulary.terms(user: vocabulary, style: style)
-        } else {
-            // Preserve existing VERBATIM/SMART request normalization.
-            words = Array(Set(vocabulary.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                                        .filter { !$0.isEmpty })).sorted().prefix(100).map { $0 }
+        // The caller snapshots the user's explicitly selected sources. A
+        // presentation style must never re-enable an unchecked source.
+        // Preserve priority/order when the combined list reaches the API cap.
+        var seen = Set<String>()
+        var words: [String] = []
+        for raw in vocabulary {
+            let word = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !word.isEmpty, seen.insert(word).inserted { words.append(word) }
+            if words.count == 100 { break }
         }
         if !words.isEmpty { audio["customVocabulary"] = words }
         let setup: [String: Any] = [
             "setup": [
                 "model": "models/\(modelID)",
                 "generationConfig": ["responseModalities": ["TEXT"]],
-                // Keep existing automatic VAD. No unsupported instruction
-                // fields, secondary model calls or change to audio streaming.
+                // A thinking pause is not an endpoint. The client sends one
+                // activityStart after setup and one activityEnd on user stop.
+                "realtimeInputConfig": ["automaticActivityDetection": ["disabled": true]],
                 "inputAudioTranscription": audio
             ]
         ]
@@ -90,7 +94,39 @@ public enum GeminiWire {
             }
             if content["turnComplete"] as? Bool == true { events.append(.turnComplete) }
         }
+        // Raw WebSocket field is `type`; the SDK renames it to
+        // voice_activity_type / voiceActivityType. Transcribe manual VAD
+        // confirms activityEnd with this root-level signal, not necessarily
+        // with a conversational model's serverContent.turnComplete.
+        if let activity = root["voiceActivity"] as? [String: Any],
+           activity["type"] as? String == "ACTIVITY_END" {
+            events.append(.activityEnd)
+        }
         return events
+    }
+
+    /// Identity is available only when the service supplies both utterance
+    /// offsets. Text equality alone cannot distinguish a replay from a user
+    /// deliberately repeating the same words. These are documented optional
+    /// fields; their absence must not suppress a final segment.
+    public static func finalSegmentIdentity(_ raw: String) -> String? {
+        guard let data = raw.data(using: .utf8),
+              let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let content = root["serverContent"] as? [String: Any],
+              let final = content["inputTranscription"] as? [String: Any],
+              let start = final["startOffset"] as? String, !start.isEmpty,
+              let end = final["endOffset"] as? String, !end.isEmpty else { return nil }
+        return start + "|" + end + "|" + ((final["speakerLabel"] as? String) ?? "")
+    }
+
+    /// Optional completion of a transcription, including a text-free frame.
+    /// This can mark one speech segment and does not acknowledge activityEnd.
+    public static func transcriptionFinished(_ raw: String) -> Bool {
+        guard let data = raw.data(using: .utf8),
+              let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let content = root["serverContent"] as? [String: Any],
+              let transcription = content["inputTranscription"] as? [String: Any] else { return false }
+        return transcription["finished"] as? Bool == true
     }
 
     /// The server may send usageMetadata alongside other messages, including
@@ -121,6 +157,7 @@ public enum GeminiWire {
         if root["error"] != nil { return "error" }
         if root["goAway"] != nil { return "goAway" }
         if root["sessionResumptionUpdate"] != nil { return "sessionResumptionUpdate" }
+        if root["voiceActivity"] != nil { return "voiceActivity" }
         if let content = root["serverContent"] as? [String: Any] {
             if content["interimInputTranscription"] != nil { return "serverContent.interimInputTranscription" }
             if content["inputTranscription"] != nil { return "serverContent.inputTranscription" }

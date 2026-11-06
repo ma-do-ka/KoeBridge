@@ -46,6 +46,9 @@ import Speech
 
     func appendPCM16(_ data: Data) throws {
         guard let request else { throw LocalError.unavailable }
+        // Some on-device recognizers finish a task early. Never keep accepting
+        // unheard tail audio and later submit the earlier prefix as a full take.
+        guard !isFinal || data.isEmpty else { throw LocalError.endedBeforeAudio }
         let frames = AVAudioFrameCount(data.count / 2)
         guard frames > 0,
               let buffer = AVAudioPCMBuffer(pcmFormat: audioFormat, frameCapacity: frames),
@@ -81,7 +84,7 @@ import Speech
     }
 
     enum LocalError: Error, LocalizedError {
-        case permission, unavailable, empty(String?), finalizationTimeout, recognitionFailure(String)
+        case permission, unavailable, empty(String?), finalizationTimeout, recognitionFailure(String), endedBeforeAudio
         var errorDescription: String? {
             switch self {
             case .permission: return "macOSの音声認識許可が必要です"
@@ -89,6 +92,7 @@ import Speech
             case .empty(let e): return "ローカル音声認識の結果がありません\(e.map { ": \($0)" } ?? "")"
             case .finalizationTimeout: return "ローカル認識が5秒以内に確定しませんでした。途中結果は履歴に保存します"
             case .recognitionFailure(let reason): return "ローカル音声認識エラー: \(reason)"
+            case .endedBeforeAudio: return "音声の末尾より先にAppleの認識が終了しました。途中結果を履歴に保存します"
             }
         }
     }

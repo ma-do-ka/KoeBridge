@@ -2,20 +2,56 @@
 import Foundation
 import KoeBridgeCore
 
-/// One WebSocket per dictation. Do not send microphone audio until setupComplete.
-/// API transport follows Google's Gemini 3.5 Transcribe Live WebSocket protocol.
+/// URLSession's ping completion may run on a background queue, while timeout
+/// and cancellation may race it. Resolve exactly once, including cancellation
+/// before the continuation is installed and sockets that never call back.
+private final class GeminiPingCompletion: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Error>?
+    private var result: Result<Void, Error>?
+
+    func install(_ continuation: CheckedContinuation<Void, Error>) {
+        lock.lock()
+        if let result {
+            lock.unlock()
+            continuation.resume(with: result)
+            return
+        }
+        self.continuation = continuation
+        lock.unlock()
+    }
+
+    @discardableResult func resolve(_ result: Result<Void, Error>) -> Bool {
+        lock.lock()
+        guard self.result == nil else { lock.unlock(); return false }
+        self.result = result
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(with: result)
+        return true
+    }
+}
+
+/// One socket and one manually delimited activity per dictation. Audio frames
+/// and the end marker share a send queue; silence never ends the activity.
 @MainActor final class GeminiLiveConnection {
     var onEvent: ((TranscribeEvent) -> Void)?
     private var socket: URLSessionWebSocketTask?
     private var receiver: Task<Void, Never>?
+    private var heartbeat: Task<Void, Never>?
+    private var sendTail: Task<Void, Error>?
+    private var endTask: Task<Void, Error>?
     private(set) var assembler = TranscriptAssembler()
     private var lastFinalAt: Date?
-    private var turnCompleteAt: Date?
+    private var endpointState = ManualEndpointState()
     private var failure: String?
     private var ready = false
+    private var started = false
     private var closedByClient = false
-    private var endedAt: Date?
-    private var firstAudioSentAt: Date?
+    private var inputEnded = false
+    private var endSendBeganInstant: ContinuousClock.Instant?
+    private var completedText: String?
     private var lastTranscriptionAt: Date?
     private var sentAudioChunks = 0
     private(set) var sentAudioBytes = 0
@@ -26,69 +62,131 @@ import KoeBridgeCore
     private var receivedFrames = 0
     private var unrecognizedFrames = 0
 
+    /// `vocabulary` is the already selected per-take list. No style adds terms.
     func connect(apiKey: String, vocabulary: [String], style: TranscriptionStyle, japaneseHint: Bool) async throws {
+        guard !started, !closedByClient else { throw ConnectionError.disconnected }
+        started = true
+        try Task.checkCancellation()
         var components = URLComponents(string: GeminiWire.endpoint)!
         components.queryItems = [URLQueryItem(name: "key", value: apiKey)]
         guard let url = components.url else { throw ConnectionError.badURL }
         let connectionBeganAt = Date()
         let ws = URLSession.shared.webSocketTask(with: url)
         socket = ws
-        closedByClient = false
         ws.resume()
-        try await ws.send(.string(GeminiWire.setup(vocabulary: vocabulary, style: style, japaneseHint: japaneseHint)))
-        // A one-shot watchdog interrupts a stuck setup handshake.
+        // Cover the initial send as well as the receive/setup handshake.
         let watchdog = Task { [weak self] in
             do { try await Task.sleep(for: .seconds(10)) }
-            catch { return } // successful setup cancels this timer
-            guard let self, !self.ready else { return }
+            catch { return }
+            guard let self, !self.ready, !self.closedByClient else { return }
             self.failure = "Gemini接続準備がタイムアウトしました"
-            self.socket?.cancel(with: .goingAway, reason: nil)
+            ws.cancel(with: .goingAway, reason: nil)
         }
         defer { watchdog.cancel() }
-        while !ready {
-            let message: URLSessionWebSocketTask.Message
-            do { message = try await ws.receive() }
-            catch { throw ConnectionError.setup(error.localizedDescription) }
-            let raw = Self.string(message)
-            captureUsage(raw)
-            for event in try GeminiWire.parse(raw) {
-                if case .error(let reason) = event { throw ConnectionError.setup(reason) }
-                if case .setupComplete = event { ready = true }
-                if case .final = event { handle(event) }
+        do {
+            try await withTaskCancellationHandler {
+                try await ws.send(.string(GeminiWire.setup(vocabulary: vocabulary, style: style, japaneseHint: japaneseHint)))
+                var setupComplete = false
+                while !setupComplete {
+                    try Task.checkCancellation()
+                    let raw = Self.string(try await ws.receive())
+                    captureUsage(raw)
+                    for event in try GeminiWire.parse(raw) {
+                        if case .error(let reason) = event { throw ConnectionError.setup(reason) }
+                        if case .setupComplete = event { setupComplete = true }
+                    }
+                }
+                try checkOpen()
+                assembler.beginActivity()
+                // Start receiving before sending activityStart so a fast reply
+                // cannot be lost. No microphone audio is accepted until ready.
+                receiver = Task { [weak self] in await self?.receiveLoop() }
+                try await ws.send(.string(GeminiWire.activityStart()))
+                try checkOpen()
+                ready = true
+            } onCancel: {
+                ws.cancel(with: .goingAway, reason: nil)
             }
+        } catch {
+            let reason = failure ?? error.localizedDescription
+            cancel()
+            if Task.isCancelled || error is CancellationError { throw CancellationError() }
+            throw ConnectionError.setup(reason)
         }
-        receiver = Task { [weak self] in await self?.receiveLoop() }
-        assembler.beginActivity()
-        DiagnosticLog.record("gemini connected; setupSeconds=\(String(format: "%.3f", Date().timeIntervalSince(connectionBeganAt)))")
-        // With automatic VAD enabled, the first audio starts recognition.
-        // Do not send manual activityStart in this mode.
+        heartbeat = Task { [weak self] in await self?.heartbeatLoop() }
+        DiagnosticLog.record("gemini connected; manualEndpoint=true setupSeconds=\(String(format: "%.3f", Date().timeIntervalSince(connectionBeganAt)))")
     }
 
     private func receiveLoop() async {
         guard let ws = socket else { return }
-        while !Task.isCancelled {
+        while !Task.isCancelled && !closedByClient {
             do {
                 let msg = try await ws.receive()
+                guard !closedByClient, !Task.isCancelled else { return }
                 receivedFrames += 1
                 let raw = Self.string(msg)
                 let gotUsage = captureUsage(raw)
                 let events = try GeminiWire.parse(raw)
                 if events.isEmpty && !gotUsage {
                     unrecognizedFrames += 1
-                    // Log schema categories only, NEVER contents or secrets.
                     if unrecognizedFrames <= 3 {
-                        DiagnosticLog.record("gemini frame without transcription event; shape=\(GeminiWire.frameKind(Self.string(msg)))")
+                        // Schema categories only: never transcript or secrets.
+                        DiagnosticLog.record("gemini frame without transcription event; shape=\(GeminiWire.frameKind(raw))")
                     }
                 }
-                for event in events { handle(event) }
+                let identity = GeminiWire.finalSegmentIdentity(raw)
+                for event in events { handle(event, segmentIdentity: identity) }
             } catch {
-                // URLSessionWebSocketTask.receive may fail independently of send.
-                // Inform the recording controller immediately: otherwise the
-                // overlay stays alive and a new shortcut appears to be broken.
                 if !closedByClient && !Task.isCancelled {
                     handle(.error("Gemini受信が終了しました: \(error.localizedDescription)"))
                 }
-                break
+                return
+            }
+        }
+    }
+
+    /// A quiet microphone produces no transcription. Check transport liveness
+    /// with ping/pong instead of treating 45 seconds of thinking as a failure.
+    /// A responding socket is not proof that recognition itself has progressed;
+    /// the bounded finalization wait handles that case after user stop.
+    private func heartbeatLoop() async {
+        guard let ws = socket else { return }
+        while !Task.isCancelled && !closedByClient {
+            do { try await Task.sleep(for: .seconds(20)) }
+            catch { return }
+            guard !closedByClient, !Task.isCancelled else { return }
+            let completion = GeminiPingCompletion()
+            let watchdog = Task { [weak self] in
+                do { try await Task.sleep(for: .seconds(10)) }
+                catch { return }
+                // A pong may have arrived on the delegate queue while the
+                // MainActor was busy. Only the winning timeout may close it.
+                guard completion.resolve(.failure(ConnectionError.stalled)) else { return }
+                guard let self, !self.closedByClient else { return }
+                self.handle(.error("Gemini接続の応答確認がタイムアウトしました"))
+                ws.cancel(with: .goingAway, reason: nil)
+            }
+            do {
+                try await withTaskCancellationHandler {
+                    try Task.checkCancellation()
+                    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                        completion.install(continuation)
+                        ws.sendPing { error in
+                            if let error { completion.resolve(.failure(error)) }
+                            else { completion.resolve(.success(())) }
+                        }
+                    }
+                } onCancel: {
+                    completion.resolve(.failure(CancellationError()))
+                    ws.cancel(with: .goingAway, reason: nil)
+                }
+                watchdog.cancel()
+            } catch {
+                watchdog.cancel()
+                if !closedByClient && !Task.isCancelled {
+                    handle(.error("Gemini接続の応答確認に失敗しました"))
+                }
+                return
             }
         }
     }
@@ -96,96 +194,161 @@ import KoeBridgeCore
     @discardableResult
     private func captureUsage(_ raw: String) -> Bool {
         guard let usage = GeminiWire.parseTokenUsage(raw) else { return false }
-        // A separate usageMetadata message is a separate report, even when
-        // two turns happen to have equal values. Do not infer cost or estimate
-        // unavailable counts. Cap transient per-session observations.
         if tokenSamples.count < 1_024 {
             tokenSamples.append(GeminiTokenSample(at: Date(), usage: usage))
         }
         return true
     }
 
-    private func handle(_ event: TranscribeEvent) {
-        // Duplicate/unchanged final events are not evidence that the service
-        // finished new audio after the user stopped. Only a newly accepted
-        // committed segment may advance the finalization clock.
+    private func handle(_ event: TranscribeEvent, segmentIdentity: String? = nil) {
+        guard !closedByClient, completedText == nil else { return }
+        let now = Date()
         let committedBefore = assembler.finalCount
-        assembler.apply(event)
+        assembler.apply(event, segmentIdentity: segmentIdentity)
         if case .final = event {
             finalEvents += 1
-            if assembler.finalCount > committedBefore { lastFinalAt = Date() }
+            if assembler.finalCount > committedBefore { lastFinalAt = now }
             else { duplicateFinalEvents += 1 }
-            lastTranscriptionAt = Date()
+            lastTranscriptionAt = now
         }
         if case .interim = event {
             interimEvents += 1
-            lastTranscriptionAt = Date()
+            lastTranscriptionAt = now
         }
-        if case .turnComplete = event { turnCompleteAt = Date() }
+        if case .turnComplete = event { endpointState.receiveTurnComplete(at: now) }
+        if case .activityEnd = event { endpointState.receiveActivityEnd(at: now) }
         if case .error(let msg) = event { failure = msg }
         onEvent?(event)
     }
 
-    func sendAudio(_ data: Data) async throws {
-        guard let ws = socket, !closedByClient else { throw ConnectionError.disconnected }
+    private func checkOpen() throws {
+        try Task.checkCancellation()
+        guard socket != nil, !closedByClient else { throw ConnectionError.disconnected }
         if let failure { throw ConnectionError.setup(failure) }
-        // A Live socket can remain TCP-connected while silently ceasing to
-        // return transcription events. Do not record for minutes in that state.
-        // The generous 45s grace also tolerates a quiet microphone. This is
-        // failure recovery, not a guarantee that speech was present.
-        let now = Date()
-        if let firstAudioSentAt, sentAudioChunks >= 100,
-           now.timeIntervalSince(lastTranscriptionAt ?? firstAudioSentAt) > 45 {
-            throw ConnectionError.stalled
+    }
+
+    /// Queue before awaiting: MainActor methods are reentrant while suspended.
+    /// endAudio must not overtake a sendAudio that is waiting on the socket.
+    private func enqueue(_ raw: String, ending: Bool = false) throws -> Task<Void, Error> {
+        try checkOpen()
+        guard let ws = socket else { throw ConnectionError.disconnected }
+        let predecessor = sendTail
+        let task = Task { [weak self] in
+            try await predecessor?.value
+            guard let self else { throw ConnectionError.disconnected }
+            try self.checkOpen()
+            let watchdog = Task { [weak self] in
+                do { try await Task.sleep(for: .seconds(10)) }
+                catch { return }
+                guard let self, !self.closedByClient else { return }
+                self.handle(.error("Geminiへの音声送信がタイムアウトしました"))
+                ws.cancel(with: .goingAway, reason: nil)
+            }
+            defer { watchdog.cancel() }
+            if ending {
+                self.endSendBeganInstant = ContinuousClock.now
+                self.endpointState.beginEnd()
+            }
+            do {
+                try await ws.send(.string(raw))
+                try self.checkOpen()
+                // This socket has one manual activity. Its acknowledgement can
+                // arrive before this send continuation resumes. The state
+                // exposes that evidence only after this write succeeds.
+                if ending { self.endpointState.endWriteSucceeded(at: Date()) }
+            } catch {
+                if ending { self.endpointState.endWriteFailed() }
+                throw error
+            }
         }
-        if firstAudioSentAt == nil { firstAudioSentAt = now }
-        try await ws.send(.string(GeminiWire.audio(data)))
+        sendTail = task
+        return task
+    }
+
+    private func awaitSend(_ task: Task<Void, Error>) async throws {
+        let ws = socket
+        try await withTaskCancellationHandler {
+            try await task.value
+            try checkOpen()
+        } onCancel: {
+            task.cancel()
+            ws?.cancel(with: .goingAway, reason: nil)
+        }
+    }
+
+    func sendAudio(_ data: Data) async throws {
+        try checkOpen()
+        guard ready, !inputEnded else { throw ConnectionError.disconnected }
+        guard !data.isEmpty else { return }
+        let task = try enqueue(GeminiWire.audio(data))
+        try await awaitSend(task)
         sentAudioChunks += 1
         sentAudioBytes += data.count
     }
 
     func endAudio() async throws {
-        guard let ws = socket, !closedByClient else { throw ConnectionError.disconnected }
-        if let failure { throw ConnectionError.setup(failure) }
-        try await ws.send(.string(GeminiWire.audioStreamEnd()))
-        endedAt = Date()
-        DiagnosticLog.record("gemini audioStreamEnd; audioBytes=\(sentAudioBytes) audioChunks=\(sentAudioChunks) interimEvents=\(interimEvents) finalEvents=\(finalEvents) duplicateFinals=\(duplicateFinalEvents) hasPendingInterim=\(!assembler.interim.isEmpty) receivedFrames=\(receivedFrames) unrecognizedFrames=\(unrecognizedFrames)")
+        if let endTask {
+            try await awaitSend(endTask)
+            return
+        }
+        try checkOpen()
+        guard ready else { throw ConnectionError.disconnected }
+        inputEnded = true
+        let task = try enqueue(GeminiWire.activityEnd(), ending: true)
+        endTask = task
+        try await awaitSend(task)
+        DiagnosticLog.record("gemini activityEnd; audioBytes=\(sentAudioBytes) audioChunks=\(sentAudioChunks) interimEvents=\(interimEvents) finalEvents=\(finalEvents) duplicateFinals=\(duplicateFinalEvents) hasPendingInterim=\(!assembler.interim.isEmpty) receivedFrames=\(receivedFrames) unrecognizedFrames=\(unrecognizedFrames)")
     }
 
-    /// Only final segments are inserted; interim hypotheses remain previews.
-    /// `turnComplete` can arrive before/after `inputTranscription`.
+    /// Only final segments may be inserted. The manual activity acknowledgement
+    /// and transcription can arrive separately; let them settle after user stop.
     func awaitFinal() async throws -> String {
-        guard let endedAt else { throw ConnectionError.disconnected }
-        // Avoid locking F8 for six seconds when the service never emits a
-        // final. The UI will retain partial text in history on timeout.
-        let deadline = Date().addingTimeInterval(2.5)
-        while Date() < deadline {
-            try Task.checkCancellation()
-            if let failure { throw ConnectionError.setup(failure) }
-            if FinalizationPolicy.canFinish(endedAt: endedAt, lastFinalAt: lastFinalAt,
-                                            turnCompleteAt: turnCompleteAt, now: Date(),
+        if let completedText { return completedText }
+        defer { if completedText == nil { cancel() } }
+        try checkOpen()
+        guard let endTask else { throw ConnectionError.disconnected }
+        try await awaitSend(endTask)
+        guard let endedAt = endpointState.writeCompletedAt else { throw ConnectionError.disconnected }
+        // The budget starts at the actual marker send, not each caller's wait.
+        let deadline = (endSendBeganInstant ?? ContinuousClock.now)
+            .advanced(by: .seconds(FinalizationPolicy.maximumWaitSeconds))
+        while ContinuousClock.now < deadline {
+            try checkOpen()
+            if !assembler.hasConflictingFinals,
+               FinalizationPolicy.canFinish(endedAt: endedAt, lastFinalAt: lastFinalAt,
+                                            endAcknowledgedAt: endpointState.acknowledgedEndAt, now: Date(),
                                             hasPendingInterim: !assembler.interim.isEmpty,
                                             lastTranscriptionAt: lastTranscriptionAt) {
                 let text = assembler.committedText
                 guard !text.isEmpty else { throw ConnectionError.noFinal }
+                completedText = text
                 DiagnosticLog.record("gemini finalized; waitSeconds=\(String(format: "%.3f", Date().timeIntervalSince(endedAt))) finalEvents=\(finalEvents)")
+                // Freeze the accepted result. Late frames cannot mutate the
+                // preview or cause a second result after the caller inserts it.
+                cancel()
                 return text
             }
             try await Task.sleep(for: .milliseconds(25))
         }
-        // Never paste a prefix as if it were the whole utterance. The controller
-        // saves the recoverable partial in the ten-entry history instead.
         let lastFinalAge = lastFinalAt.map { String(format: "%.2f", endedAt.timeIntervalSince($0)) } ?? "none"
         DiagnosticLog.record("gemini finalization timeout; finalEvents=\(finalEvents) interimEvents=\(interimEvents) pendingInterim=\(!assembler.interim.isEmpty) lastFinalAgeAtStop=\(lastFinalAge) sentChunks=\(sentAudioChunks)")
+        cancel()
         throw ConnectionError.finalizationTimeout
     }
 
     func cancel() {
         closedByClient = true
+        ready = false
+        endpointState.cancel()
         receiver?.cancel()
+        heartbeat?.cancel()
+        sendTail?.cancel()
         socket?.cancel(with: .normalClosure, reason: nil)
         receiver = nil
+        heartbeat = nil
+        sendTail = nil
         socket = nil
+        onEvent = nil
     }
 
     private static func string(_ message: URLSessionWebSocketTask.Message) -> String {
@@ -204,8 +367,8 @@ import KoeBridgeCore
             case .setup(let reason): return "Gemini API: \(reason)"
             case .disconnected: return "Gemini接続がありません"
             case .noFinal: return "Geminiから確定した文字起こしが返りませんでした"
-            case .stalled: return "Geminiから45秒以上文字起こしが届かないため接続を復旧します"
-            case .finalizationTimeout: return "Geminiから2.5秒以内に確定結果を取得できませんでした。取得済みの文字は履歴に残します"
+            case .stalled: return "Gemini接続の応答が停止したため接続を復旧します"
+            case .finalizationTimeout: return "Geminiから8秒以内に確定結果を取得できませんでした。取得済みの文字は履歴に残します"
             }
         }
     }

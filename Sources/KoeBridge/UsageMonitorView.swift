@@ -125,7 +125,7 @@ struct UsageMonitorView: View {
                                     GridItem(.flexible(), spacing: 10)], spacing: 10) {
                     summaryTile("Geminiの利用回数",
                                 "\(last24Hours.filter { $0.engine == .gemini }.count)回",
-                                detail: "過去24時間にGeminiで認識を試みた回数です。失敗も含まれます。")
+                                detail: "過去24時間にGeminiで認識を試みた回数です。音声の追加チェックと失敗も含まれます。")
                     summaryTile("Appleの利用回数",
                                 "\(last24Hours.filter { $0.engine == .apple }.count)回",
                                 detail: "過去24時間にAppleで認識を試みた回数です。自動切替も含まれます。")

@@ -743,7 +743,7 @@ struct SettingsView: View {
                         }
                         Divider()
                         settingsRow("アップデートを自動的にダウンロードしてインストール",
-                                    description: "現在はソースコード配布のみのため未対応です。安全に配布できる署名済み更新パッケージの準備後に提供します。",
+                                    description: "開発版アプリは手動でダウンロードできます。公証済みの自動更新パッケージは未提供のため、自動インストールは利用できません。",
                                     icon: "square.and.arrow.down") {
                             Toggle("自動ダウンロードとインストール", isOn: .constant(false))
                                 .labelsHidden()
@@ -994,7 +994,7 @@ struct SettingsView: View {
                         }
                         .id("smart")
                         if controller.transcriptionStyle == .agent {
-                            Text("AIエージェント指示：Geminiの逐語認識を使い、専門用語の補助と最低限の改行だけを加えます。音声の聞き間違いや文字列の完全一致までは保証できません。")
+                            Text("AIエージェント指示ではGeminiの逐語認識を使います。専門用語の補助は、選択した項目だけを使用します。音声の聞き間違いや文字列の完全一致までは保証できません。")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -1002,10 +1002,12 @@ struct SettingsView: View {
                                 .padding(.bottom, 8)
                         }
                         Divider()
+                        vocabularyAssistanceSettings
+                        Divider()
                         VStack(alignment: .leading, spacing: 8) {
                             Text("固有名詞・専門用語を登録")
                                 .font(.system(size: 14, weight: .medium))
-                            Text("認識してほしい製品名や技術用語を1行に1語ずつ入力します。最大100語をGeminiに送信します。AIエージェント指示では一般的な開発用語も補助辞書に追加します。表記を強制する機能ではありません。")
+                            Text("認識してほしい製品名や技術用語を1行に1語ずつ入力します。「登録した用語を使う」がオンのときに、登録順で優先してGeminiへ送信します。他の候補と合わせて最大100語です。表記を強制する機能ではありません。")
                                 .font(.system(size: 12)).foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
                             TextEditor(text: $controller.vocabulary)
@@ -1018,6 +1020,8 @@ struct SettingsView: View {
                                 }
                         }
                         .padding(.vertical, 8)
+                        Divider()
+                        contextCheckSettings
                     }
                     .padding(8)
                 } label: {
@@ -1036,6 +1040,88 @@ struct SettingsView: View {
             .padding(18)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    private var vocabularyAssistanceSettings: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("専門用語の補助")
+                .font(.system(size: 14, weight: .medium))
+            Toggle(isOn: $controller.registeredVocabularyEnabled) {
+                Text("登録した用語を使う")
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .toggleStyle(.checkbox)
+            Toggle(isOn: $controller.topicVocabularyEnabled) {
+                Text("開発・ITの用語を使う")
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .toggleStyle(.checkbox)
+            Text("GitHub、Pythonなど、アプリ内の開発・IT用語を認識の候補として使います。")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("両方を外すと、専門用語の候補をGeminiに送りません。登録した用語は削除されません。文字起こしスタイルを変えても、選択は変わりません。")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .font(.system(size: 14))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 12)
+        .id("vocabulary-assistance")
+    }
+
+    private var contextCheckSettings: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("文脈チェック")
+                .font(.system(size: 14, weight: .medium))
+            Toggle(isOn: $controller.textContextCheckEnabled) {
+                Text("文章のつながりと句読点を確認する")
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .toggleStyle(.checkbox)
+            Text("「という。こと」など、限られた日本語の区切りをMac内で整えます。語句の追加や言い換えは行いません。追加の通信・API料金はありません。")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Toggle(isOn: $controller.audioRecheckEnabled) {
+                Text("音声を再認識して照合する")
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .toggleStyle(.checkbox)
+            Text("同じ録音をGoogleのAPIへもう一度送り、認識結果を比べます。追加の通信・待ち時間・API料金が発生します。語句が異なる場合は自動入力せず、元の文章と候補を履歴に残します。")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if controller.audioRecheckEnabled {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("音声と照合するタイミング")
+                        .font(.system(size: 13, weight: .medium))
+                    Picker("音声と照合するタイミング", selection: $controller.audioRecheckPolicy) {
+                        ForEach(AudioRecheckPolicy.allCases) { policy in
+                            Text(policy.title).tag(policy)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: 270, alignment: .leading)
+                    .accessibilityLabel("音声と照合するタイミング")
+                    Text("長い音声・通信待ちでは未完了となり、元の確定文を使います。")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.leading, 20)
+            }
+            Text("両方を外すと、追加の文脈チェックを行いません。Geminiで認識できた録音に適用し、Appleローカルで認識した場合は実行しません。設定の選択は保持されます。")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .font(.system(size: 14))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 12)
+        .id("context-check")
     }
 
     private var privacyPage: some View {

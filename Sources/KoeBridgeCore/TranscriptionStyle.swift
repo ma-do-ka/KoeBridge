@@ -1,7 +1,7 @@
 import Foundation
 
 /// KoeBridge's UI intent. Gemini Live exposes only VERBATIM and SMART;
-/// the agent style maps to VERBATIM with additional vocabulary biasing.
+/// the agent style maps to VERBATIM with minimal paragraph formatting.
 public enum TranscriptionStyle: String, CaseIterable, Codable, Sendable, Identifiable {
     case verbatim
     case readable
@@ -24,7 +24,7 @@ public enum TranscriptionStyle: String, CaseIterable, Codable, Sendable, Identif
         case .readable:
             return "言いよどみや言い直しを整理して読みやすくします（SMART）。"
         case .agent:
-            return "技術用語、コマンド、数値、禁止事項、手順を残すことを優先します。省略の少ない逐語認識に技術用語の補助辞書と最小限の段落区切りを加えます。"
+            return "技術用語、コマンド、数値、禁止事項、手順をできるだけ残し、最小限の段落区切りを加えます。専門用語の補助は、個別の設定に従います。"
         }
     }
 
@@ -54,7 +54,25 @@ public enum AgentInstructionFormatting {
     public static func format(_ transcript: String) -> String {
         var text = transcript
         for marker in instructionStarters {
-            text = text.replacingOccurrences(of: "。" + marker, with: "。\n" + marker)
+            let protected = TextContextChecking.protectedRanges(in: text)
+            let source = text as NSString
+            var insertionOffsets: [Int] = []
+            var search = NSRange(location: 0, length: source.length)
+            while search.length > 0 {
+                let found = source.range(of: "。" + marker, options: [], range: search)
+                guard found.location != NSNotFound else { break }
+                let offset = found.location + 1
+                // Inserting immediately before/after a literal preserves it;
+                // inserting anywhere inside one changes its exact contents.
+                if !protected.contains(where: { $0.location < offset && offset < NSMaxRange($0) }) {
+                    insertionOffsets.append(offset)
+                }
+                let end = NSMaxRange(found)
+                search = NSRange(location: end, length: source.length - end)
+            }
+            let edited = NSMutableString(string: text)
+            for offset in insertionOffsets.reversed() { edited.insert("\n", at: offset) }
+            text = edited as String
         }
         return text
     }
@@ -71,9 +89,11 @@ public enum AgentVocabulary {
         "pytest", "npm", "GitHub Issue", "GitHub Pull Request"
     ]
 
-    public static func terms(user: [String], style: TranscriptionStyle, maximum: Int = 100) -> [String] {
+    public static func terms(
+        user: [String], registeredEnabled: Bool, topicEnabled: Bool, maximum: Int = 100
+    ) -> [String] {
         guard maximum > 0 else { return [] }
-        let candidates = style == .agent ? user + defaults : user
+        let candidates = (registeredEnabled ? user : []) + (topicEnabled ? defaults : [])
         var seen = Set<String>()
         var accepted: [String] = []
         for candidate in candidates {
@@ -83,7 +103,7 @@ public enum AgentVocabulary {
             if seen.insert(key).inserted {
                 accepted.append(term)
             }
-            if accepted.count >= max(0, maximum) { break }
+            if accepted.count >= min(100, maximum) { break }
         }
         return accepted
     }

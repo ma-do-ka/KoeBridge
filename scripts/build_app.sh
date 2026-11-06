@@ -48,8 +48,32 @@ cleanup() {
 }
 trap cleanup EXIT
 
-swift build -c release --product KoeBridge
-BIN="$(swift build -c release --show-bin-path)/KoeBridge"
+BUILD_ARGS=(-c release --product KoeBridge)
+if [ "${KOEBRIDGE_UNIVERSAL:-0}" = "1" ]; then
+  # Multiple --arch flags force SwiftPM onto Xcode/PIF, whose language-mode
+  # validation fails for this package on the CI toolchain. Build each macOS
+  # slice with the native backend and combine only the verified outputs.
+  for BUILD_ARCH in arm64 x86_64; do
+    THIN_ARGS=("${BUILD_ARGS[@]}" --build-system native --triple "${BUILD_ARCH}-apple-macosx15.0")
+    swift build "${THIN_ARGS[@]}"
+    THIN_BIN="$(swift build "${THIN_ARGS[@]}" --show-bin-path)/KoeBridge"
+    if [ ! -x "$THIN_BIN" ]; then
+      echo "ERROR: compiled $BUILD_ARCH binary not found: $THIN_BIN" >&2
+      exit 1
+    fi
+    if [ "$(lipo -archs "$THIN_BIN")" != "$BUILD_ARCH" ]; then
+      echo "ERROR: expected a single $BUILD_ARCH slice: $THIN_BIN" >&2
+      exit 1
+    fi
+    cp "$THIN_BIN" "$STAGE/KoeBridge-$BUILD_ARCH"
+  done
+  BIN="$STAGE/KoeBridge-universal"
+  lipo -create "$STAGE/KoeBridge-arm64" "$STAGE/KoeBridge-x86_64" -output "$BIN"
+  chmod +x "$BIN"
+else
+  swift build "${BUILD_ARGS[@]}"
+  BIN="$(swift build "${BUILD_ARGS[@]}" --show-bin-path)/KoeBridge"
+fi
 if [ ! -x "$BIN" ]; then
   echo "ERROR: compiled binary not found: $BIN" >&2
   exit 1
@@ -59,12 +83,18 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/KoeBridge"
 cp scripts/Info.plist "$APP/Contents/Info.plist"
 cp "$ICON_SOURCE" "$APP/Contents/Resources/KoeBridge_AppIcon.icns"
+# Keep the copyright and permission notice with binary-only downloads too.
+# Add resources before signing so the bundled notice is covered by the seal.
+cp LICENSE "$APP/Contents/Resources/LICENSE"
 if [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$APP/Contents/Info.plist")" != "KoeBridge_AppIcon.icns" ]; then
   echo "ERROR: Info.plist CFBundleIconFile does not reference the bundled icon" >&2
   exit 1
 fi
 test -s "$APP/Contents/Resources/KoeBridge_AppIcon.icns"
 chmod +x "$APP/Contents/MacOS/KoeBridge"
+if [ "${KOEBRIDGE_UNIVERSAL:-0}" = "1" ]; then
+  lipo "$APP/Contents/MacOS/KoeBridge" -verify_arch arm64 x86_64
+fi
 plutil -lint "$APP/Contents/Info.plist"
 codesign --force --sign "$SIGN_IDENTITY" "$APP"
 codesign --verify --strict --deep "$APP"

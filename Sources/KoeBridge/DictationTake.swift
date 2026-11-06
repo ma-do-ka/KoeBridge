@@ -20,6 +20,7 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
     let japaneseHint: Bool
     let vocabulary: [String]
     let shouldPaste: Bool
+    let options: TranscriptionOptions
     var usedMode: String
     var target: InsertionTarget?
     var targetCaptureReason = "not_attempted"
@@ -46,14 +47,22 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
     var firstPreviewAt: Date?
     var finished = false
     var automaticDeliverySuppressed = false
+    var confirmedText: String?
+    var review: TranscriptReview?
+    var historyRecordID: UUID?
+    var recheckStartedAt: Date?
+    var recheckAudioBytes = 0
+    var recheckSucceeded = false
+    var recheckTokens: [GeminiTokenSample] = []
 
     init(preferred: RecognitionMode, style: TranscriptionStyle, japaneseHint: Bool,
-         vocabulary: [String], shouldPaste: Bool) {
+         vocabulary: [String], shouldPaste: Bool, options: TranscriptionOptions) {
         self.preferred = preferred
         self.style = style
         self.japaneseHint = japaneseHint
         self.vocabulary = vocabulary
         self.shouldPaste = shouldPaste
+        self.options = options
         self.usedMode = preferred.label
     }
 
