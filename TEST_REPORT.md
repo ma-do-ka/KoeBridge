@@ -4,6 +4,8 @@
 
 対象の同一コミットで、次の検証が成功した場合にのみ開発版アプリを公開します。実際の実行結果は [macOS CI と公開ワークフロー](https://github.com/ma-do-ka/KoeBridge/actions) に記録されます。
 
+アプリの回帰検証では、[Mac CI（コミット `0bbb884`）](https://github.com/ma-do-ka/KoeBridge/actions/runs/42230091540) にて **Swift Testing 167件、portable self-test 133ケース・6,350アサーション、Python 7件が失敗0件**。通常の Release ビルドも成功しました。この実行では複数アーキテクチャを一括指定する Xcode ビルド経路が失敗したため、配布用の生成方式を個別ビルドと `lipo` に変更し、公開前に再検証します。
+
 - 公開ファイルの許可一覧・秘密情報パターン・固定アイコンの監査。
 - Python 利用量・追加音声照合の概算テスト。
 - Swift Testing と portable self-test。連続入力の位置引継ぎ、選択範囲置換、UTF-16 境界、部分送信、同一欄の未確認入力、変更された入力先の拒否を含む。
