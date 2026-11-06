@@ -18,6 +18,10 @@ struct SettingsNavigationTests {
         #expect(SettingsSearchCatalog.find("マイク").contains { $0.section == .permissions })
         #expect(SettingsSearchCatalog.find("アップデート").contains { $0.section == .about && $0.id == "updates" })
         #expect(SettingsSearchCatalog.find("自動入力").contains { $0.section == .voice })
+        #expect(SettingsSearchCatalog.find("専門用語の補助").contains { $0.section == .gemini && $0.id == "vocabulary-assistance" })
+        #expect(SettingsSearchCatalog.find("開発 IT").contains { $0.section == .gemini && $0.id == "vocabulary-assistance" })
+        #expect(SettingsSearchCatalog.find("文脈チェック").contains { $0.section == .gemini && $0.id == "context-check" })
+        #expect(SettingsSearchCatalog.find("音声 照合").contains { $0.section == .gemini && $0.id == "context-check" })
         #expect(SettingsSearchCatalog.find("  ").isEmpty)
         #expect(SettingsSearchCatalog.find("never_present_keyword_123").isEmpty)
     }

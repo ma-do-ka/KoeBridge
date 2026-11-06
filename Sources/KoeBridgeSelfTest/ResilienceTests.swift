@@ -64,7 +64,8 @@ struct ResilienceTests {
         check(!FinalizationPolicy.canFinish(endedAt: end, lastFinalAt: final,
                                               turnCompleteAt: nil, now: end.addingTimeInterval(1.25)))
         check(FinalizationPolicy.canFinish(endedAt: end, lastFinalAt: final,
-                                             turnCompleteAt: nil, now: end.addingTimeInterval(1.70)))
+                                             turnCompleteAt: nil, now: end.addingTimeInterval(1.70),
+                                             transcriptionFinishedAt: end.addingTimeInterval(1.1)))
     }
 
     func droppedAudioIsRememberedAcrossThreads() {

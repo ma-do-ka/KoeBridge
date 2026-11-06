@@ -5,23 +5,29 @@ public struct TranscriptRecord: Codable, Equatable, Identifiable, Sendable {
     public enum Delivery: String, Codable, Sendable {
         case pending
         case attemptedUnconfirmed
+        case verifiedInserted
         case blockedFocus
         case missingPermission
         case insertionUnavailable
         case partiallyDirect
         case automaticPasteDisabled
         case recognitionInterrupted
+        case reviewRequired
+        case interruptedDelivery
 
         public var label: String {
             switch self {
             case .pending: return "自動入力の処理待ち"
             case .attemptedUnconfirmed: return "自動入力を送信（受理は未確認）"
+            case .verifiedInserted: return "自動入力の反映を確認"
             case .blockedFocus: return "安全確認のため未入力（入力先変更・システム中断等）"
             case .missingPermission: return "権限不足のため未入力"
             case .insertionUnavailable: return "直接入力イベントを送れませんでした"
             case .partiallyDirect: return "直接入力が途中で中断（履歴を確認）"
             case .automaticPasteDisabled: return "自動入力OFFのため保存のみ"
             case .recognitionInterrupted: return "認識失敗（途中結果を保存）"
+            case .reviewRequired: return "追加チェックで差異あり（確認待ち・未入力）"
+            case .interruptedDelivery: return "入力状況を要確認（処理が中断）"
             }
         }
     }
@@ -32,15 +38,20 @@ public struct TranscriptRecord: Codable, Equatable, Identifiable, Sendable {
     public let text: String
     public let isPartial: Bool
     public var delivery: Delivery
+    public var deliveryDetail: String?
+    public let review: TranscriptReview?
 
     public init(id: UUID = UUID(), recordedAt: Date = Date(), engine: String,
-                text: String, isPartial: Bool, delivery: Delivery) {
+                text: String, isPartial: Bool, delivery: Delivery, review: TranscriptReview? = nil,
+                deliveryDetail: String? = nil) {
         self.id = id
         self.recordedAt = recordedAt
         self.engine = engine
         self.text = text
         self.isPartial = isPartial
         self.delivery = delivery
+        self.review = review
+        self.deliveryDetail = deliveryDetail
     }
 }
 
@@ -78,16 +89,22 @@ public struct RecentTranscriptArchive {
         guard !record.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         entries.removeAll { $0.id == record.id }
         entries.insert(record, at: 0)
+        // Recognition completes out of order during continuous dictation.
+        // History is ordered by recording time, not provider response timing.
+        entries.sort { $0.recordedAt > $1.recordedAt }
         if entries.count > Self.maximumRecords { entries.removeLast(entries.count - Self.maximumRecords) }
         try persist(entries)
     }
 
-    public mutating func updateDelivery(id: UUID, to delivery: TranscriptRecord.Delivery) throws {
+    public mutating func updateDelivery(id: UUID, to delivery: TranscriptRecord.Delivery, detail: String? = nil) throws {
         guard let index = entries.firstIndex(where: { $0.id == id }) else { return }
         var updated = entries
         updated[index].delivery = delivery
-        try persist(updated)
+        updated[index].deliveryDetail = detail
+        // Delivery has already happened. A disk error must not leave the
+        // running app showing "pending" and invite an accidental second input.
         entries = updated
+        try persist(updated)
     }
 
     public mutating func delete(id: UUID) throws {

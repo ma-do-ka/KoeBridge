@@ -33,6 +33,7 @@ def number(value):
 
 def empty_row():
     return {"gemini_calls": 0, "gemini_seconds": 0.0, "gemini_failures": 0,
+            "recheck_calls": 0, "recheck_seconds": 0.0,
             "apple_calls": 0, "apple_seconds": 0.0, "fallbacks": 0,
             "token_reports": 0, "reported_tokens": 0, "missing_prompt": 0, "missing_response": 0}
 
@@ -57,6 +58,11 @@ def summarize(payload, now, days=30):
         row = rows[at.astimezone(JST).date().isoformat()]
         row[engine + "_calls"] += 1
         row[engine + "_seconds"] += seconds
+        if event.get("purpose") == "audioRecheck":
+            if engine != "gemini":
+                raise ValueError("invalid recheck engine")
+            row["recheck_calls"] += 1
+            row["recheck_seconds"] += seconds
         if engine == "gemini" and event.get("outcome") == "failure":
             row["gemini_failures"] += 1
         if engine == "apple" and event.get("fallback") is True:
@@ -84,25 +90,26 @@ def render(rows, rate=None, days=30):
     lines = [
         "KoeBridge ローカル利用統計（直近" + str(days) + "日、日本時間）",
         "Gemini 3.5 Transcribe Live: 有料枠の概算 $0.009/音声1分（典型的な文字出力量を仮定）",
-        "日付 | Gemini回数 | Gemini分 | Apple回数 | 自動切替 | 報告トークン | 概算USD" + (" | 概算JPY" if rate is not None else "")
+        "日付 | Gemini回数 | Gemini分 | Apple回数 | 自動切替 | 報告トークン | Live概算USD" + (" | Live概算JPY" if rate is not None else "")
     ]
     grand = empty_row()
     for day, row in rows.items():
         for k in grand:
             grand[k] += row[k]
-        usd = row["gemini_seconds"] / 60 * USD_PER_MINUTE
+        usd = (row["gemini_seconds"] - row["recheck_seconds"]) / 60 * USD_PER_MINUTE
         tokens = str(row["reported_tokens"]) if row["token_reports"] else "未取得"
         entry = day + " | " + str(row["gemini_calls"]) + " | " + format(row["gemini_seconds"] / 60, ".2f") + " | " + str(row["apple_calls"]) + " | " + str(row["fallbacks"]) + " | " + tokens + " | $" + format(usd, ".4f")
         if rate is not None:
             entry += " | ¥" + format(usd * rate, ".2f")
         lines.append(entry)
-    usd = grand["gemini_seconds"] / 60 * USD_PER_MINUTE
+    usd = (grand["gemini_seconds"] - grand["recheck_seconds"]) / 60 * USD_PER_MINUTE
     tokens = str(grand["reported_tokens"]) if grand["token_reports"] else "未取得"
     entry = "合計 | " + str(grand["gemini_calls"]) + " | " + format(grand["gemini_seconds"] / 60, ".2f") + " | " + str(grand["apple_calls"]) + " | " + str(grand["fallbacks"]) + " | " + tokens + " | $" + format(usd, ".4f")
     if rate is not None:
         entry += " | ¥" + format(usd * rate, ".2f")
     lines.append(entry)
     lines.append("Gemini失敗試行: " + str(grand["gemini_failures"]) + "回、Apple処理: " + format(grand["apple_seconds"] / 60, ".2f") + "分")
+    lines.append("音声の追加チェック: " + str(grand["recheck_calls"]) + "回 / " + format(grand["recheck_seconds"] / 60, ".2f") + "分（非Live API。上記のLive概算額には含めていません。別途料金が発生します）")
     lines.append("usageMetadata報告: " + str(grand["token_reports"]) + "件（入力未取得 " + str(grand["missing_prompt"]) + "件／出力未取得 " + str(grand["missing_response"]) + "件）")
     if rate is not None:
         lines.append("円換算の仮定為替: 1 USD = " + format(rate, ".2f") + "円（自動取得なし）")

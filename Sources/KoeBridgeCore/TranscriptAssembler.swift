@@ -1,18 +1,20 @@
 import Foundation
 
 /// Gemini Live sends unstable hypotheses and finalized segments separately.
-/// Never paste the unstable hypothesis. Avoid doubling up repeated final segments.
+/// Never paste the unstable hypothesis. Final segments are incremental, not
+/// cumulative. Repeated words are valid speech even within one activity.
 public struct TranscriptAssembler {
     public private(set) var finalized = ""
     public private(set) var interim = ""
     public private(set) var finalCount = 0
-    private var nextFinalStartsNewActivity = false
+    public private(set) var hasConflictingFinals = false
+    private var acceptedSegments: [String: Set<String>] = [:]
 
     /// Called when the client sends a NEW manual activityStart. The server's
     /// turnComplete is not a reliable turn separator because final and
     /// turnComplete may arrive out of order.
     public mutating func beginActivity() {
-        nextFinalStartsNewActivity = true
+        acceptedSegments.removeAll(keepingCapacity: true)
         interim = ""
     }
     public init() {}
@@ -20,40 +22,34 @@ public struct TranscriptAssembler {
     public var displayText: String {
         if interim.isEmpty { return finalized }
         if finalized.isEmpty { return interim }
-        if interim.hasPrefix(finalized) { return interim }
         return join(finalized, interim)
     }
 
-    public mutating func apply(_ event: TranscribeEvent) {
+    public mutating func apply(_ event: TranscribeEvent, segmentIdentity: String? = nil) {
         switch event {
         case .interim(let text):
             let candidate = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            // Network messages need not be ordered. A retransmission of an
-            // already committed transcript is not a new unfinished segment.
-            if !finalized.isEmpty && (candidate == finalized || finalized.hasSuffix(candidate)) {
-                interim = ""
-            } else {
-                interim = candidate
-            }
+            // An identical hypothesis may be a NEW repetition. Keep it pending
+            // until a final arrives; never infer completion from text equality.
+            interim = candidate
         case .final(let text):
             let segment = text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !segment.isEmpty else { return }
-            // A repeated phrase in a NEW turn is valid dictation, not a
-            // retransmission ("はい" followed by another "はい").
-            // Within one turn, ignore an identical retransmitted segment.
-            if !nextFinalStartsNewActivity && (segment == finalized || finalized.hasSuffix(segment)) {
-                interim = ""
-                return
+            // Only a provider identity can establish a retransmission. Do not
+            // clear a newer pending hypothesis when a prior final is replayed.
+            if let segmentIdentity {
+                if let previous = acceptedSegments[segmentIdentity] {
+                    if previous.contains(segment) { return }
+                    // Optional timing fields identify a time range, not a
+                    // guaranteed unique server ID. Preserve conflicting text
+                    // for recovery and disallow an automatic final result.
+                    hasConflictingFinals = true
+                }
+                acceptedSegments[segmentIdentity, default: []].insert(segment)
             }
-            // Some versions deliver a cumulative hypothesis instead of a new segment.
-            if !nextFinalStartsNewActivity && segment.hasPrefix(finalized) && !finalized.isEmpty {
-                finalized = segment
-            } else {
-                finalized = join(finalized, segment)
-            }
+            finalized = join(finalized, segment)
             interim = ""
             finalCount += 1
-            nextFinalStartsNewActivity = false
         default: break
         }
     }

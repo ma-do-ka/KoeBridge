@@ -66,10 +66,34 @@ struct HistoryView: View {
                                 .font(.caption).foregroundStyle(.secondary)
                             Text(selected.delivery.label)
                                 .font(.caption).foregroundStyle(.secondary)
-                            ScrollView {
-                                Text(selected.text)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            if let detail = selected.deliveryDetail {
+                                Text(detail).font(.caption).foregroundStyle(.secondary)
                                     .textSelection(.enabled)
+                            }
+                            if let review = selected.review {
+                                Text(review.note)
+                                    .font(.caption)
+                                    .foregroundStyle(review.status == .needsReview ? Color.orange : Color.secondary)
+                                    .textSelection(.enabled)
+                            }
+                            ScrollView {
+                                VStack(alignment: .leading, spacing: 12) {
+                                    Text(selected.text)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .textSelection(.enabled)
+                                    if let original = selected.review?.originalText, original != selected.text {
+                                        Divider()
+                                        Text("追加チェック前の文章").font(.caption).foregroundStyle(.secondary)
+                                        Text(original).textSelection(.enabled)
+                                    }
+                                    if let alternative = selected.review?.alternativeText {
+                                        Divider()
+                                        Text("音声の再認識結果（自動置換していません）")
+                                            .font(.caption).foregroundStyle(.secondary)
+                                        Text(alternative).textSelection(.enabled)
+                                        Button("再認識結果をコピー") { TextInsertion.copy(alternative) }
+                                    }
+                                }
                             }
                             HStack {
                                 Spacer()
@@ -86,7 +110,7 @@ struct HistoryView: View {
                 }
             }
             HStack {
-                Text("自動入力が相手のアプリで受け付けられたかは確認できません。必要に応じて文章をコピーしてください。")
+                Text("反映を確認できないアプリでは「受理は未確認」と表示します。再送の前に入力先を確認してください。")
                     .font(.caption2).foregroundStyle(.secondary)
                 Spacer()
                 Button("履歴をすべて削除", role: .destructive) { confirmDeleteAll = true }

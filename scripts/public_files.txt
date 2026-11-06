@@ -130,3 +130,20 @@ docs/releases/v1.0.1d.md
 docs/releases/v1.0.1e.md
 docs/releases/v1.0.1f.md
 docs/cost-estimate.md
+
+# v1.1.0 continuous dictation and independent assistance
+.github/workflows/release-v1.1.0.yml
+Sources/KoeBridge/GeminiAudioRechecker.swift
+Sources/KoeBridgeCore/GeminiRecheckWire.swift
+Sources/KoeBridgeCore/InsertionReceiptPolicy.swift
+Sources/KoeBridgeCore/TranscriptReview.swift
+Sources/KoeBridgeCore/TranscriptionOptions.swift
+Sources/KoeBridgeSelfTest/InsertionReceiptPolicyTests.swift
+Sources/KoeBridgeSelfTest/TranscriptReviewSelfTests.swift
+Sources/KoeBridgeSelfTest/TranscriptionOptionsSelfTests.swift
+Tests/KoeBridgeCoreTests/GeminiRecheckWireTests.swift
+Tests/KoeBridgeCoreTests/InsertionReceiptPolicyTests.swift
+Tests/KoeBridgeCoreTests/TranscriptReviewTests.swift
+Tests/KoeBridgeCoreTests/TranscriptionOptionsTests.swift
+docs/releases/v1.1.0.md
+scripts/package_development_build.sh

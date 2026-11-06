@@ -3,6 +3,18 @@ import Testing
 @testable import KoeBridgeCore
 
 struct UsageMonitorTests {
+    @Test func recheckPurposeRoundTripsWithoutBreakingLegacyRecords() throws {
+        let sample = EngineUsageSample(at: Date(), engine: .gemini, audioSeconds: 1,
+                                       outcome: .success, purpose: .audioRecheck)
+        let encoder = JSONEncoder()
+        let decoder = JSONDecoder()
+        let data = try encoder.encode(sample)
+        #expect(try decoder.decode(EngineUsageSample.self, from: data).purpose == .audioRecheck)
+        var old = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        old.removeValue(forKey: "purpose")
+        #expect(try decoder.decode(EngineUsageSample.self, from: JSONSerialization.data(withJSONObject: old)).purpose == nil)
+    }
+
     private func file() -> URL {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("KoeBridgeUsage-\(UUID().uuidString)")

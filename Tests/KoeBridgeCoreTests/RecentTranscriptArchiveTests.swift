@@ -3,6 +3,37 @@ import Testing
 @testable import KoeBridgeCore
 
 struct RecentTranscriptArchiveTests {
+    @Test func outOfOrderRecognitionStillShowsNewestRecordingFirst() throws {
+        let url = temporaryArchiveURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        var store = try RecentTranscriptArchive(fileURL: url)
+        let earlier = TranscriptRecord(recordedAt: Date(timeIntervalSince1970: 10), engine: "Gemini",
+                                       text: "A", isPartial: false, delivery: .pending)
+        let later = TranscriptRecord(recordedAt: Date(timeIntervalSince1970: 20), engine: "Gemini",
+                                     text: "B", isPartial: false, delivery: .pending)
+        try store.insert(later)
+        try store.insert(earlier)
+        #expect(store.entries.map(\.text) == ["B", "A"])
+        #expect(try RecentTranscriptArchive(fileURL: url).entries.map(\.text) == ["B", "A"])
+    }
+
+    @Test func failedDiskUpdateRetainsActualDeliveryInMemory() throws {
+        let url = temporaryArchiveURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        var store = try RecentTranscriptArchive(fileURL: url)
+        let record = TranscriptRecord(engine: "Gemini", text: "入力済み", isPartial: false, delivery: .pending)
+        try store.insert(record)
+        // Replacing the destination with a directory deterministically makes
+        // the next atomic file write fail even when tests run as an administrator.
+        try FileManager.default.removeItem(at: url)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
+        #expect(throws: (any Error).self) {
+            try store.updateDelivery(id: record.id, to: .verifiedInserted, detail: "反映を確認")
+        }
+        #expect(store.entries.first?.delivery == .verifiedInserted)
+        #expect(store.entries.first?.deliveryDetail == "反映を確認")
+    }
+
     private func temporaryArchiveURL() -> URL {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("KoeBridgeTests-\(UUID().uuidString)")

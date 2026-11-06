@@ -12,7 +12,9 @@ struct TranscriptionStyleTests {
     }
 
     @Test func agentWireUsesSupportedVerbatimModeAndPrioritizesUserTerms() throws {
-        let raw = try GeminiWire.setup(vocabulary: ["MY_CUSTOM_TOOL", "n8n", "MY_CUSTOM_TOOL"],
+        let selectedTerms = AgentVocabulary.terms(user: ["MY_CUSTOM_TOOL", "n8n", "MY_CUSTOM_TOOL"],
+                                                  registeredEnabled: true, topicEnabled: true)
+        let raw = try GeminiWire.setup(vocabulary: selectedTerms,
                                        style: .agent, japaneseHint: true)
         let root = try #require(JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any])
         let setup = try #require(root["setup"] as? [String: Any])
@@ -28,8 +30,8 @@ struct TranscriptionStyleTests {
         #expect(setup["generationConfig"] != nil)
     }
 
-    @Test func defaultSettingsRemainUnmodifiedForOtherStyles() throws {
-        for style in [TranscriptionStyle.verbatim, .readable] {
+    @Test func noStyleImplicitlyEnablesVocabulary() throws {
+        for style in TranscriptionStyle.allCases {
             let json = try GeminiWire.setup(vocabulary: ["GitHub", "n8n", "GitHub"],
                                             style: style, japaneseHint: true)
             let root = try #require(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
@@ -37,6 +39,12 @@ struct TranscriptionStyleTests {
             let audio = try #require(outer["inputAudioTranscription"] as? [String: Any])
             #expect(audio["mode"] as? String == style.liveMode)
             #expect(audio["customVocabulary"] as? [String] == ["GitHub", "n8n"])
+
+            let emptyJSON = try GeminiWire.setup(vocabulary: [], style: style, japaneseHint: false)
+            let emptyRoot = try #require(JSONSerialization.jsonObject(with: Data(emptyJSON.utf8)) as? [String: Any])
+            let emptySetup = try #require(emptyRoot["setup"] as? [String: Any])
+            let emptyAudio = try #require(emptySetup["inputAudioTranscription"] as? [String: Any])
+            #expect(emptyAudio["customVocabulary"] == nil)
         }
     }
 
@@ -59,12 +67,26 @@ struct TranscriptionStyleTests {
 
     @Test func vocabularyHonorsUserPriorityAndDeduplicatesWithinCap() {
         let chosen = (0..<110).map { "term\($0)" }
-        let terms = AgentVocabulary.terms(user: chosen, style: .agent)
+        let terms = AgentVocabulary.terms(user: chosen, registeredEnabled: true, topicEnabled: true)
         #expect(terms.count == 100)
         #expect(terms.first == "term0")
         #expect(terms.last == "term99")
         #expect(AgentVocabulary.terms(user: ["GitHub", "github", " n8n "],
-                                      style: .agent).filter { $0.lowercased() == "github" }.count == 1)
-        #expect(AgentVocabulary.terms(user: ["test"], style: .agent, maximum: 0).isEmpty)
+                                      registeredEnabled: true, topicEnabled: true).filter { $0.lowercased() == "github" }.count == 1)
+        #expect(AgentVocabulary.terms(user: ["test"], registeredEnabled: true, topicEnabled: true, maximum: 0).isEmpty)
+        #expect(AgentVocabulary.terms(user: chosen, registeredEnabled: true, topicEnabled: true, maximum: 500).count == 100)
+    }
+
+    @Test func vocabularyCheckboxesSelectEachSourceIndependently() {
+        let user = [" custom_TOOL ", "n8n", "", "custom_TOOL"]
+        #expect(AgentVocabulary.terms(user: user, registeredEnabled: false, topicEnabled: false).isEmpty)
+        #expect(AgentVocabulary.terms(user: user, registeredEnabled: true, topicEnabled: false) == ["custom_TOOL", "n8n"])
+        let topicOnly = AgentVocabulary.terms(user: user, registeredEnabled: false, topicEnabled: true)
+        #expect(topicOnly == AgentVocabulary.defaults)
+        #expect(!topicOnly.contains("custom_TOOL"))
+        let both = AgentVocabulary.terms(user: user, registeredEnabled: true, topicEnabled: true)
+        #expect(Array(both.prefix(2)) == ["custom_TOOL", "n8n"])
+        #expect(both.filter { $0 == "n8n" }.count == 1)
+        #expect(both.contains("GitHub Actions"))
     }
 }

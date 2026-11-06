@@ -34,15 +34,18 @@ struct GeminiFailureTests {
         }
     }
 
-    func hybridVADUsesAutomaticDetectionAndAudioStreamEnd() throws {
+    func manualVADDisablesAutomaticEndpointing() throws {
         let setup = try GeminiWire.setup(vocabulary: [], smart: false, japaneseHint: true)
         let obj = try require(JSONSerialization.jsonObject(with: Data(setup.utf8)) as? [String: Any])
         let dict = try require(obj["setup"] as? [String: Any])
-        check(dict["realtimeInputConfig"] == nil)
-        let end = try GeminiWire.audioStreamEnd()
+        let realtime = try require(dict["realtimeInputConfig"] as? [String: Any])
+        let detection = try require(realtime["automaticActivityDetection"] as? [String: Any])
+        check(detection["disabled"] as? Bool == true)
+        let end = try GeminiWire.activityEnd()
         let parsed = try require(JSONSerialization.jsonObject(with: Data(end.utf8)) as? [String: Any])
         let input = try require(parsed["realtimeInput"] as? [String: Any])
-        check(input["audioStreamEnd"] as? Bool == true)
+        check(input["activityEnd"] as? [String: String] == [:])
+        check(input["audioStreamEnd"] == nil)
     }
 
     func largeVocabularyIsCappedAtOneHundred() throws {
@@ -51,6 +54,6 @@ struct GeminiFailureTests {
         let obj = try require(JSONSerialization.jsonObject(with: Data(setup.utf8)) as? [String: Any])
         let outer = try require(obj["setup"] as? [String: Any])
         let config = try require(outer["inputAudioTranscription"] as? [String: Any])
-        check((config["customVocabulary"] as? [String])?.count == 100)
+        check(config["customVocabulary"] as? [String] == Array(values.prefix(100)))
     }
 }

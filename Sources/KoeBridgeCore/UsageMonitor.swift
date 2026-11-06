@@ -28,6 +28,7 @@ public enum UsageOutcome: String, Codable, Sendable {
 }
 
 public struct EngineUsageSample: Codable, Equatable, Identifiable, Sendable {
+    public enum Purpose: String, Codable, Sendable { case audioRecheck }
     public let id: UUID
     public let at: Date
     public let engine: UsageEngine
@@ -37,15 +38,20 @@ public struct EngineUsageSample: Codable, Equatable, Identifiable, Sendable {
     public let outcome: UsageOutcome
     /// Apple only: whether the user chose Gemini but Apple was used instead.
     public let fallback: Bool
+    /// Absent in older records; distinguish optional non-Live rechecks from
+    /// primary recognition so a Live-only cost estimate cannot price both.
+    public let purpose: Purpose?
 
     public init(id: UUID = UUID(), at: Date, engine: UsageEngine,
-                audioSeconds: Double, outcome: UsageOutcome, fallback: Bool = false) {
+                audioSeconds: Double, outcome: UsageOutcome, fallback: Bool = false,
+                purpose: Purpose? = nil) {
         self.id = id
         self.at = at
         self.engine = engine
         self.audioSeconds = max(0, audioSeconds.isFinite ? audioSeconds : 0)
         self.outcome = outcome
         self.fallback = fallback
+        self.purpose = purpose
     }
 }
 

@@ -22,7 +22,7 @@ struct PreviewView: View {
         case .hidden, .preparing: return "mic"
         case .recording: return "waveform"
         case .ending: return "stop.circle"
-        case .processing: return "ellipsis"
+        case .processing, .checking: return "ellipsis"
         case .noInput: return "mic.slash"
         case .sent: return "arrow.up.circle.fill"
         case .saved: return "clock.arrow.circlepath"
@@ -36,7 +36,7 @@ struct PreviewView: View {
                 Circle()
                     .fill(controller.isRecording ? Color.red.opacity(0.15) : Color.secondary.opacity(0.12))
                     .frame(width: 38, height: 38)
-                if controller.overlayFeedback == .processing {
+                if controller.overlayFeedback == .processing || controller.overlayFeedback == .checking {
                     ProgressView()
                         .controlSize(.small)
                         .accessibilityLabel("文字起こしの確定処理中")

@@ -48,8 +48,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-swift build -c release --product KoeBridge
-BIN="$(swift build -c release --show-bin-path)/KoeBridge"
+BUILD_ARGS=(-c release)
+if [ "${KOEBRIDGE_UNIVERSAL:-0}" = "1" ]; then
+  BUILD_ARGS+=(--arch arm64 --arch x86_64)
+fi
+swift build "${BUILD_ARGS[@]}" --product KoeBridge
+BIN="$(swift build "${BUILD_ARGS[@]}" --show-bin-path)/KoeBridge"
 if [ ! -x "$BIN" ]; then
   echo "ERROR: compiled binary not found: $BIN" >&2
   exit 1
@@ -65,6 +69,9 @@ if [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$APP/Contents/Info
 fi
 test -s "$APP/Contents/Resources/KoeBridge_AppIcon.icns"
 chmod +x "$APP/Contents/MacOS/KoeBridge"
+if [ "${KOEBRIDGE_UNIVERSAL:-0}" = "1" ]; then
+  lipo -verify_arch arm64 x86_64 "$APP/Contents/MacOS/KoeBridge"
+fi
 plutil -lint "$APP/Contents/Info.plist"
 codesign --force --sign "$SIGN_IDENTITY" "$APP"
 codesign --verify --strict --deep "$APP"

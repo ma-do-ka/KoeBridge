@@ -8,6 +8,7 @@ public enum OverlayFeedback: String, Equatable, Sendable {
     case recording
     case ending
     case processing
+    case checking
     case noInput
     case sent
     case saved
@@ -20,6 +21,7 @@ public enum OverlayFeedback: String, Equatable, Sendable {
         case .recording: return "話してください…"
         case .ending: return "録音を終了しています…"
         case .processing: return "文字起こしを確定しています…"
+        case .checking: return "追加チェック中…"
         case .noInput: return "音声入力なし"
         case .sent: return "入力イベントを送信しました"
         case .saved: return "文字起こしを履歴に保存しました"

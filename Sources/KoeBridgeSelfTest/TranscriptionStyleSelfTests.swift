@@ -10,7 +10,9 @@ struct TranscriptionStyleSelfTests {
     }
 
     func agentModeUsesSupportedGeminiWire() throws {
-        let payload = try GeminiWire.setup(vocabulary: ["MY_CUSTOM_TOOL", "n8n"],
+        let wordsToSend = AgentVocabulary.terms(user: ["MY_CUSTOM_TOOL", "n8n"],
+                                                registeredEnabled: true, topicEnabled: true)
+        let payload = try GeminiWire.setup(vocabulary: wordsToSend,
                                            style: .agent, japaneseHint: true)
         let root = try require(JSONSerialization.jsonObject(with: Data(payload.utf8)) as? [String: Any])
         let setup = try require(root["setup"] as? [String: Any])
@@ -28,6 +30,13 @@ struct TranscriptionStyleSelfTests {
         let originalAudio = try require(originalSetup["inputAudioTranscription"] as? [String: Any])
         check(originalAudio["mode"] as? String == "SMART")
         check(originalAudio["customVocabulary"] as? [String] == ["GitHub", "n8n"])
+        for style in TranscriptionStyle.allCases {
+            let empty = try GeminiWire.setup(vocabulary: [], style: style, japaneseHint: false)
+            let emptyRoot = try require(JSONSerialization.jsonObject(with: Data(empty.utf8)) as? [String: Any])
+            let emptySetup = try require(emptyRoot["setup"] as? [String: Any])
+            let emptyAudio = try require(emptySetup["inputAudioTranscription"] as? [String: Any])
+            check(emptyAudio["customVocabulary"] == nil)
+        }
     }
 
     func noTechnicalDetailIsDeletedByFormatting() {
@@ -37,6 +46,6 @@ struct TranscriptionStyleSelfTests {
         check(formatted.contains("。\n次に"))
         check(formatted.contains("。\n最後に"))
         check(AgentInstructionFormatting.format(formatted) == formatted)
-        check(AgentVocabulary.terms(user: ["one"], style: .agent, maximum: 0).isEmpty)
+        check(AgentVocabulary.terms(user: ["one"], registeredEnabled: true, topicEnabled: true, maximum: 0).isEmpty)
     }
 }

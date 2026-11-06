@@ -20,14 +20,15 @@ struct GeminiWireTests {
     }
 
     @Test func parseInterimFinalTurnComplete() throws {
-        let r = try GeminiWire.parse("""
+        let events = try GeminiWire.parse("""
         {"serverContent":{"interimInputTranscription":{"text":"おは"},"inputTranscription":{"text":"おはよう"},"turnComplete":true}}
         """)
-        #expect(r == [.interim("おは"), .final("おはよう"), .turnComplete])
+        #expect(events == [.interim("おは"), .final("おはよう"), .turnComplete])
     }
 
     @Test func setupComplete() throws {
-        #expect(try GeminiWire.parse("{\"setupComplete\":{}}") == [.setupComplete])
+        let events = try GeminiWire.parse("{\"setupComplete\":{}}")
+        #expect(events == [.setupComplete])
     }
 
     @Test func assemblerJapaneseSegmentsAndEnglish() {
@@ -35,8 +36,8 @@ struct GeminiWireTests {
         a.apply(.interim("おは"))
         #expect(a.displayText == "おは")
         a.apply(.final("おはよう"))
-        a.apply(.final("ございます"))
-        a.apply(.final("ございます"))
+        a.apply(.final("ございます"), segmentIdentity: "1s|2s|")
+        a.apply(.final("ございます"), segmentIdentity: "1s|2s|")
         #expect(a.committedText == "おはようございます")
         a.apply(.final("GitHub"))
         a.apply(.final("API"))
@@ -51,23 +52,55 @@ struct GeminiWireTests {
         assembler.apply(.interim("続いてテストし、PRを作成する。"))
         #expect(assembler.committedText == "GitHubのIssueを確認する。")
         #expect(assembler.recoveryText == "GitHubのIssueを確認する。続いてテストし、PRを作成する。")
-        // A cumulative interim must not duplicate the committed prefix.
-        assembler.apply(.interim("GitHubのIssueを確認する。続いてテストし、PRを作成する。"))
-        #expect(assembler.recoveryText == "GitHubのIssueを確認する。続いてテストし、PRを作成する。")
-        // Final-only input is unchanged.
-        assembler.apply(.final("GitHubのIssueを確認する。続いてテストし、PRを作成する。"))
+        assembler.apply(.interim("続いてテストし、PRを作成する。その後は停止。"))
+        #expect(assembler.recoveryText == "GitHubのIssueを確認する。続いてテストし、PRを作成する。その後は停止。")
+        assembler.apply(.final("続いてテストし、PRを作成する。その後は停止。"))
         #expect(assembler.recoveryText == assembler.committedText)
+        #expect(assembler.interim.isEmpty)
     }
 
-    @Test func assemblerCumulativeFinal() {
+    @Test func overlappingSegmentsDoNotEraseSpokenWords() {
         var a = TranscriptAssembler()
         a.apply(.final("今日は"))
         a.apply(.final("今日は晴れ"))
-        #expect(a.committedText == "今日は晴れ")
+        // Shared text is not a cumulative-transcript contract or a segment ID.
+        #expect(a.committedText == "今日は今日は晴れ")
+    }
+
+    @Test func segmentAssemblyPreservesNumbersNamesAndNegations() {
+        var a = TranscriptAssembler()
+        for segment in ["GitHubのPRは", "123番、金額は", "30,000円ではありません。", "3,000円です。", "マージしないでください。"] {
+            a.apply(.final(segment))
+        }
+        #expect(a.committedText == "GitHubのPRは123番、金額は30,000円ではありません。3,000円です。マージしないでください。")
+    }
+
+    @Test func finalSegmentMetadataIsOptionalAndContentFree() {
+        let raw = """
+        {"serverContent":{"inputTranscription":{"text":"PRIVATE","startOffset":"0s","endOffset":"1.25s","finished":true}}}
+        """
+        #expect(GeminiWire.finalSegmentIdentity(raw) == "0s|1.25s|")
+        #expect(GeminiWire.transcriptionFinished(raw))
+        let noOffsets = """
+        {"serverContent":{"inputTranscription":{"text":"PRIVATE"}}}
+        """
+        #expect(GeminiWire.finalSegmentIdentity(noOffsets) == nil)
+        #expect(!GeminiWire.transcriptionFinished(noOffsets))
+        let missingEnd = """
+        {"serverContent":{"inputTranscription":{"startOffset":"0s"}}}
+        """
+        #expect(GeminiWire.finalSegmentIdentity(missingEnd) == nil)
+        let emptyTerminal = """
+        {"serverContent":{"inputTranscription":{"finished":true}}}
+        """
+        #expect(GeminiWire.transcriptionFinished(emptyTerminal))
+        #expect(!GeminiWire.transcriptionFinished("garbled"))
     }
 
     @Test func diagnosticFrameKindOmitsContent() {
-        let raw = "{\"serverContent\":{\"modelTurn\":{\"parts\":[{\"text\":\"PRIVATE\"}]}}}"
+        let raw = """
+        {"serverContent":{"modelTurn":{"parts":[{"text":"PRIVATE"}]}}}
+        """
         #expect(GeminiWire.frameKind(raw) == "serverContent.other")
         #expect(!GeminiWire.frameKind(raw).contains("PRIVATE"))
         #expect(GeminiWire.frameKind("{\"goAway\":{}}") == "goAway")

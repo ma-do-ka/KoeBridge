@@ -90,3 +90,7 @@ python3 scripts/estimate_usage_cost.py --days 30 --usd-jpy 158
 公式請求資料：[Cloud Billingの詳細データ](https://docs.cloud.google.com/billing/docs/how-to/export-data-bigquery-tables/detailed-usage)
 
 **公開リポジトリに個人の請求明細・利用統計JSON・認識履歴・APIキーをアップロードしないでください。**
+
+## v1.1.0の音声再チェック
+
+任意の「音声を再認識して照合する」は、Live認識とは別にGemini 3.5 Transcribeへ同じ音声を最大1回送信します。利用統計ではGeminiの追加試行として数え、`purpose: audioRecheck`で区別します。上記スクリプトは再チェックの回数・音声分数を表示しますが、Live用の分単価を当てはめず、**概算金額から除外**します。再チェック分が無料になる意味ではありません。実際の課金はGoogle側で確認してください。

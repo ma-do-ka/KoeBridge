@@ -26,7 +26,9 @@ jobs:
       - name: Swift release build
         run: swift build -c release
       - name: Build signed macOS app bundle
-        run: KOEBRIDGE_ALLOW_ADHOC=1 bash ./scripts/build_app.sh
+        run: KOEBRIDGE_ALLOW_ADHOC=1 KOEBRIDGE_UNIVERSAL=1 bash ./scripts/build_app.sh
+      - name: Validate development packaging command
+        run: bash -n scripts/package_development_build.sh
       - name: Verify app bundle
         run: |
           test -x dist/KoeBridge.app/Contents/MacOS/KoeBridge
@@ -35,3 +37,4 @@ jobs:
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' dist/KoeBridge.app/Contents/Info.plist)" = "KoeBridge_AppIcon.icns"
           echo "10186e4ecd7927a0d25c2fc26eed8c83db1f21def23f267f4695ca45f04f10f5  dist/KoeBridge.app/Contents/Resources/KoeBridge_AppIcon.icns" | shasum -a 256 --check
           codesign --verify --deep --strict dist/KoeBridge.app
+          lipo -verify_arch arm64 x86_64 dist/KoeBridge.app/Contents/MacOS/KoeBridge

@@ -12,9 +12,17 @@ The supplied macOS app icon is packaged from `Resources/KoeBridge_AppIcon.icns` 
 
 **v1.0.1 source release:** Accidental rapid, silent shortcut toggles now dismiss as a short, neutral "音声入力なし" notice rather than a transcription failure. Real speech and real hardware/API errors retain their existing paths. See [release notes](docs/releases/v1.0.1.md). There is no notarized installer.
 
+## v1.1.0 — continuous dictation and independent assistance
+
+[Download the universal development app](https://github.com/ma-do-ka/KoeBridge/releases/download/v1.1.0/KoeBridge-v1.1.0-macOS-universal-development.zip) for macOS 15+ (Apple Silicon and Intel). **Ad-hoc signed, not Developer ID signed or notarized.** Quit KoeBridge before replacing the app; macOS privacy permissions may need to be granted again. Source builds with an existing persistent certificate remain supported. See [release notes](docs/releases/v1.1.0.md).
+
+Overlapping recordings now share only verified changes caused by the preceding automatic input; user focus and caret changes remain protected. Gemini Live uses explicit activity start/end around a recording, so a thinking pause does not itself send an end marker. Registered and developer vocabulary are separate checkboxes; neither checked means neither is sent. Additional local punctuation checks and optional audio re-recognition are independently selectable and default off. Audio rechecks cost an additional API request, have a bounded deadline, and retain lexical disagreements for review instead of silently replacing words or numbers. Apple recognition never invokes the cloud recheck.
+
+The downloadable development app is built and tested in macOS CI. Actual microphone, Gemini service and target-editor behavior still require runtime verification on a user Mac.
+
 ## v1.0.1b agent-instruction mode
 
-Choose **Settings → Gemini → 文字起こしスタイル → AIエージェント指示**. This uses the supported Gemini Live `VERBATIM` transcription with user-preferred developer terminology and a small built-in glossary. Unlike SMART, it prioritizes preserving repetitions, command syntax, file paths, URLs, technical terms, negations, and numeric constraints. It never sends unsupported system-instruction fields or calls a second LLM. Short line breaks may be added to history, but the safe auto-typing path replaces newlines with spaces to prevent accidental submission. Transcription accuracy and exact command spelling are not guaranteed.
+Choose **Settings → Gemini → 文字起こしスタイル → AIエージェント指示**. This uses the supported Gemini Live `VERBATIM` transcription with user-preferred developer terminology and a small built-in glossary. Unlike SMART, it prioritizes preserving repetitions, command syntax, file paths, URLs, technical terms, negations, and numeric constraints. It never sends unsupported system-instruction fields. The style itself does not request a second model; v1.1.0 audio review is a separate opt-in. Short line breaks may be added to history, but the safe auto-typing path replaces newlines with spaces to prevent accidental submission. Transcription accuracy and exact command spelling are not guaranteed.
 
 The same source release includes **Settings → 一般 → ログイン時に自動起動** using the actual macOS login-item registration. The internal macOS version remains `1.0.1` (build 21), and the in-app release label is `1.0.1b`.
 
@@ -26,7 +34,7 @@ In **Settings → 一般 → 起動と常駐**, turning on **ログイン時に�
 
 ## v1.0.1d — Update Center and actionable General settings
 
-The menu bar has **Check for Updates…** and **Settings → 情報 → アップデート** shows official stable GitHub Releases, version status, the last successful check, and an optional daily automatic check. No executable is downloaded silently. Because KoeBridge currently publishes **source archives only** (no Developer ID signed/notarized appcast or installable app), automatic download and installation is disabled rather than deceptively appearing to work. When a newer stable tag is found, a version-pinned, safety-checked source update command can be copied and run **after quitting KoeBridge**.
+The menu bar has **Check for Updates…** and **Settings → 情報 → アップデート** shows official stable GitHub Releases, version status, the last successful check, and an optional daily automatic check. No executable is downloaded silently. Releases provide source archives and an explicitly labelled development app, but no Developer ID signed/notarized automatic-update package; automatic installation remains disabled. When a newer stable tag is found, a version-pinned, safety-checked source update command can be copied and run **after quitting KoeBridge**.
 
 **Settings → 一般** now directly edits the recognition engine, shortcut, auto-typing, and Gemini transcription style, and shows permission/API key readiness without requiring multiple page jumps. Read the [v1.0.1d release notes](docs/releases/v1.0.1d.md).
 

@@ -53,6 +53,19 @@ class CostEstimateTests(unittest.TestCase):
         }, self.now)
         self.assertEqual(rows, {})
 
+    def test_optional_recheck_is_counted_but_not_priced_as_live(self):
+        rows = summarize({
+            "engineEvents": [sample(self.now, "gemini", 60),
+                             dict(sample(self.now, "gemini", 60), purpose="audioRecheck")],
+            "tokenEvents": [],
+        }, self.now)
+        row = next(iter(rows.values()))
+        self.assertEqual(row["gemini_calls"], 2)
+        self.assertEqual(row["recheck_calls"], 1)
+        self.assertEqual(row["gemini_seconds"], 120)
+        self.assertIn("$0.0090", render(rows))
+        self.assertIn("追加チェック: 1回 / 1.00分", render(rows))
+
     def test_partial_metadata_marked_missing(self):
         rows = summarize({
             "engineEvents": [],

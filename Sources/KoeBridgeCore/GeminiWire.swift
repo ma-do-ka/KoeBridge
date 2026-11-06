@@ -30,21 +30,22 @@ public enum GeminiWire {
             // Agent is a KoeBridge presentation mode, not a new Gemini mode.
             "mode": style.liveMode
         ]
-        let words: [String]
-        if style == .agent {
-            words = AgentVocabulary.terms(user: vocabulary, style: style)
-        } else {
-            // Preserve existing VERBATIM/SMART request normalization.
-            words = Array(Set(vocabulary.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                                        .filter { !$0.isEmpty })).sorted().prefix(100).map { $0 }
-        }
+        // The caller snapshots the user's explicitly selected sources. A
+        // presentation style must never re-enable an unchecked source.
+        // Preserve priority/order when the combined list reaches the API cap.
+        var seen = Set<String>()
+        let words = vocabulary.lazy
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && seen.insert($0).inserted }
+            .prefix(100).map { $0 }
         if !words.isEmpty { audio["customVocabulary"] = words }
         let setup: [String: Any] = [
             "setup": [
                 "model": "models/\(modelID)",
                 "generationConfig": ["responseModalities": ["TEXT"]],
-                // Keep existing automatic VAD. No unsupported instruction
-                // fields, secondary model calls or change to audio streaming.
+                // A thinking pause is not an endpoint. The client sends one
+                // activityStart after setup and one activityEnd on user stop.
+                "realtimeInputConfig": ["automaticActivityDetection": ["disabled": true]],
                 "inputAudioTranscription": audio
             ]
         ]
@@ -91,6 +92,30 @@ public enum GeminiWire {
             if content["turnComplete"] as? Bool == true { events.append(.turnComplete) }
         }
         return events
+    }
+
+    /// Identity is available only when the service supplies both utterance
+    /// offsets. Text equality alone cannot distinguish a replay from a user
+    /// deliberately repeating the same words. These are documented optional
+    /// fields; their absence must not suppress a final segment.
+    public static func finalSegmentIdentity(_ raw: String) -> String? {
+        guard let data = raw.data(using: .utf8),
+              let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let content = root["serverContent"] as? [String: Any],
+              let final = content["inputTranscription"] as? [String: Any],
+              let start = final["startOffset"] as? String, !start.isEmpty,
+              let end = final["endOffset"] as? String, !end.isEmpty else { return nil }
+        return start + "|" + end + "|" + ((final["speakerLabel"] as? String) ?? "")
+    }
+
+    /// Optional provider completion, including a text-free terminal frame.
+    /// Absence is unknown, not an inferred completion after a quiet interval.
+    public static func transcriptionFinished(_ raw: String) -> Bool {
+        guard let data = raw.data(using: .utf8),
+              let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let content = root["serverContent"] as? [String: Any],
+              let transcription = content["inputTranscription"] as? [String: Any] else { return false }
+        return transcription["finished"] as? Bool == true
     }
 
     /// The server may send usageMetadata alongside other messages, including

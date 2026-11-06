@@ -1,5 +1,4 @@
 import Foundation
-
 import KoeBridgeCore
 
 struct GeminiWireTests {
@@ -20,14 +19,15 @@ struct GeminiWireTests {
     }
 
     func parseInterimFinalTurnComplete() throws {
-        let r = try GeminiWire.parse("""
+        let events = try GeminiWire.parse("""
         {"serverContent":{"interimInputTranscription":{"text":"おは"},"inputTranscription":{"text":"おはよう"},"turnComplete":true}}
         """)
-        check(r == [.interim("おは"), .final("おはよう"), .turnComplete])
+        check(events == [.interim("おは"), .final("おはよう"), .turnComplete])
     }
 
     func setupComplete() throws {
-        try check(try GeminiWire.parse("{\"setupComplete\":{}}") == [.setupComplete])
+        let events = try GeminiWire.parse("{\"setupComplete\":{}}")
+        check(events == [.setupComplete])
     }
 
     func assemblerJapaneseSegmentsAndEnglish() {
@@ -35,8 +35,8 @@ struct GeminiWireTests {
         a.apply(.interim("おは"))
         check(a.displayText == "おは")
         a.apply(.final("おはよう"))
-        a.apply(.final("ございます"))
-        a.apply(.final("ございます"))
+        a.apply(.final("ございます"), segmentIdentity: "1s|2s|")
+        a.apply(.final("ございます"), segmentIdentity: "1s|2s|")
         check(a.committedText == "おはようございます")
         a.apply(.final("GitHub"))
         a.apply(.final("API"))
@@ -46,27 +46,62 @@ struct GeminiWireTests {
     }
 
     func recoveryRetainsUncommittedInstructions() {
-        var a = TranscriptAssembler()
-        a.apply(.final("GitHubを確認。"))
-        a.apply(.interim("テストを実行してPRを作成。"))
-        check(a.committedText == "GitHubを確認。")
-        check(a.recoveryText == "GitHubを確認。テストを実行してPRを作成。")
-        a.apply(.interim("GitHubを確認。テストを実行してPRを作成。"))
-        check(a.recoveryText == "GitHubを確認。テストを実行してPRを作成。")
+        var assembler = TranscriptAssembler()
+        assembler.apply(.final("GitHubのIssueを確認する。"))
+        assembler.apply(.interim("続いてテストし、PRを作成する。"))
+        check(assembler.committedText == "GitHubのIssueを確認する。")
+        check(assembler.recoveryText == "GitHubのIssueを確認する。続いてテストし、PRを作成する。")
+        assembler.apply(.interim("続いてテストし、PRを作成する。その後は停止。"))
+        check(assembler.recoveryText == "GitHubのIssueを確認する。続いてテストし、PRを作成する。その後は停止。")
+        assembler.apply(.final("続いてテストし、PRを作成する。その後は停止。"))
+        check(assembler.recoveryText == assembler.committedText)
+        check(assembler.interim.isEmpty)
     }
 
-    func assemblerCumulativeFinal() {
+    func overlappingSegmentsDoNotEraseSpokenWords() {
         var a = TranscriptAssembler()
         a.apply(.final("今日は"))
         a.apply(.final("今日は晴れ"))
-        check(a.committedText == "今日は晴れ")
+        // Shared text is not a cumulative-transcript contract or a segment ID.
+        check(a.committedText == "今日は今日は晴れ")
+    }
+
+    func segmentAssemblyPreservesNumbersNamesAndNegations() {
+        var a = TranscriptAssembler()
+        for segment in ["GitHubのPRは", "123番、金額は", "30,000円ではありません。", "3,000円です。", "マージしないでください。"] {
+            a.apply(.final(segment))
+        }
+        check(a.committedText == "GitHubのPRは123番、金額は30,000円ではありません。3,000円です。マージしないでください。")
+    }
+
+    func finalSegmentMetadataIsOptionalAndContentFree() {
+        let raw = """
+        {"serverContent":{"inputTranscription":{"text":"PRIVATE","startOffset":"0s","endOffset":"1.25s","finished":true}}}
+        """
+        check(GeminiWire.finalSegmentIdentity(raw) == "0s|1.25s|")
+        check(GeminiWire.transcriptionFinished(raw))
+        let noOffsets = """
+        {"serverContent":{"inputTranscription":{"text":"PRIVATE"}}}
+        """
+        check(GeminiWire.finalSegmentIdentity(noOffsets) == nil)
+        check(!GeminiWire.transcriptionFinished(noOffsets))
+        let missingEnd = """
+        {"serverContent":{"inputTranscription":{"startOffset":"0s"}}}
+        """
+        check(GeminiWire.finalSegmentIdentity(missingEnd) == nil)
+        let emptyTerminal = """
+        {"serverContent":{"inputTranscription":{"finished":true}}}
+        """
+        check(GeminiWire.transcriptionFinished(emptyTerminal))
+        check(!GeminiWire.transcriptionFinished("garbled"))
     }
 
     func unknownFramesCanBeDiagnosedWithoutLeakingTheirText() {
-        let unexpected = "{\"serverContent\":{\"modelTurn\":{\"parts\":[{\"text\":\"PRIVATE\"}]}}}"
-        check(GeminiWire.frameKind(unexpected) == "serverContent.other")
+        let raw = """
+        {"serverContent":{"modelTurn":{"parts":[{"text":"PRIVATE"}]}}}
+        """
+        check(GeminiWire.frameKind(raw) == "serverContent.other")
+        check(!GeminiWire.frameKind(raw).contains("PRIVATE"))
         check(GeminiWire.frameKind("{\"goAway\":{}}") == "goAway")
-        check(GeminiWire.frameKind("garbled") == "invalid_json")
-        check(GeminiWire.frameKind(unexpected).contains("PRIVATE") == false)
     }
 }
