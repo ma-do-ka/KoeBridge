@@ -31,4 +31,22 @@ struct TranscriptReviewSelfTests {
             _ = try GeminiRecheckWire.response(Data(#"{"candidates":[{"finishReason":"MAX_TOKENS"}]}"#.utf8))
         }
     }
+
+    func mixedLiteralBoundariesKeepStableUnicodeOffsets() {
+        let literal = "👩🏽‍💻 `という。こと` src/という。こと.swift 「について。は」"
+        let source = "設定について。は変更するという。ことです。\(literal) 次の案に関して。は担当として。は確認します。という。ものです。"
+        let expected = "設定については変更するということです。\(literal) 次の案に関しては担当としては確認します。というものです。"
+        let result = TextContextChecking.check(source)
+        check(result.text == expected)
+        check(result.changes == 5)
+        check(TextContextChecking.check(result.text).changes == 0)
+        check(TextContextChecking.hasMatchingWords(original: source, candidate: result.text))
+
+        let quoted = "👩🏽‍💻「作業。次に確認」 src/手順。必ず確認.swift"
+        let instructions = "開始。必ず確認。次に\(quoted) を参照。その後実行。最後に確認。"
+        let formatted = AgentInstructionFormatting.format(instructions)
+        check(formatted == "開始。\n必ず確認。\n次に\(quoted) を参照。\nその後実行。\n最後に確認。")
+        check(AgentInstructionFormatting.format(formatted) == formatted)
+        check(formatted.replacingOccurrences(of: "\n", with: "") == instructions)
+    }
 }

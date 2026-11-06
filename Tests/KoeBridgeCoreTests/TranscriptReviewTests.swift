@@ -67,4 +67,15 @@ struct TranscriptReviewTests {
         json.removeValue(forKey: "review")
         #expect(try decoder.decode(TranscriptRecord.self, from: JSONSerialization.data(withJSONObject: json)).review == nil)
     }
+
+    @Test func mixedConnectivesPreserveOriginalLiteralBoundariesAndUnicodeOffsets() {
+        let literal = "👩🏽‍💻 `という。こと` src/という。こと.swift 「について。は」"
+        let source = "設定について。は変更するという。ことです。\(literal) 次の案に関して。は担当として。は確認します。という。ものです。"
+        let expected = "設定については変更するということです。\(literal) 次の案に関しては担当としては確認します。というものです。"
+        let result = TextContextChecking.check(source)
+        #expect(result.text == expected)
+        #expect(result.changes == 5)
+        #expect(TextContextChecking.check(result.text).changes == 0)
+        #expect(TextContextChecking.hasMatchingWords(original: source, candidate: result.text))
+    }
 }

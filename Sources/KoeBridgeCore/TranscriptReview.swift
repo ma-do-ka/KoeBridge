@@ -40,29 +40,29 @@ public enum TextContextChecking {
     ]
 
     public static func check(_ text: String) -> Result {
-        var output = text
-        var count = 0
+        let protected = ProtectedTextSpans(text)
+        let source = text as NSString
+        var edits: [(range: NSRange, replacement: String)] = []
         for (before, after) in joins {
-            // Recompute after each edit; all indices remain UTF-16 based.
-            let protected = protectedRanges(in: output)
-            let source = output as NSString
-            var matches: [NSRange] = []
             var search = NSRange(location: 0, length: source.length)
             while search.length > 0 {
                 let found = source.range(of: before, options: [], range: search)
                 guard found.location != NSNotFound else { break }
-                if !protected.contains(where: { NSIntersectionRange($0, found).length > 0 }) {
-                    matches.append(found)
+                if !protected.intersects(found) {
+                    edits.append((found, after))
                 }
                 let end = NSMaxRange(found)
                 search = NSRange(location: end, length: source.length - end)
             }
-            let edited = NSMutableString(string: output)
-            for range in matches.reversed() { edited.replaceCharacters(in: range, with: after) }
-            count += matches.count
-            output = edited as String
         }
-        return Result(text: output, changes: count)
+        // The deleted punctuation positions are distinct. Phrases may share
+        // a boundary character, which both replacements retain. Apply from the
+        // end to preserve original UTF-16 offsets and inspect literals once.
+        let output = NSMutableString(string: text)
+        for edit in edits.sorted(by: { $0.range.location > $1.range.location }) {
+            output.replaceCharacters(in: edit.range, with: edit.replacement)
+        }
+        return Result(text: output as String, changes: edits.count)
     }
 
     public static func isSuspicious(_ text: String) -> Bool {
@@ -102,46 +102,9 @@ public enum TextContextChecking {
     }
 
     private static func protectedText(in text: String) -> [Data] {
-        let source = text as NSString
-        return protectedRanges(in: text).map { Data(source.substring(with: $0).utf8) }
+        ProtectedTextSpans(text).contents
     }
 
-    static func protectedRanges(in text: String) -> [NSRange] {
-        // Quote bodies include punctuation/whitespace verbatim. ASCII runs
-        // protect URLs, paths, flags, decimals, signs, IDs and English tokens;
-        // token boundaries also prevent "foo bar" -> "foobar" acceptance.
-        let patterns = [
-            #"```[\s\S]*?(?:```|$)"#,
-            #"`[^`\n]*(?:`|\n|$)"#,
-            #"「[^」]*(?:」|$)|『[^』]*(?:』|$)"#,
-            #"“[^”]*(?:”|$)|‘[^’]*(?:’|$)"#,
-            #""[^"\n]*(?:"|\n|$)|'[^'\n]*(?:'|\n|$)"#,
-            // URLs may contain Japanese punctuation. A path with an extension
-            // ends at that extension, even when a Japanese particle follows it;
-            // otherwise an unspaced paragraph would all become protected text.
-            #"(?:[A-Za-z][A-Za-z0-9+.-]*://|www\.)[^\s<>"'「」『』“”‘’`]+"#,
-            #"(?:[^\s。、<>"'「」『』“”‘’`/\\]*[/\\])+[^\s<>"'「」『』“”‘’`/\\]*?\.[A-Za-z0-9]{1,12}(?:\.[A-Za-z0-9]{1,12})*(?![A-Za-z0-9_.])"#,
-            #"[^\s。、<>"'「」『』“”‘’`/\\]*[/\\][^\s。、<>"'「」『』“”‘’`]*"#,
-            #"[^\s、<>"'「」『』“”‘’`/\\]+?\.[A-Za-z0-9]{1,12}(?:\.[A-Za-z0-9]{1,12})*(?![A-Za-z0-9_.])"#,
-            #"[\p{N}〇一二三四五六七八九十百千万億兆]+|[!-~]+"#
-        ]
-        let fullRange = NSRange(text.startIndex..., in: text)
-        // Match each family independently: a broad path token before a URL
-        // must not hide the URL's longer, more specific protected span.
-        let ranges = patterns.flatMap { pattern -> [NSRange] in
-            guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
-            return regex.matches(in: text, range: fullRange).map(\.range)
-        }.sorted { $0.location == $1.location ? $0.length > $1.length : $0.location < $1.location }
-        var merged: [NSRange] = []
-        for range in ranges {
-            if let last = merged.last, range.location < NSMaxRange(last) {
-                merged[merged.count - 1] = NSUnionRange(last, range)
-            } else {
-                merged.append(range)
-            }
-        }
-        return merged
-    }
 }
 
 public enum TranscriptReviewDeadline {

@@ -8,7 +8,7 @@ import KoeBridgeCore
 struct UsageMonitorView: View {
     @ObservedObject var controller: VoiceController
     @Environment(\.colorScheme) private var colorScheme
-    let focusID: String?
+    let focusRequest: SettingsFocusRequest?
     @State private var scale: Scale = .hour
     @State private var confirmDelete = false
 
@@ -250,12 +250,12 @@ struct UsageMonitorView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .onAppear {
-                if let focusID { proxy.scrollTo(focusID, anchor: .top) }
+                if let focusRequest { proxy.scrollTo(focusRequest.id, anchor: .top) }
             }
-            .onChange(of: focusID) { _, target in
+            .onChange(of: focusRequest) { _, target in
                 if let target {
                     withAnimation(.easeInOut(duration: 0.18)) {
-                        proxy.scrollTo(target, anchor: .top)
+                        proxy.scrollTo(target.id, anchor: .top)
                     }
                 }
             }

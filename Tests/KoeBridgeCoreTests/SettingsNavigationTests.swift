@@ -61,4 +61,44 @@ struct SettingsNavigationTests {
         #expect(nav.pages.count <= 40)
         #expect(nav.index < nav.pages.count)
     }
+
+    @Test func repeatedSearchAndUpdateRequestsStillProduceScrollEvents() throws {
+        for id in ["words", "updates"] {
+            let entry = try #require(SettingsSearchCatalog.entries.first { $0.id == id })
+            var nav = SettingsNavigation()
+            nav.focus(entry)
+            let first = try #require(nav.focusRequest)
+            let originalPages = nav.pages
+
+            // The anchor is unchanged, but a new user action must still scroll.
+            nav.focus(entry)
+            let second = try #require(nav.focusRequest)
+            #expect(first != second)
+            #expect(first.id == second.id)
+            #expect(second.section == nav.selected)
+            #expect(nav.pages == originalPages)
+        }
+    }
+
+    @Test func pageNavigationClearsOldSearchRequests() throws {
+        let entry = try #require(SettingsSearchCatalog.entries.first { $0.id == "updates" })
+        var nav = SettingsNavigation()
+        nav.focus(entry)
+        nav.select(.about)
+        #expect(nav.focusRequest == nil)
+        #expect(nav.pages == [.voice, .about])
+
+        nav.focus(entry)
+        nav.back()
+        #expect(nav.selected == .voice)
+        #expect(nav.focusRequest == nil)
+        nav.forward()
+        #expect(nav.selected == .about)
+        #expect(nav.focusRequest == nil)
+
+        nav.focus(entry)
+        nav.select(.permissions)
+        #expect(nav.selected == .permissions)
+        #expect(nav.focusRequest == nil)
+    }
 }

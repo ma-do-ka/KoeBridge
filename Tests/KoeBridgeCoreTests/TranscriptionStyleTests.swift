@@ -99,4 +99,14 @@ struct TranscriptionStyleTests {
         #expect(both.filter { $0 == "n8n" }.count == 1)
         #expect(both.contains("GitHub Actions"))
     }
+
+    @Test func allInstructionMarkersShareStableOffsetsAroundProtectedText() {
+        let literal = "👩🏽‍💻「作業。次に確認」 src/手順。必ず確認.swift"
+        let source = "開始。必ず確認。次に\(literal) を参照。その後実行。最後に確認。"
+        let expected = "開始。\n必ず確認。\n次に\(literal) を参照。\nその後実行。\n最後に確認。"
+        let formatted = AgentInstructionFormatting.format(source)
+        #expect(formatted == expected)
+        #expect(AgentInstructionFormatting.format(formatted) == formatted)
+        #expect(formatted.replacingOccurrences(of: "\n", with: "") == source)
+    }
 }

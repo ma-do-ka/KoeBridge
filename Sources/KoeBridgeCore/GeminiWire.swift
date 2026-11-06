@@ -6,7 +6,7 @@ public enum WireError: Error, LocalizedError {
     public var errorDescription: String? { "Gemini APIの応答を解析できません" }
 }
 
-public enum TranscribeEvent: Equatable {
+public enum TranscribeEvent: Equatable, Sendable {
     case setupComplete
     case interim(String)
     case final(String)
@@ -72,37 +72,12 @@ public enum GeminiWire {
         try json(["realtimeInput": ["activityEnd": [String: String]() ]])
     }
 
+    public static func decode(_ raw: String) throws -> GeminiServerFrame {
+        try GeminiServerFrame(data: Data(raw.utf8))
+    }
+
     public static func parse(_ raw: String) throws -> [TranscribeEvent] {
-        guard let data = raw.data(using: .utf8),
-              let value = try? JSONSerialization.jsonObject(with: data),
-              let root = value as? [String: Any] else {
-            throw WireError.invalidJSON
-        }
-        var events: [TranscribeEvent] = []
-        if root["setupComplete"] != nil { events.append(.setupComplete) }
-        if let error = root["error"] as? [String: Any] {
-            events.append(.error((error["message"] as? String) ?? "API エラー"))
-        }
-        if let content = root["serverContent"] as? [String: Any] {
-            if let partial = content["interimInputTranscription"] as? [String: Any],
-               let text = partial["text"] as? String, !text.isEmpty {
-                events.append(.interim(text))
-            }
-            if let final = content["inputTranscription"] as? [String: Any],
-               let text = final["text"] as? String, !text.isEmpty {
-                events.append(.final(text))
-            }
-            if content["turnComplete"] as? Bool == true { events.append(.turnComplete) }
-        }
-        // Raw WebSocket field is `type`; the SDK renames it to
-        // voice_activity_type / voiceActivityType. Transcribe manual VAD
-        // confirms activityEnd with this root-level signal, not necessarily
-        // with a conversational model's serverContent.turnComplete.
-        if let activity = root["voiceActivity"] as? [String: Any],
-           activity["type"] as? String == "ACTIVITY_END" {
-            events.append(.activityEnd)
-        }
-        return events
+        try decode(raw).events
     }
 
     /// Identity is available only when the service supplies both utterance
@@ -110,61 +85,25 @@ public enum GeminiWire {
     /// deliberately repeating the same words. These are documented optional
     /// fields; their absence must not suppress a final segment.
     public static func finalSegmentIdentity(_ raw: String) -> String? {
-        guard let data = raw.data(using: .utf8),
-              let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              let content = root["serverContent"] as? [String: Any],
-              let final = content["inputTranscription"] as? [String: Any],
-              let start = final["startOffset"] as? String, !start.isEmpty,
-              let end = final["endOffset"] as? String, !end.isEmpty else { return nil }
-        return start + "|" + end + "|" + ((final["speakerLabel"] as? String) ?? "")
+        (try? decode(raw))?.finalSegmentIdentity
     }
 
     /// Optional completion of a transcription, including a text-free frame.
     /// This can mark one speech segment and does not acknowledge activityEnd.
     public static func transcriptionFinished(_ raw: String) -> Bool {
-        guard let data = raw.data(using: .utf8),
-              let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              let content = root["serverContent"] as? [String: Any],
-              let transcription = content["inputTranscription"] as? [String: Any] else { return false }
-        return transcription["finished"] as? Bool == true
+        (try? decode(raw))?.transcriptionFinished ?? false
     }
 
     /// The server may send usageMetadata alongside other messages, including
     /// transcription events. Reported counts are not synthesized from audio length.
     public static func parseTokenUsage(_ raw: String) -> GeminiTokenUsage? {
-        guard let data = raw.data(using: .utf8),
-              let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              let metadata = root["usageMetadata"] as? [String: Any],
-              let total = metadata["totalTokenCount"] as? Int, total >= 0 else { return nil }
-        func valid(_ key: String) -> Int? {
-            guard let value = metadata[key] as? Int, value >= 0 else { return nil }
-            return value
-        }
-        return GeminiTokenUsage(promptTokens: valid("promptTokenCount"),
-                                responseTokens: valid("candidatesTokenCount"),
-                                totalTokens: total)
+        (try? decode(raw))?.tokenUsage
     }
 
     /// Diagnostic-only schema category. Never logs received transcript or
     /// API error bodies, which may contain private data.
     public static func frameKind(_ raw: String) -> String {
-        guard let data = raw.data(using: .utf8),
-              let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
-            return "invalid_json"
-        }
-        if root["setupComplete"] != nil { return "setupComplete" }
-        if root["usageMetadata"] != nil && root["serverContent"] == nil { return "usageMetadata" }
-        if root["error"] != nil { return "error" }
-        if root["goAway"] != nil { return "goAway" }
-        if root["sessionResumptionUpdate"] != nil { return "sessionResumptionUpdate" }
-        if root["voiceActivity"] != nil { return "voiceActivity" }
-        if let content = root["serverContent"] as? [String: Any] {
-            if content["interimInputTranscription"] != nil { return "serverContent.interimInputTranscription" }
-            if content["inputTranscription"] != nil { return "serverContent.inputTranscription" }
-            if content["turnComplete"] != nil { return "serverContent.turnComplete" }
-            return "serverContent.other"
-        }
-        return "other"
+        (try? decode(raw))?.diagnosticKind ?? "invalid_json"
     }
 
     private static func json(_ value: [String: Any]) throws -> String {

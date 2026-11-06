@@ -89,9 +89,9 @@ private final class GeminiPingCompletion: @unchecked Sendable {
                 var setupComplete = false
                 while !setupComplete {
                     try Task.checkCancellation()
-                    let raw = Self.string(try await ws.receive())
-                    captureUsage(raw)
-                    for event in try GeminiWire.parse(raw) {
+                    let frame = try Self.decode(try await ws.receive())
+                    captureUsage(frame.tokenUsage)
+                    for event in frame.events {
                         if case .error(let reason) = event { throw ConnectionError.setup(reason) }
                         if case .setupComplete = event { setupComplete = true }
                     }
@@ -124,18 +124,16 @@ private final class GeminiPingCompletion: @unchecked Sendable {
                 let msg = try await ws.receive()
                 guard !closedByClient, !Task.isCancelled else { return }
                 receivedFrames += 1
-                let raw = Self.string(msg)
-                let gotUsage = captureUsage(raw)
-                let events = try GeminiWire.parse(raw)
-                if events.isEmpty && !gotUsage {
+                let frame = try Self.decode(msg)
+                let gotUsage = captureUsage(frame.tokenUsage)
+                if frame.events.isEmpty && !gotUsage {
                     unrecognizedFrames += 1
                     if unrecognizedFrames <= 3 {
                         // Schema categories only: never transcript or secrets.
-                        DiagnosticLog.record("gemini frame without transcription event; shape=\(GeminiWire.frameKind(raw))")
+                        DiagnosticLog.record("gemini frame without transcription event; shape=\(frame.diagnosticKind)")
                     }
                 }
-                let identity = GeminiWire.finalSegmentIdentity(raw)
-                for event in events { handle(event, segmentIdentity: identity) }
+                for event in frame.events { handle(event, segmentIdentity: frame.finalSegmentIdentity) }
             } catch {
                 if !closedByClient && !Task.isCancelled {
                     handle(.error("Gemini受信が終了しました: \(error.localizedDescription)"))
@@ -192,8 +190,8 @@ private final class GeminiPingCompletion: @unchecked Sendable {
     }
 
     @discardableResult
-    private func captureUsage(_ raw: String) -> Bool {
-        guard let usage = GeminiWire.parseTokenUsage(raw) else { return false }
+    private func captureUsage(_ usage: GeminiTokenUsage?) -> Bool {
+        guard let usage else { return false }
         if tokenSamples.count < 1_024 {
             tokenSamples.append(GeminiTokenSample(at: Date(), usage: usage))
         }
@@ -343,19 +341,21 @@ private final class GeminiPingCompletion: @unchecked Sendable {
         receiver?.cancel()
         heartbeat?.cancel()
         sendTail?.cancel()
+        endTask?.cancel()
         socket?.cancel(with: .normalClosure, reason: nil)
         receiver = nil
         heartbeat = nil
         sendTail = nil
+        endTask = nil
         socket = nil
         onEvent = nil
     }
 
-    private static func string(_ message: URLSessionWebSocketTask.Message) -> String {
+    private static func decode(_ message: URLSessionWebSocketTask.Message) throws -> GeminiServerFrame {
         switch message {
-        case .string(let s): return s
-        case .data(let d): return String(data: d, encoding: .utf8) ?? "{}"
-        @unknown default: return "{}"
+        case .string(let raw): return try GeminiWire.decode(raw)
+        case .data(let data): return try GeminiServerFrame(data: data)
+        @unknown default: throw WireError.invalidResponse
         }
     }
 
