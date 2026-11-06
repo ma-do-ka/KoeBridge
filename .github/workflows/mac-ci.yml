@@ -13,6 +13,8 @@ jobs:
           swift --version
       - name: Verify published files and icon assets
         run: python3 scripts/audit_public_release.py
+      - name: Privacy-safe Python usage estimator tests
+        run: python3 -m unittest discover -s scripts -p 'test_estimate_usage_cost.py' -v
       - name: Unit tests
         run: swift test --parallel
       - name: Portable core regression suite

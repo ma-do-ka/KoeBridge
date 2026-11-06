@@ -38,6 +38,12 @@ The menu-bar **アップデートを確認…** command now directs the first op
 
 Hover over **認識履歴（直近10件）** in the KoeBridge menu-bar menu to open a native submenu with up to ten saved transcript previews, with dates and a marker for interrupted/partial results. Clicking a preview copies the **entire unchanged transcript** (not just the preview) to the system clipboard for **⌘V**, and shows a short non-activating success/failure banner. No automatic paste or new permission request is performed. The existing history window is still available via **履歴をすべて表示…**. See [release notes](docs/releases/v1.0.1f.md).
 
+## Indicative Gemini API cost and local usage summary
+
+For Gemini 3.5 Transcribe Live, the official paid-tier illustration is approximately **USD 0.009 per audio minute** including typical text output. At an *assumed* USD/JPY rate of 158, this is roughly JPY 1.42 per minute, **before free tiers or credits**. This is not a real invoice.
+
+Run **python3 scripts/estimate_usage_cost.py --days 30 --usd-jpy 158** from your KoeBridge checkout to summarize locally recorded audio usage. The tool only reads aggregated usage metadata; it does not read transcripts, audio, diagnostic logs, or API keys. See [pricing assumptions and limitations](docs/cost-estimate.md).
+
 ## Run from source on a Mac
 
 ```bash
