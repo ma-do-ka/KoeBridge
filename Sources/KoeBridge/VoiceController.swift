@@ -753,7 +753,7 @@ import KoeBridgeCore
         history = store.entries
     }
 
-    func copyRecord(_ record: TranscriptRecord) { TextInsertion.copy(record.text) }
+    @discardableResult func copyRecord(_ record: TranscriptRecord) -> Bool { TextInsertion.copy(record.text) }
     func deleteRecord(_ id: UUID) {
         guard var store = archive else {
             history.removeAll { $0.id == id }

@@ -5,6 +5,7 @@
 .github/workflows/release-v1.0.1c.yml
 .github/workflows/release-v1.0.1d.yml
 .github/workflows/release-v1.0.1e.yml
+.github/workflows/release-v1.0.1f.yml
 .gitignore
 LICENSE
 Package.swift
@@ -41,6 +42,7 @@ Sources/KoeBridgeCore/PermissionSetupPolicy.swift
 Sources/KoeBridgeCore/QuickNoInputPolicy.swift
 Sources/KoeBridgeCore/ReleaseUpdatePolicy.swift
 Sources/KoeBridgeCore/RecentTranscriptArchive.swift
+Sources/KoeBridgeCore/RecentHistoryMenuPolicy.swift
 Sources/KoeBridgeCore/SessionTransitions.swift
 Sources/KoeBridgeCore/TranscriptAssembler.swift
 Sources/KoeBridgeCore/TranscriptionStyle.swift
@@ -62,6 +64,7 @@ Sources/KoeBridgeSelfTest/ModifierToggleDetectorTests.swift
 Sources/KoeBridgeSelfTest/OrderedResultBufferTests.swift
 Sources/KoeBridgeSelfTest/PermissionSetupPolicyTests.swift
 Sources/KoeBridgeSelfTest/RecentTranscriptArchiveTests.swift
+Sources/KoeBridgeSelfTest/RecentHistoryMenuSelfTests.swift
 Sources/KoeBridgeSelfTest/ReleaseUpdatePolicySelfTests.swift
 Sources/KoeBridgeSelfTest/ResilienceTests.swift
 Sources/KoeBridgeSelfTest/Runner.swift
@@ -83,6 +86,7 @@ Tests/KoeBridgeCoreTests/ModifierToggleDetectorTests.swift
 Tests/KoeBridgeCoreTests/OrderedResultBufferTests.swift
 Tests/KoeBridgeCoreTests/PermissionSetupPolicyTests.swift
 Tests/KoeBridgeCoreTests/RecentTranscriptArchiveTests.swift
+Tests/KoeBridgeCoreTests/RecentHistoryMenuPolicyTests.swift
 Tests/KoeBridgeCoreTests/ReleaseUpdatePolicyTests.swift
 Tests/KoeBridgeCoreTests/ResilienceTests.swift
 Tests/KoeBridgeCoreTests/SessionTransitionsTests.swift
@@ -122,3 +126,4 @@ docs/releases/v1.0.1b.md
 docs/releases/v1.0.1c.md
 docs/releases/v1.0.1d.md
 docs/releases/v1.0.1e.md
+docs/releases/v1.0.1f.md

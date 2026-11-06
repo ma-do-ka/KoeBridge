@@ -136,12 +136,14 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
     private var workspaceObservers: [NSObjectProtocol] = []
     private var windowKeyMonitor: Any?
     private var updateCheckTimer: Timer?
+    private let recentHistoryMenu = NSMenu(title: "認識履歴（直近10件）")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "KoeBridge")
         let menu = NSMenu()
         menu.delegate = self
+        recentHistoryMenu.delegate = self
         item.menu = menu
 
         // This never activates KoeBridge or takes keyboard focus from the text field.
@@ -243,16 +245,69 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
+        if menu === recentHistoryMenu {
+            populateRecentHistoryMenu(menu)
+            return
+        }
+        guard menu === item.menu else { return }
         menu.removeAllItems()
         let title = controller.isRecording ? "■ 音声入力を確定" : "● 音声入力を開始"
         add(menu, title, #selector(toggle))
-        add(menu, "認識履歴（直近10件）…", #selector(showHistory))
+        // Native AppKit submenus open on mouse hover or keyboard navigation.
+        let historyItem = NSMenuItem(title: "認識履歴（直近10件）", action: nil, keyEquivalent: "")
+        historyItem.submenu = recentHistoryMenu
+        menu.addItem(historyItem)
         add(menu, "設定…", #selector(showSettings))
         add(menu, "アップデートを確認…", #selector(checkForUpdates))
         add(menu, "マイク・自動入力の権限…", #selector(showPermissions))
         if controller.busy { add(menu, "録音を破棄", #selector(discard)) }
         menu.addItem(.separator())
         add(menu, "KoeBridgeを終了", #selector(quit))
+    }
+
+    private func populateRecentHistoryMenu(_ menu: NSMenu) {
+        menu.removeAllItems()
+        let entries = RecentHistoryMenuPolicy.entries(from: controller.history)
+        if entries.isEmpty {
+            let title = controller.historyProblem.isEmpty
+                ? "保存された認識履歴はありません" : "履歴を読み込めません"
+            let empty = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+            menu.addItem(empty)
+        } else {
+            for (index, entry) in entries.enumerated() {
+                let date = entry.recordedAt.formatted(date: .abbreviated, time: .shortened)
+                let row = NSMenuItem(
+                    title: "\(index + 1). \(date)  \(entry.preview)",
+                    action: #selector(copyRecentHistory(_:)), keyEquivalent: ""
+                )
+                row.target = self
+                row.representedObject = entry.recordID.uuidString
+                row.toolTip = "選ぶと保存済みの全文をコピーします。⌘Vで貼り付けできます"
+                menu.addItem(row)
+            }
+        }
+        menu.addItem(.separator())
+        add(menu, "履歴をすべて表示…", #selector(showHistory))
+    }
+
+    /// A click copies the exact stored text. No typing, app activation,
+    /// clipboard modification on hover, or new transcription is performed.
+    @objc private func copyRecentHistory(_ sender: NSMenuItem) {
+        let copied: Bool
+        if let raw = sender.representedObject as? String,
+           let id = UUID(uuidString: raw),
+           let record = controller.history.first(where: { $0.id == id }) {
+            copied = controller.copyRecord(record)
+        } else {
+            copied = false // A record may have been deleted while the menu was open.
+        }
+        // Let native menu tracking close before presenting a no-focus HUD.
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(100))
+            guard let self else { return }
+            self.windows.showClipboardFeedback(success: copied, statusButton: self.item.button)
+        }
     }
 
     private func add(_ menu: NSMenu, _ title: String, _ selector: Selector) {
