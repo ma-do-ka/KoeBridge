@@ -93,7 +93,7 @@ fi
 test -s "$APP/Contents/Resources/KoeBridge_AppIcon.icns"
 chmod +x "$APP/Contents/MacOS/KoeBridge"
 if [ "${KOEBRIDGE_UNIVERSAL:-0}" = "1" ]; then
-  lipo -verify_arch arm64 x86_64 "$APP/Contents/MacOS/KoeBridge"
+  lipo "$APP/Contents/MacOS/KoeBridge" -verify_arch arm64 x86_64
 fi
 plutil -lint "$APP/Contents/Info.plist"
 codesign --force --sign "$SIGN_IDENTITY" "$APP"
