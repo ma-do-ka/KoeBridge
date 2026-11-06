@@ -2,6 +2,37 @@
 import Foundation
 import KoeBridgeCore
 
+/// URLSession's ping completion may run on a background queue, while timeout
+/// and cancellation may race it. Resolve exactly once, including cancellation
+/// before the continuation is installed and sockets that never call back.
+private final class GeminiPingCompletion: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Error>?
+    private var result: Result<Void, Error>?
+
+    func install(_ continuation: CheckedContinuation<Void, Error>) {
+        lock.lock()
+        if let result {
+            lock.unlock()
+            continuation.resume(with: result)
+            return
+        }
+        self.continuation = continuation
+        lock.unlock()
+    }
+
+    @discardableResult func resolve(_ result: Result<Void, Error>) -> Bool {
+        lock.lock()
+        guard self.result == nil else { lock.unlock(); return false }
+        self.result = result
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(with: result)
+        return true
+    }
+}
+
 /// One socket and one manually delimited activity per dictation. Audio frames
 /// and the end marker share a send queue; silence never ends the activity.
 @MainActor final class GeminiLiveConnection {
@@ -13,15 +44,13 @@ import KoeBridgeCore
     private var endTask: Task<Void, Error>?
     private(set) var assembler = TranscriptAssembler()
     private var lastFinalAt: Date?
-    private var turnCompleteAt: Date?
-    private var transcriptionFinishedAt: Date?
+    private var endpointState = ManualEndpointState()
     private var failure: String?
     private var ready = false
     private var started = false
     private var closedByClient = false
     private var inputEnded = false
     private var endSendBeganInstant: ContinuousClock.Instant?
-    private var endedAt: Date?
     private var completedText: String?
     private var lastTranscriptionAt: Date?
     private var sentAudioChunks = 0
@@ -106,21 +135,7 @@ import KoeBridgeCore
                     }
                 }
                 let identity = GeminiWire.finalSegmentIdentity(raw)
-                let acceptedBefore = assembler.finalCount
                 for event in events { handle(event, segmentIdentity: identity) }
-                if GeminiWire.transcriptionFinished(raw) {
-                    let carriesFinal = events.contains {
-                        if case .final(let text) = $0 {
-                            return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        }
-                        return false
-                    }
-                    // A replayed segment's completion flag cannot acknowledge
-                    // newer audio. A text-free terminal frame is also valid.
-                    if !carriesFinal || assembler.finalCount > acceptedBefore {
-                        transcriptionFinishedAt = Date()
-                    }
-                }
             } catch {
                 if !closedByClient && !Task.isCancelled {
                     handle(.error("Gemini受信が終了しました: \(error.localizedDescription)"))
@@ -140,15 +155,31 @@ import KoeBridgeCore
             do { try await Task.sleep(for: .seconds(20)) }
             catch { return }
             guard !closedByClient, !Task.isCancelled else { return }
+            let completion = GeminiPingCompletion()
             let watchdog = Task { [weak self] in
                 do { try await Task.sleep(for: .seconds(10)) }
                 catch { return }
+                // A pong may have arrived on the delegate queue while the
+                // MainActor was busy. Only the winning timeout may close it.
+                guard completion.resolve(.failure(ConnectionError.stalled)) else { return }
                 guard let self, !self.closedByClient else { return }
                 self.handle(.error("Gemini接続の応答確認がタイムアウトしました"))
                 ws.cancel(with: .goingAway, reason: nil)
             }
             do {
-                try await ws.sendPing()
+                try await withTaskCancellationHandler {
+                    try Task.checkCancellation()
+                    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                        completion.install(continuation)
+                        ws.sendPing { error in
+                            if let error { completion.resolve(.failure(error)) }
+                            else { completion.resolve(.success(())) }
+                        }
+                    }
+                } onCancel: {
+                    completion.resolve(.failure(CancellationError()))
+                    ws.cancel(with: .goingAway, reason: nil)
+                }
                 watchdog.cancel()
             } catch {
                 watchdog.cancel()
@@ -184,7 +215,7 @@ import KoeBridgeCore
             interimEvents += 1
             lastTranscriptionAt = now
         }
-        if case .turnComplete = event { turnCompleteAt = now }
+        if case .turnComplete = event { endpointState.receiveTurnComplete(at: now) }
         if case .error(let msg) = event { failure = msg }
         onEvent?(event)
     }
@@ -215,13 +246,19 @@ import KoeBridgeCore
             defer { watchdog.cancel() }
             if ending {
                 self.endSendBeganInstant = ContinuousClock.now
+                self.endpointState.beginEnd()
             }
-            try await ws.send(.string(raw))
-            try self.checkOpen()
-            // Replies can arrive while send is suspended. Keep their text, but
-            // do not let their timestamps pretend to acknowledge this write.
-            // A later explicit completion is required for automatic insertion.
-            if ending { self.endedAt = Date() }
+            do {
+                try await ws.send(.string(raw))
+                try self.checkOpen()
+                // This socket has one manual activity. A turnComplete can
+                // arrive before this send continuation resumes. The state
+                // exposes that evidence only after this write succeeds.
+                if ending { self.endpointState.endWriteSucceeded(at: Date()) }
+            } catch {
+                if ending { self.endpointState.endWriteFailed() }
+                throw error
+            }
         }
         sendTail = task
         return task
@@ -270,7 +307,7 @@ import KoeBridgeCore
         try checkOpen()
         guard let endTask else { throw ConnectionError.disconnected }
         try await awaitSend(endTask)
-        guard let endedAt else { throw ConnectionError.disconnected }
+        guard let endedAt = endpointState.writeCompletedAt else { throw ConnectionError.disconnected }
         // The budget starts at the actual marker send, not each caller's wait.
         let deadline = (endSendBeganInstant ?? ContinuousClock.now)
             .advanced(by: .seconds(FinalizationPolicy.maximumWaitSeconds))
@@ -278,10 +315,9 @@ import KoeBridgeCore
             try checkOpen()
             if !assembler.hasConflictingFinals,
                FinalizationPolicy.canFinish(endedAt: endedAt, lastFinalAt: lastFinalAt,
-                                            turnCompleteAt: turnCompleteAt, now: Date(),
+                                            turnCompleteAt: endpointState.acknowledgedTurnCompleteAt, now: Date(),
                                             hasPendingInterim: !assembler.interim.isEmpty,
-                                            lastTranscriptionAt: lastTranscriptionAt,
-                                            transcriptionFinishedAt: transcriptionFinishedAt) {
+                                            lastTranscriptionAt: lastTranscriptionAt) {
                 let text = assembler.committedText
                 guard !text.isEmpty else { throw ConnectionError.noFinal }
                 completedText = text
@@ -302,6 +338,7 @@ import KoeBridgeCore
     func cancel() {
         closedByClient = true
         ready = false
+        endpointState.cancel()
         receiver?.cancel()
         heartbeat?.cancel()
         sendTail?.cancel()

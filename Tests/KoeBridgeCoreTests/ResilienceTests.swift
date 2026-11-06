@@ -58,14 +58,13 @@ struct ResilienceTests {
                                              turnCompleteAt: end.addingTimeInterval(0.2), now: end.addingTimeInterval(0.7)))
     }
 
-    @Test func finalQuietTimeMustPassWithoutTurnComplete() {
+    @Test func finalWithoutTurnCompleteDoesNotFinish() {
         let end = Date(timeIntervalSince1970: 100)
         let final = end.addingTimeInterval(1.0)
         #expect(!FinalizationPolicy.canFinish(endedAt: end, lastFinalAt: final,
                                               turnCompleteAt: nil, now: end.addingTimeInterval(1.25)))
-        #expect(FinalizationPolicy.canFinish(endedAt: end, lastFinalAt: final,
-                                             turnCompleteAt: nil, now: end.addingTimeInterval(1.70),
-                                             transcriptionFinishedAt: end.addingTimeInterval(1.1)))
+        #expect(!FinalizationPolicy.canFinish(endedAt: end, lastFinalAt: final,
+                                              turnCompleteAt: nil, now: end.addingTimeInterval(1.70)))
     }
 
     @Test func droppedAudioIsRememberedAcrossThreads() {

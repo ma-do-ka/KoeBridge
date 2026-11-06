@@ -33,13 +33,13 @@ struct GeminiFinalizationTests {
             turnCompleteAt: nil, now: end.addingTimeInterval(8)))
     }
 
-    @Test func transcriptionFinishedCanCompleteWithoutTurnComplete() {
-        let final = end.addingTimeInterval(0.2)
-        let finished = end.addingTimeInterval(0.3)
-        #expect(!FinalizationPolicy.canFinish(endedAt: end, lastFinalAt: final,
-            turnCompleteAt: nil, now: end.addingTimeInterval(0.4), transcriptionFinishedAt: finished))
-        #expect(FinalizationPolicy.canFinish(endedAt: end, lastFinalAt: final,
-            turnCompleteAt: nil, now: end.addingTimeInterval(0.8), transcriptionFinishedAt: finished))
+    @Test func segmentFinishedDoesNotAuthorizeWholeActivity() {
+        let raw = """
+        {"serverContent":{"inputTranscription":{"text":"確定した前半","finished":true}}}
+        """
+        #expect(GeminiWire.transcriptionFinished(raw))
+        #expect(!FinalizationPolicy.canFinish(endedAt: end, lastFinalAt: end.addingTimeInterval(0.2),
+            turnCompleteAt: nil, now: end.addingTimeInterval(7)))
     }
 
     @Test func pendingInterimBlocksAutoPaste() {
@@ -56,16 +56,74 @@ struct GeminiFinalizationTests {
         }
     }
 
-    @Test func eventsDuringTheEndWriteCannotAuthorizeInsertion() {
+    @Test func unscopedCompletionCannotBypassTheEndWrite() {
         // endedAt is the WRITE COMPLETION barrier, not the user's stop or the
         // start of a suspended socket send. These frames arrived during it.
         let delayedFinal = end.addingTimeInterval(-0.02)
         let earlyCompletion = end.addingTimeInterval(-0.01)
         #expect(!FinalizationPolicy.canFinish(endedAt: end, lastFinalAt: delayedFinal,
-            turnCompleteAt: earlyCompletion, now: end.addingTimeInterval(3),
-            transcriptionFinishedAt: earlyCompletion))
+            turnCompleteAt: earlyCompletion, now: end.addingTimeInterval(3)))
         #expect(FinalizationPolicy.canFinish(endedAt: end, lastFinalAt: delayedFinal,
             turnCompleteAt: end.addingTimeInterval(0.1), now: end.addingTimeInterval(0.8)))
+    }
+
+    @Test func manualEndAcceptsFastCompletionOnlyAfterSuccessfulWrite() {
+        var endpoint = ManualEndpointState()
+        endpoint.beginEnd() // All queued PCM has already been written.
+        endpoint.receiveTurnComplete(at: end.addingTimeInterval(-0.1))
+        #expect(endpoint.phase == .writingEnd)
+        #expect(endpoint.acknowledgedTurnCompleteAt == nil)
+        #expect(!FinalizationPolicy.canFinish(endedAt: end, lastFinalAt: end.addingTimeInterval(-0.05),
+            turnCompleteAt: endpoint.acknowledgedTurnCompleteAt, now: end.addingTimeInterval(0.8)))
+        // The socket send succeeds after the receive task handled its reply.
+        endpoint.endWriteSucceeded(at: end)
+        #expect(endpoint.writeCompletedAt == end)
+        #expect(endpoint.acknowledgedTurnCompleteAt == end)
+        #expect(FinalizationPolicy.canFinish(endedAt: end, lastFinalAt: end.addingTimeInterval(-0.05),
+            turnCompleteAt: endpoint.acknowledgedTurnCompleteAt, now: end.addingTimeInterval(0.8)))
+    }
+
+    @Test func manualEndIgnoresCompletionBeforeItsWriteBegins() {
+        var endpoint = ManualEndpointState()
+        endpoint.receiveTurnComplete(at: end.addingTimeInterval(-0.2))
+        endpoint.beginEnd()
+        endpoint.endWriteSucceeded(at: end)
+        #expect(endpoint.acknowledgedTurnCompleteAt == nil)
+        #expect(!FinalizationPolicy.canFinish(endedAt: end, lastFinalAt: end.addingTimeInterval(0.1),
+            turnCompleteAt: endpoint.acknowledgedTurnCompleteAt, now: end.addingTimeInterval(0.8)))
+        // A later, activity-scoped completion follows the other valid order.
+        endpoint.receiveTurnComplete(at: end.addingTimeInterval(0.2))
+        #expect(FinalizationPolicy.canFinish(endedAt: end, lastFinalAt: end.addingTimeInterval(0.1),
+            turnCompleteAt: endpoint.acknowledgedTurnCompleteAt, now: end.addingTimeInterval(0.8)))
+    }
+
+    @Test func failedOrCancelledEndWritesCannotAcknowledgeCompletion() {
+        for cancelled in [false, true] {
+            var endpoint = ManualEndpointState()
+            endpoint.beginEnd()
+            endpoint.receiveTurnComplete(at: end.addingTimeInterval(-0.1))
+            if cancelled { endpoint.cancel() } else { endpoint.endWriteFailed() }
+            // Late continuations and frames must not resurrect the operation.
+            endpoint.endWriteSucceeded(at: end)
+            endpoint.receiveTurnComplete(at: end.addingTimeInterval(0.1))
+            endpoint.beginEnd()
+            #expect(endpoint.phase == (cancelled ? .cancelled : .failed))
+            #expect(endpoint.writeCompletedAt == nil)
+            #expect(endpoint.acknowledgedTurnCompleteAt == nil)
+            #expect(!FinalizationPolicy.canFinish(endedAt: end, lastFinalAt: end.addingTimeInterval(0.1),
+                turnCompleteAt: endpoint.acknowledgedTurnCompleteAt, now: end.addingTimeInterval(0.8)))
+        }
+    }
+
+    @Test func cancellationRevokesAnAcknowledgedManualEnd() {
+        var endpoint = ManualEndpointState()
+        endpoint.beginEnd()
+        endpoint.receiveTurnComplete(at: end.addingTimeInterval(-0.1))
+        endpoint.endWriteSucceeded(at: end)
+        #expect(endpoint.acknowledgedTurnCompleteAt != nil)
+        endpoint.cancel()
+        endpoint.receiveTurnComplete(at: end.addingTimeInterval(0.1))
+        #expect(endpoint.acknowledgedTurnCompleteAt == nil)
     }
 
     @Test func identicalInterimRemainsPendingUntilItsOwnFinal() {

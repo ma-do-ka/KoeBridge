@@ -108,8 +108,8 @@ public enum GeminiWire {
         return start + "|" + end + "|" + ((final["speakerLabel"] as? String) ?? "")
     }
 
-    /// Optional provider completion, including a text-free terminal frame.
-    /// Absence is unknown, not an inferred completion after a quiet interval.
+    /// Optional completion of a transcription, including a text-free frame.
+    /// This can mark one speech segment and does not acknowledge activityEnd.
     public static func transcriptionFinished(_ raw: String) -> Bool {
         guard let data = raw.data(using: .utf8),
               let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],

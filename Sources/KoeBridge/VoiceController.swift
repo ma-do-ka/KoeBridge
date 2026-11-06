@@ -493,8 +493,8 @@ import KoeBridgeCore
             let result: String
             if mode == .gemini {
                 guard let remote = take.cloud else { throw AppError.connectionLost }
-                try await remote.endAudio()
                 do {
+                    try await remote.endAudio()
                     result = try await remote.awaitFinal()
                     take.successfulEngine = .gemini
                 } catch {

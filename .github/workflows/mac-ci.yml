@@ -2,6 +2,9 @@ name: macOS Swift build and unit tests
 on:
   push:
   pull_request:
+concurrency:
+  group: mac-ci-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 jobs:
   build:
     runs-on: macos-15
