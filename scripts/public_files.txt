@@ -97,6 +97,8 @@ scripts/Info.plist
 scripts/audit_public_release.py
 scripts/build_app.sh
 scripts/check_mac.sh
+scripts/estimate_usage_cost.py
+scripts/test_estimate_usage_cost.py
 scripts/diagnose_input.sh
 scripts/public_files.txt
 scripts/publish_to_github.sh
@@ -127,3 +129,4 @@ docs/releases/v1.0.1c.md
 docs/releases/v1.0.1d.md
 docs/releases/v1.0.1e.md
 docs/releases/v1.0.1f.md
+docs/cost-estimate.md
