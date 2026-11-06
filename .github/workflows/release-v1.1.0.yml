@@ -42,6 +42,7 @@ jobs:
           ditto -x -k dist/KoeBridge-v1.1.0-macOS-universal-development.zip dist/archive-verification
           codesign --verify --deep --strict dist/archive-verification/KoeBridge.app
           lipo -verify_arch arm64 x86_64 dist/archive-verification/KoeBridge.app/Contents/MacOS/KoeBridge
+          cmp LICENSE dist/archive-verification/KoeBridge.app/Contents/Resources/LICENSE
           cd dist
           shasum -a 256 --check SHA256SUMS.txt
       - name: Publish verified commit and download

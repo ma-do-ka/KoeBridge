@@ -54,7 +54,25 @@ public enum AgentInstructionFormatting {
     public static func format(_ transcript: String) -> String {
         var text = transcript
         for marker in instructionStarters {
-            text = text.replacingOccurrences(of: "。" + marker, with: "。\n" + marker)
+            let protected = TextContextChecking.protectedRanges(in: text)
+            let source = text as NSString
+            var insertionOffsets: [Int] = []
+            var search = NSRange(location: 0, length: source.length)
+            while search.length > 0 {
+                let found = source.range(of: "。" + marker, options: [], range: search)
+                guard found.location != NSNotFound else { break }
+                let offset = found.location + 1
+                // Inserting immediately before/after a literal preserves it;
+                // inserting anywhere inside one changes its exact contents.
+                if !protected.contains(where: { $0.location < offset && offset < NSMaxRange($0) }) {
+                    insertionOffsets.append(offset)
+                }
+                let end = NSMaxRange(found)
+                search = NSRange(location: end, length: source.length - end)
+            }
+            let edited = NSMutableString(string: text)
+            for offset in insertionOffsets.reversed() { edited.insert("\n", at: offset) }
+            text = edited as String
         }
         return text
     }

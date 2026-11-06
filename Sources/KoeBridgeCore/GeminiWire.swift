@@ -34,10 +34,12 @@ public enum GeminiWire {
         // presentation style must never re-enable an unchecked source.
         // Preserve priority/order when the combined list reaches the API cap.
         var seen = Set<String>()
-        let words = vocabulary.lazy
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty && seen.insert($0).inserted }
-            .prefix(100).map { $0 }
+        var words: [String] = []
+        for raw in vocabulary {
+            let word = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !word.isEmpty, seen.insert(word).inserted { words.append(word) }
+            if words.count == 100 { break }
+        }
         if !words.isEmpty { audio["customVocabulary"] = words }
         let setup: [String: Any] = [
             "setup": [

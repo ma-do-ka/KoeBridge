@@ -63,6 +63,9 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/KoeBridge"
 cp scripts/Info.plist "$APP/Contents/Info.plist"
 cp "$ICON_SOURCE" "$APP/Contents/Resources/KoeBridge_AppIcon.icns"
+# Keep the copyright and permission notice with binary-only downloads too.
+# Add resources before signing so the bundled notice is covered by the seal.
+cp LICENSE "$APP/Contents/Resources/LICENSE"
 if [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$APP/Contents/Info.plist")" != "KoeBridge_AppIcon.icns" ]; then
   echo "ERROR: Info.plist CFBundleIconFile does not reference the bundled icon" >&2
   exit 1

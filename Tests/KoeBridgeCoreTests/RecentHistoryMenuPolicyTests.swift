@@ -40,4 +40,44 @@ struct RecentHistoryMenuPolicyTests {
     @Test func emptyMenuIsValid() {
         #expect(RecentHistoryMenuPolicy.entries(from: []).isEmpty)
     }
+
+    @Test func reviewAndInterruptedRowsExplainWhichTextWillBeCopied() {
+        let original = "予算は100円。\n変更しないでください。"
+        let alternative = "予算は1000円。変更してください。"
+        let review = TranscriptReview(status: .needsReview, note: "差異あり", alternativeText: alternative)
+        let records = [
+            TranscriptRecord(engine: "Gemini", text: original, isPartial: false, delivery: .reviewRequired, review: review),
+            // The review marker must survive a later interruption of delivery.
+            TranscriptRecord(engine: "Gemini", text: original, isPartial: false, delivery: .interruptedDelivery, review: review),
+            TranscriptRecord(engine: "Apple", text: original, isPartial: false, delivery: .interruptedDelivery),
+            TranscriptRecord(engine: "Gemini", text: original, isPartial: false, delivery: .reviewRequired)
+        ]
+        let rows = RecentHistoryMenuPolicy.entries(from: records)
+        #expect(rows.map(\.recordID) == records.map(\.id))
+        for index in [0, 1, 3] {
+            #expect(rows[index].preview.hasPrefix("［要確認・元の文］"))
+            #expect(rows[index].copyHelp.contains("元の文章の全文をコピー"))
+            #expect(rows[index].copyHelp.contains("履歴をすべて表示…"))
+        }
+        #expect(rows[1].preview.contains("［入力要確認］"))
+        #expect(rows[2].preview.hasPrefix("［入力要確認］"))
+        #expect(rows[2].copyHelp.contains("入力先に入った範囲を確認"))
+        #expect(!rows[3].copyHelp.contains("候補は"))
+        #expect(records.allSatisfy { $0.text == original })
+        #expect(records[0].review?.alternativeText == alternative)
+        #expect(rows.allSatisfy { !$0.preview.contains("1000円") })
+    }
+
+    @Test func attentionMarkersStayInsideTheGraphemePreviewBudget() {
+        let original = String(repeating: "👩‍💻", count: 90)
+        let record = TranscriptRecord(engine: "Gemini", text: original, isPartial: true,
+                                      delivery: .interruptedDelivery,
+                                      review: TranscriptReview(status: .needsReview, note: "差異あり", alternativeText: "別の候補"))
+        let row = RecentHistoryMenuPolicy.entries(from: [record])[0]
+        let marker = "［要確認・元の文］［入力要確認］［途中］"
+        #expect(row.preview == marker + String(repeating: "👩‍💻", count: 44 - marker.count) + "…")
+        #expect(row.preview.count == RecentHistoryMenuPolicy.maximumPreviewCharacters + 1)
+        #expect(row.isPartial)
+        #expect(record.text == original)
+    }
 }

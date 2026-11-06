@@ -45,9 +45,14 @@ struct TranscriptReviewTests {
 
     @Test func incompleteQuotesAndUnicodePathsAreNeverRewritten() {
         for text in ["`という。こと", "```\nという。こと", "「について。は", "“という。こと”",
-                     "src/という。こと.swift", "https://example.com/について。は", "という。こと.swift"] {
+                     "src/という。こと.swift", "https://example.com/について。は", "という。こと.swift",
+                     "参照はhttps://example.com/について。はです"] {
             #expect(TextContextChecking.check(text).text == text)
         }
+        let prose = "src/という。こと.swiftを開きます。設定について。は変更しない。"
+        #expect(TextContextChecking.check(prose).text == "src/という。こと.swiftを開きます。設定については変更しない。")
+        #expect(!TextContextChecking.hasMatchingWords(original: "src/という。こと.swift",
+                                                      candidate: "src/ということ.swift"))
     }
 
     @Test func reviewEvidenceRoundTripsAndOldHistoryStillDecodes() throws {

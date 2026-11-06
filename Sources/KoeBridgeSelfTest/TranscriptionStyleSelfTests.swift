@@ -47,5 +47,10 @@ struct TranscriptionStyleSelfTests {
         check(formatted.contains("。\n最後に"))
         check(AgentInstructionFormatting.format(formatted) == formatted)
         check(AgentVocabulary.terms(user: ["one"], registeredEnabled: true, topicEnabled: true, maximum: 0).isEmpty)
+        for literal in ["`実行。次に削除`", "「これは。必ず残す」", "“手順。最後に確認”",
+                        "src/手順。次に実行.swift", "https://example.com/手順。次に実行",
+                        "参照はhttps://example.com/手順。次に実行"] {
+            check(AgentInstructionFormatting.format(literal) == literal)
+        }
     }
 }

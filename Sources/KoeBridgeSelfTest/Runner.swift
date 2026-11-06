@@ -81,6 +81,7 @@ struct KoeBridgeSelfTest {
         await run("DirectTypingPlanTests.emptyIsNotTyped", { DirectTypingPlanTests().emptyIsNotTyped() })
         await run("RecentHistoryMenuSelfTests.newestTenAndStableIds", { RecentHistoryMenuSelfTests().newestTenAndStableIds() })
         await run("RecentHistoryMenuSelfTests.multilinePartialAndEmojiAreSafe", { RecentHistoryMenuSelfTests().multilinePartialAndEmojiAreSafe() })
+        await run("RecentHistoryMenuSelfTests.reviewAndInterruptedEntriesAreVisible", { RecentHistoryMenuSelfTests().reviewAndInterruptedEntriesAreVisible() })
         await run("ReleaseUpdatePolicySelfTests.stableVersionsAreMonotonic", { ReleaseUpdatePolicySelfTests().stableVersionsAreMonotonic() })
         await run("ReleaseUpdatePolicySelfTests.rejectsForgedOrPrereleaseMetadata", { try ReleaseUpdatePolicySelfTests().rejectsForgedOrPrereleaseMetadata() })
         await run("ReleaseUpdatePolicySelfTests.automaticChecksAreBounded", { ReleaseUpdatePolicySelfTests().automaticChecksAreBounded() })

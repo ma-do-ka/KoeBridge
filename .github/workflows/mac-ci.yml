@@ -37,6 +37,7 @@ jobs:
           test -x dist/KoeBridge.app/Contents/MacOS/KoeBridge
           plutil -lint dist/KoeBridge.app/Contents/Info.plist
           test -s dist/KoeBridge.app/Contents/Resources/KoeBridge_AppIcon.icns
+          cmp LICENSE dist/KoeBridge.app/Contents/Resources/LICENSE
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' dist/KoeBridge.app/Contents/Info.plist)" = "KoeBridge_AppIcon.icns"
           echo "10186e4ecd7927a0d25c2fc26eed8c83db1f21def23f267f4695ca45f04f10f5  dist/KoeBridge.app/Contents/Resources/KoeBridge_AppIcon.icns" | shasum -a 256 --check
           codesign --verify --deep --strict dist/KoeBridge.app

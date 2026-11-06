@@ -77,6 +77,16 @@ struct TranscriptionStyleTests {
         #expect(AgentVocabulary.terms(user: chosen, registeredEnabled: true, topicEnabled: true, maximum: 500).count == 100)
     }
 
+    @Test func agentFormattingPreservesQuotedCommandsAndUnicodePaths() {
+        let literals = ["`実行。次に削除`", "「これは。必ず残す」", "“手順。最後に確認”",
+                        "src/手順。次に実行.swift", "https://example.com/手順。次に実行",
+                        "参照はhttps://example.com/手順。次に実行"]
+        for literal in literals {
+            #expect(AgentInstructionFormatting.format(literal) == literal)
+        }
+        #expect(AgentInstructionFormatting.format("実行。次に確認。") == "実行。\n次に確認。")
+    }
+
     @Test func vocabularyCheckboxesSelectEachSourceIndependently() {
         let user = [" custom_TOOL ", "n8n", "", "custom_TOOL"]
         #expect(AgentVocabulary.terms(user: user, registeredEnabled: false, topicEnabled: false).isEmpty)

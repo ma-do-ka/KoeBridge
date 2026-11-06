@@ -22,9 +22,9 @@ The downloadable development app is built and tested in macOS CI. Actual microph
 
 ## v1.0.1b agent-instruction mode
 
-Choose **Settings → Gemini → 文字起こしスタイル → AIエージェント指示**. This uses the supported Gemini Live `VERBATIM` transcription with user-preferred developer terminology and a small built-in glossary. Unlike SMART, it prioritizes preserving repetitions, command syntax, file paths, URLs, technical terms, negations, and numeric constraints. It never sends unsupported system-instruction fields. The style itself does not request a second model; v1.1.0 audio review is a separate opt-in. Short line breaks may be added to history, but the safe auto-typing path replaces newlines with spaces to prevent accidental submission. Transcription accuracy and exact command spelling are not guaranteed.
+Choose **Settings → Gemini → 文字起こしスタイル → AIエージェント指示**. This uses the supported Gemini Live `VERBATIM` transcription. Registered terminology and the built-in developer glossary are used only when their respective assistance checkboxes are enabled. Unlike SMART, it prioritizes preserving repetitions, command syntax, file paths, URLs, technical terms, negations, and numeric constraints. It never sends unsupported system-instruction fields. The style itself does not request a second model; v1.1.0 audio review is a separate opt-in. Short line breaks may be added to history, but the safe auto-typing path replaces newlines with spaces to prevent accidental submission. Transcription accuracy and exact command spelling are not guaranteed.
 
-The same source release includes **Settings → 一般 → ログイン時に自動起動** using the actual macOS login-item registration. The internal macOS version remains `1.0.1` (build 21), and the in-app release label is `1.0.1b`.
+That source release introduced **Settings → 一般 → ログイン時に自動起動** using the actual macOS login-item registration. For v1.0.1b, the internal macOS version was `1.0.1` (build 21), and the in-app release label was `1.0.1b`.
 
 [Release notes](docs/releases/v1.0.1b.md).
 
@@ -40,7 +40,7 @@ The menu bar has **Check for Updates…** and **Settings → 情報 → アッ�
 
 ## v1.0.1e — reliable update navigation
 
-The menu-bar **アップデートを確認…** command now directs the first opening of Settings to the actual Update Center. Subsequent selections refocus the Updates section, even when the Information page is already open. No installer is downloaded automatically; the source-only release and manual update safeguards are unchanged. See [v1.0.1e notes](docs/releases/v1.0.1e.md).
+The menu-bar **アップデートを確認…** command directs the first opening of Settings to the actual Update Center. Subsequent selections refocus the Updates section, even when the Information page is already open. No installer is downloaded automatically. v1.0.1e was a source-only release; v1.1.0 adds the explicitly labelled manual development download above. See [v1.0.1e notes](docs/releases/v1.0.1e.md).
 
 ## v1.0.1f — menu-bar transcript submenu and copy confirmation
 
