@@ -135,8 +135,9 @@ struct PersistenceRecoveryTests {
         var store = TranscriptHistoryStore(fileURL: url)
         try Data("blocks directory creation".utf8).write(to: blockedParent)
         let now = Date()
-        let firstID = try #require(store.remember("失われてはいけない文", isPartial: false, delivery: .pending,
-                                                 engine: "Gemini", recordedAt: now.addingTimeInterval(-1)))
+        let rememberedID = store.remember("失われてはいけない文", isPartial: false, delivery: .pending,
+                                          engine: "Gemini", recordedAt: now.addingTimeInterval(-1))
+        let firstID = try #require(rememberedID)
         store.updateDelivery(firstID, to: .verifiedInserted, detail: "入力を確認")
         store.updateDelivery(UUID(), to: .blockedFocus)
         #expect(!store.problem.isEmpty)
