@@ -65,8 +65,19 @@ import KoeBridgeCore
     var onShowHistory: (() -> Void)?
     var onShowPermissions: (() -> Void)?
 
-    private var archive: RecentTranscriptArchive?
-    private var usageArchive: UsageMonitorArchive?
+    private var historyStore: TranscriptHistoryStore {
+        didSet {
+            history = historyStore.entries
+            historyProblem = historyStore.problem
+        }
+    }
+    private var usageStore: UsageMonitorStore {
+        didSet {
+            monitorEvents = usageStore.engineEvents
+            monitorTokens = usageStore.tokenEvents
+            monitorProblem = usageStore.problem
+        }
+    }
     private var active: DictationTake?
     private var inFlight: [UUID: DictationTake] = [:]
     private var finished = OrderedResultBuffer<Completion>(maximumPending: 8)
@@ -110,29 +121,13 @@ import KoeBridgeCore
         audioRecheckEnabled = options.audioRecheckEnabled
         audioRecheckPolicy = options.audioRecheckPolicy
         shortcutChoice = RecordingShortcut(rawValue: d.string(forKey: "recordingShortcut") ?? "") ?? .controlOptionSpace
-        do {
-            var saved = try RecentTranscriptArchive()
-            for record in saved.entries where record.delivery == .pending {
-                do {
-                    try saved.updateDelivery(id: record.id, to: .interruptedDelivery,
-                                             detail: "前回の入力処理が完了する前に終了しました。再送の前に入力先を確認してください。")
-                } catch {
-                    historyProblem = "履歴の入力状態をディスクへ更新できません：\(error.localizedDescription)"
-                }
-            }
-            archive = saved
-            history = saved.entries
-        } catch {
-            historyProblem = "履歴を読み込めません（元のファイルは保持しています）：\(error.localizedDescription)"
-        }
-        do {
-            let stored = try UsageMonitorArchive()
-            usageArchive = stored
-            monitorEvents = stored.engineEvents
-            monitorTokens = stored.tokenEvents
-        } catch {
-            monitorProblem = "利用統計を読み込めません。元のデータは保持しています：\(error.localizedDescription)"
-        }
+        historyStore = TranscriptHistoryStore()
+        usageStore = UsageMonitorStore()
+        history = historyStore.entries
+        historyProblem = historyStore.problem
+        monitorEvents = usageStore.engineEvents
+        monitorTokens = usageStore.tokenEvents
+        monitorProblem = usageStore.problem
     }
 
     var hasKey: Bool { KeychainStore.load() != nil }
@@ -381,10 +376,8 @@ import KoeBridgeCore
             do { try await Task.sleep(for: .seconds(TranscriptReviewDeadline.totalSeconds)) } catch { return }
             guard let self, let take, !take.finished else { return }
             DiagnosticLog.record("background finalization watchdog; id=\(take.id.uuidString.prefix(8))")
-            if let confirmed = take.confirmedText {
-                take.review = TranscriptReview(status: .incomplete,
-                                               note: "追加チェックが時間内に終わらなかったため、元の確定文を使用しました。")
-                self.resolve(take, text: confirmed, reason: nil)
+            if let review = take.reviewSession {
+                self.resolve(take, text: review.expire(), reason: nil)
             } else {
                 self.resolve(take, text: nil, reason: "認識処理が15秒以内に完了しませんでした")
             }
@@ -429,6 +422,8 @@ import KoeBridgeCore
     /// Apple's on-device recognizer using the SAME audio data. This does not
     /// block the next recording; the result still waits for its delivery slot.
     private func retryLocally(_ take: DictationTake) async throws -> String {
+        try Task.checkCancellation()
+        guard !take.finished else { throw CancellationError() }
         guard !take.audioBackup.isEmpty else { throw AppError.connectionLost }
         guard take.audioBackup.count <= 50 * 32_000 else { throw AppError.localRecoveryTooLong }
         // Only one fallback recognizer at a time. A wave of failed Gemini
@@ -441,6 +436,8 @@ import KoeBridgeCore
             }
             try await Task.sleep(for: .milliseconds(75))
         }
+        try Task.checkCancellation()
+        guard !take.finished else { throw CancellationError() }
         localRecoveryBusy = true
         defer { localRecoveryBusy = false }
         // Never bring up a permission prompt during a following dictation.
@@ -450,12 +447,18 @@ import KoeBridgeCore
             throw AppleLocalTranscriber.LocalError.permission
         }
         let local = AppleLocalTranscriber()
+        // If a deadline cancels this worker while start() awaits macOS, the
+        // take may already have released its resources. Always close this
+        // local owner as well, including recognizers that finish starting late.
+        defer { local.cancel() }
         take.local = local
         take.fellBackToApple = true
         take.appleAttempted = true
         take.appleStartedAt = Date()
+        take.usedMode = "Appleオンデバイス（Gemini失敗時の救済）"
         try await local.start()
         try Task.checkCancellation()
+        guard !take.finished else { throw CancellationError() }
         let length = take.audioBackup.count
         var offset = 0
         while offset < length {
@@ -466,7 +469,6 @@ import KoeBridgeCore
             offset = end
         }
         let result = try await local.endAudioAndAwaitFinal()
-        take.usedMode = "Appleオンデバイス（Gemini失敗時の救済）"
         DiagnosticLog.record("local recovery succeeded; chars=\(result.count)")
         return result
     }
@@ -498,6 +500,8 @@ import KoeBridgeCore
                     result = try await remote.awaitFinal()
                     take.successfulEngine = .gemini
                 } catch {
+                    try Task.checkCancellation()
+                    guard !take.finished else { throw CancellationError() }
                     // No transcript despite valid audio: local ASR may recover
                     // the text. A failed local attempt stays an explicit error.
                     DiagnosticLog.record("gemini final failed; attempting Apple on-device recovery")
@@ -517,81 +521,22 @@ import KoeBridgeCore
                 ? AgentInstructionFormatting.format(result) : result
             // Only an actually confirmed primary result can survive a review
             // timeout. Pending/interim text never takes this route.
-            take.confirmedText = original
-            let output = await review(original, take: take)
+            let review = DictationReviewSession(
+                originalText: original, engine: take.successfulEngine, options: take.options,
+                stoppedAt: take.stoppingAt, audio: take.audioBackup,
+                vocabulary: take.vocabulary, style: take.style, japaneseHint: take.japaneseHint)
+            take.reviewSession = review
+            let output = await review.run { [weak self, weak take] in
+                guard let self, let take, !take.finished else { return }
+                if self.overlayOwner == take.id, self.active == nil { self.overlayFeedback = .checking }
+                if self.active == nil { self.status = "追加チェック中。次の録音は開始できます" }
+            }
             guard !take.finished, !Task.isCancelled else { return }
             resolve(take, text: output, reason: nil)
         } catch {
             guard !take.finished, !Task.isCancelled else { return }
             DiagnosticLog.record("recognition failure; category=\(Self.failureCategory(error))")
             resolve(take, text: nil, reason: "認識失敗: \(error.localizedDescription)")
-        }
-    }
-
-    private func review(_ original: String, take: DictationTake) async -> String {
-        let options = take.options
-        guard options.textContextCheckEnabled || options.audioRecheckEnabled else { return original }
-        guard take.successfulEngine == .gemini else {
-            take.review = TranscriptReview(status: .incomplete,
-                                           note: "Appleの認識結果にはGemini用の追加チェックを実行していません。")
-            return original
-        }
-        let local = options.textContextCheckEnabled ? TextContextChecking.check(original) : nil
-        let locallyChecked = local?.text ?? original
-        let textNote = local.map { "文章チェック：句読点を\($0.changes)箇所調整。" } ?? ""
-        let shouldRecheck = options.audioRecheckEnabled &&
-            (options.audioRecheckPolicy == .always || TextContextChecking.isSuspicious(original))
-        guard shouldRecheck else {
-            let audioNote = options.audioRecheckEnabled ? "音声照合：疑わしい区切りの検出条件に該当せず、再認識は実行していません。" : ""
-            take.review = TranscriptReview(status: .checked, note: textNote + audioNote,
-                                           originalText: locallyChecked == original ? nil : original)
-            return locallyChecked
-        }
-        let budget = TranscriptReviewDeadline.available(stoppedAt: take.stoppingAt, now: Date())
-        guard budget > 0, !take.audioBackup.isEmpty,
-              take.audioBackup.count <= GeminiRecheckWire.maximumPCMBytes,
-              let key = KeychainStore.load() else {
-            take.review = TranscriptReview(status: .incomplete,
-                                           note: "追加チェックの時間・音声サイズ・APIキーの条件を満たさないため、元の確定文を使用しました。")
-            return original
-        }
-        if overlayOwner == take.id, active == nil { overlayFeedback = .checking }
-        if active == nil { status = "追加チェック中。次の録音は開始できます" }
-        take.recheckStartedAt = Date()
-        take.recheckAudioBytes = take.audioBackup.count
-        do {
-            let checked = try await GeminiAudioRechecker.recognize(
-                pcm16LE: take.audioBackup, vocabulary: take.vocabulary, style: take.style,
-                japaneseHint: take.japaneseHint, apiKey: key, timeout: budget)
-            guard !take.finished, !Task.isCancelled else { return original }
-            take.recheckSucceeded = true
-            if let usage = checked.usage {
-                take.recheckTokens.append(GeminiTokenSample(at: Date(), usage: usage))
-            }
-            let comparison = TextContextChecking.compare(original: original, candidate: checked.text,
-                                                         textCheckEnabled: options.textContextCheckEnabled)
-            guard !comparison.requiresReview else {
-                take.review = TranscriptReview(status: .needsReview,
-                                               note: "元の確定文と再認識結果に文字の違いがあります。自動入力せず、両方を保存しました。",
-                                               alternativeText: checked.text)
-                return original
-            }
-            // Audio comparison never enables the independent text-editing
-            // checkbox. Keep the primary punctuation except for the selected
-            // local check's narrowly defined changes.
-            let accepted = comparison.text
-            take.review = TranscriptReview(status: .checked,
-                                           note: textNote + "音声を1回再認識し、語句の一致を確認しました。認識の正しさを保証するものではありません。",
-                                           originalText: accepted == original ? nil : original)
-            return accepted
-        } catch {
-            guard !take.finished, !Task.isCancelled else { return original }
-            // Do not log private request/response bodies or credentials, and
-            // never silently retry a charged optional API operation.
-            take.review = TranscriptReview(status: .incomplete,
-                                           note: "追加チェックを完了できなかったため、元の確定文を使用しました。")
-            DiagnosticLog.record("audio recheck incomplete; original confirmed result retained")
-            return original
         }
     }
 
@@ -644,54 +589,8 @@ import KoeBridgeCore
     /// Called exactly once per take, including failures and fallback.
     /// No transcript, audio, credentials, or platform error messages are stored.
     private func recordUsage(_ take: DictationTake, succeeded: Bool, cancelled: Bool) {
-        let fallbackTime = take.startedAt ?? Date()
-        func outcome(for mode: RecognitionMode) -> UsageOutcome {
-            if succeeded && take.successfulEngine == mode { return .success }
-            return cancelled ? .cancelled : .failure
-        }
-        var rows: [EngineUsageSample] = []
-        if take.geminiAttempted {
-            rows.append(EngineUsageSample(
-                at: take.geminiStartedAt ?? fallbackTime, engine: .gemini,
-                audioSeconds: Double(take.cloud?.sentAudioBytes ?? 0) / 32_000,
-                outcome: outcome(for: .gemini)))
-        }
-        if take.appleAttempted {
-            rows.append(EngineUsageSample(
-                at: take.appleStartedAt ?? fallbackTime, engine: .apple,
-                audioSeconds: Double(take.appleAudioBytes) / 32_000,
-                outcome: outcome(for: .local), fallback: take.fellBackToApple))
-        }
-        if let startedAt = take.recheckStartedAt {
-            rows.append(EngineUsageSample(at: startedAt, engine: .gemini,
-                                          audioSeconds: Double(take.recheckAudioBytes) / 32_000,
-                                          outcome: take.recheckSucceeded ? .success : (cancelled ? .cancelled : .failure),
-                                          purpose: .audioRecheck))
-        }
-        let tokens = (take.cloud?.tokenSamples ?? []) + take.recheckTokens
-        guard !rows.isEmpty || !tokens.isEmpty else { return }
-        if var store = usageArchive {
-            do {
-                try store.append(engineEvents: rows, tokenEvents: tokens)
-                usageArchive = store
-                monitorEvents = store.engineEvents
-                monitorTokens = store.tokenEvents
-                monitorProblem = ""
-            } catch {
-                monitorProblem = "利用統計を保存できません。元のファイルは保持しています：\(error.localizedDescription)"
-                monitorEvents.append(contentsOf: rows)
-                monitorTokens.append(contentsOf: tokens)
-            }
-        } else {
-            monitorEvents.append(contentsOf: rows)
-            monitorTokens.append(contentsOf: tokens)
-        }
-        if monitorEvents.count > UsageMonitorArchive.maximumEngineEvents {
-            monitorEvents = Array(monitorEvents.suffix(UsageMonitorArchive.maximumEngineEvents))
-        }
-        if monitorTokens.count > UsageMonitorArchive.maximumTokenEvents {
-            monitorTokens = Array(monitorTokens.suffix(UsageMonitorArchive.maximumTokenEvents))
-        }
+        let samples = take.usageSamples(succeeded: succeeded, cancelled: cancelled)
+        usageStore.append(engineEvents: samples.engines, tokenEvents: samples.tokens)
     }
 
     private func deliverOrderedResults() {
@@ -733,68 +632,35 @@ import KoeBridgeCore
         let recordID = take.historyRecordID ?? remember(text, isPartial: false, delivery: .pending,
                                                         engine: take.usedMode, review: take.review,
                                                         recordedAt: take.requestedAt)
-        let outcome: TranscriptRecord.Delivery
-        let detail: String
-        if take.automaticDeliverySuppressed {
-            outcome = .blockedFocus
-            detail = "システム中断により自動入力しませんでした。"
-        } else if take.review?.status == .needsReview {
-            outcome = .reviewRequired
-            detail = "再認識との違いを確認するため、自動入力せず両方の文章を保存しました。"
-        } else if !take.shouldPaste {
-            outcome = .automaticPasteDisabled
-            detail = "自動入力がOFFのため、履歴へ保存しました。"
+        let outcome: DictationDelivery.Outcome
+        if let skipped = DictationDelivery.skipped(suppressed: take.automaticDeliverySuppressed,
+                                                  requiresReview: take.review?.status == .needsReview,
+                                                  shouldPaste: take.shouldPaste) {
+            outcome = skipped
         } else {
             deliveringTakeID = id
-            let report = await TextInsertion.deliver(text, to: take.target, shouldContinue: { [weak self, weak take] in
+            outcome = await DictationDelivery.send(text, to: take.target,
+                                                  captureReason: take.targetCaptureReason) { [weak self, weak take] in
                 guard let self, let take else { return false }
                 return !take.automaticDeliverySuppressed && self.inFlight[take.id] === take
-            })
+            }
             deliveringTakeID = nil
             // Reconcile before the next sender. Event submission alone cannot
             // authorize a new caret; an unknown receipt blocks concurrent targets.
-            for other in inFlight.values where other.id != id {
-                if let target = other.target { other.target = report.reconciled(target) }
+            if let report = outcome.report {
+                for other in inFlight.values where other.id != id {
+                    if let target = other.target { other.target = report.reconciled(target) }
+                }
+                DiagnosticLog.record("delivery resolved; id=\(id.uuidString.prefix(8)); outcome=\(outcome.delivery.rawValue); reason=\(report.reason)")
             }
-            switch report.outcome {
-            case .verifiedInserted: outcome = .verifiedInserted
-            case .inserted: outcome = .attemptedUnconfirmed
-            case .focusChanged, .cancelled: outcome = .blockedFocus
-            case .notPermitted, .eventPermissionMissing: outcome = .missingPermission
-            case .partiallySubmitted: outcome = .partiallyDirect
-            case .eventUnavailable: outcome = .insertionUnavailable
-            }
-            detail = Self.deliveryDescription(outcome, reason: take.target == nil ? take.targetCaptureReason : report.reason)
-            DiagnosticLog.record("delivery resolved; id=\(id.uuidString.prefix(8)); outcome=\(outcome.rawValue); reason=\(report.reason)")
         }
-        if let recordID { updateRemembered(recordID, delivery: outcome, detail: detail) }
-        let submitted = outcome == .verifiedInserted || outcome == .attemptedUnconfirmed
-        if submitted, let stoppedAt = take.stoppingAt {
+        if let recordID { updateRemembered(recordID, delivery: outcome.delivery, detail: outcome.detail) }
+        if outcome.submitted, let stoppedAt = take.stoppingAt {
             lastStopToInputSeconds = Date().timeIntervalSince(stoppedAt)
         }
-        showCompletionFeedback(submitted ? .sent : .saved, for: id)
+        showCompletionFeedback(outcome.submitted ? .sent : .saved, for: id)
         if active == nil {
-            status = detail + (take.review?.status == .incomplete ? " 追加チェックは未完了です。" : "")
-        }
-    }
-
-    private static func deliveryDescription(_ delivery: TranscriptRecord.Delivery, reason: String) -> String {
-        switch delivery {
-        case .verifiedInserted: return "入力先への反映を確認しました。履歴に保存済みです。"
-        case .attemptedUnconfirmed: return "入力イベントを送信しました（受理は未確認）。再送の前に入力先を確認してください。"
-        case .missingPermission: return "入力に必要な権限がありません。認識結果は履歴に保存しました。"
-        case .partiallyDirect: return "入力が途中で中断しました。履歴を使う前に、入力先に入った範囲を確認してください。"
-        case .insertionUnavailable: return "入力イベントを送信できませんでした。認識結果は履歴に保存しました。"
-        default: break
-        }
-        switch reason {
-        case "caret_or_selection_changed": return "カーソルまたは選択範囲が変わったため、入力せず履歴に保存しました。"
-        case "prior_input_unverified": return "前の文章の反映を確認できないため、続く文章を履歴に保存しました。"
-        case "koebridge_window_is_frontmost": return "設定画面を閉じて入力欄を選んでください。認識結果は履歴に保存しました。"
-        case "active_app_changed", "focused_field_changed", "focused_window_changed":
-            return "録音開始時と入力先が変わったため、入力せず履歴に保存しました。"
-        case "accessibility_not_granted": return "アクセシビリティの許可が必要です。認識結果は履歴に保存しました。"
-        default: return "入力先の安全確認を完了できなかったため、履歴に保存しました。"
+            status = outcome.detail + (take.review?.status == .incomplete ? " 追加チェックは未完了です。" : "")
         }
     }
 
@@ -912,84 +778,26 @@ import KoeBridgeCore
                                               engine: String? = nil,
                                               review: TranscriptReview? = nil,
                                               recordedAt: Date = Date()) -> UUID? {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        let record = TranscriptRecord(recordedAt: recordedAt,
-                                      engine: engine ?? (usedMode.isEmpty ? requestedMode.label : usedMode),
-                                      text: trimmed, isPartial: isPartial, delivery: delivery, review: review)
-        guard var store = archive else {
-            // Recovery within the running app even if an old archive is corrupt.
-            history.insert(record, at: 0)
-            history.sort { $0.recordedAt > $1.recordedAt }
-            history = Array(history.prefix(RecentTranscriptArchive.maximumRecords))
-            return record.id
-        }
-        do {
-            try store.insert(record)
-            historyProblem = ""
-        } catch {
-            historyProblem = "履歴をディスクへ保存できません（起動中のみ保持）：\(error.localizedDescription)"
-        }
-        archive = store
-        history = store.entries
-        return record.id
+        historyStore.remember(text, isPartial: isPartial, delivery: delivery,
+                              engine: engine ?? (usedMode.isEmpty ? requestedMode.label : usedMode),
+                              review: review, recordedAt: recordedAt)
     }
 
     private func updateRemembered(_ id: UUID, delivery: TranscriptRecord.Delivery, detail: String? = nil) {
-        guard var store = archive else {
-            if let index = history.firstIndex(where: { $0.id == id }) {
-                history[index].delivery = delivery
-                history[index].deliveryDetail = detail
-            }
-            return
-        }
-        do { try store.updateDelivery(id: id, to: delivery, detail: detail) }
-        catch { historyProblem = "履歴の状態更新に失敗しました：\(error.localizedDescription)" }
-        archive = store
-        history = store.entries
+        historyStore.updateDelivery(id, to: delivery, detail: detail)
     }
 
     @discardableResult func copyRecord(_ record: TranscriptRecord) -> Bool { TextInsertion.copy(record.text) }
-    func deleteRecord(_ id: UUID) {
-        guard var store = archive else {
-            history.removeAll { $0.id == id }
-            return
-        }
-        do { try store.delete(id: id) }
-        catch { historyProblem = "履歴の削除に失敗しました：\(error.localizedDescription)" }
-        archive = store
-        history = store.entries
-    }
-    func clearHistory() {
-        guard var store = archive else { history = []; return }
-        do { try store.deleteAll() }
-        catch { historyProblem = "履歴の全削除に失敗しました：\(error.localizedDescription)" }
-        archive = store
-        history = store.entries
-    }
-
-    func clearUsageMonitor() {
-        guard var store = usageArchive else {
-            monitorProblem = "統計ファイルを読み込めないため、既存ファイルを安全に削除できません"
-            return
-        }
-        do {
-            try store.deleteAll()
-            usageArchive = store
-            monitorEvents = []
-            monitorTokens = []
-            monitorProblem = ""
-        } catch {
-            monitorProblem = "利用統計を削除できません：\(error.localizedDescription)"
-        }
-    }
+    func deleteRecord(_ id: UUID) { historyStore.delete(id) }
+    func clearHistory() { historyStore.deleteAll() }
+    func clearUsageMonitor() { usageStore.deleteAll() }
 
     func saveKey(_ key: String) throws {
         try KeychainStore.save(key)
         objectWillChange.send()
     }
-    func deleteKey() {
-        KeychainStore.delete()
+    func deleteKey() throws {
+        try KeychainStore.delete()
         objectWillChange.send()
     }
     func copyLastText() { TextInsertion.copy(history.first?.text ?? previewText) }

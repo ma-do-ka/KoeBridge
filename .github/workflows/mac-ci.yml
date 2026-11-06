@@ -8,7 +8,8 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: macos-15-intel
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - name: Tool versions
@@ -18,7 +19,7 @@ jobs:
       - name: Verify published files and icon assets
         run: python3 scripts/audit_public_release.py
       - name: Privacy-safe Python usage estimator tests
-        run: python3 -m unittest discover -s scripts -p 'test_estimate_usage_cost.py' -v
+        run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
       - name: Unit tests
         run: swift test --parallel
       - name: Portable core regression suite
@@ -31,24 +32,9 @@ jobs:
         run: swift build -c release
       - name: Build and package universal development app
         run: KOEBRIDGE_PACKAGE_DEVELOPMENT=1 bash scripts/package_development_build.sh
-      - name: Validate development packaging command
-        run: bash -n scripts/package_development_build.sh
-      - name: Verify app bundle
+      - name: Validate packaging scripts
         run: |
-          test -x dist/KoeBridge.app/Contents/MacOS/KoeBridge
-          plutil -lint dist/KoeBridge.app/Contents/Info.plist
-          test -s dist/KoeBridge.app/Contents/Resources/KoeBridge_AppIcon.icns
-          cmp LICENSE dist/KoeBridge.app/Contents/Resources/LICENSE
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' dist/KoeBridge.app/Contents/Info.plist)" = "KoeBridge_AppIcon.icns"
-          echo "10186e4ecd7927a0d25c2fc26eed8c83db1f21def23f267f4695ca45f04f10f5  dist/KoeBridge.app/Contents/Resources/KoeBridge_AppIcon.icns" | shasum -a 256 --check
-          codesign --verify --deep --strict dist/KoeBridge.app
-          lipo dist/KoeBridge.app/Contents/MacOS/KoeBridge -verify_arch arm64 x86_64
+          bash -n scripts/package_development_build.sh
+          bash -n scripts/verify_development_archive.sh
       - name: Verify downloadable archive
-        run: |
-          mkdir -p dist/archive-verification
-          ditto -x -k dist/KoeBridge-v1.1.0-macOS-universal-development.zip dist/archive-verification
-          codesign --verify --deep --strict dist/archive-verification/KoeBridge.app
-          lipo dist/archive-verification/KoeBridge.app/Contents/MacOS/KoeBridge -verify_arch arm64 x86_64
-          cmp LICENSE dist/archive-verification/KoeBridge.app/Contents/Resources/LICENSE
-          cd dist
-          shasum -a 256 --check SHA256SUMS.txt
+        run: bash scripts/verify_development_archive.sh

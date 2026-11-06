@@ -98,9 +98,11 @@ final class MicrophoneCapture: @unchecked Sendable {
               let converter = AVAudioConverter(from: input, to: output) else {
             throw CaptureError.noInput
         }
-        self.onAudio = onAudio
-        self.converter = converter
-        self.alive = true
+        processingQueue.sync {
+            self.onAudio = onAudio
+            self.converter = converter
+            self.alive = true
+        }
         self.engine = engine
         node.installTap(onBus: 0, bufferSize: 1024, format: input) { [weak self] buffer, _ in
             guard let self else { return }
@@ -142,15 +144,10 @@ final class MicrophoneCapture: @unchecked Sendable {
                 engineStart: completedAt.timeIntervalSince(startAt),
                 total: completedAt.timeIntervalSince(beganAt))
         } catch {
-            node.removeTap(onBus: 0)
-            if let configurationObserver {
-                NotificationCenter.default.removeObserver(configurationObserver)
-                self.configurationObserver = nil
-            }
-            self.engine = nil
-            self.converter = nil
-            self.onAudio = nil
-            alive = false
+            // start() may fail after the tap has queued buffers. Use the same
+            // drain barrier as normal stop before clearing converter/callback
+            // ownership. Failed startup must not emit an extra partial chunk.
+            stopBlocking(flushPendingAudio: false)
             throw error
         }
     }
@@ -214,8 +211,8 @@ final class MicrophoneCapture: @unchecked Sendable {
         }
     }
 
-    private func stopBlocking(completion: @escaping (Int) -> Void) {
-        guard let engine else { completion(lostBufferCount); return }
+    private func stopBlocking(flushPendingAudio: Bool = true, completion: ((Int) -> Void)? = nil) {
+        guard let engine else { completion?(lostBufferCount); return }
         if let configurationObserver {
             NotificationCenter.default.removeObserver(configurationObserver)
             self.configurationObserver = nil
@@ -229,14 +226,14 @@ final class MicrophoneCapture: @unchecked Sendable {
         // This is a background serial lane; it does not block AppKit/UI.
         processingQueue.sync { [self] in
             alive = false
-            if !carry.isEmpty {
+            if flushPendingAudio && !carry.isEmpty {
                 noteAudioDelivered(carry.count)
                 onAudio?(carry)
             }
             carry.removeAll(keepingCapacity: true)
             onAudio = nil
             converter = nil
-            completion(lostBufferCount)
+            completion?(lostBufferCount)
         }
     }
 

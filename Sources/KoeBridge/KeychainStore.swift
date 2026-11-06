@@ -42,13 +42,16 @@ enum KeychainStore {
         }
     }
 
-    static func delete() {
+    static func delete() throws {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account
         ]
-        SecItemDelete(query as CFDictionary)
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw KeyError.security(status)
+        }
     }
 
     enum KeyError: Error, LocalizedError {

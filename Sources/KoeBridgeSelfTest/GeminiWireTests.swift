@@ -68,6 +68,65 @@ struct GeminiWireTests {
         check(events == [.setupComplete])
     }
 
+    func decodedFramePreservesAllSignalsAndMetadata() throws {
+        let raw = """
+        {"serverContent":{"interimInputTranscription":{"text":"途中"},"inputTranscription":{"text":"確定しました。","startOffset":"0s","endOffset":"1.25s","speakerLabel":"speaker0","finished":true},"turnComplete":true},"voiceActivity":{"type":"ACTIVITY_END"},"usageMetadata":{"promptTokenCount":12,"candidatesTokenCount":3,"totalTokenCount":15}}
+        """
+        let frame = try GeminiWire.decode(raw)
+        check(frame.events == [.interim("途中"), .final("確定しました。"), .turnComplete, .activityEnd])
+        check(frame.finalSegmentIdentity == "0s|1.25s|speaker0")
+        check(frame.transcriptionFinished)
+        check(frame.tokenUsage == GeminiTokenUsage(promptTokens: 12, responseTokens: 3, totalTokens: 15))
+        check(frame.diagnosticKind == "voiceActivity")
+        try check(try GeminiServerFrame(data: Data(raw.utf8)) == frame)
+        // Existing helpers share the decoder and retain their public contract.
+        try check(try GeminiWire.parse(raw) == frame.events)
+        check(GeminiWire.finalSegmentIdentity(raw) == frame.finalSegmentIdentity)
+        check(GeminiWire.transcriptionFinished(raw) == frame.transcriptionFinished)
+        check(GeminiWire.parseTokenUsage(raw) == frame.tokenUsage)
+        check(GeminiWire.frameKind(raw) == frame.diagnosticKind)
+    }
+
+    func decodedFrameRetainsUsageAndOptionalFrames() throws {
+        let usage = try GeminiWire.decode("{\"usageMetadata\":{\"totalTokenCount\":0}}")
+        check(usage.events.isEmpty)
+        check(usage.tokenUsage?.totalTokens == 0)
+        check(usage.diagnosticKind == "usageMetadata")
+        let emptyFinal = try GeminiWire.decode("{\"serverContent\":{\"inputTranscription\":{\"finished\":true}}}")
+        check(emptyFinal.events.isEmpty)
+        check(emptyFinal.transcriptionFinished)
+        check(emptyFinal.finalSegmentIdentity == nil)
+        // Unknown, well-formed schema additions remain forward compatible.
+        let unknown = try GeminiWire.decode("{\"futureMetadata\":{\"text\":\"PRIVATE\"}}")
+        check(unknown.events.isEmpty)
+        check(unknown.diagnosticKind == "other")
+    }
+
+    func malformedFrameFailsInsteadOfBecomingEmptyMessage() {
+        let validPrefix = Data("{\"serverContent\":{\"inputTranscription\":{\"text\":\"前半\"}}}".utf8)
+        for data in [Data([0xff]), validPrefix + Data([0xff]), Data(), Data("[]".utf8), Data("null".utf8)] {
+            do {
+                _ = try GeminiServerFrame(data: data)
+                check(false)
+            } catch {
+                check(error is WireError)
+            }
+        }
+        check(GeminiWire.finalSegmentIdentity("garbled") == nil)
+        check(GeminiWire.parseTokenUsage("garbled") == nil)
+        check(!GeminiWire.transcriptionFinished("garbled"))
+        check(GeminiWire.frameKind("garbled") == "invalid_json")
+    }
+
+    func decodedErrorKeepsDiagnosticsContentFree() throws {
+        let frame = try GeminiWire.decode("{\"error\":{\"message\":\"PRIVATE_FAILURE\"}}")
+        check(frame.events == [.error("PRIVATE_FAILURE")])
+        check(frame.diagnosticKind == "error")
+        check(frame.finalSegmentIdentity == nil)
+        check(frame.tokenUsage == nil)
+        check(!frame.transcriptionFinished)
+    }
+
     func assemblerJapaneseSegmentsAndEnglish() {
         var a = TranscriptAssembler()
         a.apply(.interim("おは"))

@@ -88,9 +88,25 @@ public enum SettingsSearchCatalog {
     }
 }
 
+/// An explicit scroll request. Repeating the same search result must still
+/// produce a different value so SwiftUI does not coalesce it into a no-op.
+public struct SettingsFocusRequest: Equatable, Sendable {
+    public let id: String
+    public let section: SettingsSection
+    public let sequence: UInt64
+
+    fileprivate init(entry: SettingsSearchEntry, sequence: UInt64) {
+        self.id = entry.id
+        self.section = entry.section
+        self.sequence = sequence
+    }
+}
+
 public struct SettingsNavigation: Equatable, Sendable {
     public private(set) var pages: [SettingsSection] = [.voice]
     public private(set) var index: Int = 0
+    public private(set) var focusRequest: SettingsFocusRequest?
+    private var focusSequence: UInt64 = 0
     public var selected: SettingsSection { pages[index] }
     public var canGoBack: Bool { index > 0 }
     public var canGoForward: Bool { index + 1 < pages.count }
@@ -98,6 +114,7 @@ public struct SettingsNavigation: Equatable, Sendable {
     public init() {}
 
     public mutating func select(_ page: SettingsSection) {
+        focusRequest = nil
         guard page != selected else { return }
         pages = Array(pages.prefix(index + 1))
         pages.append(page)
@@ -108,10 +125,21 @@ public struct SettingsNavigation: Equatable, Sendable {
             index = pages.count - 1
         }
     }
+
+    public mutating func focus(_ entry: SettingsSearchEntry) {
+        select(entry.section)
+        focusSequence &+= 1
+        focusRequest = SettingsFocusRequest(entry: entry, sequence: focusSequence)
+    }
+
     public mutating func back() {
-        if canGoBack { index -= 1 }
+        guard canGoBack else { return }
+        focusRequest = nil
+        index -= 1
     }
     public mutating func forward() {
-        if canGoForward { index += 1 }
+        guard canGoForward else { return }
+        focusRequest = nil
+        index += 1
     }
 }

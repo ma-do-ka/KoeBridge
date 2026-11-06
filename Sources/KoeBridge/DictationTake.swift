@@ -47,13 +47,8 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
     var firstPreviewAt: Date?
     var finished = false
     var automaticDeliverySuppressed = false
-    var confirmedText: String?
-    var review: TranscriptReview?
+    var reviewSession: DictationReviewSession?
     var historyRecordID: UUID?
-    var recheckStartedAt: Date?
-    var recheckAudioBytes = 0
-    var recheckSucceeded = false
-    var recheckTokens: [GeminiTokenSample] = []
 
     init(preferred: RecognitionMode, style: TranscriptionStyle, japaneseHint: Bool,
          vocabulary: [String], shouldPaste: Bool, options: TranscriptionOptions) {
@@ -67,10 +62,39 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
     }
 
     var recoverableText: String {
-        let remote = cloud?.assembler.recoveryText ?? ""
-        if !remote.isEmpty { return remote }
-        let offline = local?.transcript ?? ""
-        return offline.isEmpty ? partialText : offline
+        TranscriptRecovery.text(preferred: appleAttempted ? .local : .cloud,
+                                cloud: cloud?.assembler.recoveryText,
+                                local: local?.transcript, preview: partialText)
+    }
+
+    var review: TranscriptReview? { reviewSession?.record }
+
+    /// Snapshot before resources are released. No transcript, PCM, platform
+    /// error details, or credentials are included in the persisted counters.
+    func usageSamples(succeeded: Bool, cancelled: Bool) -> (engines: [EngineUsageSample], tokens: [GeminiTokenSample]) {
+        let fallbackTime = startedAt ?? Date()
+        func outcome(for mode: RecognitionMode) -> UsageOutcome {
+            if succeeded && successfulEngine == mode { return .success }
+            return cancelled ? .cancelled : .failure
+        }
+        var rows: [EngineUsageSample] = []
+        if geminiAttempted {
+            rows.append(EngineUsageSample(at: geminiStartedAt ?? fallbackTime, engine: .gemini,
+                                          audioSeconds: Double(cloud?.sentAudioBytes ?? 0) / 32_000,
+                                          outcome: outcome(for: .gemini)))
+        }
+        if appleAttempted {
+            rows.append(EngineUsageSample(at: appleStartedAt ?? fallbackTime, engine: .apple,
+                                          audioSeconds: Double(appleAudioBytes) / 32_000,
+                                          outcome: outcome(for: .local), fallback: fellBackToApple))
+        }
+        if let usage = reviewSession?.usage, let startedAt = usage.startedAt {
+            rows.append(EngineUsageSample(at: startedAt, engine: .gemini,
+                                          audioSeconds: Double(usage.audioBytes) / 32_000,
+                                          outcome: usage.succeeded ? .success : (cancelled ? .cancelled : .failure),
+                                          purpose: .audioRecheck))
+        }
+        return (rows, (cloud?.tokenSamples ?? []) + (reviewSession?.usage.tokens ?? []))
     }
 
     func releaseResources() {
@@ -78,6 +102,7 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
         recordingTimeout?.cancel()
         finalizationTimeout?.cancel()
         worker?.cancel()
+        reviewSession?.cancel()
         // A capture may still be preparing; late callbacks are gated by
         // 'finished', and the original startup task releases its own mic.
         mic?.stop { _ in }
