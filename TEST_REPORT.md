@@ -4,12 +4,12 @@
 
 対象の同一コミットで、次の検証が成功した場合にのみ開発版アプリを公開します。実際の実行結果は [macOS CI と公開ワークフロー](https://github.com/ma-do-ka/KoeBridge/actions) に記録されます。
 
-アプリの回帰検証では、[Mac CI（コミット `0bbb884`）](https://github.com/ma-do-ka/KoeBridge/actions/runs/42230091540) にて **Swift Testing 167件、portable self-test 133ケース・6,350アサーション、Python 7件が失敗0件**。通常の Release ビルドも成功しました。この実行では複数アーキテクチャを一括指定する Xcode ビルド経路が失敗したため、配布用の生成方式を個別ビルドと `lipo` に変更し、公開前に再検証します。
+初回の統合検証では、[Mac CI（コミット `c63ca54`）](https://github.com/ma-do-ka/KoeBridge/actions/runs/42232149007) にて **Swift Testing 167件、portable self-test 133ケース・6,350アサーション、Python 7件が失敗0件**。Universal アプリの生成、署名、ZIP の展開、両アーキテクチャと SHA-256 の検証も成功しました。その後に補強した専用モデルの終了通知対応を含む最終コミットは、同じ検証と公開ワークフローで再検証します。
 
 - 公開ファイルの許可一覧・秘密情報パターン・固定アイコンの監査。
 - Python 利用量・追加音声照合の概算テスト。
 - Swift Testing と portable self-test。連続入力の位置引継ぎ、選択範囲置換、UTF-16 境界、部分送信、同一欄の未確認入力、変更された入力先の拒否を含む。
-- 手動 `activityEnd` と先行音声キューの順序、送信中の早い完了通知、未完了・古い通知・失敗時の確定拒否、同じ発話の反復保持。
+- 手動 `activityEnd` と先行音声キューの順序、専用モデルの `voiceActivity.type = ACTIVITY_END`、送信中の早い完了通知、未完了・古い通知・失敗時の確定拒否、同じ発話の反復保持。
 - 独立チェックの全組合せ、旧設定の移行、100語上限、JSON 化で用語を失わない eager な辞書構築、音声照合の要求・応答・時間制限。
 - 引用・コード・日本語パスの保護、限定した句読点補正、文章チェック OFF 時の原文保持、要確認履歴とメニュープレビュー。
 - Universal（arm64 / x86_64）ビルド、Info.plist、アイコン、同梱 LICENSE、アドホック署名の整合性。

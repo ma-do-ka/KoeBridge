@@ -216,6 +216,7 @@ private final class GeminiPingCompletion: @unchecked Sendable {
             lastTranscriptionAt = now
         }
         if case .turnComplete = event { endpointState.receiveTurnComplete(at: now) }
+        if case .activityEnd = event { endpointState.receiveActivityEnd(at: now) }
         if case .error(let msg) = event { failure = msg }
         onEvent?(event)
     }
@@ -251,7 +252,7 @@ private final class GeminiPingCompletion: @unchecked Sendable {
             do {
                 try await ws.send(.string(raw))
                 try self.checkOpen()
-                // This socket has one manual activity. A turnComplete can
+                // This socket has one manual activity. Its acknowledgement can
                 // arrive before this send continuation resumes. The state
                 // exposes that evidence only after this write succeeds.
                 if ending { self.endpointState.endWriteSucceeded(at: Date()) }
@@ -299,8 +300,8 @@ private final class GeminiPingCompletion: @unchecked Sendable {
         DiagnosticLog.record("gemini activityEnd; audioBytes=\(sentAudioBytes) audioChunks=\(sentAudioChunks) interimEvents=\(interimEvents) finalEvents=\(finalEvents) duplicateFinals=\(duplicateFinalEvents) hasPendingInterim=\(!assembler.interim.isEmpty) receivedFrames=\(receivedFrames) unrecognizedFrames=\(unrecognizedFrames)")
     }
 
-    /// Only final segments may be inserted. Transcription and turnComplete
-    /// have no guaranteed relative order; allow them to settle after user stop.
+    /// Only final segments may be inserted. The manual activity acknowledgement
+    /// and transcription can arrive separately; let them settle after user stop.
     func awaitFinal() async throws -> String {
         if let completedText { return completedText }
         defer { if completedText == nil { cancel() } }
@@ -315,7 +316,7 @@ private final class GeminiPingCompletion: @unchecked Sendable {
             try checkOpen()
             if !assembler.hasConflictingFinals,
                FinalizationPolicy.canFinish(endedAt: endedAt, lastFinalAt: lastFinalAt,
-                                            turnCompleteAt: endpointState.acknowledgedTurnCompleteAt, now: Date(),
+                                            endAcknowledgedAt: endpointState.acknowledgedEndAt, now: Date(),
                                             hasPendingInterim: !assembler.interim.isEmpty,
                                             lastTranscriptionAt: lastTranscriptionAt) {
                 let text = assembler.committedText

@@ -11,10 +11,10 @@ public struct ManualEndpointState: Sendable {
 
     public private(set) var phase: Phase = .recording
     public private(set) var writeCompletedAt: Date?
-    /// Time at which BOTH the end write and its turnComplete are known. This
-    /// is deliberately not the raw arrival time of a possibly early reply.
-    public private(set) var acknowledgedTurnCompleteAt: Date?
-    private var hasPendingTurnComplete = false
+    /// Time at which BOTH the end write and its server acknowledgement are
+    /// known. This is not the raw arrival time of a possibly early reply.
+    public private(set) var acknowledgedEndAt: Date?
+    private var hasPendingEndAcknowledgement = false
 
     public init() {}
 
@@ -24,11 +24,21 @@ public struct ManualEndpointState: Sendable {
     }
 
     public mutating func receiveTurnComplete(at now: Date) {
+        receiveEndAcknowledgement(at: now)
+    }
+
+    /// Gemini Transcribe's manual flush acknowledges the activity with a
+    /// root-level voiceActivity ACTIVITY_END. It uses the same write gate.
+    public mutating func receiveActivityEnd(at now: Date) {
+        receiveEndAcknowledgement(at: now)
+    }
+
+    private mutating func receiveEndAcknowledgement(at now: Date) {
         switch phase {
         case .writingEnd:
-            hasPendingTurnComplete = true
+            hasPendingEndAcknowledgement = true
         case .endWritten:
-            acknowledgedTurnCompleteAt = now
+            acknowledgedEndAt = now
         case .recording, .failed, .cancelled:
             break
         }
@@ -38,27 +48,28 @@ public struct ManualEndpointState: Sendable {
         guard phase == .writingEnd else { return }
         phase = .endWritten
         writeCompletedAt = now
-        if hasPendingTurnComplete { acknowledgedTurnCompleteAt = now }
-        hasPendingTurnComplete = false
+        if hasPendingEndAcknowledgement { acknowledgedEndAt = now }
+        hasPendingEndAcknowledgement = false
     }
 
     public mutating func endWriteFailed() {
         guard phase == .writingEnd else { return }
         phase = .failed
-        hasPendingTurnComplete = false
-        acknowledgedTurnCompleteAt = nil
+        hasPendingEndAcknowledgement = false
+        acknowledgedEndAt = nil
     }
 
     public mutating func cancel() {
         phase = .cancelled
-        hasPendingTurnComplete = false
-        acknowledgedTurnCompleteAt = nil
+        hasPendingEndAcknowledgement = false
+        acknowledgedEndAt = nil
     }
 }
 
 /// Gemini Transcribe Live emits an authoritative `inputTranscription` for a
 /// speech SEGMENT. It is not guaranteed to arrive after `activityEnd` and
 /// `turnComplete` is neither mandatory nor ordered relative to that text.
+/// Transcribe's manual endpoint can instead return voiceActivity ACTIVITY_END.
 ///
 /// Safety rule: Never auto-type an uncommitted interim. A final segment's
 /// arrival time is not proof that all submitted audio was transcribed. Require
@@ -74,13 +85,23 @@ public enum FinalizationPolicy {
                                  turnCompleteAt: Date?, now: Date,
                                  hasPendingInterim: Bool = false,
                                  lastTranscriptionAt: Date? = nil) -> Bool {
+        canFinish(endedAt: endedAt, lastFinalAt: lastFinalAt,
+                  endAcknowledgedAt: turnCompleteAt, now: now,
+                  hasPendingInterim: hasPendingInterim,
+                  lastTranscriptionAt: lastTranscriptionAt)
+    }
+
+    public static func canFinish(endedAt: Date, lastFinalAt: Date?,
+                                 endAcknowledgedAt: Date?, now: Date,
+                                 hasPendingInterim: Bool = false,
+                                 lastTranscriptionAt: Date? = nil) -> Bool {
         guard let lastFinalAt, now >= endedAt, !hasPendingInterim else { return false }
         let sinceStop = now.timeIntervalSince(endedAt)
         let sinceFinal = now.timeIntervalSince(lastFinalAt)
         let sinceUpdate = now.timeIntervalSince(lastTranscriptionAt ?? lastFinalAt)
         guard sinceFinal >= 0, sinceUpdate >= 0 else { return false }
 
-        guard let completion = turnCompleteAt, completion >= endedAt else { return false }
+        guard let completion = endAcknowledgedAt, completion >= endedAt else { return false }
         return sinceStop >= 0.40 && sinceFinal >= 0.25
             && now.timeIntervalSince(completion) >= 0.25 && sinceUpdate >= 0.25
     }

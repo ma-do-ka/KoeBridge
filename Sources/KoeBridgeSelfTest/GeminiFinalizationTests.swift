@@ -71,15 +71,15 @@ struct GeminiFinalizationTests {
         endpoint.beginEnd() // All queued PCM has already been written.
         endpoint.receiveTurnComplete(at: end.addingTimeInterval(-0.1))
         check(endpoint.phase == .writingEnd)
-        check(endpoint.acknowledgedTurnCompleteAt == nil)
+        check(endpoint.acknowledgedEndAt == nil)
         check(!FinalizationPolicy.canFinish(endedAt: end, lastFinalAt: end.addingTimeInterval(-0.05),
-            turnCompleteAt: endpoint.acknowledgedTurnCompleteAt, now: end.addingTimeInterval(0.8)))
+            turnCompleteAt: endpoint.acknowledgedEndAt, now: end.addingTimeInterval(0.8)))
         // The socket send succeeds after the receive task handled its reply.
         endpoint.endWriteSucceeded(at: end)
         check(endpoint.writeCompletedAt == end)
-        check(endpoint.acknowledgedTurnCompleteAt == end)
+        check(endpoint.acknowledgedEndAt == end)
         check(FinalizationPolicy.canFinish(endedAt: end, lastFinalAt: end.addingTimeInterval(-0.05),
-            turnCompleteAt: endpoint.acknowledgedTurnCompleteAt, now: end.addingTimeInterval(0.8)))
+            turnCompleteAt: endpoint.acknowledgedEndAt, now: end.addingTimeInterval(0.8)))
     }
 
     func manualEndIgnoresCompletionBeforeItsWriteBegins() {
@@ -87,13 +87,13 @@ struct GeminiFinalizationTests {
         endpoint.receiveTurnComplete(at: end.addingTimeInterval(-0.2))
         endpoint.beginEnd()
         endpoint.endWriteSucceeded(at: end)
-        check(endpoint.acknowledgedTurnCompleteAt == nil)
+        check(endpoint.acknowledgedEndAt == nil)
         check(!FinalizationPolicy.canFinish(endedAt: end, lastFinalAt: end.addingTimeInterval(0.1),
-            turnCompleteAt: endpoint.acknowledgedTurnCompleteAt, now: end.addingTimeInterval(0.8)))
+            turnCompleteAt: endpoint.acknowledgedEndAt, now: end.addingTimeInterval(0.8)))
         // A later, activity-scoped completion follows the other valid order.
         endpoint.receiveTurnComplete(at: end.addingTimeInterval(0.2))
         check(FinalizationPolicy.canFinish(endedAt: end, lastFinalAt: end.addingTimeInterval(0.1),
-            turnCompleteAt: endpoint.acknowledgedTurnCompleteAt, now: end.addingTimeInterval(0.8)))
+            turnCompleteAt: endpoint.acknowledgedEndAt, now: end.addingTimeInterval(0.8)))
     }
 
     func failedOrCancelledEndWritesCannotAcknowledgeCompletion() {
@@ -108,9 +108,9 @@ struct GeminiFinalizationTests {
             endpoint.beginEnd()
             check(endpoint.phase == (cancelled ? .cancelled : .failed))
             check(endpoint.writeCompletedAt == nil)
-            check(endpoint.acknowledgedTurnCompleteAt == nil)
+            check(endpoint.acknowledgedEndAt == nil)
             check(!FinalizationPolicy.canFinish(endedAt: end, lastFinalAt: end.addingTimeInterval(0.1),
-                turnCompleteAt: endpoint.acknowledgedTurnCompleteAt, now: end.addingTimeInterval(0.8)))
+                turnCompleteAt: endpoint.acknowledgedEndAt, now: end.addingTimeInterval(0.8)))
         }
     }
 
@@ -119,10 +119,58 @@ struct GeminiFinalizationTests {
         endpoint.beginEnd()
         endpoint.receiveTurnComplete(at: end.addingTimeInterval(-0.1))
         endpoint.endWriteSucceeded(at: end)
-        check(endpoint.acknowledgedTurnCompleteAt != nil)
+        check(endpoint.acknowledgedEndAt != nil)
         endpoint.cancel()
         endpoint.receiveTurnComplete(at: end.addingTimeInterval(0.1))
-        check(endpoint.acknowledgedTurnCompleteAt == nil)
+        check(endpoint.acknowledgedEndAt == nil)
+    }
+
+    func manualActivityEndFinalizesWithoutModelTurnComplete() throws {
+        var endpoint = ManualEndpointState()
+        var assembler = TranscriptAssembler()
+        assembler.beginActivity()
+        endpoint.beginEnd()
+        // Matches the dedicated Transcribe manual-VAD response: final text
+        // plus root voiceActivity ACTIVITY_END, with no model turnComplete.
+        let events = try GeminiWire.parse("""
+        {"serverContent":{"inputTranscription":{"text":"3,000円です。"}},"voiceActivity":{"type":"ACTIVITY_END"}}
+        """)
+        for event in events {
+            assembler.apply(event)
+            if case .activityEnd = event {
+                endpoint.receiveActivityEnd(at: end.addingTimeInterval(-0.05))
+            }
+        }
+        check(endpoint.acknowledgedEndAt == nil)
+        endpoint.endWriteSucceeded(at: end)
+        check(assembler.committedText == "3,000円です。")
+        check(FinalizationPolicy.canFinish(endedAt: end, lastFinalAt: end.addingTimeInterval(-0.05),
+            endAcknowledgedAt: endpoint.acknowledgedEndAt, now: end.addingTimeInterval(0.8),
+            hasPendingInterim: !assembler.interim.isEmpty))
+        // The new acknowledgement does not authorize an unfinished suffix.
+        assembler.apply(.interim("ただし"))
+        check(!FinalizationPolicy.canFinish(endedAt: end, lastFinalAt: end.addingTimeInterval(-0.05),
+            endAcknowledgedAt: endpoint.acknowledgedEndAt, now: end.addingTimeInterval(0.8),
+            hasPendingInterim: !assembler.interim.isEmpty))
+    }
+
+    func manualActivityEndNeverBypassesFailedOrUnstartedEnd() {
+        var early = ManualEndpointState()
+        early.receiveActivityEnd(at: end.addingTimeInterval(-0.2))
+        early.beginEnd()
+        early.endWriteSucceeded(at: end)
+        check(early.acknowledgedEndAt == nil)
+        for cancelled in [false, true] {
+            var endpoint = ManualEndpointState()
+            endpoint.beginEnd()
+            endpoint.receiveActivityEnd(at: end.addingTimeInterval(-0.1))
+            if cancelled { endpoint.cancel() } else { endpoint.endWriteFailed() }
+            endpoint.endWriteSucceeded(at: end)
+            endpoint.receiveActivityEnd(at: end.addingTimeInterval(0.1))
+            check(endpoint.acknowledgedEndAt == nil)
+            check(!FinalizationPolicy.canFinish(endedAt: end, lastFinalAt: end,
+                endAcknowledgedAt: endpoint.acknowledgedEndAt, now: end.addingTimeInterval(0.8)))
+        }
     }
 
     func identicalInterimRemainsPendingUntilItsOwnFinal() {

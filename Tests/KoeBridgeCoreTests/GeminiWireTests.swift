@@ -26,6 +26,44 @@ struct GeminiWireTests {
         #expect(events == [.interim("おは"), .final("おはよう"), .turnComplete])
     }
 
+    @Test func manualActivityEndUsesRawWireType() throws {
+        let raw = """
+        {"voiceActivity":{"type":"ACTIVITY_END","audioOffset":"1.25s"}}
+        """
+        let events = try GeminiWire.parse(raw)
+        #expect(events == [.activityEnd])
+        #expect(GeminiWire.frameKind(raw) == "voiceActivity")
+        // voiceActivityType is the SDK property, not the raw WebSocket field.
+        let sdkShape = try GeminiWire.parse("""
+        {"voiceActivity":{"voiceActivityType":"ACTIVITY_END"}}
+        """)
+        #expect(sdkShape.isEmpty)
+    }
+
+    @Test func manualActivityEndCanAccompanyFinalText() throws {
+        let events = try GeminiWire.parse("""
+        {"serverContent":{"inputTranscription":{"text":"考えてから続けました。"}},"voiceActivity":{"type":"ACTIVITY_END"}}
+        """)
+        #expect(events == [.final("考えてから続けました。"), .activityEnd])
+    }
+
+    @Test func unrelatedSignalsDoNotAcknowledgeManualEnd() throws {
+        for raw in [
+            """
+            {"voiceActivity":{"type":"ACTIVITY_START"}}
+            """,
+            """
+            {"voiceActivity":{"type":"TYPE_UNSPECIFIED"}}
+            """,
+            """
+            {"serverContent":{"voiceActivity":{"type":"ACTIVITY_END"},"generationComplete":true,"interactionStatus":"IDLE"}}
+            """
+        ] {
+            let events = try GeminiWire.parse(raw)
+            #expect(events.isEmpty)
+        }
+    }
+
     @Test func setupComplete() throws {
         let events = try GeminiWire.parse("{\"setupComplete\":{}}")
         #expect(events == [.setupComplete])

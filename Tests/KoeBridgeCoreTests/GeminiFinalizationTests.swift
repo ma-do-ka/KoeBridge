@@ -72,15 +72,15 @@ struct GeminiFinalizationTests {
         endpoint.beginEnd() // All queued PCM has already been written.
         endpoint.receiveTurnComplete(at: end.addingTimeInterval(-0.1))
         #expect(endpoint.phase == .writingEnd)
-        #expect(endpoint.acknowledgedTurnCompleteAt == nil)
+        #expect(endpoint.acknowledgedEndAt == nil)
         #expect(!FinalizationPolicy.canFinish(endedAt: end, lastFinalAt: end.addingTimeInterval(-0.05),
-            turnCompleteAt: endpoint.acknowledgedTurnCompleteAt, now: end.addingTimeInterval(0.8)))
+            turnCompleteAt: endpoint.acknowledgedEndAt, now: end.addingTimeInterval(0.8)))
         // The socket send succeeds after the receive task handled its reply.
         endpoint.endWriteSucceeded(at: end)
         #expect(endpoint.writeCompletedAt == end)
-        #expect(endpoint.acknowledgedTurnCompleteAt == end)
+        #expect(endpoint.acknowledgedEndAt == end)
         #expect(FinalizationPolicy.canFinish(endedAt: end, lastFinalAt: end.addingTimeInterval(-0.05),
-            turnCompleteAt: endpoint.acknowledgedTurnCompleteAt, now: end.addingTimeInterval(0.8)))
+            turnCompleteAt: endpoint.acknowledgedEndAt, now: end.addingTimeInterval(0.8)))
     }
 
     @Test func manualEndIgnoresCompletionBeforeItsWriteBegins() {
@@ -88,13 +88,13 @@ struct GeminiFinalizationTests {
         endpoint.receiveTurnComplete(at: end.addingTimeInterval(-0.2))
         endpoint.beginEnd()
         endpoint.endWriteSucceeded(at: end)
-        #expect(endpoint.acknowledgedTurnCompleteAt == nil)
+        #expect(endpoint.acknowledgedEndAt == nil)
         #expect(!FinalizationPolicy.canFinish(endedAt: end, lastFinalAt: end.addingTimeInterval(0.1),
-            turnCompleteAt: endpoint.acknowledgedTurnCompleteAt, now: end.addingTimeInterval(0.8)))
+            turnCompleteAt: endpoint.acknowledgedEndAt, now: end.addingTimeInterval(0.8)))
         // A later, activity-scoped completion follows the other valid order.
         endpoint.receiveTurnComplete(at: end.addingTimeInterval(0.2))
         #expect(FinalizationPolicy.canFinish(endedAt: end, lastFinalAt: end.addingTimeInterval(0.1),
-            turnCompleteAt: endpoint.acknowledgedTurnCompleteAt, now: end.addingTimeInterval(0.8)))
+            turnCompleteAt: endpoint.acknowledgedEndAt, now: end.addingTimeInterval(0.8)))
     }
 
     @Test func failedOrCancelledEndWritesCannotAcknowledgeCompletion() {
@@ -109,9 +109,9 @@ struct GeminiFinalizationTests {
             endpoint.beginEnd()
             #expect(endpoint.phase == (cancelled ? .cancelled : .failed))
             #expect(endpoint.writeCompletedAt == nil)
-            #expect(endpoint.acknowledgedTurnCompleteAt == nil)
+            #expect(endpoint.acknowledgedEndAt == nil)
             #expect(!FinalizationPolicy.canFinish(endedAt: end, lastFinalAt: end.addingTimeInterval(0.1),
-                turnCompleteAt: endpoint.acknowledgedTurnCompleteAt, now: end.addingTimeInterval(0.8)))
+                turnCompleteAt: endpoint.acknowledgedEndAt, now: end.addingTimeInterval(0.8)))
         }
     }
 
@@ -120,10 +120,58 @@ struct GeminiFinalizationTests {
         endpoint.beginEnd()
         endpoint.receiveTurnComplete(at: end.addingTimeInterval(-0.1))
         endpoint.endWriteSucceeded(at: end)
-        #expect(endpoint.acknowledgedTurnCompleteAt != nil)
+        #expect(endpoint.acknowledgedEndAt != nil)
         endpoint.cancel()
         endpoint.receiveTurnComplete(at: end.addingTimeInterval(0.1))
-        #expect(endpoint.acknowledgedTurnCompleteAt == nil)
+        #expect(endpoint.acknowledgedEndAt == nil)
+    }
+
+    @Test func manualActivityEndFinalizesWithoutModelTurnComplete() throws {
+        var endpoint = ManualEndpointState()
+        var assembler = TranscriptAssembler()
+        assembler.beginActivity()
+        endpoint.beginEnd()
+        // Matches the dedicated Transcribe manual-VAD response: final text
+        // plus root voiceActivity ACTIVITY_END, with no model turnComplete.
+        let events = try GeminiWire.parse("""
+        {"serverContent":{"inputTranscription":{"text":"3,000円です。"}},"voiceActivity":{"type":"ACTIVITY_END"}}
+        """)
+        for event in events {
+            assembler.apply(event)
+            if case .activityEnd = event {
+                endpoint.receiveActivityEnd(at: end.addingTimeInterval(-0.05))
+            }
+        }
+        #expect(endpoint.acknowledgedEndAt == nil)
+        endpoint.endWriteSucceeded(at: end)
+        #expect(assembler.committedText == "3,000円です。")
+        #expect(FinalizationPolicy.canFinish(endedAt: end, lastFinalAt: end.addingTimeInterval(-0.05),
+            endAcknowledgedAt: endpoint.acknowledgedEndAt, now: end.addingTimeInterval(0.8),
+            hasPendingInterim: !assembler.interim.isEmpty))
+        // The new acknowledgement does not authorize an unfinished suffix.
+        assembler.apply(.interim("ただし"))
+        #expect(!FinalizationPolicy.canFinish(endedAt: end, lastFinalAt: end.addingTimeInterval(-0.05),
+            endAcknowledgedAt: endpoint.acknowledgedEndAt, now: end.addingTimeInterval(0.8),
+            hasPendingInterim: !assembler.interim.isEmpty))
+    }
+
+    @Test func manualActivityEndNeverBypassesFailedOrUnstartedEnd() {
+        var early = ManualEndpointState()
+        early.receiveActivityEnd(at: end.addingTimeInterval(-0.2))
+        early.beginEnd()
+        early.endWriteSucceeded(at: end)
+        #expect(early.acknowledgedEndAt == nil)
+        for cancelled in [false, true] {
+            var endpoint = ManualEndpointState()
+            endpoint.beginEnd()
+            endpoint.receiveActivityEnd(at: end.addingTimeInterval(-0.1))
+            if cancelled { endpoint.cancel() } else { endpoint.endWriteFailed() }
+            endpoint.endWriteSucceeded(at: end)
+            endpoint.receiveActivityEnd(at: end.addingTimeInterval(0.1))
+            #expect(endpoint.acknowledgedEndAt == nil)
+            #expect(!FinalizationPolicy.canFinish(endedAt: end, lastFinalAt: end,
+                endAcknowledgedAt: endpoint.acknowledgedEndAt, now: end.addingTimeInterval(0.8)))
+        }
     }
 
     @Test func identicalInterimRemainsPendingUntilItsOwnFinal() {

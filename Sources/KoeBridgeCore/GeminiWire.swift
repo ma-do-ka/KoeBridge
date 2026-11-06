@@ -11,6 +11,7 @@ public enum TranscribeEvent: Equatable {
     case interim(String)
     case final(String)
     case turnComplete
+    case activityEnd
     case error(String)
 }
 
@@ -93,6 +94,14 @@ public enum GeminiWire {
             }
             if content["turnComplete"] as? Bool == true { events.append(.turnComplete) }
         }
+        // Raw WebSocket field is `type`; the SDK renames it to
+        // voice_activity_type / voiceActivityType. Transcribe manual VAD
+        // confirms activityEnd with this root-level signal, not necessarily
+        // with a conversational model's serverContent.turnComplete.
+        if let activity = root["voiceActivity"] as? [String: Any],
+           activity["type"] as? String == "ACTIVITY_END" {
+            events.append(.activityEnd)
+        }
         return events
     }
 
@@ -148,6 +157,7 @@ public enum GeminiWire {
         if root["error"] != nil { return "error" }
         if root["goAway"] != nil { return "goAway" }
         if root["sessionResumptionUpdate"] != nil { return "sessionResumptionUpdate" }
+        if root["voiceActivity"] != nil { return "voiceActivity" }
         if let content = root["serverContent"] as? [String: Any] {
             if content["interimInputTranscription"] != nil { return "serverContent.interimInputTranscription" }
             if content["inputTranscription"] != nil { return "serverContent.inputTranscription" }

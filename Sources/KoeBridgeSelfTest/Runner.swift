@@ -202,6 +202,11 @@ struct KoeBridgeSelfTest {
         await run("GeminiFinalizationTests.manualEndIgnoresCompletionBeforeItsWriteBegins", { GeminiFinalizationTests().manualEndIgnoresCompletionBeforeItsWriteBegins() })
         await run("GeminiFinalizationTests.failedOrCancelledEndWritesCannotAcknowledgeCompletion", { GeminiFinalizationTests().failedOrCancelledEndWritesCannotAcknowledgeCompletion() })
         await run("GeminiFinalizationTests.cancellationRevokesAnAcknowledgedManualEnd", { GeminiFinalizationTests().cancellationRevokesAnAcknowledgedManualEnd() })
+        await run("GeminiWireTests.manualActivityEndUsesRawWireType", { try GeminiWireTests().manualActivityEndUsesRawWireType() })
+        await run("GeminiWireTests.manualActivityEndCanAccompanyFinalText", { try GeminiWireTests().manualActivityEndCanAccompanyFinalText() })
+        await run("GeminiWireTests.unrelatedSignalsDoNotAcknowledgeManualEnd", { try GeminiWireTests().unrelatedSignalsDoNotAcknowledgeManualEnd() })
+        await run("GeminiFinalizationTests.manualActivityEndFinalizesWithoutModelTurnComplete", { try GeminiFinalizationTests().manualActivityEndFinalizesWithoutModelTurnComplete() })
+        await run("GeminiFinalizationTests.manualActivityEndNeverBypassesFailedOrUnstartedEnd", { GeminiFinalizationTests().manualActivityEndNeverBypassesFailedOrUnstartedEnd() })
         print("KoeBridge portable self-test: \(testCount) cases, \(TestRecorder.checked) assertions, \(TestRecorder.failures) failures")
         if TestRecorder.failures > 0 { exit(1) }
     }
