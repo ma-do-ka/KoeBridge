@@ -1,23 +1,29 @@
-name: Publish KoeBridge v1.1.0 and development download
+name: Publish tested KoeBridge v1.1.0 using Intel runner
 
 on:
   push:
-    branches: [main]
+    branches: [ci/release-v1.1.0-intel]
     paths:
-      - 'docs/releases/v1.1.0.md'
+      - '.github/workflows/release-v1.1.0.yml'
 
 permissions:
   contents: write
 
+env:
+  KOEBRIDGE_RELEASE_COMMIT: dfe8797acd812ee73c0f91983002a359c59a18c4
+
 jobs:
   verify-and-publish:
     if: github.repository == 'ma-do-ka/KoeBridge'
-    runs-on: macos-15
+    runs-on: macos-15-intel
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: dfe8797acd812ee73c0f91983002a359c59a18c4
       - name: Verify release identity
         run: |
+          test "$(git rev-parse HEAD)" = "$KOEBRIDGE_RELEASE_COMMIT"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' scripts/Info.plist)" = '1.1.0'
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' scripts/Info.plist)" = '26'
           test "$(/usr/libexec/PlistBuddy -c 'Print :KoeBridgeReleaseLabel' scripts/Info.plist)" = '1.1.0'
@@ -61,9 +67,9 @@ jobs:
           gh release create v1.1.0 \
             dist/KoeBridge-v1.1.0-macOS-universal-development.zip \
             dist/SHA256SUMS.txt \
-            --target "$GITHUB_SHA" \
+            --target "$KOEBRIDGE_RELEASE_COMMIT" \
             --title 'KoeBridge v1.1.0' \
             --notes-file docs/releases/v1.1.0.md \
             --latest
-          test "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/v1.1.0" --jq '.object.sha')" = "$GITHUB_SHA"
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/v1.1.0" --jq '.object.sha')" = "$KOEBRIDGE_RELEASE_COMMIT"
           gh release view v1.1.0 --json url,tagName,isDraft,isPrerelease,assets
