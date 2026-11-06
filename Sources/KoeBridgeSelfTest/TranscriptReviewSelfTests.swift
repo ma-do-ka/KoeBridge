@@ -26,7 +26,7 @@ struct TranscriptReviewSelfTests {
         check(config["customVocabulary"] == nil)
         check(config["mode"] as? String == "VERBATIM")
         let complete = Data(#"{"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":"本文。"}]}}]}"#.utf8)
-        check(try GeminiRecheckWire.response(complete) == "本文。")
+        try check(try GeminiRecheckWire.response(complete) == "本文。")
         checkThrows(GeminiRecheckWire.RecheckError.self) {
             _ = try GeminiRecheckWire.response(Data(#"{"candidates":[{"finishReason":"MAX_TOKENS"}]}"#.utf8))
         }
