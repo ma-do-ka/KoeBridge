@@ -23,7 +23,7 @@ ALLOWED_EXTRA = {'.DS_Store'}
 APPROVED_BINARY_BLOBS = {
     'Resources/KoeBridge_AppIcon.icns': 'b3c6586c44da783e823d165b4b4fa4f7b885b740',
     'Resources/KoeBridge_AppIcon_1024.png': 'f5cafb8a82d3496ea3aa8487928b1ebf5e2d7a69',
-    'docs/images/koebridge-hero.webp': '1e021eb97928cdc084b997494f9b30b46b6a9141',
+    'docs/images/koebridge-hero.webp': 'ff3a1762cc464e91d29033388348bfab659adffa',
 }
 OMIT_DIRS = {'.git', '.build', 'dist', '.swiftpm', 'DerivedData', '__pycache__'}
 

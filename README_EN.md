@@ -1,74 +1,100 @@
-# KoeBridge — lightweight native macOS dictation
+<p align="center"><img src="docs/images/koebridge-hero.webp" alt="KoeBridge: illustrated native macOS dictation settings and features" width="100%" /></p>
 
-[日本語 README](README.md)
+<h1 align="center">KoeBridge</h1>
+<p align="center"><strong>Your voice, in the text field you're using.</strong><br />A native Swift menu-bar dictation app for macOS.</p>
+<p align="center"><strong>macOS 15+</strong> · <strong>Apple Silicon / Intel</strong> · <a href="LICENSE">MIT License</a> · <a href="README.md">日本語</a></p>
+<p align="center"><a href="#download">Download</a> · <a href="#quick-start">Quick start</a> · <a href="#features">Features</a> · <a href="#when-text-doesnt-appear">Troubleshooting</a> · <a href="#build-from-source">Build</a></p>
 
-KoeBridge is a **Swift-native, menu-bar dictation tool** for macOS 15+. Press your configured shortcut to record and press it again to finish. It attempts to type the recognized text into the original input field, with a ten-item local recovery history.
+## Download
 
-It supports **Gemini 3.5 Transcribe Live** (requires your own Gemini API key) and **Apple on-device speech recognition** (where supported). No Electron or always-on web server. Diagnostic file logging defaults to **OFF** and can be enabled in **Settings → 履歴と記録**.
+**[KoeBridge v1.1.2 (Build 28) — Universal macOS ZIP](https://github.com/ma-do-ka/KoeBridge/releases/download/v1.1.2/KoeBridge-v1.1.2-macOS-universal-development.zip)**  
+[Release details](https://github.com/ma-do-ka/KoeBridge/releases/tag/v1.1.2) · [SHA-256](https://github.com/ma-do-ka/KoeBridge/releases/download/v1.1.2/SHA256SUMS.txt)
 
-**For Google AI Pro subscribers with unused Cloud credits:** This can be an interesting way to use API-eligible credits, but **Google AI Pro does not automatically mean unlimited or free Gemini API calls**. Check credit eligibility, your linked billing project, prepayment conditions, and actual usage in [Google AI Studio](https://aistudio.google.com/) and the [official billing documentation](https://ai.google.dev/gemini-api/docs/billing).
+> [!IMPORTANT]
+> This is an **ad-hoc-signed development build, not Developer ID signed or Apple-notarized**. Quit KoeBridge and back up your existing app before replacing it. macOS may require privacy permissions again. There is no need to disable macOS protections globally.
 
-The supplied macOS app icon is packaged from `Resources/KoeBridge_AppIcon.icns` into the signed `.app` bundle; `Resources/KoeBridge_AppIcon_1024.png` is the corresponding source artwork. Finder and the settings brand header use the icon. The menu bar retains a monochrome waveform for legibility.
+## Quick start
 
-**v1.0.1 source release:** Accidental rapid, silent shortcut toggles now dismiss as a short, neutral "音声入力なし" notice rather than a transcription failure. Real speech and real hardware/API errors retain their existing paths. See [release notes](docs/releases/v1.0.1.md). There is no notarized installer.
+1. Select the text field in your notes app, browser, editor, or chat.
+2. Press your configured recording shortcut (for example, F8) and speak.
+3. Press the same shortcut again to finish. KoeBridge attempts to type into the original field.
 
-## Latest: v1.1.2 — opt-in input failure diagnostics
+You can begin another recording immediately after stopping the previous one. If the original target changes or cannot be verified, automatic typing is blocked to avoid misdirected or duplicated text. You can copy the transcript from the **last ten local history entries**. Automatic typing is not guaranteed in every app.
 
-[Download v1.1.2, Build 28](https://github.com/ma-do-ka/KoeBridge/releases/download/v1.1.2/KoeBridge-v1.1.2-macOS-universal-development.zip) for macOS 15+ (Apple Silicon and Intel). **Ad-hoc signed; not Developer ID signed or notarized.** Quit KoeBridge before replacing the app. See [release notes](docs/releases/v1.1.2.md).
+## Features
 
-With **Settings → 履歴と記録 → 問題調査用の記録を残す** enabled, local records distinguish unreadable AX state from actual focus/caret changes, show posting and read-back results, and correlate overlapping recordings. Text, audio, API keys, window titles and URLs are excluded. Disabling logging or deleting logs revokes pending traces. Short process-wide AX timeouts are reset after the fallback read. The exact cause of an intermittent user failure still requires a trace from the affected Mac; this release does not claim every input failure is fixed. [Investigation guide](docs/input-diagnostics.md).
+| Feature | What it does |
+| --- | --- |
+| Speech engines | Gemini 3.5 Transcribe Live (your API key and internet required) or Apple on-device recognition on supported Macs |
+| Dictation controls | One shortcut starts and stops recording; selectable keys include F8 and right Command |
+| Continuous dictation | Starts another take immediately; preserves result order and checks destination safety |
+| Transcription style | Verbatim, readable, or AI-agent instruction formatting; no accuracy guarantee |
+| Terminology assistance | Independent options for registered terms and developer/IT terms |
+| Context review | Optional limited punctuation cleanup or additional audio comparison; re-recognition uses extra API time and charges |
+| History and usage | Last ten transcript entries, local usage statistics, copy-to-clipboard recovery |
+| Opt-in diagnostics | Records focus checks, AX error codes, event posting, and read-back outcomes without saving transcript content |
 
-v1.1.1 refactored controller, review, persistence and settings responsibilities and fixed recovery and cancellation defects. [v1.1.1 notes](docs/releases/v1.1.1.md).
+This is a native Swift app and needs no Electron runtime or always-on Python/web server. Relative speed, CPU use, and memory use have not been benchmarked against competitors.
 
-## v1.1.0 — continuous dictation and independent assistance
+## Settings
 
-[Download the universal development app](https://github.com/ma-do-ka/KoeBridge/releases/download/v1.1.0/KoeBridge-v1.1.0-macOS-universal-development.zip) for macOS 15+ (Apple Silicon and Intel). **Ad-hoc signed, not Developer ID signed or notarized.** Quit KoeBridge before replacing the app; macOS privacy permissions may need to be granted again. Source builds with an existing persistent certificate remain supported. See [release notes](docs/releases/v1.1.0.md).
+Open **KoeBridge → 設定…** from the menu bar:
 
-Overlapping recordings now share only verified changes caused by the preceding automatic input; user focus and caret changes remain protected. Gemini Live uses explicit activity start/end around a recording, so a thinking pause does not itself send an end marker. Registered and developer vocabulary are separate checkboxes; neither checked means neither is sent. Additional local punctuation checks and optional audio re-recognition are independently selectable and default off. Audio rechecks cost an additional API request, have a bounded deadline, and retain lexical disagreements for review instead of silently replacing words or numbers. Apple recognition never invokes the cloud recheck.
+- **音声入力**: Recognition engine, recording key, automatic typing.
+- **Gemini**: API key (saved in macOS Keychain), transcription style, terminology assistance, context checks.
+- **利用許可**: Microphone, Accessibility, event-posting and related permission status.
+- **履歴と記録**: Local history and opt-in troubleshooting records (default OFF).
+- **利用統計**: Attempt counts, submitted audio duration and available token reports.
+- **情報**: Update checking; automatic installation is not provided.
 
-The downloadable development app is built and tested in macOS CI. Actual microphone, Gemini service and target-editor behavior still require runtime verification on a user Mac.
+## When text doesn't appear
 
-## v1.0.1b agent-instruction mode
+1. Click the desired text field **before starting recording**. Check whether focus changed during dictation.
+2. Open **設定 → 利用許可** to inspect Accessibility and event-posting permissions; they may need reapproval after replacing an ad-hoc-signed app.
+3. Recover the recognized text via **認識履歴（直近10件）…** in the menu bar.
+4. For recurring failures, turn on **設定 → 履歴と記録 → 問題調査用の記録を残す**. Reproduce the problem and inspect `~/Library/Logs/KoeBridge.log` (and `.log.1` if present). See the [diagnostic guide](docs/input-diagnostics.md).
 
-Choose **Settings → Gemini → 文字起こしスタイル → AIエージェント指示**. This uses the supported Gemini Live `VERBATIM` transcription. Registered terminology and the built-in developer glossary are used only when their respective assistance checkboxes are enabled. Unlike SMART, it prioritizes preserving repetitions, command syntax, file paths, URLs, technical terms, negations, and numeric constraints. It never sends unsupported system-instruction fields. The style itself does not request a second model; v1.1.0 audio review is a separate opt-in. Short line breaks may be added to history, but the safe auto-typing path replaces newlines with spaces to prevent accidental submission. Transcription accuracy and exact command spelling are not guaranteed.
+Diagnostics remain off by default, store up to approximately 384 KiB across two rotated files, and **do not log transcripts, input-field contents, audio, API keys, window titles, or URLs**. Logs are not uploaded automatically. A trace from the affected Mac is required to establish the actual cause of an intermittent failure.
 
-That source release introduced **Settings → 一般 → ログイン時に自動起動** using the actual macOS login-item registration. For v1.0.1b, the internal macOS version was `1.0.1` (build 21), and the in-app release label was `1.0.1b`.
+## API cost and privacy
 
-[Release notes](docs/releases/v1.0.1b.md).
+Gemini mode uploads microphone audio to the Google API and may incur usage fees. Apple's on-device mode, where supported, does not require a Gemini API key. Google AI Pro membership alone does not imply free or unlimited Gemini API access; check your actual billing eligibility. KoeBridge does not set an automatic API spending limit.
 
-## v1.0.1c — macOS Login Items registration
+Transcript history retains up to ten **plaintext** entries locally; protect your Mac account and backups. Recording audio is not stored in that history file. See [cost estimates](docs/cost-estimate.md) and [security details](SECURITY.md).
 
-In **Settings → 一般 → 起動と常駐**, turning on **ログイン時に自動起動** now attempts to register the main KoeBridge app even when macOS returns `SMAppService.Status.notFound`. If macOS reports `requiresApproval`, the app opens the system Login Items settings for user approval. If macOS still cannot register the app, the UI clearly reports failure and offers to reveal KoeBridge.app in Finder for manual addition. This does not bypass consent, move the app, or register it until the user operates the toggle. User approval is not always required by macOS; registration may enable immediately. See [v1.0.1c notes](docs/releases/v1.0.1c.md).
+## Build from source
 
-## v1.0.1d — Update Center and actionable General settings
-
-The menu bar has **Check for Updates…** and **Settings → 情報 → アップデート** shows official stable GitHub Releases, version status, the last successful check, and an optional daily automatic check. No executable is downloaded silently. Releases provide source archives and an explicitly labelled development app, but no Developer ID signed/notarized automatic-update package; automatic installation remains disabled. When a newer stable tag is found, a version-pinned, safety-checked source update command can be copied and run **after quitting KoeBridge**.
-
-**Settings → 一般** now directly edits the recognition engine, shortcut, auto-typing, and Gemini transcription style, and shows permission/API key readiness without requiring multiple page jumps. Read the [v1.0.1d release notes](docs/releases/v1.0.1d.md).
-
-## v1.0.1e — reliable update navigation
-
-The menu-bar **アップデートを確認…** command directs the first opening of Settings to the actual Update Center. Subsequent selections refocus the Updates section, even when the Information page is already open. No installer is downloaded automatically. v1.0.1e was a source-only release; v1.1.0 adds the explicitly labelled manual development download above. See [v1.0.1e notes](docs/releases/v1.0.1e.md).
-
-## v1.0.1f — menu-bar transcript submenu and copy confirmation
-
-Hover over **認識履歴（直近10件）** in the KoeBridge menu-bar menu to open a native submenu with up to ten saved transcript previews, with dates and a marker for interrupted/partial results. Clicking a preview copies the **entire unchanged transcript** (not just the preview) to the system clipboard for **⌘V**, and shows a short non-activating success/failure banner. No automatic paste or new permission request is performed. The existing history window is still available via **履歴をすべて表示…**. See [release notes](docs/releases/v1.0.1f.md).
-
-## Indicative Gemini API cost and local usage summary
-
-For Gemini 3.5 Transcribe Live, the official paid-tier illustration is approximately **USD 0.009 per audio minute** including typical text output. At an *assumed* USD/JPY rate of 158, this is roughly JPY 1.42 per minute, **before free tiers or credits**. This is not a real invoice.
-
-Run **python3 scripts/estimate_usage_cost.py --days 30 --usd-jpy 158** from your KoeBridge checkout to summarize locally recorded audio usage. The tool only reads aggregated usage metadata; it does not read transcripts, audio, diagnostic logs, or API keys. See [pricing assumptions and limitations](docs/cost-estimate.md).
-
-## Run from source on a Mac
+On macOS with Swift/Xcode Command Line Tools installed:
 
 ```bash
+git clone https://github.com/ma-do-ka/KoeBridge.git
 cd KoeBridge
 bash scripts/verify_and_build.sh --open
 ```
 
-The build requires Swift/Xcode tools and a stable code-signing identity. For local development only, `KOEBRIDGE_ALLOW_ADHOC=1 bash scripts/verify_and_build.sh --open` allows ad-hoc signing, which may cause macOS privacy permissions to be requested again.
+The script runs tests, builds and verifies `dist/KoeBridge.app`. It normally requires an appropriate signing identity; for **local development testing only**, explicitly allow an ad-hoc signature:
 
-Add the API key in **Settings → Gemini**. macOS Keychain holds the key; it is not included in this repository. Allow microphone, Accessibility and keyboard event posting when requested. Apple local mode does not need a Gemini API key. Some editors reject synthesized key events.
+```bash
+KOEBRIDGE_ALLOW_ADHOC=1 bash scripts/verify_and_build.sh --open
+```
 
-**MIT license**: fork, modify and redistribute with attribution/license notice. This is an independent community project, not affiliated with Google or Apple. **macOS runtime testing is still required**; see [TEST_REPORT.md](TEST_REPORT.md).
+For separate test runs:
+
+```bash
+swift test --parallel
+swift run -c release KoeBridgeSelfTest
+```
+
+See [test coverage and limitations](TEST_REPORT.md). CI cannot establish that each user's microphone, Gemini connection, macOS permissions or target editor will work.
+
+## Recent changes
+
+- [v1.1.2](docs/releases/v1.1.2.md): Opt-in input-failure diagnostics, clear AX-unavailable vs. actual selection/focus changes, restored AX messaging timeout.
+- [v1.1.1](docs/releases/v1.1.1.md): Refactoring and recovery/cancellation fixes.
+- [v1.1.0](docs/releases/v1.1.0.md): Continuous dictation, explicit activity start/end, independent assistance switches.
+
+[All releases](https://github.com/ma-do-ka/KoeBridge/releases) · [Japanese README](README.md)
+
+---
+
+**MIT License** — You may fork, modify and redistribute while retaining the required notices. KoeBridge is an independent project and is not affiliated with Google or Apple.
