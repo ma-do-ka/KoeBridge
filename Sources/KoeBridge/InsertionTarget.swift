@@ -203,11 +203,9 @@ import KoeBridgeCore
 
     private var selectionKind: Token {
         guard let selectionAttribute else { return .none }
-        switch selectionAttribute {
-        case kAXSelectedTextRangeAttribute as String: return .numericRange
-        case "AXSelectedTextMarkerRange": return .textMarker
-        default: return .unknown
-        }
+        if selectionAttribute == (kAXSelectedTextRangeAttribute as String) { return .numericRange }
+        if selectionAttribute == "AXSelectedTextMarkerRange" { return .textMarker }
+        return .unknown
     }
 
     /// Many browser editors do not expose AXValue. Unknown contents never
