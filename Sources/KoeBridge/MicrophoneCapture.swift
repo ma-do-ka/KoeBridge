@@ -213,18 +213,18 @@ final class MicrophoneCapture: @unchecked Sendable {
         }
         // Do not hold lifecycleQueue while a stopped take completes inference.
         speechDetector.finish { [self] speech in
-            processingQueue.async { [self] in
-                let digitalSilence = activityEvidence.classification == .nearSilence
-                if let remainder = admission.finish(proof: speech, isDigitalSilence: digitalSilence) { emit(remainder) }
-                onAudio = nil
+            self.processingQueue.async { [self] in
+                let digitalSilence = self.activityEvidence.classification == .nearSilence
+                if let remainder = self.admission.finish(proof: speech, isDigitalSilence: digitalSilence) { self.emit(remainder) }
+                self.onAudio = nil
                 Task { @MainActor [self] in
-                    if let trace = speechTrace, trace.isCollecting {
+                    if let trace = self.speechTrace, trace.isCollecting {
                         let score = Int((speech.maximumConfidence * 1_000).rounded())
-                        DiagnosticLog.record("speech_classifier capture=\(diagnosticID.uuidString) state=\(speech.state.rawValue) windows=\(speech.windows) positives=\(speech.positiveWindows) max_permille=\(score) allowed=\(speech.allowsTranscript)")
+                        DiagnosticLog.record("speech_classifier capture=\(self.diagnosticID.uuidString) state=\(speech.state.rawValue) windows=\(speech.windows) positives=\(speech.positiveWindows) max_permille=\(score) allowed=\(speech.allowsTranscript)")
                         trace.finish()
                     }
                 }
-                completion?(lostBufferCount)
+                completion?(self.lostBufferCount)
             }
         }
     }
