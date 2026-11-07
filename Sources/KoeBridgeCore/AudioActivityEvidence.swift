@@ -23,10 +23,10 @@ public struct AudioActivityEvidence: Equatable, Sendable {
     public var classification: Classification {
         guard frames >= 4 else { return .unavailable }
         guard invalidSamples == 0 else { return .uncertain }
-        if speechVerification?.allowsTranscript == true { return .activity }
-        // Exact digital silence is unambiguous. A low-amplitude voice is not:
-        // never discard it just because it is below a hand-tuned RMS threshold.
+        // Exact digital silence must never be authorized by a model hypothesis,
+        // including a mistaken positive from the independent classifier itself.
         if maximumFrameRMS == 0, peak == 0 { return .nearSilence }
+        if speechVerification?.allowsTranscript == true { return .activity }
         return .uncertain
     }
 }
