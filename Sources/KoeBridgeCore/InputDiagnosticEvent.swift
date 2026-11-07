@@ -54,6 +54,8 @@ public struct InputDiagnosticEvent: Equatable, Sendable {
         case unavailable
         case deadlineExceeded = "deadline_exceeded"
         case budgetInsufficient = "budget_insufficient"
+        case vocabularyCount = "vocabulary_count", registeredTerms = "registered_terms", topicTerms = "topic_terms"
+        case recognizedUTF16 = "recognized_utf16"
         case textCheck = "text_check"
         case audioRecheck = "audio_recheck"
         case engine, style, build
