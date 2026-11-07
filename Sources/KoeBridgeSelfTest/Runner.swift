@@ -114,6 +114,11 @@ struct KoeBridgeSelfTest {
         await run("PermissionSetupPolicyTests.directInputRequiresActualProcessPermissionAndTarget", {
             PermissionSetupPolicyTests().directInputRequiresActualProcessPermissionAndTarget()
         })
+        await run("AudioActivityEvidenceTests.silenceCannotBeConfirmedByModelText", { AudioActivityEvidenceTests().silenceCannotBeConfirmedByModelText() })
+        await run("AudioActivityEvidenceTests.ambientNoiseAndClickRequireReview", { AudioActivityEvidenceTests().ambientNoiseAndClickRequireReview() })
+        await run("AudioActivityEvidenceTests.speechAndWhisperCanBeInput", { AudioActivityEvidenceTests().speechAndWhisperCanBeInput() })
+        await run("AudioActivityEvidenceTests.weakSpeechCannotBeThrownAway", { AudioActivityEvidenceTests().weakSpeechCannotBeThrownAway() })
+        await run("AudioActivityEvidenceTests.invalidPCMDoesNotAuthorizeInput", { AudioActivityEvidenceTests().invalidPCMDoesNotAuthorizeInput() })
         await run("AudioDurationTests.immediateSecondPressDoesNotWaitForCloudFinal", { AudioDurationTests().immediateSecondPressDoesNotWaitForCloudFinal() })
         await run("AudioDurationTests.rapidEmptyInputIsNeutralButSpeechAndLossRemainReal", { AudioDurationTests().rapidEmptyInputIsNeutralButSpeechAndLossRemainReal() })
         await run("FileLockTests.secondHandleCannotAcquireUntilFirstCloses", { try FileLockTests().secondHandleCannotAcquireUntilFirstCloses() })
