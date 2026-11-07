@@ -1,6 +1,7 @@
 #if os(macOS)
 import Foundation
 import AVFoundation
+import KoeBridgeCore
 
 /// Captures audio once; converts to signed 16-bit, 16 kHz, mono, little-endian PCM.
 /// Never perform WebSocket requests on the real-time microphone callback.
@@ -32,6 +33,8 @@ final class MicrophoneCapture: @unchecked Sendable {
     private var conversionErrors = 0
     private var deliveredPCMBytes = 0
     private var peakAmplitude: Float = 0
+    private var activityMeter = AudioActivityMeter() // conversion queue only
+    private var cachedActivity = AudioActivityMeter().evidence // healthLock protected
 
     struct StartTimings {
         let microphonePreparation: TimeInterval
@@ -44,6 +47,12 @@ final class MicrophoneCapture: @unchecked Sendable {
         healthLock.lock()
         defer { healthLock.unlock() }
         return peakAmplitude
+    }
+
+    var activityEvidence: AudioActivityEvidence {
+        healthLock.lock()
+        defer { healthLock.unlock() }
+        return cachedActivity
     }
 
     var totalPCMBytes: Int {
@@ -177,13 +186,16 @@ final class MicrophoneCapture: @unchecked Sendable {
             return
         }
         let n = Int(target.frameLength)
+        activityMeter.observe(UnsafeBufferPointer(start: floats, count: n))
+        let evidence = activityMeter.evidence
         var pcm = Data(count: n * 2)
         var peak: Float = 0
         pcm.withUnsafeMutableBytes { raw in
             guard let base = raw.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
             for i in 0..<n {
-                peak = max(peak, abs(floats[i]))
-                let clipped = max(-1.0, min(1.0, floats[i]))
+                let finite = floats[i].isFinite ? floats[i] : 0
+                peak = max(peak, abs(finite))
+                let clipped = max(-1.0, min(1.0, finite))
                 let value = Int16((clipped * 32767).rounded()).littleEndian
                 base[i * 2] = UInt8(truncatingIfNeeded: value)
                 base[i * 2 + 1] = UInt8(truncatingIfNeeded: Int(value) >> 8)
@@ -191,6 +203,7 @@ final class MicrophoneCapture: @unchecked Sendable {
         }
         healthLock.lock()
         peakAmplitude = max(peakAmplitude, peak)
+        cachedActivity = evidence
         healthLock.unlock()
         carry.append(pcm)
         while carry.count >= chunkBytes {
