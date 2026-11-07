@@ -188,3 +188,10 @@ Tests/KoeBridgeCoreTests/InputDiagnosticTests.swift
 Tests/KoeBridgeCoreTests/InputReceiptObservationTests.swift
 docs/input-diagnostics.md
 docs/releases/v1.1.2.md
+
+# v1.1.3 false transcription guard
+.github/workflows/release-v1.1.3.yml
+Sources/KoeBridgeCore/AudioActivityEvidence.swift
+Sources/KoeBridgeSelfTest/AudioActivityEvidenceTests.swift
+Tests/KoeBridgeCoreTests/AudioActivityEvidenceTests.swift
+docs/releases/v1.1.3.md
