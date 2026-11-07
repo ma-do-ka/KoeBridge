@@ -175,3 +175,16 @@ Tests/KoeBridgeCoreTests/TranscriptRecoveryTests.swift
 Tests/KoeBridgeCoreTests/PersistenceRecoveryTests.swift
 docs/releases/v1.1.1.md
 scripts/verify_development_archive.sh
+
+# v1.1.2 opt-in input failure diagnostics
+.github/workflows/release-v1.1.2.yml
+Sources/KoeBridge/InputDiagnosticTrace.swift
+Sources/KoeBridgeCore/InputDiagnosticBuffer.swift
+Sources/KoeBridgeCore/InputDiagnosticEvent.swift
+Sources/KoeBridgeCore/InputReceiptObservation.swift
+Sources/KoeBridgeSelfTest/InputDiagnosticTests.swift
+Sources/KoeBridgeSelfTest/InputReceiptObservationTests.swift
+Tests/KoeBridgeCoreTests/InputDiagnosticTests.swift
+Tests/KoeBridgeCoreTests/InputReceiptObservationTests.swift
+docs/input-diagnostics.md
+docs/releases/v1.1.2.md

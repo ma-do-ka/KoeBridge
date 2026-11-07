@@ -9,6 +9,7 @@ import KoeBridgeCore
     static let fileURL = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Logs/KoeBridge.log")
     private static let store = DiagnosticFileStore(fileURL: fileURL)
+    private static var inputConsent = InputDiagnosticConsent()
 
     /// An unset preference (including upgrades from v0.4.x) is OFF.
     static var isEnabled: Bool {
@@ -23,8 +24,35 @@ import KoeBridgeCore
         catch { /* Diagnostics may never interrupt actual dictation. */ }
     }
 
+    /// Called for both ON and OFF, including an OFF/ON cycle between async
+    /// receipt polls. Previously buffered evidence cannot cross that boundary.
+    static func preferenceDidChange(_ enabled: Bool) {
+        inputConsent.setEnabled(enabled)
+    }
+
+    static func inputTrace(takeID: UUID) -> InputDiagnosticTrace? {
+        inputConsent.setEnabled(isEnabled)
+        guard let token = inputConsent.token else { return nil }
+        return InputDiagnosticTrace(takeID: takeID, consent: token)
+    }
+
+    static func permitsInputTrace(_ token: InputDiagnosticConsent.Token) -> Bool {
+        inputConsent.setEnabled(isEnabled)
+        return inputConsent.allows(token)
+    }
+
+    static func writeInputTrace(_ lines: @autoclosure () -> [String],
+                                consent: InputDiagnosticConsent.Token) {
+        // Gate again immediately before formatting/writing. No asynchronous
+        // writer can append old evidence after logging is disabled or deleted.
+        guard permitsInputTrace(consent) else { return }
+        do { try store.appendBatch(lines()) }
+        catch { /* A diagnostic failure must never change delivery. */ }
+    }
+
     /// Stopping logging never erases an old file. Deletion is user-initiated.
     static func deleteExistingFiles() throws {
+        inputConsent.invalidate()
         try store.deleteAll()
     }
 }

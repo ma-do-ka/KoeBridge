@@ -166,6 +166,19 @@ import KoeBridgeCore
                                 vocabulary: selectedVocabulary,
                                 shouldPaste: automaticPaste, options: options)
         guard finished.begin(take.id) else { return }
+        take.inputDiagnostics = DiagnosticLog.inputTrace(takeID: take.id)
+        take.inputDiagnostics?.record(.session, stage: .requested, [
+            .pending: .integer(finished.count),
+            .shouldPaste: .flag(take.shouldPaste),
+            .textCheck: .flag(take.options.textContextCheckEnabled),
+            .audioRecheck: .flag(take.options.audioRecheckEnabled),
+            .engine: .token(take.preferred == .gemini ? .gemini : .apple),
+            .style: .token(take.style == .agent ? .agent : (take.style == .readable ? .readable : .verbatim)),
+            .build: .integer(Int(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "") ?? 0),
+            .osMajor: .integer(ProcessInfo.processInfo.operatingSystemVersion.majorVersion),
+            .osMinor: .integer(ProcessInfo.processInfo.operatingSystemVersion.minorVersion),
+            .osPatch: .integer(ProcessInfo.processInfo.operatingSystemVersion.patchVersion)
+        ])
         inFlight[take.id] = take
         active = take
         overlayDismissal?.cancel()
@@ -177,12 +190,15 @@ import KoeBridgeCore
         lastMetrics = ""
         usedMode = take.usedMode
         status = "マイクを準備しています…"
-        DiagnosticLog.record("session requested; id=\(take.id.uuidString.prefix(8)); pending=\(finished.count)")
-        let focusStartedAt = Date()
-        let targetResult = InsertionTarget.capture() // BEFORE the overlay is shown
+        let focusStartedAt = ProcessInfo.processInfo.systemUptime
+        let targetResult = InsertionTarget.capture(diagnostics: take.inputDiagnostics) // BEFORE the overlay is shown
         take.target = targetResult.target
         take.targetCaptureReason = targetResult.reason
-        DiagnosticLog.record("session preparing; accessibility=\(TextInsertion.isTrusted); target captured=\(take.target != nil); reason=\(targetResult.reason); duration=\(String(format: "%.2f", Date().timeIntervalSince(focusStartedAt)))s")
+        take.inputDiagnostics?.record(.target, stage: .capture, [
+            .element: .token(take.target != nil ? .ok : .unavailable),
+            .reason: .reason(targetResult.reason),
+            .elapsedMS: .integer(InputDiagnosticTrace.milliseconds(since: focusStartedAt))
+        ])
         onShowPreview?()
         take.permissionTask = Task { [weak self, weak take] in
             do { try await Task.sleep(for: .seconds(40)) } catch { return }
@@ -545,6 +561,9 @@ import KoeBridgeCore
                          noInput: Bool = false) {
         guard !take.finished else { return }
         let partial = take.recoverableText
+        if take.inputDiagnostics != nil {
+            take.resolvedAtUptime = ProcessInfo.processInfo.systemUptime
+        }
         take.finished = true
         if let start = take.startedAt, let stop = take.stoppingAt, text != nil {
             let first = take.firstPreviewAt.map { String(format: "%.2f", $0.timeIntervalSince(start)) } ?? "未取得"
@@ -614,11 +633,26 @@ import KoeBridgeCore
 
     private func deliver(_ result: Completion, take: DictationTake) async {
         let id = take.id
+        // AX reads and receipt polling only collect bounded in-memory evidence.
+        // Write it once, after input and all dependent-target decisions finish.
+        defer { take.inputDiagnostics?.finish() }
+        take.inputDiagnostics?.record(.session, stage: .preflight, [
+            .queueWaitMS: .integer(take.resolvedAtUptime.map { InputDiagnosticTrace.milliseconds(since: $0) } ?? 0),
+            .shouldPaste: .flag(take.shouldPaste),
+            .suppressed: .flag(take.automaticDeliverySuppressed),
+            .requiresReview: .flag(take.review?.status == .needsReview)
+        ])
         if result.noInput {
+            take.inputDiagnostics?.record(.result, stage: .result, [
+                .outcome: .token(.skipped), .reason: .reason("no_input"), .eventsPosted: .flag(false)
+            ])
             DiagnosticLog.record("empty rapid recording discarded; id=\(id.uuidString.prefix(8))")
             return
         }
         guard let text = result.text, !text.isEmpty else {
+            take.inputDiagnostics?.record(.result, stage: .result, [
+                .outcome: .token(.skipped), .reason: .reason("recognition_failed"), .eventsPosted: .flag(false)
+            ])
             let recovered = result.partial.trimmingCharacters(in: .whitespacesAndNewlines)
             if !recovered.isEmpty, take.historyRecordID == nil {
                 _ = remember(recovered, isPartial: true, delivery: .recognitionInterrupted,
@@ -637,10 +671,17 @@ import KoeBridgeCore
                                                   requiresReview: take.review?.status == .needsReview,
                                                   shouldPaste: take.shouldPaste) {
             outcome = skipped
+            take.inputDiagnostics?.record(.result, stage: .result, [
+                .outcome: .token(.skipped),
+                .reason: .reason(take.automaticDeliverySuppressed ? "system_suppressed"
+                    : (take.review?.status == .needsReview ? "review_required" : "automatic_input_disabled")),
+                .eventsPosted: .flag(false)
+            ])
         } else {
             deliveringTakeID = id
             outcome = await DictationDelivery.send(text, to: take.target,
-                                                  captureReason: take.targetCaptureReason) { [weak self, weak take] in
+                                                  captureReason: take.targetCaptureReason,
+                                                  diagnostics: take.inputDiagnostics) { [weak self, weak take] in
                 guard let self, let take else { return false }
                 return !take.automaticDeliverySuppressed && self.inFlight[take.id] === take
             }
@@ -649,7 +690,10 @@ import KoeBridgeCore
             // authorize a new caret; an unknown receipt blocks concurrent targets.
             if let report = outcome.report {
                 for other in inFlight.values where other.id != id {
-                    if let target = other.target { other.target = report.reconciled(target) }
+                    if let target = other.target {
+                        other.target = report.reconciled(target, sourceTakeID: id, candidateTakeID: other.id,
+                                                        diagnostics: other.inputDiagnostics)
+                    }
                 }
                 DiagnosticLog.record("delivery resolved; id=\(id.uuidString.prefix(8)); outcome=\(outcome.delivery.rawValue); reason=\(report.reason)")
             }

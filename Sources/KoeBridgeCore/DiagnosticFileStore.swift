@@ -11,46 +11,59 @@ public struct DiagnosticFileStore {
     public init(fileURL: URL) { self.fileURL = fileURL }
 
     public func append(_ event: String, at timestamp: Date = Date()) throws {
-        guard let safe = DiagnosticLogPolicy.sanitizedEvent(event) else { return }
-        let line = "\(ISO8601DateFormatter().string(from: timestamp)) \(safe)\n"
-        let bytes = Data(line.utf8)
+        try appendBatch([event], at: timestamp)
+    }
+
+    /// Flush bounded evidence after input has resolved. Formatting, file opens
+    /// and permission updates happen once per batch, outside the receipt poll.
+    public func appendBatch(_ events: [String], at timestamp: Date = Date()) throws {
+        let safeEvents = events.compactMap(DiagnosticLogPolicy.sanitizedEvent)
+        guard !safeEvents.isEmpty else { return }
+        let date = ISO8601DateFormatter().string(from: timestamp)
         let cap = DiagnosticLogPolicy.maximumFileBytes
-        guard bytes.count <= cap else { return }
         let fm = FileManager.default
         try fm.createDirectory(at: fileURL.deletingLastPathComponent(),
                                withIntermediateDirectories: true)
         // Never follow a user-controlled symlink into an unrelated file.
-        if try isSymbolicLink(fileURL) {
-            throw StoreError.invalidFile
+        for url in [fileURL, rotatedURL] {
+            try validateRegularFileIfPresent(url)
         }
-        if try isSymbolicLink(rotatedURL) {
-            throw StoreError.invalidFile
-        }
-        let current = fileSize(fileURL)
-        if current > cap {
-            // Prior versions and external file modifications may exceed the
-            // cap. Preserve a normal-size rotated generation, discard an
-            // oversized diagnostics file rather than keeping it forever.
-            try fm.removeItem(at: fileURL)
-        } else if DiagnosticLogPolicy.needsRotation(existingBytes: current,
-                                                     incomingBytes: bytes.count) {
-            if fm.fileExists(atPath: rotatedURL.path) {
-                try fm.removeItem(at: rotatedURL)
-            }
-            try fm.moveItem(at: fileURL, to: rotatedURL)
-        }
-        if !fm.fileExists(atPath: fileURL.path) {
-            guard fm.createFile(atPath: fileURL.path, contents: nil,
-                                attributes: [.posixPermissions: NSNumber(value: 0o600)]) else {
-                throw StoreError.createFailed
+        for url in [fileURL, rotatedURL] where fm.fileExists(atPath: url.path) {
+            // Apply the advertised limit to both generations, including an
+            // oversized old file left by another version or external edits.
+            if fileSize(url) > cap {
+                try fm.removeItem(at: url)
+            } else {
+                try fm.setAttributes([.posixPermissions: NSNumber(value: 0o600)],
+                                     ofItemAtPath: url.path)
             }
         }
-        let writer = try FileHandle(forWritingTo: fileURL)
-        defer { try? writer.close() }
-        _ = try writer.seekToEnd()
-        try writer.write(contentsOf: bytes)
-        try fm.setAttributes([.posixPermissions: NSNumber(value: 0o600)],
-                             ofItemAtPath: fileURL.path)
+        var current = fileSize(fileURL)
+        var writer: FileHandle?
+        defer { try? writer?.close() }
+        for safe in safeEvents {
+            let bytes = Data("\(date) \(safe)\n".utf8)
+            guard bytes.count <= cap else { continue }
+            if DiagnosticLogPolicy.needsRotation(existingBytes: current, incomingBytes: bytes.count) {
+                try writer?.close()
+                writer = nil
+                if fm.fileExists(atPath: rotatedURL.path) { try fm.removeItem(at: rotatedURL) }
+                try fm.moveItem(at: fileURL, to: rotatedURL)
+                current = 0
+            }
+            if writer == nil {
+                if !fm.fileExists(atPath: fileURL.path) {
+                    guard fm.createFile(atPath: fileURL.path, contents: nil,
+                                        attributes: [.posixPermissions: NSNumber(value: 0o600)]) else {
+                        throw StoreError.createFailed
+                    }
+                }
+                writer = try FileHandle(forWritingTo: fileURL)
+                _ = try writer?.seekToEnd()
+            }
+            try writer?.write(contentsOf: bytes)
+            current += bytes.count
+        }
     }
 
     public func deleteAll() throws {
@@ -72,6 +85,16 @@ public struct DiagnosticFileStore {
         // carefully, without logging anything from the linked destination.
         let values = try? url.resourceValues(forKeys: [.isSymbolicLinkKey])
         return values?.isSymbolicLink == true
+    }
+
+    private func validateRegularFileIfPresent(_ url: URL) throws {
+        if try isSymbolicLink(url) { throw StoreError.invalidFile }
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: url.path) else { return }
+        let attributes = try fm.attributesOfItem(atPath: url.path)
+        guard attributes[.type] as? FileAttributeType == .typeRegular else {
+            throw StoreError.invalidFile
+        }
     }
 
     public enum StoreError: Error {

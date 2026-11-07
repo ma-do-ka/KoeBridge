@@ -33,8 +33,16 @@ struct SettingsPrivacyPage: View {
                 GroupBox {
                     VStack(alignment: .leading, spacing: 9) {
                         SettingsRow("問題調査用の記録を残す",
-                                    description: "不具合調査に役立つ動作情報を保存します。通常はオフで問題ありません。認識した文章・音声・APIキーは記録しません。", icon: "stethoscope") {
-                            Toggle("問題調査用の記録を残す", isOn: $diagnosticsEnabled)
+                                    description: "入力できなかった段階、入力先アプリの識別子、確認結果や処理時間をこのMacに保存します。通常はオフで問題ありません。認識した文章・入力欄の本文・音声・APIキー・ウィンドウ名・URLは記録しません。", icon: "stethoscope") {
+                            Toggle("問題調査用の記録を残す", isOn: Binding(
+                                get: { diagnosticsEnabled },
+                                set: { enabled in
+                                    diagnosticsEnabled = enabled
+                                    // Consent changes synchronously with the
+                                    // control, even if SwiftUI coalesces redraws.
+                                    DiagnosticLog.preferenceDidChange(enabled)
+                                }
+                            ))
                                 .id("logging")
                                 .labelsHidden()
                                 .toggleStyle(.switch)
