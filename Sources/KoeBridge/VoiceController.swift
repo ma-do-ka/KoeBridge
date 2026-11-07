@@ -172,6 +172,9 @@ import KoeBridgeCore
             .shouldPaste: .flag(take.shouldPaste),
             .textCheck: .flag(take.options.textContextCheckEnabled),
             .audioRecheck: .flag(take.options.audioRecheckEnabled),
+            .vocabularyCount: .integer(take.vocabulary.count),
+            .registeredTerms: .flag(take.options.registeredVocabularyEnabled),
+            .topicTerms: .flag(take.options.topicVocabularyEnabled),
             .engine: .token(take.preferred == .gemini ? .gemini : .apple),
             .style: .token(take.style == .agent ? .agent : (take.style == .readable ? .readable : .verbatim)),
             .build: .integer(Int(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "") ?? 0),
@@ -591,6 +594,13 @@ import KoeBridgeCore
                          noInput: Bool = false) {
         guard !take.finished else { return }
         let partial = take.recoverableText
+        let actualEngine: InputDiagnosticEvent.Token = take.successfulEngine == .gemini ? .gemini
+            : (take.successfulEngine == .local ? .apple : .unknown)
+        take.inputDiagnostics?.record(.session, stage: .result, [
+            .engine: .token(actualEngine),
+            .recognizedUTF16: .integer(text?.utf16.count ?? 0),
+            .outcome: .token(noInput ? .skipped : (text?.isEmpty == false ? .ok : .unavailable))
+        ])
         if take.inputDiagnostics != nil {
             take.resolvedAtUptime = ProcessInfo.processInfo.systemUptime
         }
