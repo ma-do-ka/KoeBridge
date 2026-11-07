@@ -172,6 +172,9 @@ import KoeBridgeCore
             .shouldPaste: .flag(take.shouldPaste),
             .textCheck: .flag(take.options.textContextCheckEnabled),
             .audioRecheck: .flag(take.options.audioRecheckEnabled),
+            .vocabularyCount: .integer(take.vocabulary.count),
+            .registeredTerms: .flag(take.options.registeredVocabularyEnabled),
+            .topicTerms: .flag(take.options.topicVocabularyEnabled),
             .engine: .token(take.preferred == .gemini ? .gemini : .apple),
             .style: .token(take.style == .agent ? .agent : (take.style == .readable ? .readable : .verbatim)),
             .build: .integer(Int(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "") ?? 0),
@@ -312,7 +315,10 @@ import KoeBridgeCore
                             if take.firstPreviewAt == nil, !take.partialText.isEmpty {
                                 take.firstPreviewAt = Date()
                             }
-                            if self.active === take { self.previewText = take.partialText }
+                            if self.active === take {
+                                self.previewText = AudioActivityPolicy.mayShowInterim(take.mic?.activityEvidence ?? take.acousticEvidence)
+                                    ? take.partialText : ""
+                            }
                         case .error:
                             DiagnosticLog.record("gemini receiver failure during take")
                         default: break
@@ -347,7 +353,10 @@ import KoeBridgeCore
                 guard let self, let take, !take.finished else { return }
                 take.partialText = text
                 if take.firstPreviewAt == nil, !text.isEmpty { take.firstPreviewAt = Date() }
-                if self.active === take { self.previewText = text }
+                if self.active === take {
+                    self.previewText = AudioActivityPolicy.mayShowInterim(take.mic?.activityEvidence ?? take.acousticEvidence)
+                        ? text : ""
+                }
             }
         }
         guard !take.finished, !Task.isCancelled else { throw CancellationError() }
@@ -407,6 +416,26 @@ import KoeBridgeCore
                     let pcmBytes = capture.totalPCMBytes
                     let seconds = Double(pcmBytes) / 32_000
                     let peak = capture.sessionPeakAmplitude
+                    let evidence = capture.activityEvidence
+                    take.acousticEvidence = evidence
+                    take.acousticReviewRequired = AudioActivityPolicy.requiresReview(evidence)
+                    let hasObservedText = !take.recoverableText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    let acousticToken: InputDiagnosticEvent.Token
+                    switch evidence.classification {
+                    case .nearSilence: acousticToken = .nearSilence
+                    case .uncertain: acousticToken = .uncertain
+                    case .activity: acousticToken = .activity
+                    case .unavailable: acousticToken = .unavailable
+                    }
+                    take.inputDiagnostics?.record(.session, stage: .capture, [
+                        .acoustic: .token(acousticToken),
+                        .audioFrames: .integer(evidence.frames),
+                        .activeFrames: .integer(evidence.activeFrames),
+                        .maxRMSPPM: .integer(Int((Double(evidence.maximumFrameRMS) * 1_000_000).rounded())),
+                        .modulationPct: .integer(Int((Double(evidence.modulation) * 100).rounded())),
+                        .invalidSamples: .integer(evidence.invalidSamples)
+                    ])
+                    DiagnosticLog.record("audio activity; classification=\(evidence.classification.rawValue) frames=\(evidence.frames) active=\(evidence.activeFrames) rms_ppm=\(Int(Double(evidence.maximumFrameRMS) * 1_000_000))")
                     DiagnosticLog.record("mic stopped; pcmBytes=\(pcmBytes) audioSeconds=\(String(format: "%.2f", seconds)) peak=\(String(format: "%.4f", peak)) losses=\(losses)")
                     let lostAudio = losses > 0 || take.audioIntegrity.droppedChunks > 0
                     // Audio-loss errors and real transcribed text are never
@@ -415,12 +444,15 @@ import KoeBridgeCore
                         self.resolve(take, text: nil, reason: "マイクの音声チャンクが欠落しました")
                     } else if QuickNoInputPolicy.shouldSkipRecognition(
                         seconds: recordedSeconds, pcmBytes: pcmBytes, peak: peak,
-                        hasText: !take.recoverableText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                        hasText: hasObservedText,
                         audioDropped: lostAudio
-                    ) {
+                    ) && (evidence.classification == .nearSilence || !AudioDurationPolicy.hasEnoughAudio(pcmBytes: pcmBytes)) {
                         self.resolve(take, text: nil, reason: "音声入力なし", noInput: true)
                     } else if !AudioDurationPolicy.hasEnoughAudio(pcmBytes: pcmBytes) {
                         self.resolve(take, text: nil, reason: "録音が短すぎます（0.1秒未満）")
+                    } else if AudioActivityPolicy.shouldDiscardQuietTake(evidence, pcmBytes: pcmBytes,
+                                                                         hasTranscript: hasObservedText) {
+                        self.resolve(take, text: nil, reason: "音声入力なし", noInput: true)
                     } else {
                         if self.overlayOwner == take.id && self.overlayFeedback == .ending {
                             self.overlayFeedback = .processing
@@ -430,6 +462,7 @@ import KoeBridgeCore
                 }
             }
         } else {
+            take.acousticReviewRequired = true
             take.continuation?.finish()
         }
     }
@@ -561,6 +594,13 @@ import KoeBridgeCore
                          noInput: Bool = false) {
         guard !take.finished else { return }
         let partial = take.recoverableText
+        let actualEngine: InputDiagnosticEvent.Token = take.successfulEngine == .gemini ? .gemini
+            : (take.successfulEngine == .local ? .apple : .unknown)
+        take.inputDiagnostics?.record(.session, stage: .result, [
+            .engine: .token(actualEngine),
+            .recognizedUTF16: .integer(text?.utf16.count ?? 0),
+            .outcome: .token(noInput ? .skipped : (text?.isEmpty == false ? .ok : .unavailable))
+        ])
         if take.inputDiagnostics != nil {
             take.resolvedAtUptime = ProcessInfo.processInfo.systemUptime
         }
@@ -669,12 +709,14 @@ import KoeBridgeCore
         let outcome: DictationDelivery.Outcome
         if let skipped = DictationDelivery.skipped(suppressed: take.automaticDeliverySuppressed,
                                                   requiresReview: take.review?.status == .needsReview,
+                                                  acousticReviewRequired: take.acousticReviewRequired,
                                                   shouldPaste: take.shouldPaste) {
             outcome = skipped
             take.inputDiagnostics?.record(.result, stage: .result, [
                 .outcome: .token(.skipped),
                 .reason: .reason(take.automaticDeliverySuppressed ? "system_suppressed"
-                    : (take.review?.status == .needsReview ? "review_required" : "automatic_input_disabled")),
+                    : (take.acousticReviewRequired ? "acoustic_review_required"
+                        : (take.review?.status == .needsReview ? "review_required" : "automatic_input_disabled"))),
                 .eventsPosted: .flag(false)
             ])
         } else {

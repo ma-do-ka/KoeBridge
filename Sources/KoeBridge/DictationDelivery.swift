@@ -13,13 +13,16 @@ import KoeBridgeCore
         var submitted: Bool { delivery == .verifiedInserted || delivery == .attemptedUnconfirmed }
     }
 
-    static func skipped(suppressed: Bool, requiresReview: Bool, shouldPaste: Bool) -> Outcome? {
+    static func skipped(suppressed: Bool, requiresReview: Bool,
+                        acousticReviewRequired: Bool = false, shouldPaste: Bool) -> Outcome? {
         if suppressed {
             return Outcome(delivery: .blockedFocus, detail: "システム中断により自動入力しませんでした。", report: nil)
         }
         if requiresReview {
             return Outcome(delivery: .reviewRequired,
-                           detail: "再認識との違いを確認するため、自動入力せず両方の文章を保存しました。", report: nil)
+                           detail: acousticReviewRequired
+                               ? "音声の活動を十分に確認できず、誤認識の可能性があるため自動入力せず履歴へ保存しました。"
+                               : "再認識との違いを確認するため、自動入力せず両方の文章を保存しました。", report: nil)
         }
         if !shouldPaste {
             return Outcome(delivery: .automaticPasteDisabled,

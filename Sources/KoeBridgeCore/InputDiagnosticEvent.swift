@@ -54,6 +54,8 @@ public struct InputDiagnosticEvent: Equatable, Sendable {
         case unavailable
         case deadlineExceeded = "deadline_exceeded"
         case budgetInsufficient = "budget_insufficient"
+        case vocabularyCount = "vocabulary_count", registeredTerms = "registered_terms", topicTerms = "topic_terms"
+        case recognizedUTF16 = "recognized_utf16"
         case textCheck = "text_check"
         case audioRecheck = "audio_recheck"
         case engine, style, build
@@ -61,6 +63,8 @@ public struct InputDiagnosticEvent: Equatable, Sendable {
         case osMinor = "os_minor"
         case osPatch = "os_patch"
         case queueWaitMS = "queue_wait_ms"
+        case acoustic, audioFrames = "audio_frames", activeFrames = "active_frames"
+        case maxRMSPPM = "max_rms_ppm", modulationPct = "modulation_pct", invalidSamples = "invalid_samples"
         case totalMS = "total_ms"
         case retained, dropped, total
     }
@@ -85,6 +89,8 @@ public struct InputDiagnosticEvent: Equatable, Sendable {
         case subrole, value, owner, rebased, blocked, unchanged
         case verified, unconfirmed, partial, cancelled, skipped
         case gemini, apple, agent, verbatim, readable
+        case nearSilence = "near_silence"
+        case uncertain, activity
 
         // Current capture, preflight, transport and receipt reasons. Unknown
         // future strings deliberately become `unknown` until reviewed here.
@@ -127,6 +133,7 @@ public struct InputDiagnosticEvent: Equatable, Sendable {
         case reviewRequired = "review_required"
         case recognitionFailed = "recognition_failed"
         case noInput = "no_input"
+        case acousticReviewRequired = "acoustic_review_required"
         case systemSuppressed = "system_suppressed"
         case automaticInputDisabled = "automatic_input_disabled"
         case notAttempted = "not_attempted"
