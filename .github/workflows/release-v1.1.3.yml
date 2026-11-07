@@ -1,4 +1,4 @@
-name: Publish KoeBridge v1.1.3 and development download
+name: Replace KoeBridge v1.1.3 with verified Build 30
 
 on:
   push:
@@ -9,24 +9,28 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: koebridge-release-v1.1.3-replacement
+  cancel-in-progress: false
+
 jobs:
   verify-and-publish:
     if: github.repository == 'ma-do-ka/KoeBridge'
     runs-on: macos-15-intel
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - name: Verify release identity
         run: |
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' scripts/Info.plist)" = '1.1.3'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' scripts/Info.plist)" = '29'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' scripts/Info.plist)" = '30'
           test "$(/usr/libexec/PlistBuddy -c 'Print :KoeBridgeReleaseLabel' scripts/Info.plist)" = '1.1.3'
           test -s docs/releases/v1.1.3.md
       - name: Audit public source
         run: python3 scripts/audit_public_release.py
       - name: Python regression suite
         run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
-      - name: Swift regression suites
+      - name: Swift and real native-classifier regression suites
         run: |
           swift test --parallel
           swift run -c release KoeBridgeSelfTest
@@ -38,25 +42,89 @@ jobs:
         run: KOEBRIDGE_PACKAGE_DEVELOPMENT=1 bash scripts/package_development_build.sh
       - name: Verify downloadable archive
         run: bash scripts/verify_development_archive.sh
-      - name: Publish verified commit and download
+      - name: Preserve original and replace authorized v1.1.3 assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/v1.1.3" >/dev/null 2>&1; then
-            echo 'ERROR: v1.1.3 tag already exists; refusing to overwrite.' >&2
-            exit 1
+          TAG=v1.1.3
+          OLD_SHA=c05a7e0ac7c8f3e2e74b8d6c956c09984fee087b
+          OLD_DIGEST=c0607214e6a5da7866d1d6f5da810a96243f8f3ef569b94af95318b0e70ed128
+          ARCHIVE=KoeBridge-v1.1.3-macOS-universal-development.zip
+          ROLLBACK=KoeBridge-v1.1.3-build29-rollback.zip
+          ALIAS=KoeBridge-v1.1.3-build30-macOS-universal-development.zip
+          WORK="$(mktemp -d "${RUNNER_TEMP}/koebridge-replace.XXXXXX")"
+          mkdir -p "$WORK/original" "$WORK/rollback" "$WORK/probe"
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$TAG" > "$WORK/release.json"
+          test "$(jq -r '.id' "$WORK/release.json")" = '437436836'
+          test "$(jq -r '.immutable' "$WORK/release.json")" = 'false'
+          test "$(jq -r '.draft' "$WORK/release.json")" = 'false'
+          BEFORE="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/$TAG" --jq '.object.sha')"
+          case "$BEFORE" in
+            "$OLD_SHA"|"$GITHUB_SHA") ;;
+            *) echo 'ERROR: v1.1.3 moved to an unexpected commit; no overwrite.' >&2; exit 1 ;;
+          esac
+          # Save the current canonical pair before clobbering either asset.
+          gh release download "$TAG" -p "$ARCHIVE" -p SHA256SUMS.txt --dir "$WORK/original"
+          (cd "$WORK/original" && shasum -a 256 --check SHA256SUMS.txt)
+          if jq -e --arg name "$ROLLBACK" '.assets[] | select(.name == $name)' "$WORK/release.json" >/dev/null; then
+            gh release download "$TAG" -p "$ROLLBACK" --dir "$WORK/rollback"
+          else
+            test "$(shasum -a 256 "$WORK/original/$ARCHIVE" | awk '{print $1}')" = "$OLD_DIGEST"
+            cp "$WORK/original/$ARCHIVE" "$WORK/rollback/$ROLLBACK"
+            gh release upload "$TAG" "$WORK/rollback/$ROLLBACK"
           fi
-          if gh release view v1.1.3 >/dev/null 2>&1; then
-            echo 'ERROR: v1.1.3 release already exists; refusing to overwrite.' >&2
-            exit 1
-          fi
-          gh release create v1.1.3 \
-            dist/KoeBridge-v1.1.3-macOS-universal-development.zip \
-            dist/SHA256SUMS.txt \
-            --target "$GITHUB_SHA" \
-            --title 'KoeBridge v1.1.3' \
-            --notes-file docs/releases/v1.1.3.md \
-            --latest
-          test "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/v1.1.3" --jq '.object.sha')" = "$GITHUB_SHA"
-          gh release view v1.1.3 --json url,tagName,isDraft,isPrerelease,assets
+          test "$(shasum -a 256 "$WORK/rollback/$ROLLBACK" | awk '{print $1}')" = "$OLD_DIGEST"
+          (cd "$WORK/rollback" && shasum -a 256 "$ROLLBACK" > SHA256SUMS-build29.txt)
+          gh release upload "$TAG" "$WORK/rollback/SHA256SUMS-build29.txt" --clobber
+
+          # Stage an unambiguous Build 30 URL and verify it before replacing the
+          # canonical same-version URL. Both contain the exact same ZIP bytes.
+          cp "dist/$ARCHIVE" "dist/$ALIAS"
+          (cd dist && shasum -a 256 "$ALIAS" > SHA256SUMS-build30.txt)
+          printf 'version=1.1.3\nbuild=30\nsource_commit=%s\n' "$GITHUB_SHA" > dist/SOURCE-build30.txt
+          gh release upload "$TAG" "dist/$ALIAS" dist/SHA256SUMS-build30.txt dist/SOURCE-build30.txt --clobber
+          gh release download "$TAG" -p "$ALIAS" -p SHA256SUMS-build30.txt --dir "$WORK/probe"
+          (cd "$WORK/probe" && shasum -a 256 --check SHA256SUMS-build30.txt)
+          cmp "dist/$ARCHIVE" "$WORK/probe/$ALIAS"
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/$TAG" --jq '.object.sha')" = "$BEFORE"
+
+          # If a canonical upload or verification fails, restore the verified
+          # pre-replacement pair. Never overwrite a tag another actor moved.
+          restore_on_error() {
+            code=$?
+            trap - ERR
+            set +e
+            current="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/$TAG" --jq '.object.sha')"
+            if [ "$current" = "$BEFORE" ] || [ "$current" = "$GITHUB_SHA" ]; then
+              gh release upload "$TAG" "$WORK/original/$ARCHIVE" "$WORK/original/SHA256SUMS.txt" --clobber
+              if [ "$current" = "$GITHUB_SHA" ] && [ "$BEFORE" != "$GITHUB_SHA" ]; then
+                gh api --method PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/$TAG" -f sha="$BEFORE" -F force=true
+              fi
+              jq '{name,body,target_commitish}' "$WORK/release.json" > "$WORK/restore.json"
+              gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/437436836" --input "$WORK/restore.json"
+            fi
+            echo 'ERROR: release replacement did not finish; inspect rollback and workflow logs.' >&2
+            exit "$code"
+          }
+          trap restore_on_error ERR
+          gh release upload "$TAG" "dist/$ARCHIVE" dist/SHA256SUMS.txt --clobber
+          mkdir "$WORK/published"
+          gh release download "$TAG" -p "$ARCHIVE" -p SHA256SUMS.txt --dir "$WORK/published"
+          (cd "$WORK/published" && shasum -a 256 --check SHA256SUMS.txt)
+          cmp "dist/$ARCHIVE" "$WORK/published/$ARCHIVE"
+          ditto -x -k "$WORK/published/$ARCHIVE" "$WORK/unpacked"
+          APP="$WORK/unpacked/KoeBridge.app"
+          cmp scripts/Info.plist "$APP/Contents/Info.plist"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = '1.1.3'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist")" = '30'
+          codesign --verify --deep --strict "$APP"
+          lipo "$APP/Contents/MacOS/KoeBridge" -verify_arch arm64 x86_64
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/$TAG" --jq '.object.sha')" = "$BEFORE"
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/$TAG" -f sha="$GITHUB_SHA" -F force=true
+          gh release edit "$TAG" --target "$GITHUB_SHA" --title 'KoeBridge v1.1.3 (Build 30)' --notes-file docs/releases/v1.1.3.md --latest
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/$TAG" --jq '.object.sha')" = "$GITHUB_SHA"
+          trap - ERR
+          echo "Verified published replacement: $TAG Build 30, source=$GITHUB_SHA"
+          shasum -a 256 "$WORK/published/$ARCHIVE"
+          gh release view "$TAG" --json url,tagName,isDraft,isPrerelease,assets
