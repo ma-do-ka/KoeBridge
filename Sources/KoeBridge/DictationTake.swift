@@ -50,6 +50,8 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
     var reviewSession: DictationReviewSession?
     var historyRecordID: UUID?
     var inputDiagnostics: InputDiagnosticTrace?
+    var acousticEvidence = AudioActivityMeter().evidence
+    var acousticReviewRequired = false
     var resolvedAtUptime: TimeInterval?
 
     init(preferred: RecognitionMode, style: TranscriptionStyle, japaneseHint: Bool,
@@ -69,7 +71,15 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
                                 local: local?.transcript, preview: partialText)
     }
 
-    var review: TranscriptReview? { reviewSession?.record }
+    var review: TranscriptReview? {
+        guard acousticReviewRequired else { return reviewSession?.record }
+        if let record = reviewSession?.record, record.status == .needsReview { return record }
+        return TranscriptReview(
+            status: .needsReview,
+            note: "録音音声から発話に十分な根拠が得られませんでした。誤認識の可能性があるため、自動入力せず履歴で確認できます。",
+            originalText: reviewSession?.record?.originalText,
+            alternativeText: reviewSession?.record?.alternativeText)
+    }
 
     /// Snapshot before resources are released. No transcript, PCM, platform
     /// error details, or credentials are included in the persisted counters.
