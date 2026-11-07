@@ -7,8 +7,8 @@
 
 ## Download
 
-**[KoeBridge v1.1.2 (Build 28) — Universal macOS ZIP](https://github.com/ma-do-ka/KoeBridge/releases/download/v1.1.2/KoeBridge-v1.1.2-macOS-universal-development.zip)**  
-[Release details](https://github.com/ma-do-ka/KoeBridge/releases/tag/v1.1.2) · [SHA-256](https://github.com/ma-do-ka/KoeBridge/releases/download/v1.1.2/SHA256SUMS.txt)
+**[KoeBridge v1.1.3 (Build 29) — Universal macOS ZIP](https://github.com/ma-do-ka/KoeBridge/releases/download/v1.1.3/KoeBridge-v1.1.3-macOS-universal-development.zip)**  
+[Release details](https://github.com/ma-do-ka/KoeBridge/releases/tag/v1.1.3) · [SHA-256](https://github.com/ma-do-ka/KoeBridge/releases/download/v1.1.3/SHA256SUMS.txt)
 
 > [!IMPORTANT]
 > This is an **ad-hoc-signed development build, not Developer ID signed or Apple-notarized**. Quit KoeBridge and back up your existing app before replacing it. macOS may require privacy permissions again. There is no need to disable macOS protections globally.
@@ -33,6 +33,7 @@ You can begin another recording immediately after stopping the previous one. If 
 | Context review | Optional limited punctuation cleanup or additional audio comparison; re-recognition uses extra API time and charges |
 | History and usage | Last ten transcript entries, local usage statistics, copy-to-clipboard recovery |
 | Opt-in diagnostics | Records focus checks, AX error codes, event posting, and read-back outcomes without saving transcript content |
+| Silence safety | Separately checks PCM activity. Clear silence is ignored, while uncertain results are saved for review instead of automatically typed |
 
 This is a native Swift app and needs no Electron runtime or always-on Python/web server. Relative speed, CPU use, and memory use have not been benchmarked against competitors.
 
@@ -46,6 +47,10 @@ Open **KoeBridge → 設定…** from the menu bar:
 - **履歴と記録**: Local history and opt-in troubleshooting records (default OFF).
 - **利用統計**: Attempt counts, submitted audio duration and available token reports.
 - **情報**: Update checking; automatic installation is not provided.
+
+## When words appear without speaking
+
+Gemini or Apple may occasionally recognize silence or ambient sound as a word. v1.1.3 now checks local PCM signal activity independently of recognized text. Clear silence is ignored and uncertain results are **saved for manual review instead of auto-typed**. This is not an infallible human-voice detector, and quiet speech may require recovery from history. Words such as “GitHub” are not blacklisted. To reduce vocabulary bias, review **Gemini → 文字起こしの調整**. Details: [v1.1.3 release notes](docs/releases/v1.1.3.md).
 
 ## When text doesn't appear
 
@@ -89,7 +94,7 @@ See [test coverage and limitations](TEST_REPORT.md). CI cannot establish that ea
 
 ## Recent changes
 
-- [v1.1.2](docs/releases/v1.1.2.md): Opt-in input-failure diagnostics, clear AX-unavailable vs. actual selection/focus changes, restored AX messaging timeout.
+- [v1.1.3](docs/releases/v1.1.3.md): Opt-in input-failure diagnostics, clear AX-unavailable vs. actual selection/focus changes, restored AX messaging timeout.
 - [v1.1.1](docs/releases/v1.1.1.md): Refactoring and recovery/cancellation fixes.
 - [v1.1.0](docs/releases/v1.1.0.md): Continuous dictation, explicit activity start/end, independent assistance switches.
 
