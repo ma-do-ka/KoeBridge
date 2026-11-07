@@ -72,4 +72,4 @@
 
 「問題調査用の記録を残す」をONにした録音では、認識文字列やPCM本文は残さず、`kind=session stage=capture` に `acoustic`（`near_silence`／`uncertain`／`activity`／`unavailable`）、`audio_frames`（20ms区間数）、`active_frames`、`max_rms_ppm`（最大区間RMS×100万）、`modulation_pct`（時間変動率の概算％）、`invalid_samples` を記録します。
 
-`near_silence` はデジタル無音に近いことの証拠、`uncertain` は環境音・小声を区別できない状態、`activity` は音声らしい時間変動のある信号を確認した状態です。**activityは人間の声の証明ではありません。** 無音で「GitHub」と出た場合は、録音時刻と入力先アプリを添えてこの数値で切り分けます。保存容量・ON/OFF・削除方針は従来と同じです。
+`near_silence` はデジタル無音に近いことの証拠、`uncertain` は環境音・小声を区別できない状態、`activity` は音声らしい時間変動のある信号を確認した状態です。**activityは人間の声の証明ではありません。** 無音で「GitHub」と出た場合は、録音時刻と入力先アプリを添えてこの数値で切り分けます。また `stage=requested` の `registered_terms`・`topic_terms`・`vocabulary_count` により用語候補を送ったかどうか、`stage=result` の `engine`・`recognized_utf16` により実際に結果を返した認識方式と文字数を追えます。**単語そのものは残しません。** 保存容量・ON/OFF・削除方針は従来と同じです。
