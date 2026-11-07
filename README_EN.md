@@ -7,11 +7,11 @@
 
 ## Download
 
-**[KoeBridge v1.1.3 (Build 30) — Universal macOS ZIP](https://github.com/ma-do-ka/KoeBridge/releases/download/v1.1.3/KoeBridge-v1.1.3-build30-macOS-universal-development.zip)**  
-[Release details](https://github.com/ma-do-ka/KoeBridge/releases/tag/v1.1.3) · [Build 30 SHA-256](https://github.com/ma-do-ka/KoeBridge/releases/download/v1.1.3/SHA256SUMS-build30.txt)
+**[KoeBridge v1.1.4 (Build 31) — Universal macOS ZIP](https://github.com/ma-do-ka/KoeBridge/releases/download/v1.1.4/KoeBridge-v1.1.4-macOS-universal-development.zip)**  
+[Release details](https://github.com/ma-do-ka/KoeBridge/releases/tag/v1.1.4) · [SHA-256](https://github.com/ma-do-ka/KoeBridge/releases/download/v1.1.4/SHA256SUMS.txt)
 
 > [!IMPORTANT]
-> **Build 30 replaces Build 29 without changing version 1.1.3.** The old app's update checker may not recognize this as a newer version. Download it manually and confirm **ビルド：30** under **設定 → 情報**.
+> **v1.1.4 improves diagnostic retention and per-recording summaries; it does not claim to fix intermittent typing failures.** After replacing the app, confirm **1.1.4 / ビルド：31** under **設定 → 情報**, and avoid launching an older copy from another folder.
 >
 > This is an **ad-hoc-signed development build, not Developer ID signed or Apple-notarized**. Quit KoeBridge and back up your existing app before replacing it. macOS may require privacy permissions again. There is no need to disable macOS protections globally.
 
@@ -34,7 +34,7 @@ You can begin another recording immediately after stopping the previous one. If 
 | Terminology assistance | Independent options for registered terms and developer/IT terms |
 | Context review | Optional limited punctuation cleanup or additional audio comparison; re-recognition uses extra API time and charges |
 | History and usage | Last ten transcript entries, local usage statistics, copy-to-clipboard recovery |
-| Opt-in diagnostics | Records focus checks, AX errors, event posting, read-back outcomes, and numeric speech-classifier evidence without recording content |
+| Opt-in diagnostics | Prioritizes delivery milestones and summarizes build, target app, event posting and read-back outcomes per recording without recording content |
 | Silence safety | On-device SoundAnalysis speech verification, rather than energy fluctuations alone. Uncertain recognized text is kept for review, not automatically typed |
 
 This is a native Swift app and needs no Electron runtime or always-on Python/web server. Relative speed, CPU use, and memory use have not been benchmarked against competitors.
@@ -56,16 +56,16 @@ Build 29's RMS/modulation thresholds could accept fluctuating environmental nois
 
 An unconfirmed, failed or timed-out classification cannot authorize live transcript display or automatic typing. Nonzero uncertain audio can still be recognized after stopping, with any resulting text available in local history. This can delay the first preview or require manual recovery of a quiet/short utterance. The classifier is not infallible and does not distinguish the user's intention from a television or another person's voice. Words such as “GitHub” are **not blacklisted**, and vocabulary selections are unchanged.
 
-See the [Build 30 release notes and validation limits](docs/releases/v1.1.3.md). The user's real microphone, room noise, recognition API and target-app workflow are not validated by CI.
+See the [Build 30 release notes and validation limits](docs/releases/v1.1.3.md). The user's real microphone, room noise, recognition API and target-app workflow are not validated by CI. v1.1.4 retains these safeguards.
 
 ## When text doesn't appear
 
 1. Click the desired text field **before starting recording**. Check whether focus changed during dictation.
 2. Open **設定 → 利用許可** to inspect Accessibility and event-posting permissions; they may need reapproval after replacing an ad-hoc-signed app.
 3. Recover the recognized text via **認識履歴（直近10件）…** in the menu bar.
-4. For recurring failures, turn on **設定 → 履歴と記録 → 問題調査用の記録を残す**. Reproduce the problem and inspect `~/Library/Logs/KoeBridge.log` (and `.log.1` if present). See the [diagnostic guide](docs/input-diagnostics.md).
+4. For recurring failures, turn on **設定 → 履歴と記録 → 問題調査用の記録を残す**. Reproduce the problem and inspect `~/Library/Logs/KoeBridge.log` (and `.log.1` if present). v1.1.4 adds `input_summary v=2` sections to locate a recording's target and outcome even when its time is unknown. See the [diagnostic guide](docs/input-diagnostics.md) and [v1.1.4 notes](docs/releases/v1.1.4.md).
 
-Diagnostics remain off by default, store up to approximately 384 KiB across two rotated files, and **do not log transcripts, input-field contents, audio, API keys, window titles, or URLs**. Logs are not uploaded automatically. A trace from the affected Mac is required to establish the actual cause of an intermittent failure.
+Diagnostics remain off by default, store up to approximately 384 KiB across two rotated files, and **do not log transcripts, input-field contents, audio, API keys, window titles, URLs or content hashes**. Logs are not uploaded automatically. A trace from the affected Mac is required to establish the actual cause of an intermittent failure; old traces can be lost to rotation.
 
 ## API cost and privacy
 
@@ -102,6 +102,7 @@ See [test coverage and limitations](TEST_REPORT.md). CI cannot establish that ea
 
 ## Recent changes
 
+- [v1.1.4 / Build 31](docs/releases/v1.1.4.md): Retains important delivery evidence and adds per-recording summaries; does not relax input safety checks.
 - [v1.1.3 / Build 30](docs/releases/v1.1.3.md): Replaces Build 29's inadequate energy-only gate with native speech classification and deferred leading-audio admission.
 - [v1.1.2](docs/releases/v1.1.2.md): Opt-in input-failure diagnostics, clear AX-unavailable vs. actual selection/focus changes, restored AX messaging timeout.
 - [v1.1.1](docs/releases/v1.1.1.md): Refactoring and recovery/cancellation fixes.

@@ -168,3 +168,113 @@ struct InputDiagnosticTests {
         #expect(buffer.retainedCount == 0)
     }
 }
+
+// Synthetic fixtures only. Do not check a user's diagnostic logs into the repo.
+extension InputDiagnosticTests {
+    @Test func receiptNoiseCannotEvictPayloadOrExpectedEdit() {
+        var buffer = InputDiagnosticBuffer(takeID: takeID)
+        for n in 1...32 {
+            buffer.append(.init(kind: .ax, stage: .capture, fields: [.polls: .integer(n)]), elapsedMS: n)
+        }
+        buffer.append(.init(kind: .payload, stage: .posting, fields: [
+            .valueUTF16: .integer(48), .plannedChunks: .integer(3),
+            .modifiers: .integer(0), .hardwareModifiers: .integer(0)
+        ]), elapsedMS: 40)
+        buffer.append(.init(kind: .receipt, stage: .receipt, fields: [
+            .timeoutMS: .integer(600), .expectedStart: .integer(48),
+            .expectedLength: .integer(0), .valueUTF16: .integer(57)
+        ]), elapsedMS: 41)
+        for n in 35...1_000 {
+            buffer.append(.init(kind: .ax, stage: .receipt, fields: [.error: .integer(0)]), elapsedMS: n)
+        }
+        #expect(buffer.retainedCount == 128)
+        #expect(buffer.droppedCount == buffer.totalCount - buffer.retainedCount)
+        #expect(buffer.entries.contains { $0.sequence == 33 })
+        #expect(buffer.entries.contains { $0.sequence == 34 })
+        #expect(Array(buffer.entries.prefix(32)).map(\.sequence) == Array(1...32))
+        let output = buffer.renderedLines()
+        #expect(output.contains { $0.contains("section=payload") && $0.contains("hardware_modifiers=0") })
+        #expect(output.contains { $0.contains("section=expected") && $0.contains("value_utf16=57") })
+        #expect(output.allSatisfy { $0.utf8.count <= 320 && DiagnosticLogPolicy.sanitizedEvent($0) == $0 })
+    }
+
+    @Test func summariesCorrelateBuildAppRecognitionAndOutcome() {
+        var buffer = InputDiagnosticBuffer(takeID: takeID)
+        let events: [InputDiagnosticEvent] = [
+            .init(kind: .session, stage: .requested, fields: [.build: .integer(30), .engine: .token(.gemini)]),
+            .init(kind: .target, stage: .capture, fields: [.app: .application("com.example.Editor"), .pid: .integer(123)]),
+            .init(kind: .session, stage: .result, fields: [.recognizedUTF16: .integer(48), .outcome: .token(.ok)]),
+            .init(kind: .receipt, stage: .receipt, fields: [.polls: .integer(10), .textMismatch: .integer(9), .unchanged: .integer(1), .deadlineExceeded: .flag(false)]),
+            .init(kind: .result, stage: .result, fields: [.eventsPosted: .flag(true), .outcome: .token(.unconfirmed), .reason: .token(.postedReceiptTimeout), .sentChunks: .integer(3)])
+        ]
+        for (i, event) in events.enumerated() { buffer.append(event, elapsedMS: i) }
+        let summaries = buffer.renderedLines().filter { $0.hasPrefix("input_summary v=2 ") }
+        let text = summaries.joined(separator: "\n")
+        #expect(text.contains("section=requested") && text.contains("build=30"))
+        #expect(text.contains("section=target") && text.contains("app=com.example.Editor"))
+        #expect(text.contains("section=recognition") && text.contains("recognized_utf16=48"))
+        #expect(text.contains("section=result") && text.contains("reason=posted_receipt_timeout"))
+        #expect(!text.contains("outcome=verified"))
+        #expect(summaries.allSatisfy { $0.contains("take=\(takeID.uuidString.lowercased())") && $0.utf8.count <= 320 })
+    }
+
+    @Test func actualDoubleReadCaretIsNotLabeledAsPlannedCaret() {
+        var buffer = InputDiagnosticBuffer(takeID: takeID)
+        buffer.append(.init(kind: .receipt, stage: .receipt, fields: [
+            .timeoutMS: .integer(600), .expectedStart: .integer(99), .expectedLength: .integer(0)
+        ]), elapsedMS: 40)
+        buffer.append(.init(kind: .snapshot, stage: .receipt, fields: [
+            .expectedStart: .integer(11), .expectedLength: .integer(0),
+            .selectionStart: .integer(11), .selectionLength: .integer(0), .valueUTF16: .integer(11)
+        ]), elapsedMS: 50)
+        let lines = buffer.renderedLines()
+        let expected = lines.filter { $0.contains("section=expected ") }.joined()
+        let observed = lines.filter { $0.contains("section=observed ") }.joined()
+        #expect(expected.contains("expected_start=99"))
+        #expect(observed.contains("first_read_start=11"))
+        #expect(!observed.contains("expected_start="))
+        #expect(lines.contains { $0.hasPrefix("input_diag v=1 ") && $0.contains("expected_start=11") })
+    }
+
+    @Test func summaryConsentRevocationErasesMilestonesAsWellAsTrace() throws {
+        var consent = InputDiagnosticConsent(enabled: true)
+        let token = try #require(consent.token)
+        var buffer = InputDiagnosticBuffer(takeID: takeID)
+        buffer.append(.init(kind: .result, stage: .result, fields: [.reason: .token(.postedReceiptTimeout)]), elapsedMS: 5)
+        #expect(buffer.renderedLines().contains { $0.hasPrefix("input_summary") })
+        consent.invalidate()
+        #expect(buffer.drain(consent: consent, token: token).isEmpty)
+        #expect(buffer.renderedLines().isEmpty)
+        buffer.append(.init(kind: .ax, stage: .capture, fields: [:]), elapsedMS: 1)
+        #expect(!buffer.renderedLines().joined().contains("posted_receipt_timeout"))
+    }
+
+    @Test func milestonesStayBoundedAndKeepFirstAndLastReadbacks() {
+        var buffer = InputDiagnosticBuffer(takeID: takeID)
+        for index in 0..<3_000 {
+            buffer.append(.init(kind: .snapshot, stage: .receipt, fields: [
+                .selectionStart: .integer(index), .expectedStart: .integer(index)
+            ]), elapsedMS: index)
+            #expect(buffer.retainedCount <= 128)
+        }
+        let lines = buffer.renderedLines()
+        #expect(lines.contains { $0.contains("section=first_observed ") && $0.contains("selection_start=0") })
+        #expect(lines.contains { $0.contains("section=observed ") && $0.contains("selection_start=2999") })
+        #expect(lines.filter { $0.hasPrefix("input_summary") }.count <= 4)
+    }
+
+    @Test func longestSummaryFieldsAreBoundedAndSanitized() {
+        var fields = Dictionary(uniqueKeysWithValues: InputDiagnosticEvent.Field.allCases.map {
+            ($0, InputDiagnosticEvent.Value.integer(Int.max))
+        })
+        fields[.app] = .application(String(repeating: "a", count: 94) + ".b")
+        var buffer = InputDiagnosticBuffer(takeID: takeID)
+        buffer.append(.init(kind: .target, stage: .capture, fields: fields), elapsedMS: Int.max)
+        let summaries = buffer.renderedLines().filter { $0.hasPrefix("input_summary") }
+        #expect(!summaries.isEmpty)
+        #expect(summaries.allSatisfy { $0.utf8.count <= 320 && DiagnosticLogPolicy.sanitizedEvent($0) == $0 })
+        for field in InputDiagnosticEvent.Field.allCases {
+            #expect(summaries.flatMap { $0.split(separator: " ") }.filter { $0.hasPrefix(field.rawValue + "=") }.count == 1)
+        }
+    }
+}

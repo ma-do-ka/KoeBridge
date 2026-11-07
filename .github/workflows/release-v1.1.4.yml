@@ -1,0 +1,82 @@
+name: Publish KoeBridge v1.1.4 diagnostic update
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/releases/v1.1.4.md'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-v1.1.4
+  cancel-in-progress: false
+
+jobs:
+  verify-and-publish:
+    if: github.repository == 'ma-do-ka/KoeBridge'
+    runs-on: macos-15-intel
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify release identity
+        run: |
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' scripts/Info.plist)" = '1.1.4'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' scripts/Info.plist)" = '31'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :KoeBridgeReleaseLabel' scripts/Info.plist)" = '1.1.4'
+          test -s docs/releases/v1.1.4.md
+      - name: Audit public source
+        run: python3 scripts/audit_public_release.py
+      - name: Python regression suite
+        run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
+      - name: Swift and diagnostic regression suites
+        run: |
+          swift test --parallel
+          swift run -c release KoeBridgeSelfTest
+      - name: Check source updater
+        run: |
+          bash -n scripts/update_from_release.sh
+          bash scripts/update_from_release.sh --syntax-check
+      - name: Package universal development app
+        run: KOEBRIDGE_PACKAGE_DEVELOPMENT=1 bash scripts/package_development_build.sh
+      - name: Verify downloadable archive
+        run: bash scripts/verify_development_archive.sh
+      - name: Upload draft, verify downloaded bytes, then publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG=v1.1.4
+          ARCHIVE=KoeBridge-v1.1.4-macOS-universal-development.zip
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            echo 'ERROR: v1.1.4 tag already exists; refusing to overwrite.' >&2
+            exit 1
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo 'ERROR: v1.1.4 release already exists; refusing to overwrite.' >&2
+            exit 1
+          fi
+          printf 'version=1.1.4\nbuild=31\nsource_commit=%s\n' "$GITHUB_SHA" > dist/SOURCE.txt
+          gh release create "$TAG" "dist/$ARCHIVE" dist/SHA256SUMS.txt dist/SOURCE.txt \
+            --draft --target "$GITHUB_SHA" --title 'KoeBridge v1.1.4 (Build 31)' \
+            --notes-file docs/releases/v1.1.4.md
+          WORK="$(mktemp -d "${RUNNER_TEMP}/koebridge-v114.XXXXXX")"
+          trap 'rm -rf "$WORK"' EXIT
+          gh release download "$TAG" -p "$ARCHIVE" -p SHA256SUMS.txt -p SOURCE.txt --dir "$WORK"
+          (cd "$WORK" && shasum -a 256 --check SHA256SUMS.txt)
+          cmp "dist/$ARCHIVE" "$WORK/$ARCHIVE"
+          cmp dist/SOURCE.txt "$WORK/SOURCE.txt"
+          ditto -x -k "$WORK/$ARCHIVE" "$WORK/unpacked"
+          APP="$WORK/unpacked/KoeBridge.app"
+          cmp scripts/Info.plist "$APP/Contents/Info.plist"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = '1.1.4'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist")" = '31'
+          codesign --verify --deep --strict "$APP"
+          lipo "$APP/Contents/MacOS/KoeBridge" -verify_arch arm64 x86_64
+          gh release edit "$TAG" --draft=false --latest
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/$TAG" --jq '.object.sha')" = "$GITHUB_SHA"
+          test "$(gh release view "$TAG" --json isDraft --jq '.isDraft')" = 'false'
+          echo "Verified published release: $TAG Build 31, source=$GITHUB_SHA"
+          shasum -a 256 "$WORK/$ARCHIVE"
+          gh release view "$TAG" --json url,tagName,isDraft,isPrerelease,assets
