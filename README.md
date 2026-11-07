@@ -7,8 +7,8 @@
 
 ## ダウンロード
 
-**[KoeBridge v1.1.2（Build 28）をダウンロード — macOS Universal ZIP](https://github.com/ma-do-ka/KoeBridge/releases/download/v1.1.2/KoeBridge-v1.1.2-macOS-universal-development.zip)**  
-[リリース詳細](https://github.com/ma-do-ka/KoeBridge/releases/tag/v1.1.2) · [SHA-256](https://github.com/ma-do-ka/KoeBridge/releases/download/v1.1.2/SHA256SUMS.txt) · [変更履歴](#最近の更新)
+**[KoeBridge v1.1.3（Build 29）をダウンロード — macOS Universal ZIP](https://github.com/ma-do-ka/KoeBridge/releases/download/v1.1.3/KoeBridge-v1.1.3-macOS-universal-development.zip)**  
+[リリース詳細](https://github.com/ma-do-ka/KoeBridge/releases/tag/v1.1.3) · [SHA-256](https://github.com/ma-do-ka/KoeBridge/releases/download/v1.1.3/SHA256SUMS.txt) · [変更履歴](#最近の更新)
 
 > [!IMPORTANT]
 > **配布ZIPはアドホック署名の開発版です。** Apple Developer ID署名・公証は未取得です。起動中のKoeBridgeを終了し、現在のアプリを退避してから入れ替えてください。macOSの権限を再度求められる場合があります。OSの保護機能をまとめて無効化する必要はありません。
@@ -43,6 +43,7 @@
 | **文脈チェック** | 句読点の限定補正と任意の音声再照合を個別に選択。音声再照合は追加の通信・料金が発生 |
 | **履歴・利用統計** | 直近10件からコピー。試行回数・音声処理時間・報告されたトークン数を確認 |
 | **入力失敗の調査** | 既存の診断記録をONにした場合のみ、入力先の照合・送信・反映確認の失敗段階を記録 |
+| **無音の誤入力防止** | モデルの単語と独立にPCM音声の信号を確認。明らかな無音は無視し、不確かな結果は自動入力せず履歴に保存 |
 
 **設計上の方針：** SwiftとmacOSの標準フレームワークを中心に使用。Electron、常駐Webサーバー、別途Python常駐プロセスは不要です。速度・CPU・メモリが他製品より優れているという実測上の保証はありません。
 
@@ -62,6 +63,12 @@
 | 不具合調査の記録をON/OFF | **履歴と記録 → 問題調査用の記録を残す**（初期OFF） |
 | 利用量を確認 | **利用統計** |
 | 更新情報を確認 | **情報 → アップデート**、またはメニューバーの更新確認 |
+
+## 話していないのに単語が出るとき
+
+認識モデルが無音や環境音を「GitHub」などの言葉と誤認識する場合があります。v1.1.3では**認識文字列とは別にPCMの音声活動を測定**し、明らかな無音の自動入力を防ぎます。声か環境音か不確かな結果は消さずに履歴へ保存し、自動入力を止めます。**人間の発話を確実に検知できる仕組みではありません**。小声の入力は履歴確認が必要になる場合もあります。
+
+特定の語を禁止してはいません。**Gemini → 文字起こしの調整 → 専門用語の補助** で、使わない辞書のチェックを外せます。診断ログをONにすると、録音ごとの音量統計と判定を記録しますが、本文や音声は記録しません。[今回の修正](docs/releases/v1.1.3.md)。
 
 ## 入力できないとき
 
@@ -127,7 +134,7 @@ swift run -c release KoeBridgeSelfTest
 
 | バージョン | 主な変更 |
 | --- | --- |
-| **[v1.1.2](docs/releases/v1.1.2.md)** | 入力先の取得不能・位置変更・入力送信後の確認失敗を区別する診断を追加。AXの時間設定の残留を修正 |
+| **[v1.1.3](docs/releases/v1.1.3.md)** | 入力先の取得不能・位置変更・入力送信後の確認失敗を区別する診断を追加。AXの時間設定の残留を修正 |
 | **[v1.1.1](docs/releases/v1.1.1.md)** | 録音・履歴・設定のリファクタリングと不具合修正 |
 | **[v1.1.0](docs/releases/v1.1.0.md)** | 確定直後の連続入力、明示的な発話区切り、独立した補助チェック |
 
