@@ -29,8 +29,13 @@ import KoeBridgeCore
     }
 
     static func send(_ text: String, to target: InsertionTarget?, captureReason: String,
+                     diagnostics: InputDiagnosticTrace? = nil,
                      shouldContinue: @MainActor () -> Bool) async -> Outcome {
-        let report = await TextInsertion.deliver(text, to: target, shouldContinue: shouldContinue)
+        if target == nil {
+            diagnostics?.record(.target, stage: .preflight, [.reason: .reason(captureReason)])
+        }
+        let report = await TextInsertion.deliver(text, to: target, diagnostics: diagnostics,
+                                                 shouldContinue: shouldContinue)
         let delivery: TranscriptRecord.Delivery
         switch report.outcome {
         case .verifiedInserted: delivery = .verifiedInserted

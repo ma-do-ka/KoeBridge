@@ -12,6 +12,14 @@ The supplied macOS app icon is packaged from `Resources/KoeBridge_AppIcon.icns` 
 
 **v1.0.1 source release:** Accidental rapid, silent shortcut toggles now dismiss as a short, neutral "音声入力なし" notice rather than a transcription failure. Real speech and real hardware/API errors retain their existing paths. See [release notes](docs/releases/v1.0.1.md). There is no notarized installer.
 
+## Latest: v1.1.2 — opt-in input failure diagnostics
+
+[Download v1.1.2, Build 28](https://github.com/ma-do-ka/KoeBridge/releases/download/v1.1.2/KoeBridge-v1.1.2-macOS-universal-development.zip) for macOS 15+ (Apple Silicon and Intel). **Ad-hoc signed; not Developer ID signed or notarized.** Quit KoeBridge before replacing the app. See [release notes](docs/releases/v1.1.2.md).
+
+With **Settings → 履歴と記録 → 問題調査用の記録を残す** enabled, local records distinguish unreadable AX state from actual focus/caret changes, show posting and read-back results, and correlate overlapping recordings. Text, audio, API keys, window titles and URLs are excluded. Disabling logging or deleting logs revokes pending traces. Short process-wide AX timeouts are reset after the fallback read. The exact cause of an intermittent user failure still requires a trace from the affected Mac; this release does not claim every input failure is fixed. [Investigation guide](docs/input-diagnostics.md).
+
+v1.1.1 refactored controller, review, persistence and settings responsibilities and fixed recovery and cancellation defects. [v1.1.1 notes](docs/releases/v1.1.1.md).
+
 ## v1.1.0 — continuous dictation and independent assistance
 
 [Download the universal development app](https://github.com/ma-do-ka/KoeBridge/releases/download/v1.1.0/KoeBridge-v1.1.0-macOS-universal-development.zip) for macOS 15+ (Apple Silicon and Intel). **Ad-hoc signed, not Developer ID signed or notarized.** Quit KoeBridge before replacing the app; macOS privacy permissions may need to be granted again. Source builds with an existing persistent certificate remain supported. See [release notes](docs/releases/v1.1.0.md).

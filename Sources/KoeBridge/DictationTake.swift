@@ -49,6 +49,8 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
     var automaticDeliverySuppressed = false
     var reviewSession: DictationReviewSession?
     var historyRecordID: UUID?
+    var inputDiagnostics: InputDiagnosticTrace?
+    var resolvedAtUptime: TimeInterval?
 
     init(preferred: RecognitionMode, style: TranscriptionStyle, japaneseHint: Bool,
          vocabulary: [String], shouldPaste: Bool, options: TranscriptionOptions) {

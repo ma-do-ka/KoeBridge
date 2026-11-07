@@ -1,0 +1,62 @@
+name: Publish KoeBridge v1.1.2 and development download
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/releases/v1.1.2.md'
+
+permissions:
+  contents: write
+
+jobs:
+  verify-and-publish:
+    if: github.repository == 'ma-do-ka/KoeBridge'
+    runs-on: macos-15-intel
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify release identity
+        run: |
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' scripts/Info.plist)" = '1.1.2'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' scripts/Info.plist)" = '28'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :KoeBridgeReleaseLabel' scripts/Info.plist)" = '1.1.2'
+          test -s docs/releases/v1.1.2.md
+      - name: Audit public source
+        run: python3 scripts/audit_public_release.py
+      - name: Python regression suite
+        run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
+      - name: Swift regression suites
+        run: |
+          swift test --parallel
+          swift run -c release KoeBridgeSelfTest
+      - name: Check source updater
+        run: |
+          bash -n scripts/update_from_release.sh
+          bash scripts/update_from_release.sh --syntax-check
+      - name: Package universal development app
+        run: KOEBRIDGE_PACKAGE_DEVELOPMENT=1 bash scripts/package_development_build.sh
+      - name: Verify downloadable archive
+        run: bash scripts/verify_development_archive.sh
+      - name: Publish verified commit and download
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/v1.1.2" >/dev/null 2>&1; then
+            echo 'ERROR: v1.1.2 tag already exists; refusing to overwrite.' >&2
+            exit 1
+          fi
+          if gh release view v1.1.2 >/dev/null 2>&1; then
+            echo 'ERROR: v1.1.2 release already exists; refusing to overwrite.' >&2
+            exit 1
+          fi
+          gh release create v1.1.2 \
+            dist/KoeBridge-v1.1.2-macOS-universal-development.zip \
+            dist/SHA256SUMS.txt \
+            --target "$GITHUB_SHA" \
+            --title 'KoeBridge v1.1.2' \
+            --notes-file docs/releases/v1.1.2.md \
+            --latest
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/v1.1.2" --jq '.object.sha')" = "$GITHUB_SHA"
+          gh release view v1.1.2 --json url,tagName,isDraft,isPrerelease,assets

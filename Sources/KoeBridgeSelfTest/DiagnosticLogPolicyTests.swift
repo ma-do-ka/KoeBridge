@@ -67,4 +67,72 @@ struct DiagnosticLogPolicyTests {
         check(original == "stay unchanged")
     }
 
+    func batchedEventsRotateInOrderAndKeepBothFilesPrivate() throws {
+        let fm = FileManager.default
+        let directory = fm.temporaryDirectory.appendingPathComponent("koebridge-diag-batch-\(UUID())")
+        defer { try? fm.removeItem(at: directory) }
+        let store = DiagnosticFileStore(fileURL: directory.appendingPathComponent("KoeBridge.log"))
+        let events = (0..<1_800).map { "case=\($0) " + String(repeating: "x", count: 230) }
+        try store.appendBatch(events, at: Date(timeIntervalSince1970: 0))
+        for url in [store.fileURL, store.rotatedURL] {
+            check(store.fileSize(url) > 0)
+            check(store.fileSize(url) <= DiagnosticLogPolicy.maximumFileBytes)
+            let attributes = try fm.attributesOfItem(atPath: url.path)
+            check((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+        }
+        let older = try String(contentsOf: store.rotatedURL, encoding: .utf8)
+        let current = try String(contentsOf: store.fileURL, encoding: .utf8)
+        let lines = (older + current).split(separator: "\n")
+        let ids = lines.compactMap { line -> Int? in
+            line.split(separator: " ").dropFirst().first.flatMap { Int($0.dropFirst(5)) }
+        }
+        let first = try require(ids.first)
+        check(first > 0)
+        check(ids.count == lines.count)
+        check(ids == Array(first..<1_800))
+        let names = try fm.contentsOfDirectory(atPath: directory.path)
+        check(Set(names) == Set(["KoeBridge.log", "KoeBridge.log.1"]))
+    }
+
+    func oversizedRotatedFileIsRemovedBeforeTheNextNormalRotation() throws {
+        let fm = FileManager.default
+        let directory = fm.temporaryDirectory.appendingPathComponent("koebridge-diag-limit-\(UUID())")
+        defer { try? fm.removeItem(at: directory) }
+        let store = DiagnosticFileStore(fileURL: directory.appendingPathComponent("KoeBridge.log"))
+        try store.append("event=before")
+        let oversized = Data(repeating: 0x78, count: DiagnosticLogPolicy.maximumFileBytes + 1)
+        try oversized.write(to: store.rotatedURL)
+        try store.appendBatch(["event=second", "event=third"])
+        check(!fm.fileExists(atPath: store.rotatedURL.path))
+        let retained = try String(contentsOf: store.fileURL, encoding: .utf8)
+        check(retained.contains("event=before"))
+        check(retained.contains("event=second"))
+        check(retained.contains("event=third"))
+        for url in [store.fileURL, store.rotatedURL] { try oversized.write(to: url) }
+        try store.appendBatch(["event=fresh"])
+        check(store.fileSize(store.fileURL) <= DiagnosticLogPolicy.maximumFileBytes)
+        check(store.fileSize(store.rotatedURL) <= DiagnosticLogPolicy.maximumFileBytes)
+        let fresh = try String(contentsOf: store.fileURL, encoding: .utf8)
+        check(fresh.contains("event=fresh"))
+        check(fresh.split(separator: "\n").count == 1)
+    }
+
+    func invalidBatchDoesNotCreateFilesOrAcceptANonregularDestination() throws {
+        let fm = FileManager.default
+        let directory = fm.temporaryDirectory.appendingPathComponent("koebridge-diag-empty-\(UUID())")
+        defer { try? fm.removeItem(at: directory) }
+        let store = DiagnosticFileStore(fileURL: directory.appendingPathComponent("KoeBridge.log"))
+        try store.appendBatch([])
+        try store.appendBatch(["", String(repeating: "x", count: 321), "event=bad\0value"])
+        check(!fm.fileExists(atPath: directory.path))
+        try fm.createDirectory(at: store.fileURL, withIntermediateDirectories: true)
+        let marker = store.fileURL.appendingPathComponent("marker.txt")
+        try Data("unchanged".utf8).write(to: marker)
+        var rejected = false
+        do { try store.appendBatch(["event=valid"]) }
+        catch DiagnosticFileStore.StoreError.invalidFile { rejected = true }
+        check(rejected)
+        let contents = try String(contentsOf: marker, encoding: .utf8)
+        check(contents == "unchanged")
+    }
 }

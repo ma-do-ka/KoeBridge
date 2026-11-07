@@ -11,11 +11,11 @@ macOSのための、**超軽量を目指したオープンソース音声入力�
 > **録音キー → 話す → 同じキーで確定。** 文字起こし結果を、元の入力欄へ直接送ります。  
 > Swift製のネイティブなメニューバーアプリ。Electron・Webブラウザー・Python常駐サーバーは不要です。
 
-**v1.1.1（ソースコード＋開発版アプリ）/ MIT License / 自由に改造・再配布OK**（ライセンス表示の維持が条件）
+**v1.1.2（ソースコード＋開発版アプリ）/ MIT License / 自由に改造・再配布OK**（ライセンス表示の維持が条件）
 
-## ダウンロード — v1.1.1
+## ダウンロード — v1.1.2
 
-[開発版アプリをダウンロード（Universal ZIP）](https://github.com/ma-do-ka/KoeBridge/releases/download/v1.1.1/KoeBridge-v1.1.1-macOS-universal-development.zip) / [リリースノート・SHA-256](https://github.com/ma-do-ka/KoeBridge/releases/tag/v1.1.1)
+[開発版アプリをダウンロード（Universal ZIP）](https://github.com/ma-do-ka/KoeBridge/releases/download/v1.1.2/KoeBridge-v1.1.2-macOS-universal-development.zip) / [リリースノート・SHA-256](https://github.com/ma-do-ka/KoeBridge/releases/tag/v1.1.2)
 
 macOS 15以降、Apple Silicon・Intel向けです。**このZIPはアドホック署名の開発版で、Developer ID署名・Apple公証はありません。** KoeBridgeを終了してから展開し、既存版を退避してアプリを置き換えてください。OSが起動を止める場合はmacOSの通常の「プライバシーとセキュリティ」の案内に従ってください。更新後にマイク・アクセシビリティなどの再許可が必要になる場合があります。OSの保護を一括で無効化する操作は不要です。
 
@@ -32,7 +32,9 @@ macOS 15以降、Apple Silicon・Intel向けです。**このZIPはアドホッ�
 
 ## 主な機能
 
-最新更新： [v1.1.1 リリースノート](docs/releases/v1.1.1.md)。録音・文章チェック・履歴保存・設定画面の責務を整理し、保存失敗時の統計欠落、キャンセル後の遅延通知、設定内検索とAPIキー削除の不具合を修正しました。
+最新更新： [v1.1.2 リリースノート](docs/releases/v1.1.2.md)。入力失敗の段階、macOSの応答、入力先・選択位置の照合、送信後の確認、前の録音との関係を、既存の「問題調査用の記録を残す」がONのときだけ記録します。本文・音声・APIキー・ウィンドウ名・URLは記録しません。カーソルの移動と取得不能を区別し、短いAX問い合わせ時間の設定がプロセス全体に残る経路を修正しました。[調査記録の説明](docs/input-diagnostics.md)。実環境での個別の失敗原因は再発時の記録で調査します。
+
+v1.1.1： [リリースノート](docs/releases/v1.1.1.md)。録音・文章チェック・履歴保存・設定画面の責務を整理し、保存失敗時の統計欠落、キャンセル後の遅延通知、設定内検索とAPIキー削除の不具合を修正しました。
 
 v1.1.0： 確定直後の連続録音で、自分自身の入力によるカーソル移動を後続へ引き継ぎます。Geminiの発話区間は録音開始・停止で明示し、自然な間だけで区切らない方式へ変更しました。用語補助と追加チェックは独立チェックボックスで選べます。
 
@@ -170,8 +172,8 @@ bash scripts/verify_and_build.sh --open
 | 専門用語を登録 | `設定… → Gemini → 文字起こしの調整 → 固有名詞・専門用語を登録`（1行1語） |
 | Appleオンデバイス認識に変更 | `設定… → 音声入力 → 文字起こしの方法` |
 | 自動入力に失敗した文章をコピー | メニューバー → `認識履歴（直近10件）…` |
-| 問題調査用の記録ON/OFF（初期OFF） | `設定… → 履歴・記録 → 問題調査用の記録を残す` |
-| ログだけ削除 | `設定… → 履歴・記録 → 動作記録を削除` |
+| 問題調査用の記録ON/OFF（初期OFF） | `設定… → 履歴と記録 → 問題調査用の記録を残す` |
+| ログだけ削除 | `設定… → 履歴と記録 → 動作記録を削除` |
 | コード変更後に再ビルド | KoeBridgeを終了して `bash scripts/verify_and_build.sh --open` |
 | テスト | `swift test --parallel` と `swift run -c release KoeBridgeSelfTest` |
 
