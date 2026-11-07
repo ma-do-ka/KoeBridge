@@ -142,7 +142,6 @@ Sources/KoeBridgeSelfTest/InsertionReceiptPolicyTests.swift
 Sources/KoeBridgeSelfTest/TranscriptReviewSelfTests.swift
 Sources/KoeBridgeSelfTest/TranscriptionOptionsSelfTests.swift
 Tests/KoeBridgeCoreTests/GeminiRecheckWireTests.swift
-Tests/KoeBridgeCoreTests/InsertionReceiptPolicyTests.swift
 Tests/KoeBridgeCoreTests/TranscriptReviewTests.swift
 Tests/KoeBridgeCoreTests/TranscriptionOptionsTests.swift
 docs/releases/v1.1.0.md
@@ -195,3 +194,8 @@ Sources/KoeBridgeCore/AudioActivityEvidence.swift
 Sources/KoeBridgeSelfTest/AudioActivityEvidenceTests.swift
 Tests/KoeBridgeCoreTests/AudioActivityEvidenceTests.swift
 docs/releases/v1.1.3.md
+
+# v1.1.3 Build 30: independent speech verification
+Sources/KoeBridgeCore/SpeechVerification.swift
+Sources/KoeBridgeCore/NativeSpeechDetector.swift
+Sources/KoeBridgeCore/SpeechAdmissionBuffer.swift
