@@ -1,4 +1,4 @@
-# Exact allowlist for scripts/publish_to_github.sh. Approved binaries are hash-pinned in audit_public_release.py.
+# Exact allowlist. Binary artwork is hash-pinned by audit_public_release.py.
 .github/workflows/mac-ci.yml
 .github/workflows/release-v1.0.1.yml
 .github/workflows/release-v1.0.1b.yml
@@ -105,8 +105,6 @@ scripts/publish_to_github.sh
 scripts/select_signing_identity.sh
 scripts/verify_and_build.sh
 scripts/update_from_release.sh
-
-# Reviewed artwork and newer source/test files
 Resources/KoeBridge_AppIcon.icns
 Resources/KoeBridge_AppIcon_1024.png
 Sources/KoeBridge/SettingsAppearance.swift
@@ -130,8 +128,6 @@ docs/releases/v1.0.1d.md
 docs/releases/v1.0.1e.md
 docs/releases/v1.0.1f.md
 docs/cost-estimate.md
-
-# v1.1.0 continuous dictation and independent assistance
 .github/workflows/release-v1.1.0.yml
 Sources/KoeBridge/GeminiAudioRechecker.swift
 Sources/KoeBridgeCore/GeminiRecheckWire.swift
@@ -147,8 +143,6 @@ Tests/KoeBridgeCoreTests/TranscriptReviewTests.swift
 Tests/KoeBridgeCoreTests/TranscriptionOptionsTests.swift
 docs/releases/v1.1.0.md
 scripts/package_development_build.sh
-
-# v1.1.1 refactor and failure recovery
 .github/workflows/release-v1.1.1.yml
 Sources/KoeBridge/DictationDelivery.swift
 Sources/KoeBridge/DictationReviewSession.swift
@@ -175,8 +169,6 @@ Tests/KoeBridgeCoreTests/TranscriptRecoveryTests.swift
 Tests/KoeBridgeCoreTests/PersistenceRecoveryTests.swift
 docs/releases/v1.1.1.md
 scripts/verify_development_archive.sh
-
-# v1.1.2 opt-in input failure diagnostics
 .github/workflows/release-v1.1.2.yml
 Sources/KoeBridge/InputDiagnosticTrace.swift
 Sources/KoeBridgeCore/InputDiagnosticBuffer.swift
@@ -188,10 +180,11 @@ Tests/KoeBridgeCoreTests/InputDiagnosticTests.swift
 Tests/KoeBridgeCoreTests/InputReceiptObservationTests.swift
 docs/input-diagnostics.md
 docs/releases/v1.1.2.md
-
-# v1.1.3 false transcription guard
 .github/workflows/release-v1.1.3.yml
 Sources/KoeBridgeCore/AudioActivityEvidence.swift
 Sources/KoeBridgeSelfTest/AudioActivityEvidenceTests.swift
 Tests/KoeBridgeCoreTests/AudioActivityEvidenceTests.swift
 docs/releases/v1.1.3.md
+Sources/KoeBridgeCore/SpeechVerification.swift
+Sources/KoeBridgeCore/NativeSpeechDetector.swift
+Sources/KoeBridgeCore/SpeechAdmissionBuffer.swift

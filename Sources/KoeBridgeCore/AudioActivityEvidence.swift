@@ -1,6 +1,6 @@
 import Foundation
 
-/// Content-free acoustic evidence only; environmental sounds are not proof of a voice.
+/// PCM energy remains useful diagnostic evidence, but cannot establish speech.
 public struct AudioActivityEvidence: Equatable, Sendable {
     public enum Classification: String, Sendable {
         case unavailable, nearSilence, uncertain, activity
@@ -12,15 +12,21 @@ public struct AudioActivityEvidence: Equatable, Sendable {
     public let maximumFrameRMS: Float
     public let modulation: Float
     public let invalidSamples: Int
+    public private(set) var speechVerification: SpeechVerification? = nil
+
+    public func withSpeechVerification(_ speech: SpeechVerification) -> Self {
+        var copy = self
+        copy.speechVerification = speech
+        return copy
+    }
 
     public var classification: Classification {
         guard frames >= 4 else { return .unavailable }
         guard invalidSamples == 0 else { return .uncertain }
-        // Reject only near-digital silence; keep quieter possible speech recoverable.
-        if maximumFrameRMS < 0.0007, peak < 0.005 { return .nearSilence }
-        // Sustained and changing energy can corroborate speech, not prove it.
-        if activeFrames >= 4, longestActiveRun >= 3,
-           maximumFrameRMS >= 0.0025, modulation >= 0.12 { return .activity }
+        // Exact digital silence must never be authorized by a model hypothesis,
+        // including a mistaken positive from the independent classifier itself.
+        if maximumFrameRMS == 0, peak == 0 { return .nearSilence }
+        if speechVerification?.allowsTranscript == true { return .activity }
         return .uncertain
     }
 }
@@ -76,9 +82,13 @@ public struct AudioActivityMeter {
         let mean = frameCount > 0 ? rmsSum / Double(frameCount) : 0
         let variance = frameCount > 0 ? max(0, rmsSquaresSum / Double(frameCount) - mean * mean) : 0
         let modulation = mean > 0 ? Float(sqrt(variance) / mean) : 0
+        // Include the incomplete tail so a last-millisecond sound cannot vanish
+        // behind completed all-zero frames when deciding whether to discard.
+        let tailRMS = accumulatedSamples > 0
+            ? Float(sqrt(accumulatedPower / Double(accumulatedSamples))) : 0
         return AudioActivityEvidence(frames: frameCount, activeFrames: activeCount,
-                                     longestActiveRun: longestRun, peak: globalPeak,
-                                     maximumFrameRMS: maximumRMS, modulation: modulation,
+                                     longestActiveRun: longestRun, peak: max(globalPeak, peak),
+                                     maximumFrameRMS: max(maximumRMS, tailRMS), modulation: modulation,
                                      invalidSamples: invalidCount)
     }
 }

@@ -4,7 +4,7 @@
 
 ## 再発時の記録方法
 
-1. v1.1.2（Build 28）以降のアプリで、**設定 → 履歴と記録 → 問題調査用の記録を残す**を ON にします。
+1. **設定 → 履歴と記録 → 問題調査用の記録を残す**を ON にします。無音誤認識の発話分類を調べる場合は、設定 → 情報で **v1.1.3／Build 30** を確認してください。
 2. 設定を閉じ、普段の入力先で音声入力します。連続入力時の問題なら「確定してすぐ次の録音」を含め、普段と同じ操作を行います。
 3. 問題が起きたら、入力処理の終了表示を待ち、発生時刻と入力先アプリ名を控えます。
 4. Finder の「移動 → フォルダへ移動…」で `~/Library/Logs/` を開き、`KoeBridge.log` と、存在すれば `KoeBridge.log.1` を手元にコピーします。調査相手へ必要なファイルを添付してください。公開 Issue に無断でログを掲載しません。
@@ -27,6 +27,7 @@
 | 待機が長い | `wait_ms`、`remaining_ms`、`deadline_exceeded` | 待機や AX 操作で予算を使い切ったか。次録音の capture と共通時刻で比較する |
 | 前の入力が原因で停止 | `prior_input_unverified`、`kind=reconcile` | `related_take` と `prior_reason` から前の録音をたどる。前の入力の受理未確認と、今回の位置変更を区別する |
 | 入力対象外 | `automatic_input_disabled`、`review_required`、`system_suppressed` など | 自動入力を試みない設定・状態だった |
+| 発話の裏付け不足 | `acoustic_review_required` | 独立した発話確認を満たさず、自動入力しなかった |
 
 `kind=ax` の `error` は AXError の数値です。`error=0` はその API 呼び出しの成功であり、キー入力の受理成功ではありません。`cannotComplete` のような通信失敗を、数値だけで「タイムアウト」と断定しません。要求した時間、設定結果、実測時間と合わせて読みます。[Apple の AXUIElement 仕様](https://developer.apple.com/documentation/applicationservices/axuielement_h)。
 
@@ -68,8 +69,21 @@
 
 この仕組みで、どの段階・どのチェックで失敗したかを絞り込めます。ただし、相手アプリが合成イベントを無視した内部理由や、OS 内部の通信失敗原因までログだけで確定できるわけではありません。必要に応じ、入力先アプリの種類・版、失敗時刻、操作順と照合します。受理不明の文章を自動再送する処理は追加していません。
 
-## v1.1.3：無音誤認識を調べる数値
+## v1.1.3のPCM数値とビルドによる違い
 
-「問題調査用の記録を残す」をONにした録音では、認識文字列やPCM本文は残さず、`kind=session stage=capture` に `acoustic`（`near_silence`／`uncertain`／`activity`／`unavailable`）、`audio_frames`（20ms区間数）、`active_frames`、`max_rms_ppm`（最大区間RMS×100万）、`modulation_pct`（時間変動率の概算％）、`invalid_samples` を記録します。
+`kind=session stage=capture` に `acoustic`（`near_silence`／`uncertain`／`activity`／`unavailable`）、`audio_frames`（20ms区間数）、`active_frames`、`max_rms_ppm`（最大区間RMS×100万）、`modulation_pct`（時間変動率の概算％）、`invalid_samples` を記録します。
 
-`near_silence` はデジタル無音に近いことの証拠、`uncertain` は環境音・小声を区別できない状態、`activity` は音声らしい時間変動のある信号を確認した状態です。**activityは人間の声の証明ではありません。** 無音で「GitHub」と出た場合は、録音時刻と入力先アプリを添えてこの数値で切り分けます。また `stage=requested` の `registered_terms`・`topic_terms`・`vocabulary_count` により用語候補を送ったかどうか、`stage=result` の `engine`・`recognized_utf16` により実際に結果を返した認識方式と文字数を追えます。**単語そのものは残しません。** 保存容量・ON/OFF・削除方針は従来と同じです。
+**Build 29のactivityは音量・変動条件だけでした。Build 30のactivityは独立したSoundAnalysis分類が発話を確認した状態です。** 同じ名前でもビルドを混同しないでください。Build 30では、小声を失わないため、分類で確認されていない低音量の信号を単純な閾値で無音扱いしません。`near_silence` は全ゼロの信号を確認した状態です。どの判定も本人の意図や認識内容の正しさを証明しません。
+
+`stage=requested` の `registered_terms`・`topic_terms`・`vocabulary_count` により用語候補の設定と件数、`stage=result` の `engine`・`recognized_utf16` により結果を返した認識方式と文字数を追えます。**単語そのものは残しません。**
+
+## Build 30の発話分類記録
+
+- `speech_classifier_started capture=<UUID> build=30`：マイク処理単位の診断開始。
+- `speech_classifier capture=<UUID> state=... windows=... positives=... max_permille=... allowed=...`：分類終了時の数値。
+
+`capture` はマイク処理専用のUUIDで、入力診断の `take` とは別です。`started` と終了行を同じ `capture` で結び、時刻と入力診断の録音順序を照合してください。`windows` は分類区間数、`positives` はスコア条件を満たした区間数、`max_permille` は最大分類スコアの1000倍、`allowed` は分類結果による許可状態です。スコアは成功率や認識精度そのものではありません。
+
+`state=failed` または `timedOut` は分類処理の失敗・待機期限超過であり、無音の証拠ではありません。この場合は自動入力を許可しません。`completed` でも `allowed=false` なら発話確認は得られていません。`allowed=true` の誤検出もあり得るため、ユーザーの実際の状況と合わせて調査します。
+
+これらの行はONで開始した録音に限定し、OFF・再ON・削除で古い診断を失効させます。新しいログ画面はありません。音声・本文の保存や自動アップロードは追加していません。

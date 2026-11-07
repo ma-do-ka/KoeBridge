@@ -3,38 +3,30 @@ import Foundation
 import AVFoundation
 import KoeBridgeCore
 
-/// Captures audio once; converts to signed 16-bit, 16 kHz, mono, little-endian PCM.
-/// Never perform WebSocket requests on the real-time microphone callback.
-///
-/// Concurrency contract:
-/// - AVAudioEngine start/stop and engine ownership use lifecycleQueue.
-/// - All queued PCM conversion, carry, converter and onAudio cleanup finishes
-///   before lifecycleQueue can start the next capture (stop drains with sync).
-/// - Dropped-buffer counts, delivered byte counts and peak are locked.
-/// - The real-time audio tap only copies buffers and enqueues conversion.
-/// Queue confinement is reviewed here; @unchecked Sendable is not a blanket
-/// promise that arbitrary external mutations are safe.
+/// Engine lifecycle, conversion and inference have separate serial lanes.
+/// The real-time tap only copies; health counters use healthLock.
 final class MicrophoneCapture: @unchecked Sendable {
-    // A single serial lane prevents overlapping AVAudioEngine start/stop
-    // calls when F8 is pressed immediately after finishing a take.
     private static let lifecycleQueue = DispatchQueue(label: "dev.koebridge.microphone-lifecycle", qos: .userInteractive)
     private let processingQueue = DispatchQueue(label: "dev.koebridge.pcm-conversion", qos: .userInitiated)
-    private let output = AVAudioFormat(commonFormat: .pcmFormatFloat32,
-                                        sampleRate: 16_000, channels: 1, interleaved: false)!
+    private let output = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false)!
     private var converter: AVAudioConverter?
     private var engine: AVAudioEngine?
     private var carry = Data()
     private var onAudio: ((Data) -> Void)?
-    private let chunkBytes = 1_600 // 50 ms at 16kHz 16-bit mono: lower first-result latency
+    private let chunkBytes = 1_600
     private var alive = false
     private let workSlots = DispatchSemaphore(value: 16)
     private let healthLock = NSLock()
     private var droppedBuffers = 0
     private var conversionErrors = 0
-    private var deliveredPCMBytes = 0
+    private var capturedPCMBytes = 0
     private var peakAmplitude: Float = 0
-    private var activityMeter = AudioActivityMeter() // conversion queue only
-    private var cachedActivity = AudioActivityMeter().evidence // healthLock protected
+    private var activityMeter = AudioActivityMeter()
+    private var cachedActivity = AudioActivityMeter().evidence
+    private var admission = SpeechAdmissionBuffer() // processingQueue only
+    private let speechDetector = NativeSpeechDetector()
+    private let diagnosticID = UUID()
+    @MainActor private var speechTrace: InputDiagnosticTrace?
 
     struct StartTimings {
         let microphonePreparation: TimeInterval
@@ -42,56 +34,46 @@ final class MicrophoneCapture: @unchecked Sendable {
         let total: TimeInterval
     }
     private(set) var startTimings: StartTimings?
-
     var sessionPeakAmplitude: Float {
-        healthLock.lock()
-        defer { healthLock.unlock() }
+        healthLock.lock(); defer { healthLock.unlock() }
         return peakAmplitude
     }
-
     var activityEvidence: AudioActivityEvidence {
         healthLock.lock()
-        defer { healthLock.unlock() }
-        return cachedActivity
-    }
-
-    var totalPCMBytes: Int {
-        healthLock.lock()
-        defer { healthLock.unlock() }
-        return deliveredPCMBytes
-    }
-
-    private func noteAudioDelivered(_ bytes: Int) {
-        healthLock.lock()
-        deliveredPCMBytes += bytes
+        let energy = cachedActivity
         healthLock.unlock()
+        return energy.withSpeechVerification(speechDetector.evidence)
+    }
+    /// Captured duration is independent of the leading-silence admission buffer.
+    /// Provider usage continues to count only bytes actually sent by that provider.
+    var totalPCMBytes: Int {
+        healthLock.lock(); defer { healthLock.unlock() }
+        return capturedPCMBytes
     }
     private var configurationObserver: NSObjectProtocol?
-
     var lostBufferCount: Int {
-        healthLock.lock()
-        defer { healthLock.unlock() }
+        healthLock.lock(); defer { healthLock.unlock() }
         return droppedBuffers + conversionErrors
     }
-
     private func noteBufferLoss(conversionError: Bool = false) {
         healthLock.lock()
         if conversionError { conversionErrors += 1 } else { droppedBuffers += 1 }
         healthLock.unlock()
     }
 
-    /// A first AVAudioEngine.start() can block for seconds when an external
-    /// audio device wakes. Never run it on AppKit's main thread.
+    @MainActor
     func start(onAudio: @escaping (Data) -> Void,
                onDeviceChanged: @escaping () -> Void = {}) async throws {
+        speechTrace = DiagnosticLog.inputTrace(takeID: diagnosticID)
+        if speechTrace?.isCollecting == true {
+            DiagnosticLog.record("speech_classifier_started capture=\(diagnosticID.uuidString) build=\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown")")
+        }
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             Self.lifecycleQueue.async { [self] in
                 do {
                     try startBlocking(onAudio: onAudio, onDeviceChanged: onDeviceChanged)
                     continuation.resume(returning: ())
-                } catch {
-                    continuation.resume(throwing: error)
-                }
+                } catch { continuation.resume(throwing: error) }
             }
         }
     }
@@ -103,29 +85,18 @@ final class MicrophoneCapture: @unchecked Sendable {
         let engine = AVAudioEngine()
         let node = engine.inputNode
         let input = node.outputFormat(forBus: 0)
-        guard input.sampleRate > 0,
-              let converter = AVAudioConverter(from: input, to: output) else {
-            throw CaptureError.noInput
+        guard input.sampleRate > 0, let converter = AVAudioConverter(from: input, to: output) else {
+            speechDetector.cancel(); throw CaptureError.noInput
         }
         processingQueue.sync {
-            self.onAudio = onAudio
-            self.converter = converter
-            self.alive = true
+            self.onAudio = onAudio; self.converter = converter; self.alive = true
         }
         self.engine = engine
         node.installTap(onBus: 0, bufferSize: 1024, format: input) { [weak self] buffer, _ in
             guard let self else { return }
-            // Never let a blocked conversion queue accumulate unbounded microphone
-            // buffers. The real-time callback must never wait for a free slot.
-            guard self.workSlots.wait(timeout: .now()) == .success else {
-                self.noteBufferLoss()
-                return
-            }
-            // AVAudioEngine recycles tap buffers. Copy before returning from callback.
+            guard self.workSlots.wait(timeout: .now()) == .success else { self.noteBufferLoss(); return }
             guard let copy = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: buffer.frameLength) else {
-                self.noteBufferLoss()
-                self.workSlots.signal()
-                return
+                self.noteBufferLoss(); self.workSlots.signal(); return
             }
             copy.frameLength = buffer.frameLength
             let src = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: buffer.audioBufferList))
@@ -148,14 +119,10 @@ final class MicrophoneCapture: @unchecked Sendable {
             let startAt = Date()
             try engine.start()
             let completedAt = Date()
-            startTimings = StartTimings(
-                microphonePreparation: startAt.timeIntervalSince(beganAt),
-                engineStart: completedAt.timeIntervalSince(startAt),
-                total: completedAt.timeIntervalSince(beganAt))
+            startTimings = StartTimings(microphonePreparation: startAt.timeIntervalSince(beganAt),
+                                       engineStart: completedAt.timeIntervalSince(startAt),
+                                       total: completedAt.timeIntervalSince(beganAt))
         } catch {
-            // start() may fail after the tap has queued buffers. Use the same
-            // drain barrier as normal stop before clearing converter/callback
-            // ownership. Failed startup must not emit an extra partial chunk.
             stopBlocking(flushPendingAudio: false)
             throw error
         }
@@ -165,29 +132,21 @@ final class MicrophoneCapture: @unchecked Sendable {
         guard alive, let converter else { return }
         let capacity = AVAudioFrameCount(ceil(Double(incoming.frameLength) * 16_000.0 / incoming.format.sampleRate)) + 128
         guard let target = AVAudioPCMBuffer(pcmFormat: output, frameCapacity: capacity) else {
-            noteBufferLoss(conversionError: true)
-            return
+            noteBufferLoss(conversionError: true); return
         }
         var didProvide = false
         var conversionError: NSError?
         _ = converter.convert(to: target, error: &conversionError) { _, status in
             if didProvide { status.pointee = .noDataNow; return nil }
-            didProvide = true
-            status.pointee = .haveData
+            didProvide = true; status.pointee = .haveData
             return incoming
         }
-        guard conversionError == nil else {
-            noteBufferLoss(conversionError: true)
-            return
-        }
+        guard conversionError == nil else { noteBufferLoss(conversionError: true); return }
         guard target.frameLength > 0 else { return }
-        guard let floats = target.floatChannelData?.pointee else {
-            noteBufferLoss(conversionError: true)
-            return
-        }
+        guard let floats = target.floatChannelData?.pointee else { noteBufferLoss(conversionError: true); return }
         let n = Int(target.frameLength)
         activityMeter.observe(UnsafeBufferPointer(start: floats, count: n))
-        let evidence = activityMeter.evidence
+        let energy = activityMeter.evidence
         var pcm = Data(count: n * 2)
         var peak: Float = 0
         pcm.withUnsafeMutableBytes { raw in
@@ -196,6 +155,7 @@ final class MicrophoneCapture: @unchecked Sendable {
                 let finite = floats[i].isFinite ? floats[i] : 0
                 peak = max(peak, abs(finite))
                 let clipped = max(-1.0, min(1.0, finite))
+                floats[i] = clipped
                 let value = Int16((clipped * 32767).rounded()).littleEndian
                 base[i * 2] = UInt8(truncatingIfNeeded: value)
                 base[i * 2 + 1] = UInt8(truncatingIfNeeded: Int(value) >> 8)
@@ -203,50 +163,69 @@ final class MicrophoneCapture: @unchecked Sendable {
         }
         healthLock.lock()
         peakAmplitude = max(peakAmplitude, peak)
-        cachedActivity = evidence
+        cachedActivity = energy
+        capturedPCMBytes += pcm.count
         healthLock.unlock()
+        speechDetector.append(target) // target is independently owned, never recycled
         carry.append(pcm)
         while carry.count >= chunkBytes {
             let data = carry.subdata(in: 0..<chunkBytes)
             carry.removeSubrange(0..<chunkBytes)
-            noteAudioDelivered(data.count)
-            onAudio?(data)
+            admit(data)
         }
     }
 
-    /// Stop the input tap, but do not wait for queued conversion work on the
-    /// UI thread. The callback runs only after all trailing PCM was forwarded.
+    private func admit(_ pcm: Data) {
+        let wasOverflowed = admission.overflowed
+        if let admitted = admission.append(pcm, proof: speechDetector.evidence) { emit(admitted) }
+        if admission.overflowed && !wasOverflowed { noteBufferLoss(conversionError: true) }
+    }
+    private func emit(_ pcm: Data) {
+        // A long review-only take is replayed in bounded packets, not thousands
+        // of 50ms synchronous yields that could overflow the 480-item ASR queue.
+        var offset = 0
+        while offset < pcm.count {
+            let end = min(offset + 64_000, pcm.count)
+            onAudio?(pcm.subdata(in: offset..<end))
+            offset = end
+        }
+    }
+
     func stop(completion: @escaping (Int) -> Void) {
-        // Never block the main thread / F8 handling on an external microphone
-        // or an AVAudioEngine teardown. Start and stop use the same queue.
-        Self.lifecycleQueue.async { [self] in
-            stopBlocking(completion: completion)
-        }
+        Self.lifecycleQueue.async { [self] in stopBlocking(completion: completion) }
     }
-
     private func stopBlocking(flushPendingAudio: Bool = true, completion: ((Int) -> Void)? = nil) {
         guard let engine else { completion?(lostBufferCount); return }
         if let configurationObserver {
             NotificationCenter.default.removeObserver(configurationObserver)
             self.configurationObserver = nil
         }
-        engine.stop()
-        engine.inputNode.removeTap(onBus: 0)
-        self.engine = nil
-        // Drain *all* queued conversion work before releasing lifecycleQueue.
-        // The old async cleanup could run after a new startBlocking(), erase
-        // the new converter/callback, and silently stop audio on rapid toggles.
-        // This is a background serial lane; it does not block AppKit/UI.
+        engine.stop(); engine.inputNode.removeTap(onBus: 0); self.engine = nil
         processingQueue.sync { [self] in
             alive = false
-            if flushPendingAudio && !carry.isEmpty {
-                noteAudioDelivered(carry.count)
-                onAudio?(carry)
-            }
+            if flushPendingAudio && !carry.isEmpty { admit(carry) }
             carry.removeAll(keepingCapacity: true)
-            onAudio = nil
             converter = nil
-            completion?(lostBufferCount)
+            if !flushPendingAudio { admission = SpeechAdmissionBuffer(); onAudio = nil }
+        }
+        guard flushPendingAudio else {
+            speechDetector.cancel(); completion?(lostBufferCount); return
+        }
+        // Do not hold lifecycleQueue while a stopped take completes inference.
+        speechDetector.finish { [self] speech in
+            self.processingQueue.async { [self] in
+                let digitalSilence = self.activityEvidence.classification == .nearSilence
+                if let remainder = self.admission.finish(proof: speech, isDigitalSilence: digitalSilence) { self.emit(remainder) }
+                self.onAudio = nil
+                Task { @MainActor [self] in
+                    if let trace = self.speechTrace, trace.isCollecting {
+                        let score = Int((speech.maximumConfidence * 1_000).rounded())
+                        DiagnosticLog.record("speech_classifier capture=\(self.diagnosticID.uuidString) state=\(speech.state.rawValue) windows=\(speech.windows) positives=\(speech.positiveWindows) max_permille=\(score) allowed=\(speech.allowsTranscript)")
+                        trace.finish()
+                    }
+                }
+                completion?(self.lostBufferCount)
+            }
         }
     }
 

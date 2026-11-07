@@ -7,10 +7,12 @@
 
 ## Download
 
-**[KoeBridge v1.1.3 (Build 29) — Universal macOS ZIP](https://github.com/ma-do-ka/KoeBridge/releases/download/v1.1.3/KoeBridge-v1.1.3-macOS-universal-development.zip)**  
-[Release details](https://github.com/ma-do-ka/KoeBridge/releases/tag/v1.1.3) · [SHA-256](https://github.com/ma-do-ka/KoeBridge/releases/download/v1.1.3/SHA256SUMS.txt)
+**[KoeBridge v1.1.3 (Build 30) — Universal macOS ZIP](https://github.com/ma-do-ka/KoeBridge/releases/download/v1.1.3/KoeBridge-v1.1.3-build30-macOS-universal-development.zip)**  
+[Release details](https://github.com/ma-do-ka/KoeBridge/releases/tag/v1.1.3) · [Build 30 SHA-256](https://github.com/ma-do-ka/KoeBridge/releases/download/v1.1.3/SHA256SUMS-build30.txt)
 
 > [!IMPORTANT]
+> **Build 30 replaces Build 29 without changing version 1.1.3.** The old app's update checker may not recognize this as a newer version. Download it manually and confirm **ビルド：30** under **設定 → 情報**.
+>
 > This is an **ad-hoc-signed development build, not Developer ID signed or Apple-notarized**. Quit KoeBridge and back up your existing app before replacing it. macOS may require privacy permissions again. There is no need to disable macOS protections globally.
 
 ## Quick start
@@ -32,8 +34,8 @@ You can begin another recording immediately after stopping the previous one. If 
 | Terminology assistance | Independent options for registered terms and developer/IT terms |
 | Context review | Optional limited punctuation cleanup or additional audio comparison; re-recognition uses extra API time and charges |
 | History and usage | Last ten transcript entries, local usage statistics, copy-to-clipboard recovery |
-| Opt-in diagnostics | Records focus checks, AX error codes, event posting, and read-back outcomes without saving transcript content |
-| Silence safety | Separately checks PCM activity. Clear silence is ignored, while uncertain results are saved for review instead of automatically typed |
+| Opt-in diagnostics | Records focus checks, AX errors, event posting, read-back outcomes, and numeric speech-classifier evidence without recording content |
+| Silence safety | On-device SoundAnalysis speech verification, rather than energy fluctuations alone. Uncertain recognized text is kept for review, not automatically typed |
 
 This is a native Swift app and needs no Electron runtime or always-on Python/web server. Relative speed, CPU use, and memory use have not been benchmarked against competitors.
 
@@ -50,7 +52,11 @@ Open **KoeBridge → 設定…** from the menu bar:
 
 ## When words appear without speaking
 
-Gemini or Apple may occasionally recognize silence or ambient sound as a word. v1.1.3 now checks local PCM signal activity independently of recognized text. Clear silence is ignored and uncertain results are **saved for manual review instead of auto-typed**. This is not an infallible human-voice detector, and quiet speech may require recovery from history. Words such as “GitHub” are not blacklisted. To reduce vocabulary bias, review **Gemini → 文字起こしの調整**. Details: [v1.1.3 release notes](docs/releases/v1.1.3.md).
+Build 29's RMS/modulation thresholds could accept fluctuating environmental noise as speech. **Build 30 replaces that admission decision with Apple's on-device sound classifier.** It holds leading audio in RAM until speech is independently confirmed, preserves a short lead-in before the first speech window, and defers Gemini's activity-start notification until audio is actually submitted. Thinking pauses after admission do not end the recording.
+
+An unconfirmed, failed or timed-out classification cannot authorize live transcript display or automatic typing. Nonzero uncertain audio can still be recognized after stopping, with any resulting text available in local history. This can delay the first preview or require manual recovery of a quiet/short utterance. The classifier is not infallible and does not distinguish the user's intention from a television or another person's voice. Words such as “GitHub” are **not blacklisted**, and vocabulary selections are unchanged.
+
+See the [Build 30 release notes and validation limits](docs/releases/v1.1.3.md). The user's real microphone, room noise, recognition API and target-app workflow are not validated by CI.
 
 ## When text doesn't appear
 
@@ -63,7 +69,9 @@ Diagnostics remain off by default, store up to approximately 384 KiB across two 
 
 ## API cost and privacy
 
-Gemini mode uploads microphone audio to the Google API and may incur usage fees. Apple's on-device mode, where supported, does not require a Gemini API key. Google AI Pro membership alone does not imply free or unlimited Gemini API access; check your actual billing eligibility. KoeBridge does not set an automatic API spending limit.
+Gemini mode uploads microphone audio to the Google API and may incur usage fees. Apple's on-device mode, where supported, does not require a Gemini API key. Speech classification itself runs on the Mac without an additional external API call; Gemini recognition, including review-only recovery after stopping, may still incur normal API charges.
+
+Google AI Pro membership alone does not imply free or unlimited Gemini API access; check your actual billing eligibility. KoeBridge does not set an automatic API spending limit.
 
 Transcript history retains up to ten **plaintext** entries locally; protect your Mac account and backups. Recording audio is not stored in that history file. See [cost estimates](docs/cost-estimate.md) and [security details](SECURITY.md).
 
@@ -94,7 +102,8 @@ See [test coverage and limitations](TEST_REPORT.md). CI cannot establish that ea
 
 ## Recent changes
 
-- [v1.1.3](docs/releases/v1.1.3.md): Opt-in input-failure diagnostics, clear AX-unavailable vs. actual selection/focus changes, restored AX messaging timeout.
+- [v1.1.3 / Build 30](docs/releases/v1.1.3.md): Replaces Build 29's inadequate energy-only gate with native speech classification and deferred leading-audio admission.
+- [v1.1.2](docs/releases/v1.1.2.md): Opt-in input-failure diagnostics, clear AX-unavailable vs. actual selection/focus changes, restored AX messaging timeout.
 - [v1.1.1](docs/releases/v1.1.1.md): Refactoring and recovery/cancellation fixes.
 - [v1.1.0](docs/releases/v1.1.0.md): Continuous dictation, explicit activity start/end, independent assistance switches.
 
