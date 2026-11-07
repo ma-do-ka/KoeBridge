@@ -26,7 +26,7 @@ public struct TranscriptRecord: Codable, Equatable, Identifiable, Sendable {
             case .partiallyDirect: return "直接入力が途中で中断（履歴を確認）"
             case .automaticPasteDisabled: return "自動入力OFFのため保存のみ"
             case .recognitionInterrupted: return "認識失敗（途中結果を保存）"
-            case .reviewRequired: return "追加チェックで差異あり（確認待ち・未入力）"
+            case .reviewRequired: return "認識内容を要確認（未入力）"
             case .interruptedDelivery: return "入力状況を要確認（処理が中断）"
             }
         }
