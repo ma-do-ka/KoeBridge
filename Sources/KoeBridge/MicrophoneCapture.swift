@@ -3,14 +3,12 @@ import Foundation
 import AVFoundation
 import KoeBridgeCore
 
-/// Captures signed 16-bit, 16kHz mono PCM. Audio tap only copies and enqueues.
-/// Engine start/stop use lifecycleQueue, conversion uses processingQueue,
-/// health counters use healthLock, and speech inference has its own bounded lane.
+/// Engine lifecycle, conversion and inference have separate serial lanes.
+/// The real-time tap only copies; health counters use healthLock.
 final class MicrophoneCapture: @unchecked Sendable {
     private static let lifecycleQueue = DispatchQueue(label: "dev.koebridge.microphone-lifecycle", qos: .userInteractive)
     private let processingQueue = DispatchQueue(label: "dev.koebridge.pcm-conversion", qos: .userInitiated)
-    private let output = AVAudioFormat(commonFormat: .pcmFormatFloat32,
-                                        sampleRate: 16_000, channels: 1, interleaved: false)!
+    private let output = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false)!
     private var converter: AVAudioConverter?
     private var engine: AVAudioEngine?
     private var carry = Data()
@@ -21,10 +19,11 @@ final class MicrophoneCapture: @unchecked Sendable {
     private let healthLock = NSLock()
     private var droppedBuffers = 0
     private var conversionErrors = 0
-    private var deliveredPCMBytes = 0
+    private var capturedPCMBytes = 0
     private var peakAmplitude: Float = 0
     private var activityMeter = AudioActivityMeter()
     private var cachedActivity = AudioActivityMeter().evidence
+    private var admission = SpeechAdmissionBuffer() // processingQueue only
     private let speechDetector = NativeSpeechDetector()
     private let diagnosticID = UUID()
     @MainActor private var speechTrace: InputDiagnosticTrace?
@@ -35,7 +34,6 @@ final class MicrophoneCapture: @unchecked Sendable {
         let total: TimeInterval
     }
     private(set) var startTimings: StartTimings?
-
     var sessionPeakAmplitude: Float {
         healthLock.lock(); defer { healthLock.unlock() }
         return peakAmplitude
@@ -46,12 +44,11 @@ final class MicrophoneCapture: @unchecked Sendable {
         healthLock.unlock()
         return energy.withSpeechVerification(speechDetector.evidence)
     }
+    /// Captured duration is independent of the leading-silence admission buffer.
+    /// Provider usage continues to count only bytes actually sent by that provider.
     var totalPCMBytes: Int {
         healthLock.lock(); defer { healthLock.unlock() }
-        return deliveredPCMBytes
-    }
-    private func noteAudioDelivered(_ bytes: Int) {
-        healthLock.lock(); deliveredPCMBytes += bytes; healthLock.unlock()
+        return capturedPCMBytes
     }
     private var configurationObserver: NSObjectProtocol?
     var lostBufferCount: Int {
@@ -88,22 +85,16 @@ final class MicrophoneCapture: @unchecked Sendable {
         let engine = AVAudioEngine()
         let node = engine.inputNode
         let input = node.outputFormat(forBus: 0)
-        guard input.sampleRate > 0,
-              let converter = AVAudioConverter(from: input, to: output) else {
-            speechDetector.cancel()
-            throw CaptureError.noInput
+        guard input.sampleRate > 0, let converter = AVAudioConverter(from: input, to: output) else {
+            speechDetector.cancel(); throw CaptureError.noInput
         }
         processingQueue.sync {
-            self.onAudio = onAudio
-            self.converter = converter
-            self.alive = true
+            self.onAudio = onAudio; self.converter = converter; self.alive = true
         }
         self.engine = engine
         node.installTap(onBus: 0, bufferSize: 1024, format: input) { [weak self] buffer, _ in
             guard let self else { return }
-            guard self.workSlots.wait(timeout: .now()) == .success else {
-                self.noteBufferLoss(); return
-            }
+            guard self.workSlots.wait(timeout: .now()) == .success else { self.noteBufferLoss(); return }
             guard let copy = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: buffer.frameLength) else {
                 self.noteBufferLoss(); self.workSlots.signal(); return
             }
@@ -147,15 +138,12 @@ final class MicrophoneCapture: @unchecked Sendable {
         var conversionError: NSError?
         _ = converter.convert(to: target, error: &conversionError) { _, status in
             if didProvide { status.pointee = .noDataNow; return nil }
-            didProvide = true
-            status.pointee = .haveData
+            didProvide = true; status.pointee = .haveData
             return incoming
         }
         guard conversionError == nil else { noteBufferLoss(conversionError: true); return }
         guard target.frameLength > 0 else { return }
-        guard let floats = target.floatChannelData?.pointee else {
-            noteBufferLoss(conversionError: true); return
-        }
+        guard let floats = target.floatChannelData?.pointee else { noteBufferLoss(conversionError: true); return }
         let n = Int(target.frameLength)
         activityMeter.observe(UnsafeBufferPointer(start: floats, count: n))
         let energy = activityMeter.evidence
@@ -167,7 +155,7 @@ final class MicrophoneCapture: @unchecked Sendable {
                 let finite = floats[i].isFinite ? floats[i] : 0
                 peak = max(peak, abs(finite))
                 let clipped = max(-1.0, min(1.0, finite))
-                floats[i] = clipped // classifier never sees NaN/Inf; energy evidence remembers it
+                floats[i] = clipped
                 let value = Int16((clipped * 32767).rounded()).littleEndian
                 base[i * 2] = UInt8(truncatingIfNeeded: value)
                 base[i * 2 + 1] = UInt8(truncatingIfNeeded: Int(value) >> 8)
@@ -176,58 +164,68 @@ final class MicrophoneCapture: @unchecked Sendable {
         healthLock.lock()
         peakAmplitude = max(peakAmplitude, peak)
         cachedActivity = energy
+        capturedPCMBytes += pcm.count
         healthLock.unlock()
-        // This buffer is independently allocated. Its ownership lasts until the
-        // inference lane is done; never run SoundAnalysis on the real-time tap.
-        speechDetector.append(target)
+        speechDetector.append(target) // target is independently owned, never recycled
         carry.append(pcm)
         while carry.count >= chunkBytes {
             let data = carry.subdata(in: 0..<chunkBytes)
             carry.removeSubrange(0..<chunkBytes)
-            noteAudioDelivered(data.count)
-            onAudio?(data)
+            admit(data)
+        }
+    }
+
+    private func admit(_ pcm: Data) {
+        let wasOverflowed = admission.overflowed
+        if let admitted = admission.append(pcm, proof: speechDetector.evidence) { emit(admitted) }
+        if admission.overflowed && !wasOverflowed { noteBufferLoss(conversionError: true) }
+    }
+    private func emit(_ pcm: Data) {
+        // A long review-only take is replayed in bounded packets, not thousands
+        // of 50ms synchronous yields that could overflow the 480-item ASR queue.
+        var offset = 0
+        while offset < pcm.count {
+            let end = min(offset + 64_000, pcm.count)
+            onAudio?(pcm.subdata(in: offset..<end))
+            offset = end
         }
     }
 
     func stop(completion: @escaping (Int) -> Void) {
         Self.lifecycleQueue.async { [self] in stopBlocking(completion: completion) }
     }
-
     private func stopBlocking(flushPendingAudio: Bool = true, completion: ((Int) -> Void)? = nil) {
         guard let engine else { completion?(lostBufferCount); return }
         if let configurationObserver {
             NotificationCenter.default.removeObserver(configurationObserver)
             self.configurationObserver = nil
         }
-        engine.stop()
-        engine.inputNode.removeTap(onBus: 0)
-        self.engine = nil
+        engine.stop(); engine.inputNode.removeTap(onBus: 0); self.engine = nil
         processingQueue.sync { [self] in
             alive = false
-            if flushPendingAudio && !carry.isEmpty {
-                noteAudioDelivered(carry.count)
-                onAudio?(carry)
-            }
+            if flushPendingAudio && !carry.isEmpty { admit(carry) }
             carry.removeAll(keepingCapacity: true)
-            onAudio = nil
             converter = nil
+            if !flushPendingAudio { admission = SpeechAdmissionBuffer(); onAudio = nil }
         }
         guard flushPendingAudio else {
-            speechDetector.cancel()
-            completion?(lostBufferCount)
-            return
+            speechDetector.cancel(); completion?(lostBufferCount); return
         }
-        // Release lifecycleQueue immediately: finishing inference for take A
-        // must not hold up microphone startup for take B.
+        // Do not hold lifecycleQueue while a stopped take completes inference.
         speechDetector.finish { [self] speech in
-            Task { @MainActor [self] in
-                if let trace = speechTrace, trace.isCollecting {
-                    let score = Int((speech.maximumConfidence * 1_000).rounded())
-                    DiagnosticLog.record("speech_classifier capture=\(diagnosticID.uuidString) state=\(speech.state.rawValue) windows=\(speech.windows) positives=\(speech.positiveWindows) max_permille=\(score) allowed=\(speech.allowsTranscript)")
-                    trace.finish()
+            processingQueue.async { [self] in
+                let digitalSilence = activityEvidence.classification == .nearSilence
+                if let remainder = admission.finish(proof: speech, isDigitalSilence: digitalSilence) { emit(remainder) }
+                onAudio = nil
+                Task { @MainActor [self] in
+                    if let trace = speechTrace, trace.isCollecting {
+                        let score = Int((speech.maximumConfidence * 1_000).rounded())
+                        DiagnosticLog.record("speech_classifier capture=\(diagnosticID.uuidString) state=\(speech.state.rawValue) windows=\(speech.windows) positives=\(speech.positiveWindows) max_permille=\(score) allowed=\(speech.allowsTranscript)")
+                        trace.finish()
+                    }
                 }
+                completion?(lostBufferCount)
             }
-            completion?(lostBufferCount)
         }
     }
 
