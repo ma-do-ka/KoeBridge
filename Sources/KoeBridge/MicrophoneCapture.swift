@@ -10,7 +10,13 @@ final class MicrophoneCapture: @unchecked Sendable {
     private let processingQueue = DispatchQueue(label: "dev.koebridge.pcm-conversion", qos: .userInitiated)
     private let output = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false)!
     private var converter: AVAudioConverter?
-    private var engine: AVAudioEngine?
+    // Capture objects are per attempt; the audio engine is NOT. Both supplied
+    // Build 34 crashes occurred while AVAudioEngine deallocated concurrently
+    // with its AVAudioIOUnit property listener. Keep a single stopped engine
+    // alive across attempts instead of trying to guess a safe deallocation delay.
+    private static let engineLifetime = MicrophoneEngineLifetime { AVAudioEngine() }
+    private var engineLease: MicrophoneEngineLifetime<AVAudioEngine>.Lease? // lifecycleQueue only
+    private var engine: AVAudioEngine? { engineLease?.resource }
     private let selectedInputUID: String
     private var selectedTarget: MicrophoneSelectionTarget? // lifecycleQueue only
     init(selectedInputUID: String = "") { self.selectedInputUID = selectedInputUID }
@@ -213,8 +219,9 @@ final class MicrophoneCapture: @unchecked Sendable {
             devices: snapshot.devices, systemDefaultID: snapshot.defaultID)
         selectedTarget = target
         routeSnapshot = MicrophoneRouteSnapshot.current(inputDeviceID: target.deviceID)
-        let engine = AVAudioEngine()
-        self.engine = engine
+        guard let lease = Self.engineLifetime.acquire() else { throw CaptureError.engineInUse }
+        engineLease = lease
+        let engine = lease.resource
         let node = engine.inputNode
         try MicrophoneDevices.bind(target, to: node)
         // Device binding itself may emit a synchronous configuration change.
@@ -413,7 +420,8 @@ final class MicrophoneCapture: @unchecked Sendable {
             if tapInstalled { engine.inputNode.removeTap(onBus: 0) }
         }
         tapInstalled = false
-        self.engine = nil
+        // Do not drop the process-wide engine owner here. Removing our
+        // NotificationCenter observer does not drain AVFAudio's private queue.
         processingQueue.sync { [self] in
             alive = false
             startupBuffers.removeAll(keepingCapacity: false)
@@ -422,6 +430,14 @@ final class MicrophoneCapture: @unchecked Sendable {
             carry.removeAll(keepingCapacity: true)
             converter = nil
             if !flushPendingAudio { admission = SpeechAdmissionBuffer(); onAudio = nil }
+        }
+        // Old processing work has drained and the tap is gone. Subsequent
+        // classifier completion only uses this capture's buffers, not the engine.
+        // Clear the local lease before returning its token; the lifetime owner
+        // retains the engine and stale stop callbacks cannot release a new lease.
+        if let lease = engineLease {
+            engineLease = nil
+            _ = Self.engineLifetime.release(token: lease.token)
         }
         guard flushPendingAudio else {
             speechDetector.cancel(); stopLatch.finish(losses: lostBufferCount); return
@@ -445,13 +461,14 @@ final class MicrophoneCapture: @unchecked Sendable {
     }
 
     enum CaptureError: Error, LocalizedError {
-        case noInput, alreadyStarted
+        case noInput, alreadyStarted, engineInUse
         case notReady(MicrophoneStartupGate.Failure)
 
         var diagnosticCategory: String {
             switch self {
             case .noInput: return "invalid_input_format"
             case .alreadyStarted: return "already_started"
+            case .engineInUse: return "engine_in_use"
             case .notReady(let reason): return reason.rawValue
             }
         }
@@ -462,6 +479,8 @@ final class MicrophoneCapture: @unchecked Sendable {
                 return "マイクの入力形式が確定しませんでした。接続・入力デバイスを確認してください"
             case .alreadyStarted:
                 return "同じマイクの準備処理が重複しました"
+            case .engineInUse:
+                return "前のマイク処理の終了を待っています"
             case .notReady(.configurationChanged), .notReady(.inputRouteChanged), .notReady(.formatChanged):
                 return "マイクの接続切り替えが安定しませんでした"
             case .notReady(.noBuffers):

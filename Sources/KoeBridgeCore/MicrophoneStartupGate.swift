@@ -225,3 +225,55 @@ public final class MicrophoneStopLatch: @unchecked Sendable {
         for callback in waiting { callback(losses) }
     }
 }
+
+/// Own one audio engine for the lifetime of this owner, independently of a
+/// recording attempt. The macOS caller keeps this owner in a process-wide static.
+/// Releasing a lease NEVER releases the resource: AVFAudio's asynchronous I/O
+/// property listeners may still be handling a route change after engine.stop().
+/// This is bounded (one engine), not a timer-based quarantine or an engine pool.
+/// Engine operations themselves must remain on the microphone lifecycle queue.
+public final class MicrophoneEngineLifetime<Resource: AnyObject>: @unchecked Sendable {
+    public struct Lease {
+        public let token: UUID
+        public let resource: Resource
+        fileprivate init(token: UUID, resource: Resource) {
+            self.token = token
+            self.resource = resource
+        }
+    }
+
+    private let lock = NSLock()
+    private let makeResource: () -> Resource
+    private var resource: Resource?
+    private var activeToken: UUID?
+
+    public init(makeResource: @escaping () -> Resource) {
+        self.makeResource = makeResource
+    }
+
+    /// A caller must stop its engine, remove its tap and drain queued conversion
+    /// work before release. A simultaneous start fails closed instead of stealing
+    /// an engine still owned by another attempt. Creation is lazy and exactly once.
+    public func acquire() -> Lease? {
+        lock.lock(); defer { lock.unlock() }
+        guard activeToken == nil else { return nil }
+        let retained: Resource
+        if let resource { retained = resource }
+        else {
+            retained = makeResource()
+            resource = retained
+        }
+        let token = UUID()
+        activeToken = token
+        return Lease(token: token, resource: retained)
+    }
+
+    /// Tokens prevent a late stop from returning a newer take's lease.
+    /// A successful return is NOT permission to deallocate the resource.
+    @discardableResult public func release(token: UUID) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard activeToken == token else { return false }
+        activeToken = nil
+        return true
+    }
+}

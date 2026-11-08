@@ -470,3 +470,183 @@ final class MicrophoneStopLatchTests: XCTestCase {
         XCTAssertEqual(count, 1)
     }
 }
+
+final class MicrophoneEngineLifetimeTests: XCTestCase {
+    private final class Counters: @unchecked Sendable {
+        private let lock = NSLock()
+        private var made = 0
+        private var destroyed = 0
+        func created() { lock.lock(); made += 1; lock.unlock() }
+        func deallocated() { lock.lock(); destroyed += 1; lock.unlock() }
+        var snapshot: (made: Int, destroyed: Int) {
+            lock.lock(); defer { lock.unlock() }
+            return (made, destroyed)
+        }
+    }
+    private final class Engine {
+        let counters: Counters
+        init(_ counters: Counters) { self.counters = counters; counters.created() }
+        deinit { counters.deallocated() }
+    }
+    private func owner(_ counters: Counters) -> MicrophoneEngineLifetime<Engine> {
+        MicrophoneEngineLifetime { Engine(counters) }
+    }
+
+    func testOwnerDoesNotCreateAnIdleMicrophone() {
+        let counts = Counters()
+        let lifetime = owner(counts)
+        XCTAssertEqual(counts.snapshot.made, 0)
+        withExtendedLifetime(lifetime) {}
+    }
+
+    func testFirstLeaseCreatesOneEngine() throws {
+        let counts = Counters()
+        let lifetime = owner(counts)
+        let lease = try XCTUnwrap(lifetime.acquire())
+        XCTAssertEqual(counts.snapshot.made, 1)
+        XCTAssertTrue(lifetime.release(token: lease.token))
+    }
+
+    func testConcurrentAttemptCannotStealOwnedEngine() throws {
+        let lifetime = owner(Counters())
+        let lease = try XCTUnwrap(lifetime.acquire())
+        XCTAssertNil(lifetime.acquire())
+        XCTAssertTrue(lifetime.release(token: lease.token))
+        XCTAssertNotNil(lifetime.acquire())
+    }
+
+    func testLeaseReturnDoesNotDeallocateStoppedEngine() throws {
+        let counts = Counters()
+        let lifetime = owner(counts)
+        weak var watched: Engine?
+        do {
+            let lease = try XCTUnwrap(lifetime.acquire())
+            watched = lease.resource
+            XCTAssertTrue(lifetime.release(token: lease.token))
+        }
+        XCTAssertNotNil(watched)
+        XCTAssertEqual(counts.snapshot.destroyed, 0)
+        withExtendedLifetime(lifetime) {}
+    }
+
+    func testRetryUsesSameEngineAndDifferentToken() throws {
+        let counts = Counters()
+        let lifetime = owner(counts)
+        let first = try XCTUnwrap(lifetime.acquire())
+        XCTAssertTrue(lifetime.release(token: first.token))
+        let second = try XCTUnwrap(lifetime.acquire())
+        XCTAssertTrue(first.resource === second.resource)
+        XCTAssertNotEqual(first.token, second.token)
+        XCTAssertEqual(counts.snapshot.made, 1)
+    }
+
+    func testStaleStopCannotReleaseNewRecording() throws {
+        let lifetime = owner(Counters())
+        let first = try XCTUnwrap(lifetime.acquire())
+        XCTAssertTrue(lifetime.release(token: first.token))
+        let next = try XCTUnwrap(lifetime.acquire())
+        XCTAssertFalse(lifetime.release(token: first.token))
+        XCTAssertNil(lifetime.acquire())
+        XCTAssertTrue(lifetime.release(token: next.token))
+    }
+
+    func testUnknownTokenCannotReleaseActiveRecording() throws {
+        let lifetime = owner(Counters())
+        let lease = try XCTUnwrap(lifetime.acquire())
+        XCTAssertFalse(lifetime.release(token: UUID()))
+        XCTAssertNil(lifetime.acquire())
+        XCTAssertTrue(lifetime.release(token: lease.token))
+    }
+
+    func testDuplicateLeaseReturnIsIdempotent() throws {
+        let lifetime = owner(Counters())
+        let lease = try XCTUnwrap(lifetime.acquire())
+        XCTAssertTrue(lifetime.release(token: lease.token))
+        XCTAssertFalse(lifetime.release(token: lease.token))
+    }
+
+    func testFailedPreparationRetryDoesNotAccumulateEngines() throws {
+        let counts = Counters()
+        let lifetime = owner(counts)
+        for _ in 0..<4 {
+            let lease = try XCTUnwrap(lifetime.acquire())
+            // A failed capture drops its per-attempt ownership after teardown.
+            XCTAssertTrue(lifetime.release(token: lease.token))
+        }
+        XCTAssertEqual(counts.snapshot.made, 1)
+        XCTAssertEqual(counts.snapshot.destroyed, 0)
+        withExtendedLifetime(lifetime) {}
+    }
+
+    func testManyRecordingsStillRetainOnlyOneEngine() throws {
+        let counts = Counters()
+        let lifetime = owner(counts)
+        for _ in 0..<2_000 {
+            let lease = try XCTUnwrap(lifetime.acquire())
+            XCTAssertTrue(lifetime.release(token: lease.token))
+        }
+        XCTAssertEqual(counts.snapshot.made, 1)
+        XCTAssertEqual(counts.snapshot.destroyed, 0)
+        withExtendedLifetime(lifetime) {}
+    }
+
+    func testDelayedPropertyObserverStillHasLiveEngineAfterCaptureDropsLease() throws {
+        let counts = Counters()
+        let lifetime = owner(counts)
+        var callback: (() -> Bool)?
+        do {
+            let lease = try XCTUnwrap(lifetime.acquire())
+            callback = { [weak engine = lease.resource] in engine != nil }
+            XCTAssertTrue(lifetime.release(token: lease.token))
+        }
+        // A lifetime simulation only, not execution of Apple's AVAudioIOUnit.
+        XCTAssertEqual(callback?(), true)
+        XCTAssertEqual(counts.snapshot.destroyed, 0)
+        withExtendedLifetime(lifetime) {}
+    }
+
+    func testResourceLifetimeEndsOnlyWhenOwnerAndLeasesEnd() throws {
+        let counts = Counters()
+        weak var watched: Engine?
+        do {
+            let lifetime = owner(counts)
+            let lease = try XCTUnwrap(lifetime.acquire())
+            watched = lease.resource
+            XCTAssertTrue(lifetime.release(token: lease.token))
+        }
+        XCTAssertNil(watched)
+        XCTAssertEqual(counts.snapshot.destroyed, 1)
+    }
+
+    func testOneWinnerUnderConcurrentAcquire() {
+        let counts = Counters()
+        let lifetime = owner(counts)
+        // No winner releases until after all attempts, so exactly one can win.
+        final class Results: @unchecked Sendable {
+            let lock = NSLock()
+            var tokens: [UUID] = []
+            func add(_ token: UUID) { lock.lock(); tokens.append(token); lock.unlock() }
+        }
+        let result = Results()
+        DispatchQueue.concurrentPerform(iterations: 1_000) { _ in
+            if let lease = lifetime.acquire() { result.add(lease.token) }
+        }
+        XCTAssertEqual(result.tokens.count, 1)
+        XCTAssertEqual(counts.snapshot.made, 1)
+        XCTAssertEqual(counts.snapshot.destroyed, 0)
+        if let token = result.tokens.first { XCTAssertTrue(lifetime.release(token: token)) }
+    }
+
+    func testConcurrentStaleReleasesCannotUnblockCurrentLease() throws {
+        let lifetime = owner(Counters())
+        let previous = try XCTUnwrap(lifetime.acquire())
+        XCTAssertTrue(lifetime.release(token: previous.token))
+        let active = try XCTUnwrap(lifetime.acquire())
+        let staleToken = previous.token
+        DispatchQueue.concurrentPerform(iterations: 1_000) { _ in
+            XCTAssertFalse(lifetime.release(token: staleToken))
+        }
+        XCTAssertNil(lifetime.acquire())
+        XCTAssertTrue(lifetime.release(token: active.token))
+    }
+}

@@ -47,7 +47,10 @@ enum MicrophoneDevices {
     /// Read-back is mandatory: a successful SetProperty alone is not proof.
     static func bind(_ target: MicrophoneSelectionTarget, to node: AVAudioInputNode) throws {
         guard let unit = node.audioUnit else { throw DeviceError.noAudioUnit }
-        if !target.followsSystem {
+        // A retained engine may still be bound to the previous explicit mic.
+        // Rebind to the resolved system default too when needed, and avoid an
+        // unnecessary device write when the requested device is already bound.
+        if currentID(node) != target.deviceID {
             var id = AudioDeviceID(target.deviceID)
             let status = AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice,
                                               kAudioUnitScope_Global, 0, &id,
