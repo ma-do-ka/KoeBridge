@@ -235,35 +235,84 @@ import KoeBridgeCore
         let (stream, continuation) = AsyncStream<Data>.makeStream(
             of: Data.self, bufferingPolicy: .bufferingOldest(480))
         take.continuation = continuation
-        take.worker = Task { [weak self, weak take] in
-            guard let self, let take else { return }
-            await self.transmit(stream, take: take)
-        }
-        let capture = MicrophoneCapture()
         let integrity = take.audioIntegrity // thread-safe; do not cross actor isolation in audio callback
+        let retryPolicy = MicrophoneStartupRetryPolicy()
+        let preparationBegan = ProcessInfo.processInfo.systemUptime
+        var attempts = 0
         do {
-            try await capture.start(onAudio: { [weak self, weak take] data in
-                let delivery = continuation.yield(data)
-                if case .dropped = delivery {
-                    integrity.markDropped()
-                    Task { @MainActor [weak self, weak take] in
-                        guard let self, let take, !take.finished else { return }
-                        self.resolve(take, text: nil, reason: "音声送信キューから音声が欠落しました")
+            var readyCapture: MicrophoneCapture?
+            while readyCapture == nil {
+                try Task.checkCancellation()
+                guard active === take, phase == .preparing, !take.finished else { throw CancellationError() }
+                let elapsed = ProcessInfo.processInfo.systemUptime - preparationBegan
+                let timeout = retryPolicy.timeoutForNextAttempt(elapsed: elapsed)
+                guard timeout > 0 else { throw MicrophoneCapture.CaptureError.notReady(.noBuffers) }
+                attempts += 1
+                let candidate = MicrophoneCapture()
+                // Own preparation, not just a successfully started microphone.
+                // discard()/releaseResources() can now stop it immediately.
+                take.mic = candidate
+                DiagnosticLog.record("mic_prepare_attempt take=\(take.id.uuidString) attempt=\(attempts)")
+                do {
+                    try await candidate.start(timeout: timeout, onAudio: { [weak self, weak take] data in
+                        let delivery = continuation.yield(data)
+                        if case .dropped = delivery {
+                            integrity.markDropped()
+                            Task { @MainActor [weak self, weak take] in
+                                guard let self, let take, !take.finished else { return }
+                                self.resolve(take, text: nil, reason: "音声送信キューから音声が欠落しました")
+                            }
+                        }
+                    }, onDeviceChanged: { [weak self, weak take, weak candidate] in
+                        Task { @MainActor [weak self, weak take, weak candidate] in
+                            guard let self, let take, let candidate, !take.finished,
+                                  self.active === take, take.mic === candidate else { return }
+                            // Covers the narrow ready-to-UI handoff as well as
+                            // recording; preparing-only events stay inside start().
+                            self.resolve(take, text: nil, reason: "マイク入力が変更または中断されたため録音を終了しました")
+                        }
+                    })
+                    readyCapture = candidate
+                } catch {
+                    await candidate.cancelAndWait()
+                    if take.mic === candidate { take.mic = nil }
+                    guard active === take, phase == .preparing, !take.finished else { throw CancellationError() }
+                    if error is CancellationError { throw error }
+                    let category = (error as? MicrophoneCapture.CaptureError)?.diagnosticCategory ?? "engine_start_failed"
+                    let elapsed = ProcessInfo.processInfo.systemUptime - preparationBegan
+                    if let route = candidate.routeSnapshot {
+                        DiagnosticLog.record("mic_prepare_route take=\(take.id.uuidString) attempt=\(attempts) \(route.diagnosticFields)")
                     }
+                    if let format = candidate.formatSnapshot {
+                        DiagnosticLog.record("mic_prepare_format take=\(take.id.uuidString) attempt=\(attempts) \(format.diagnosticFields)")
+                    }
+                    DiagnosticLog.record("mic_prepare_failed take=\(take.id.uuidString) attempt=\(attempts) category=\(category) code=\((error as NSError).code) elapsed_ms=\(Int(elapsed * 1_000))")
+                    guard let delay = retryPolicy.retryDelay(after: attempts, elapsed: elapsed) else { throw error }
+                    status = "マイクの接続準備を待っています…（\(attempts + 1)/\(retryPolicy.maximumAttempts)）"
+                    try await Task.sleep(for: .seconds(delay))
                 }
-            }, onDeviceChanged: { [weak self, weak take] in
-                Task { @MainActor [weak self, weak take] in
-                    guard let self, let take, !take.finished,
-                          self.active === take, self.phase == .recording else { return }
-                    self.resolve(take, text: nil, reason: "録音中にマイク構成が変わりました")
-                }
-            })
+            }
+            guard let capture = readyCapture else { throw MicrophoneCapture.CaptureError.noInput }
             guard active === take, phase == .preparing, !take.finished else {
-                capture.stop { _ in }
+                await capture.cancelAndWait()
                 continuation.finish()
                 return
             }
-            take.mic = capture
+            // No repeated cloud/local recognizer setup while Bluetooth warms up.
+            // The stream retains the verified pre-roll until this worker starts.
+            take.worker = Task { [weak self, weak take] in
+                guard let self, let take, !take.finished, !Task.isCancelled else { return }
+                await self.transmit(stream, take: take)
+            }
+            if let route = capture.routeSnapshot {
+                DiagnosticLog.record("mic_prepare_route take=\(take.id.uuidString) attempt=\(attempts) \(route.diagnosticFields)")
+            }
+            if let format = capture.formatSnapshot {
+                DiagnosticLog.record("mic_prepare_format take=\(take.id.uuidString) attempt=\(attempts) \(format.diagnosticFields)")
+            }
+            if let timing = capture.startTimings {
+                DiagnosticLog.record("mic_prepare_ready take=\(take.id.uuidString) attempts=\(attempts) first_pcm_ms=\(Int(timing.firstBufferDelay * 1_000)) sample_rate=\(String(format: "%.0f", timing.sampleRate)) channels=\(timing.channels)")
+            }
             take.startedAt = Date()
             lastStartupSeconds = take.startedAt?.timeIntervalSince(take.requestedAt)
             phase = .recording

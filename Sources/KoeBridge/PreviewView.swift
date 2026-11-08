@@ -36,10 +36,10 @@ struct PreviewView: View {
                 Circle()
                     .fill(controller.isRecording ? Color.red.opacity(0.15) : Color.secondary.opacity(0.12))
                     .frame(width: 38, height: 38)
-                if controller.overlayFeedback == .processing || controller.overlayFeedback == .checking {
+                if controller.overlayFeedback == .preparing || controller.overlayFeedback == .processing || controller.overlayFeedback == .checking {
                     ProgressView()
                         .controlSize(.small)
-                        .accessibilityLabel("文字起こしの確定処理中")
+                        .accessibilityLabel(controller.overlayFeedback == .preparing ? "マイクの接続準備中" : "文字起こしの確定処理中")
                 } else {
                     Image(systemName: feedbackSymbol)
                         .font(.system(size: 17, weight: .semibold))
