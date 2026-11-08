@@ -190,3 +190,8 @@ Sources/KoeBridgeCore/NativeSpeechDetector.swift
 Sources/KoeBridgeCore/SpeechAdmissionBuffer.swift
 .github/workflows/release-v1.1.4.yml
 docs/releases/v1.1.4.md
+Sources/KoeBridge/MicrophoneRouteSnapshot.swift
+Sources/KoeBridgeCore/MicrophoneStartupGate.swift
+Tests/KoeBridgeCoreTests/MicrophoneStartupGateTests.swift
+docs/bluetooth-startup-recovery.md
+docs/releases/v1.1.4b.md
