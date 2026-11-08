@@ -15,6 +15,17 @@
 >
 > This is an **ad-hoc-signed development build, not Developer ID signed or Apple-notarized**. Quit KoeBridge and back up your existing app before replacing it. macOS may require privacy permissions again. There is no need to disable macOS protections globally.
 
+### Headsets in use
+
+The following headsets are used for development and day-to-day dictation.
+
+| Manufacturer and model | Connection used |
+| --- | --- |
+| **SENNHEISER ADAPT 130 USB II** | Wired USB connection |
+| **SHOKZ OpenComm2 UC 2025** | Direct Bluetooth connection to the Mac, without a dedicated USB adapter |
+
+This records the hardware in use, not a guarantee of compatibility in every environment. Microphone preparation time and stability during repeated Bluetooth use are still being evaluated.
+
 ## Quick start
 
 1. Select the text field in your notes app, browser, editor, or chat.
