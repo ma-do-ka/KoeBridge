@@ -15,6 +15,14 @@
 >
 > **配布ZIPはアドホック署名の開発版です。** Apple Developer ID署名・公証は未取得です。起動中のKoeBridgeを終了し、現在のアプリを退避してから入れ替えてください。macOSの権限を再度求められる場合があります。OSの保護機能をまとめて無効化する必要はありません。
 
+### 30秒でわかるKoeBridge
+
+[![KoeBridgeの紹介動画を再生する（30秒）](docs/images/koebridge-intro-thumbnail.jpg)](docs/videos/koebridge-intro.mp4?raw=1)
+
+**[▶ 紹介動画を再生する（30秒・音声あり）](docs/videos/koebridge-intro.mp4?raw=1)**
+
+> 動画は実際の画面をもとに編集した**紹介イメージ**です。入力速度・認識精度・入力成功率の実測デモではありません。利用前に上記の開発版の注意事項と、下記の動作環境をご確認ください。
+
 ### 動作環境
 
 | 項目 | 内容 |
