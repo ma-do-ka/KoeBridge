@@ -55,6 +55,7 @@ struct SettingsHelpPage: View {
 
 struct SettingsAboutPage: View {
     @ObservedObject var updater: KoeBridgeUpdateManager
+    @ObservedObject private var nativeUpdater = KoeBridgeInAppUpdater.shared
     let focusRequest: SettingsFocusRequest?
 
     var body: some View {
@@ -110,13 +111,13 @@ struct SettingsAboutPage: View {
                         }
                         Divider()
                         SettingsRow("アップデートを自動的にダウンロードしてインストール",
-                                    description: "開発版アプリは手動でダウンロードできます。公証済みの自動更新パッケージは未提供のため、自動インストールは利用できません。",
+                                    description: "無人でのインストールは行いません。アプリ内更新では、更新画面で確認してからインストールします。",
                                     icon: "square.and.arrow.down") {
                             Toggle("自動ダウンロードとインストール", isOn: .constant(false))
                                 .labelsHidden()
                                 .toggleStyle(.switch)
                                 .disabled(true)
-                                .help("公証済みアプリと安全な更新署名の準備が必要です")
+                                .help("インストールには更新画面での確認が必要です")
                         }
                         Divider()
                         SettingsRow("アップデートチャンネル",
@@ -132,7 +133,7 @@ struct SettingsAboutPage: View {
                             VStack(alignment: .leading, spacing: 5) {
                                 Text("現在：v\(updater.installedLabel)")
                                     .font(.system(size: 14, weight: .semibold))
-                                Text(updater.statusMessage)
+                                Text(nativeUpdater.message.isEmpty ? updater.statusMessage : nativeUpdater.message)
                                     .font(.caption)
                                     .foregroundStyle(updater.state == .failed ? Color.orange : Color.secondary)
                                     .fixedSize(horizontal: false, vertical: true)
@@ -143,33 +144,33 @@ struct SettingsAboutPage: View {
                                     .controlSize(.small)
                             }
                             Button("アップデートを確認…") {
-                                Task { await updater.checkNow() }
+                                if nativeUpdater.configured { nativeUpdater.checkForUpdates() }
+                                else { Task { await updater.checkNow() } }
                             }
                             .disabled(updater.state == .checking)
                         }
                         .padding(.vertical, 12)
                         if updater.state == .available {
-                            HStack(spacing: 10) {
+                            VStack(alignment: .leading, spacing: 8) {
                                 Label("新しい正式版が利用できます", systemImage: "arrow.down.circle.fill")
                                     .foregroundStyle(Color.green)
-                                Spacer()
-                                Button("リリースを見る") { updater.openLatestRelease() }
-                                Button("更新コマンドをコピー") {
-                                    _ = updater.copyUpdateCommand()
+                                HStack(spacing: 10) {
+                                    Button("ダウンロードしてインストール…") { nativeUpdater.checkForUpdates() }
+                                        .disabled(!nativeUpdater.configured || nativeUpdater.blocksRecording)
+                                    Button("リリースを見る") { updater.openLatestRelease() }
+                                    Button("更新コマンドをコピー") { _ = updater.copyUpdateCommand() }
                                 }
+                                Text("更新コマンドはソース版向けです。使用する場合はKoeBridgeを終了してターミナルで実行してください。")
+                                    .foregroundStyle(.secondary)
                             }
                             .font(.caption)
                             .padding(.bottom, 8)
-                            Text("KoeBridgeを終了して、コピーしたコマンドをターミナルで実行してください。ビルド・署名・アプリの再起動を行います。")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        } else {
-                            Text("自動インストールには対応していません。新しい正式版が出た場合、更新方法をここから案内します。")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
                         }
+                        Text(nativeUpdater.explanation)
+                            .font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                         if let checked = updater.lastCheckedAt {
-                            Text("最終確認：\(checked.formatted(date: .abbreviated, time: .shortened))")
+                            Text("GitHubリリースの最終確認：\(checked.formatted(date: .abbreviated, time: .shortened))")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                                 .padding(.top, 8)

@@ -132,6 +132,8 @@ import KoeBridgeCore
 
     var hasKey: Bool { KeychainStore.load() != nil }
     var busy: Bool { active != nil }
+    // Updating must not terminate background recognition or pending delivery.
+    var hasPendingWork: Bool { active != nil || !inFlight.isEmpty || deliveryWorker != nil }
 
     /// Recording STOP frees the shortcut synchronously. Recognition and
     /// paste continue on the take that just ended; the next F8 can start NOW.
@@ -151,6 +153,10 @@ import KoeBridgeCore
 
     private func beginRecording() {
         guard active == nil, phase == .idle else { return }
+        guard !KoeBridgeUpdateManager.shared.blocksRecording else {
+            status = "更新画面を閉じるか、更新の完了後に録音を開始してください"
+            return
+        }
         guard finished.canBegin, inFlight.count < 8 else {
             status = "確定待ちが8件あります。前の認識が終わるまで追加できません（録音内容は履歴へ保存）"
             DiagnosticLog.record("shortcut capacity reached; pending=\(finished.count)")
@@ -225,6 +231,7 @@ import KoeBridgeCore
     private func startPrepared(_ take: DictationTake) async {
         guard active === take, !take.finished else { return }
         let beforePermission = Date()
+        let selectedInputUID = MicrophoneDeviceStore.shared.selectedUID
         guard await microphoneAllowed() else {
             if active === take { resolve(take, text: nil, reason: "マイクへのアクセスが許可されていません") }
             return
@@ -248,7 +255,7 @@ import KoeBridgeCore
                 let timeout = retryPolicy.timeoutForNextAttempt(elapsed: elapsed)
                 guard timeout > 0 else { throw MicrophoneCapture.CaptureError.notReady(.noBuffers) }
                 attempts += 1
-                let candidate = MicrophoneCapture()
+                let candidate = MicrophoneCapture(selectedInputUID: selectedInputUID)
                 // Own preparation, not just a successfully started microphone.
                 // discard()/releaseResources() can now stop it immediately.
                 take.mic = candidate
@@ -278,6 +285,8 @@ import KoeBridgeCore
                     if take.mic === candidate { take.mic = nil }
                     guard active === take, phase == .preparing, !take.finished else { throw CancellationError() }
                     if error is CancellationError { throw error }
+                    // A missing explicit choice must never become another mic.
+                    if error is MicrophoneSelectionError { throw error }
                     let category = (error as? MicrophoneCapture.CaptureError)?.diagnosticCategory ?? "engine_start_failed"
                     let elapsed = ProcessInfo.processInfo.systemUptime - preparationBegan
                     if let route = candidate.routeSnapshot {
@@ -392,6 +401,7 @@ import KoeBridgeCore
             let recognizer = AppleLocalTranscriber()
             take.appleAttempted = true
             take.appleStartedAt = Date()
+            take.local = recognizer
             try await recognizer.start()
             guard !take.finished, !Task.isCancelled else {
                 recognizer.cancel()

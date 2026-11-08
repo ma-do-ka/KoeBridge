@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- No installable update has been published here. The publisher replaces this
+     empty feed with a signed feed only after verifying uploaded release assets. -->
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>KoeBridge signed updates</title>
+    <language>ja</language>
+  </channel>
+</rss>
