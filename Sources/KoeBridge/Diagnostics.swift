@@ -50,6 +50,20 @@ import KoeBridgeCore
         catch { /* A diagnostic failure must never change delivery. */ }
     }
 
+    /// Streaming breadcrumbs use the SAME opt-in/revocation token and bounded
+    /// rotating store as input diagnostics. No separate log or consent setting.
+    static func microphoneTrace(captureID: UUID, explicitSelection: Bool) -> MicrophonePreparationDiagnostics? {
+        inputConsent.setEnabled(isEnabled)
+        guard let token = inputConsent.token else { return nil }
+        let build = Int(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "") ?? 0
+        return MicrophonePreparationDiagnostics { entry in
+            Task { @MainActor in
+                writeInputTrace(["mic_start v=1 capture=\(captureID.uuidString) build=\(build) explicit=\(explicitSelection ? 1 : 0) \(entry.rendered)"],
+                                consent: token)
+            }
+        }
+    }
+
     /// Stopping logging never erases an old file. Deletion is user-initiated.
     static func deleteExistingFiles() throws {
         inputConsent.invalidate()
