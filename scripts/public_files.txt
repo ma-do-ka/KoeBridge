@@ -195,3 +195,16 @@ Sources/KoeBridgeCore/MicrophoneStartupGate.swift
 Tests/KoeBridgeCoreTests/MicrophoneStartupGateTests.swift
 docs/bluetooth-startup-recovery.md
 docs/releases/v1.1.4b.md
+Resources/Sparkle-LICENSE.txt
+Sources/KoeBridge/MicrophoneDevices.swift
+Sources/KoeBridge/MicrophoneSettingsRow.swift
+Sources/KoeBridge/KoeBridgeInAppUpdater.swift
+Sources/KoeBridgeCore/MicrophoneSelectionPolicy.swift
+Sources/KoeBridgeCore/SignedUpdateConfiguration.swift
+Tests/KoeBridgeCoreTests/MicrophoneSelectionPolicyTests.swift
+scripts/embed_sparkle.sh
+scripts/prepare_signed_updates.sh
+scripts/validate_update_feed.py
+scripts/test_validate_update_feed.py
+docs/updates/appcast.xml
+docs/updates-and-microphones.md

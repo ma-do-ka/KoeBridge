@@ -86,6 +86,8 @@ cp "$ICON_SOURCE" "$APP/Contents/Resources/KoeBridge_AppIcon.icns"
 # Keep the copyright and permission notice with binary-only downloads too.
 # Add resources before signing so the bundled notice is covered by the seal.
 cp LICENSE "$APP/Contents/Resources/LICENSE"
+cp Resources/Sparkle-LICENSE.txt "$APP/Contents/Resources/Sparkle-LICENSE.txt"
+bash scripts/embed_sparkle.sh "$APP" "$SIGN_IDENTITY"
 if [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$APP/Contents/Info.plist")" != "KoeBridge_AppIcon.icns" ]; then
   echo "ERROR: Info.plist CFBundleIconFile does not reference the bundled icon" >&2
   exit 1

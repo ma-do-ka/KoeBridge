@@ -22,9 +22,18 @@ test -x "$APP_PATH/Contents/MacOS/KoeBridge"
 plutil -lint "$APP_PATH/Contents/Info.plist"
 cmp scripts/Info.plist "$APP_PATH/Contents/Info.plist"
 cmp LICENSE "$APP_PATH/Contents/Resources/LICENSE"
+cmp Resources/Sparkle-LICENSE.txt "$APP_PATH/Contents/Resources/Sparkle-LICENSE.txt"
+FW="$APP_PATH/Contents/Frameworks/Sparkle.framework"
+test -x "$FW/Versions/B/Autoupdate"
+test -d "$FW/Versions/B/Updater.app"
+test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$FW/Resources/Info.plist")" = '2.10.1'
+codesign --verify --deep --strict "$FW"
+lipo "$FW/Sparkle" -verify_arch arm64 x86_64
+otool -L "$APP_PATH/Contents/MacOS/KoeBridge" | grep -F '@rpath/Sparkle.framework/' >/dev/null
+otool -l "$APP_PATH/Contents/MacOS/KoeBridge" | grep -F '@executable_path/../Frameworks' >/dev/null
 test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$APP_PATH/Contents/Info.plist")" = KoeBridge_AppIcon.icns
 ICON_SHA256="$(shasum -a 256 "$APP_PATH/Contents/Resources/KoeBridge_AppIcon.icns" | awk '{print $1}')"
 test "$ICON_SHA256" = 10186e4ecd7927a0d25c2fc26eed8c83db1f21def23f267f4695ca45f04f10f5
 codesign --verify --deep --strict "$APP_PATH"
 lipo "$APP_PATH/Contents/MacOS/KoeBridge" -verify_arch arm64 x86_64
-echo "Verified: $ARCHIVE_NAME (metadata, license, icon, signature, architectures, SHA-256)"
+echo "Verified: $ARCHIVE_NAME (metadata, licenses, Sparkle, icon, signature, architectures, SHA-256)"

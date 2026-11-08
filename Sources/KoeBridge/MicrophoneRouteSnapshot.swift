@@ -11,8 +11,8 @@ struct MicrophoneRouteSnapshot: Sendable {
     let inputTransport: String
     let outputTransport: String
 
-    static func current() -> Self {
-        let input = defaultInputDeviceID()
+    static func current(inputDeviceID: UInt32? = nil) -> Self {
+        let input = inputDeviceID ?? defaultInputDeviceID()
         let output = deviceID(selector: kAudioHardwarePropertyDefaultOutputDevice)
         return Self(inputDeviceID: input, outputDeviceID: output,
                     inputTransport: transport(of: input), outputTransport: transport(of: output))

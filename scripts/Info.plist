@@ -11,10 +11,22 @@
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>1.1.4</string>
   <key>KoeBridgeReleaseLabel</key><string>1.1.4b</string>
-  <key>CFBundleVersion</key><string>32</string>
+  <key>CFBundleVersion</key><string>33</string>
   <key>LSMinimumSystemVersion</key><string>15.0</string>
   <key>LSUIElement</key><true/>
   <key>NSMicrophoneUsageDescription</key><string>音声入力のためにマイク音声を取得します。GeminiモードではGoogle APIへ送信します。</string>
   <key>NSSpeechRecognitionUsageDescription</key><string>ローカルモードでAppleのオンデバイス音声認識を利用します。</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>SUFeedURL</key><string>https://raw.githubusercontent.com/ma-do-ka/KoeBridge/main/docs/updates/appcast.xml</string>
+  <!-- Publisher bootstraps this PUBLIC key with prepare_signed_updates.sh configure.
+       Never insert or commit a private key. Empty means refuse in-app installation. -->
+  <key>SUPublicEDKey</key><string></string>
+  <key>SUEnableAutomaticChecks</key><false/>
+  <key>SUAutomaticallyUpdate</key><false/>
+  <key>SUAllowsAutomaticUpdates</key><false/>
+  <key>SUEnableSystemProfiling</key><false/>
+  <key>SUShowReleaseNotes</key><false/>
+  <key>SUVerifyUpdateBeforeExtraction</key><true/>
+  <key>SURequireSignedFeed</key><true/>
+  <key>SUSignedFeedFailureExpirationInterval</key><integer>0</integer>
 </dict></plist>

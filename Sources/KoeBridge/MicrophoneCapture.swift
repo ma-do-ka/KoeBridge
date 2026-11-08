@@ -11,6 +11,9 @@ final class MicrophoneCapture: @unchecked Sendable {
     private let output = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false)!
     private var converter: AVAudioConverter?
     private var engine: AVAudioEngine?
+    private let selectedInputUID: String
+    private var selectedTarget: MicrophoneSelectionTarget? // lifecycleQueue only
+    init(selectedInputUID: String = "") { self.selectedInputUID = selectedInputUID }
     private let startupGate = MicrophoneStartupGate()
     private let stopLatch = MicrophoneStopLatch()
     private var tapInstalled = false // lifecycleQueue only
@@ -149,8 +152,8 @@ final class MicrophoneCapture: @unchecked Sendable {
             Self.lifecycleQueue.async { [self] in
                 let running = engine?.isRunning == true
                 if lostBufferCount > 0 { startupGate.invalidate(.bufferDropped) }
-                if let expected = routeSnapshot?.inputDeviceID,
-                   let current = MicrophoneRouteSnapshot.defaultInputDeviceID(), current != expected {
+                if let engine, let selectedTarget,
+                   !MicrophoneDevices.isStillSelected(selectedTarget, node: engine.inputNode) {
                     startupGate.invalidate(.inputRouteChanged)
                 }
                 var decision = startupGate.decision(
@@ -205,15 +208,22 @@ final class MicrophoneCapture: @unchecked Sendable {
         guard !startupGate.isStopped, !teardownStarted else { throw CancellationError() }
         guard engine == nil else { throw CaptureError.alreadyStarted }
         let beganAt = Date()
-        routeSnapshot = MicrophoneRouteSnapshot.current()
+        let snapshot = MicrophoneDevices.snapshot()
+        let target = try MicrophoneSelectionPolicy.resolve(uid: selectedInputUID,
+            devices: snapshot.devices, systemDefaultID: snapshot.defaultID)
+        selectedTarget = target
+        routeSnapshot = MicrophoneRouteSnapshot.current(inputDeviceID: target.deviceID)
         let engine = AVAudioEngine()
         self.engine = engine
+        let node = engine.inputNode
+        try MicrophoneDevices.bind(target, to: node)
+        // Device binding itself may emit a synchronous configuration change.
+        // Subscribe after that deliberate change, before tap/engine startup.
         configurationObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil
         ) { [weak self] _ in
             self?.invalidateStartup(.configurationChanged, onDeviceChanged: onDeviceChanged)
         }
-        let node = engine.inputNode
         let hardware = node.inputFormat(forBus: 0)
         let input = node.outputFormat(forBus: 0)
         formatSnapshot = InputFormatSnapshot(hardwareRate: hardware.sampleRate,
@@ -265,8 +275,8 @@ final class MicrophoneCapture: @unchecked Sendable {
                     engineRunning: self.engine?.isRunning == true) {
                     self.invalidateStartup(failure, onDeviceChanged: onDeviceChanged)
                 } else if self.startupGate.didCommit,
-                          let expected = self.routeSnapshot?.inputDeviceID,
-                          let current = MicrophoneRouteSnapshot.defaultInputDeviceID(), current != expected {
+                          let engine = self.engine, let target = self.selectedTarget,
+                          !MicrophoneDevices.isStillSelected(target, node: engine.inputNode) {
                     self.invalidateStartup(.inputRouteChanged, onDeviceChanged: onDeviceChanged)
                 }
             }

@@ -19,6 +19,8 @@ struct SettingsVoicePage: View {
                         }
                         .id("engine")
                         Divider()
+                        MicrophoneSettingsRow(controller: controller)
+                        Divider()
                         SettingsRow("録音の開始・終了キー",
                                     description: "選んだキーで録音を開始し、もう一度押すと終了します。ほかのアプリのキー操作と競合する場合があります。") {
                             SettingsShortcutPicker("録音の開始・終了キー", selection: Binding(
