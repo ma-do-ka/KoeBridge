@@ -208,3 +208,7 @@ scripts/validate_update_feed.py
 scripts/test_validate_update_feed.py
 docs/updates/appcast.xml
 docs/updates-and-microphones.md
+Sources/KoeBridgeCore/SourceUpdateCommand.swift
+Tests/KoeBridgeCoreTests/SourceUpdateCommandTests.swift
+scripts/test_source_update_command.py
+docs/releases/v1.1.5.md

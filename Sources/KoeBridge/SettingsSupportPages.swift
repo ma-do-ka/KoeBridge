@@ -103,7 +103,7 @@ struct SettingsAboutPage: View {
                 GroupBox {
                     VStack(alignment: .leading, spacing: 0) {
                         SettingsRow("アップデートを自動的に確認",
-                                    description: "1日1回を上限に、GitHubの正式リリースを確認します。",
+                                    description: "1日1回を上限に、正式リリースと公式ソースの更新を確認します。自動インストールはしません。",
                                     icon: "arrow.clockwise") {
                             Toggle("自動更新確認", isOn: $updater.automaticChecksEnabled)
                                 .labelsHidden()
@@ -121,7 +121,7 @@ struct SettingsAboutPage: View {
                         }
                         Divider()
                         SettingsRow("アップデートチャンネル",
-                                    description: "現在は正式版（Stable）のみが対象です。",
+                                    description: "正式リリースと、手動ビルド用の公式mainソースを分けて案内します。",
                                     icon: "checkmark.seal") {
                             Text(updater.channelName)
                                 .font(.system(size: 14, weight: .medium))
@@ -144,13 +144,15 @@ struct SettingsAboutPage: View {
                                     .controlSize(.small)
                             }
                             Button("アップデートを確認…") {
-                                if nativeUpdater.configured { nativeUpdater.checkForUpdates() }
-                                else { Task { await updater.checkNow() } }
+                                Task {
+                                    await updater.checkNow()
+                                    if nativeUpdater.configured { nativeUpdater.checkForUpdates() }
+                                }
                             }
-                            .disabled(updater.state == .checking)
+                            .disabled(updater.state == .checking || nativeUpdater.blocksRecording)
                         }
                         .padding(.vertical, 12)
-                        if updater.state == .available {
+                        if updater.hasNewStableRelease {
                             VStack(alignment: .leading, spacing: 8) {
                                 Label("新しい正式版が利用できます", systemImage: "arrow.down.circle.fill")
                                     .foregroundStyle(Color.green)
@@ -158,10 +160,7 @@ struct SettingsAboutPage: View {
                                     Button("ダウンロードしてインストール…") { nativeUpdater.checkForUpdates() }
                                         .disabled(!nativeUpdater.configured || nativeUpdater.blocksRecording)
                                     Button("リリースを見る") { updater.openLatestRelease() }
-                                    Button("更新コマンドをコピー") { _ = updater.copyUpdateCommand() }
                                 }
-                                Text("更新コマンドはソース版向けです。使用する場合はKoeBridgeを終了してターミナルで実行してください。")
-                                    .foregroundStyle(.secondary)
                             }
                             .font(.caption)
                             .padding(.bottom, 8)
@@ -169,6 +168,21 @@ struct SettingsAboutPage: View {
                         Text(nativeUpdater.explanation)
                             .font(.caption).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
+                        Divider().padding(.vertical, 12)
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("ソース更新（手動ビルド）").font(.headline)
+                            Text(updater.sourceStatusMessage)
+                                .font(.caption).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Button(updater.copiedCommand ? "コピーしました" : "更新コマンドをコピー") {
+                                _ = updater.copyUpdateCommand()
+                            }
+                            .disabled(!updater.canCopyUpdateCommand || nativeUpdater.blocksRecording)
+                            Text("KoeBridgeを終了し、ターミナルで実行してください。Swiftと署名環境が必要です。ユーザーフォルダのKoeBridgeでテスト・ビルドし、dist/KoeBridge.appを起動します。別の場所にあるアプリは置き換えません。未保存の変更がある場合は停止します。")
+                                .font(.caption).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         if let checked = updater.lastCheckedAt {
                             Text("GitHubリリースの最終確認：\(checked.formatted(date: .abbreviated, time: .shortened))")
                                 .font(.caption2)
