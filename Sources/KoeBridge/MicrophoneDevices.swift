@@ -45,19 +45,28 @@ enum MicrophoneDevices {
 
     /// Do this before reading the hardware format or installing a tap.
     /// Read-back is mandatory: a successful SetProperty alone is not proof.
-    static func bind(_ target: MicrophoneSelectionTarget, to node: AVAudioInputNode) throws {
+    static func bind(_ target: MicrophoneSelectionTarget, to node: AVAudioInputNode,
+                     diagnostics: MicrophonePreparationDiagnostics? = nil) throws {
         guard let unit = node.audioUnit else { throw DeviceError.noAudioUnit }
         // A retained engine may still be bound to the previous explicit mic.
         // Rebind to the resolved system default too when needed, and avoid an
         // unnecessary device write when the requested device is already bound.
-        if currentID(node) != target.deviceID {
+        diagnostics?.begin(.deviceBefore)
+        let before = currentID(node)
+        diagnostics?.end(.deviceBefore, code: before == nil ? 0 : 1, matched: before == target.deviceID)
+        if before != target.deviceID {
             var id = AudioDeviceID(target.deviceID)
+            diagnostics?.begin(.deviceSet)
             let status = AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice,
                                               kAudioUnitScope_Global, 0, &id,
                                               UInt32(MemoryLayout<AudioDeviceID>.size))
+            diagnostics?.end(.deviceSet, code: Int(status))
             guard status == noErr else { throw DeviceError.selectionFailed(status) }
         }
-        guard currentID(node) == target.deviceID else { throw DeviceError.selectionNotApplied }
+        diagnostics?.begin(.deviceAfter)
+        let after = currentID(node)
+        diagnostics?.end(.deviceAfter, code: after == nil ? 0 : 1, matched: after == target.deviceID)
+        guard after == target.deviceID else { throw DeviceError.selectionNotApplied }
     }
 
     static func isStillSelected(_ target: MicrophoneSelectionTarget, node: AVAudioInputNode) -> Bool {
