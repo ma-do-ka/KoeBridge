@@ -214,3 +214,5 @@ scripts/test_source_update_command.py
 docs/releases/v1.1.5.md
 Sources/KoeBridgeCore/MicrophonePreparationDiagnostics.swift
 Tests/KoeBridgeCoreTests/MicrophonePreparationDiagnosticsTests.swift
+Sources/KoeBridgeCore/MicrophoneTapFormatPlan.swift
+Tests/KoeBridgeCoreTests/MicrophoneTapFormatPlanTests.swift

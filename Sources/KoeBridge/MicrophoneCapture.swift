@@ -63,8 +63,12 @@ final class MicrophoneCapture: @unchecked Sendable {
         let hardwareChannels: UInt32
         let nodeRate: Double
         let nodeChannels: UInt32
+        var tapRate: Double = 0
+        var tapChannels: UInt32 = 0
+        var appliedRate: Double = 0
+        var appliedChannels: UInt32 = 0
         var diagnosticFields: String {
-            "hardware_rate=\(hardwareRate) hardware_channels=\(hardwareChannels) node_rate=\(nodeRate) node_channels=\(nodeChannels)"
+            "hardware_rate=\(hardwareRate) hardware_channels=\(hardwareChannels) node_rate=\(nodeRate) node_channels=\(nodeChannels) tap_rate=\(tapRate) tap_channels=\(tapChannels) applied_rate=\(appliedRate) applied_channels=\(appliedChannels)"
         }
     }
     private(set) var formatSnapshot: InputFormatSnapshot?
@@ -275,26 +279,48 @@ final class MicrophoneCapture: @unchecked Sendable {
         }
         startupDiagnostics?.begin(.formats)
         let hardware = node.inputFormat(forBus: 0)
-        let input = node.outputFormat(forBus: 0)
+        let previousClientFormat = node.outputFormat(forBus: 0)
+        formatSnapshot = InputFormatSnapshot(hardwareRate: hardware.sampleRate,
+                                            hardwareChannels: hardware.channelCount,
+                                            nodeRate: previousClientFormat.sampleRate,
+                                            nodeChannels: previousClientFormat.channelCount)
+        // A retained engine keeps the OLD client format after a device change.
+        // Build 36 reproduced hardware 16 kHz/mono versus client 44.1 kHz/stereo.
+        // A nil tap format leaves that mismatch intact; retries cannot repair it.
+        guard let plan = MicrophoneTapFormatPlan(hardwareSampleRate: hardware.sampleRate,
+                                                hardwareChannels: hardware.channelCount),
+              let input = AVAudioFormat(commonFormat: .pcmFormatFloat32,
+                                        sampleRate: plan.sampleRate, channels: plan.channelCount,
+                                        interleaved: false) else { throw CaptureError.noInput }
         startupDiagnostics?.format(sampleRate: input.sampleRate, channels: input.channelCount)
         startupDiagnostics?.end(.formats)
         startupDiagnostics?.begin(.converter)
-        formatSnapshot = InputFormatSnapshot(hardwareRate: hardware.sampleRate,
-                                            hardwareChannels: hardware.channelCount,
-                                            nodeRate: input.sampleRate, nodeChannels: input.channelCount)
-        guard hardware.sampleRate.isFinite, hardware.sampleRate > 0, hardware.channelCount > 0,
-              input.sampleRate.isFinite, input.sampleRate > 0, input.channelCount > 0,
-              let converter = AVAudioConverter(from: input, to: output) else {
+        guard let converter = AVAudioConverter(from: input, to: output) else {
             throw CaptureError.noInput
         }
+        formatSnapshot?.tapRate = input.sampleRate
+        formatSnapshot?.tapChannels = input.channelCount
         startupDiagnostics?.end(.converter)
         guard !startupGate.isStopped else { throw CancellationError() }
         processingQueue.sync {
             self.onAudio = onAudio; self.converter = converter; self.alive = true
         }
-        // Do not force a stale pre-Bluetooth-transition format onto the tap.
+        // This engine is exclusively leased and owns a tap-only input graph.
+        // A non-nil format is valid only on an unconnected output bus. Refuse
+        // an unexpected graph rather than modifying another connection.
+        guard !engine.isRunning,
+              engine.outputConnectionPoints(for: node, outputBus: 0).isEmpty else {
+            throw CaptureError.notReady(.formatChanged)
+        }
+        let beforeTap = node.inputFormat(forBus: 0)
+        guard plan.matches(sampleRate: beforeTap.sampleRate, channels: beforeTap.channelCount) else {
+            throw CaptureError.notReady(.formatChanged)
+        }
+        guard !startupGate.isStopped else { throw CancellationError() }
+        // Explicitly reconfigure the input node output to CURRENT hardware.
+        // The tap and AVAudioConverter must use this SAME format.
         startupDiagnostics?.begin(.tapInstall)
-        node.installTap(onBus: 0, bufferSize: 1024, format: nil) { [weak self] buffer, _ in
+        node.installTap(onBus: 0, bufferSize: 1024, format: input) { [weak self] buffer, _ in
             guard let self, buffer.frameLength > 0, self.startupGate.acceptsBuffers else { return }
             // Timestamp arrival, not eventual conversion. Queued old buffers
             // must not make a stalled microphone appear live/ready.
@@ -320,9 +346,12 @@ final class MicrophoneCapture: @unchecked Sendable {
         tapInstalled = true
         startupDiagnostics?.end(.tapInstall)
         do {
+            try verifyTapFormat(node, plan: plan)
             startupDiagnostics?.begin(.enginePrepare)
             engine.prepare()
             startupDiagnostics?.end(.enginePrepare)
+            try verifyTapFormat(node, plan: plan)
+            guard !startupGate.isStopped else { throw CancellationError() }
             let startAt = Date()
             startupDiagnostics?.begin(.engineStart)
             try engine.start()
@@ -350,8 +379,23 @@ final class MicrophoneCapture: @unchecked Sendable {
                                        total: completedAt.timeIntervalSince(beganAt),
                                        sampleRate: input.sampleRate, channels: input.channelCount)
         } catch {
+            startupDiagnostics?.note(.startFailed, code: (error as NSError).code)
             stopBlocking(flushPendingAudio: false)
             throw error
+        }
+    }
+
+    /// Read back both scopes; never promote a successful API call alone to a
+    /// valid stream. This does not change the system device or hardware rate.
+    private func verifyTapFormat(_ node: AVAudioInputNode,
+                                 plan: MicrophoneTapFormatPlan) throws {
+        let hardware = node.inputFormat(forBus: 0)
+        let applied = node.outputFormat(forBus: 0)
+        formatSnapshot?.appliedRate = applied.sampleRate
+        formatSnapshot?.appliedChannels = applied.channelCount
+        guard plan.matches(sampleRate: hardware.sampleRate, channels: hardware.channelCount),
+              plan.matches(sampleRate: applied.sampleRate, channels: applied.channelCount) else {
+            throw CaptureError.notReady(.formatChanged)
         }
     }
 
