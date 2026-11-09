@@ -106,12 +106,12 @@ enum DeveloperDiagnostics {
     }
 
     static func recordDelivery(takeID: UUID, delivery: String, detail: String,
-                               transportText: String?) {
+                               transportText: String?, observedDelta: String? = nil) {
         guard let token else { return }
         Task {
             await DeveloperDiagnosticsStore.shared.recordDelivery(
                 takeID: takeID, delivery: delivery, detail: detail,
-                transportText: transportText, token: token
+                transportText: transportText, observedDelta: observedDelta, token: token
             )
         }
     }
@@ -263,12 +263,14 @@ actor DeveloperDiagnosticsStore {
     }
 
     func recordDelivery(takeID: UUID, delivery: String, detail: String,
-                        transportText: String?, token: DeveloperDiagnosticsToken) {
+                        transportText: String?, observedDelta: String?,
+                        token: DeveloperDiagnosticsToken) {
         guard DeveloperDiagnostics.allows(token) else { return }
         do {
             let directory = try sessionDirectory(takeID)
             let transport = transportText.map(DeveloperDiagnosticsPolicy.cappedText)
             let detailCapped = DeveloperDiagnosticsPolicy.cappedText(detail)
+            let observed = observedDelta.map { DeveloperDiagnosticsPolicy.cappedText($0) }
             let object: [String: Any] = [
                 "take_id": takeID.uuidString.lowercased(),
                 "at": ISO8601DateFormatter().string(from: Date()),
@@ -276,7 +278,9 @@ actor DeveloperDiagnosticsStore {
                 "detail": detailCapped.text,
                 "detail_truncated": detailCapped.truncated,
                 "transport_text": transport?.text as Any? ?? NSNull(),
-                "transport_text_truncated": transport?.truncated ?? false
+                "transport_text_truncated": transport?.truncated ?? false,
+                "observed_change": observed?.text as Any? ?? NSNull(),
+                "observed_change_truncated": observed?.truncated ?? false
             ]
             try writeJSONObject(object, to: directory.appendingPathComponent("delivery.json"),
                                 maximumBytes: 96 * 1024)
