@@ -76,7 +76,8 @@ import KoeBridgeCore
         sourceStatusMessage = "公式mainのコミットと版番号を確認中…"
         var releaseChecked = false
         do {
-            let data = try await readOfficial(URL(string: "https://api.github.com/repos/ma-do-ka/KoeBridge/releases/latest")!)
+            let data = try await readOfficial(try officialURL(
+                "https://api.github.com/repos/ma-do-ka/KoeBridge/releases/latest"))
             let release = try KoeBridgeUpdatePolicy.decodeLatest(data)
             guard let installed = KoeBridgeReleaseVersion(installedLabel) else {
                 throw UpdateCheckError.unknownInstalledVersion
@@ -96,9 +97,10 @@ import KoeBridgeCore
             statusMessage = "正式リリースの確認に失敗しました：\(error.localizedDescription)"
         }
         do {
-            let head = try SourceUpdateTarget.decodeHead(await readOfficial(
-                URL(string: "https://api.github.com/repos/ma-do-ka/KoeBridge/branches/main")!))
-            let infoURL = URL(string: "https://raw.githubusercontent.com/ma-do-ka/KoeBridge/\(head)/scripts/Info.plist")!
+            let head = try SourceUpdateTarget.decodeHead(await readOfficial(try officialURL(
+                "https://api.github.com/repos/ma-do-ka/KoeBridge/branches/main")))
+            let infoURL = try officialURL(
+                "https://raw.githubusercontent.com/ma-do-ka/KoeBridge/\(head)/scripts/Info.plist")
             let candidate = try SourceUpdateTarget.decodeInfoPlist(await readOfficial(infoURL), commit: head)
             guard candidate.canBuild(over: installedLabel, build: installedBuild) else {
                 throw UpdateCheckError.sourceDowngrade
@@ -115,6 +117,11 @@ import KoeBridgeCore
         } else {
             state = releaseChecked ? .upToDate : .failed
         }
+    }
+
+    private func officialURL(_ raw: String) throws -> URL {
+        guard let url = URL(string: raw) else { throw UpdateCheckError.invalidResponse }
+        return url
     }
 
     private func readOfficial(_ url: URL) async throws -> Data {
