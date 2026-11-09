@@ -112,6 +112,7 @@ struct SettingsAboutPage: View {
                             Toggle("自動更新確認", isOn: $updater.automaticChecksEnabled)
                                 .labelsHidden()
                                 .toggleStyle(.switch)
+                                .disabled(developerDiagnostics.isDeleting)
                         }
                         Divider()
                         SettingsRow("アップデートを自動的にダウンロードしてインストール",
@@ -235,6 +236,7 @@ struct SettingsAboutPage: View {
                                 Button("診断データを削除", role: .destructive) {
                                     confirmDeleteDeveloperDiagnostics = true
                                 }
+                                .disabled(developerDiagnostics.isDeleting)
                             }
                             if !developerDiagnostics.statusMessage.isEmpty {
                                 Text(developerDiagnostics.statusMessage)
