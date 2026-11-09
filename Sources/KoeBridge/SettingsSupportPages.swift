@@ -56,6 +56,10 @@ struct SettingsHelpPage: View {
 struct SettingsAboutPage: View {
     @ObservedObject var updater: KoeBridgeUpdateManager
     @ObservedObject private var nativeUpdater = KoeBridgeInAppUpdater.shared
+    @ObservedObject private var developerDiagnostics = DeveloperDiagnosticsController.shared
+    @State private var developerExpanded = false
+    @State private var confirmEnableDeveloperDiagnostics = false
+    @State private var confirmDeleteDeveloperDiagnostics = false
     let focusRequest: SettingsFocusRequest?
 
     var body: some View {
@@ -195,11 +199,73 @@ struct SettingsAboutPage: View {
                     Label("アップデート", systemImage: "arrow.triangle.2.circlepath")
                 }
                 .id("updates")
+
+                GroupBox {
+                    DisclosureGroup("開発用診断を表示", isExpanded: $developerExpanded) {
+                        VStack(alignment: .leading, spacing: 12) {
+                            SettingsRow(
+                                "詳細診断データを保存",
+                                description: "開発・実機検証専用です。ONの間だけ、詳細な処理ログ、認識に渡した音声の先頭最大20秒、認識文字列と入力用文字列をこのMac内に保存します。自動送信はしません。",
+                                icon: "stethoscope"
+                            ) {
+                                Toggle("開発用診断", isOn: Binding(
+                                    get: { developerDiagnostics.enabled },
+                                    set: { enabled in
+                                        if enabled {
+                                            confirmEnableDeveloperDiagnostics = true
+                                        } else {
+                                            developerDiagnostics.disableAndDelete()
+                                        }
+                                    }
+                                ))
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+                            }
+                            Divider()
+                            Text("保存先：~/Library/Application Support/KoeBridge/DeveloperDiagnostics")
+                                .font(.system(.caption, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                            Text("音声：16 kHz / mono の認識入力から先頭最大20秒を AAC 24 kbps で保存。最大30録音・全体8 MiB・1録音512 KiB。上限を超える古い録音から削除します。")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            HStack(spacing: 10) {
+                                Button("Finderで開く") { developerDiagnostics.revealInFinder() }
+                                Button("診断データを削除", role: .destructive) {
+                                    confirmDeleteDeveloperDiagnostics = true
+                                }
+                            }
+                            if !developerDiagnostics.statusMessage.isEmpty {
+                                Text(developerDiagnostics.statusMessage)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                        .padding(.top, 10)
+                    }
+                    .padding(8)
+                } label: {
+                    Label("開発者向け", systemImage: "hammer")
+                }
             }
             .padding(18)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .onAppear { updater.checkIfDue() }
+        .alert("開発用診断を有効にしますか？", isPresented: $confirmEnableDeveloperDiagnostics) {
+            Button("有効にする") { developerDiagnostics.enable() }
+            Button("キャンセル", role: .cancel) {}
+        } message: {
+            Text("このモードでは、認識に渡した音声の短いサンプルと認識文字列・入力用文字列をMac内へ保存します。APIキーは保存せず、外部へ自動送信しません。OFFにすると開発用診断データを削除します。")
+        }
+        .alert("開発用診断データを削除しますか？", isPresented: $confirmDeleteDeveloperDiagnostics) {
+            Button("削除", role: .destructive) { developerDiagnostics.deleteData() }
+            Button("キャンセル", role: .cancel) {}
+        } message: {
+            Text("DeveloperDiagnostics内の詳細ログ・音声・文字列だけを削除します。通常の履歴、KoeBridge.log、利用統計、設定は削除しません。")
+        }
     }
 }
 #endif
