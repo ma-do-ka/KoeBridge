@@ -66,3 +66,28 @@ public enum MicrophoneSelectionPolicy {
         return !target.followsSystem || systemDefaultID == target.deviceID
     }
 }
+
+public struct MicrophoneRouteStabilityGate: Sendable {
+    public let requiredConsecutiveMismatches: Int
+    public private(set) var consecutiveMismatches = 0
+
+    public init(requiredConsecutiveMismatches: Int = 3) {
+        precondition(requiredConsecutiveMismatches > 0)
+        self.requiredConsecutiveMismatches = requiredConsecutiveMismatches
+    }
+
+    /// During preparation only. A single transient CoreAudio read failure may
+    /// delay readiness, but can never authorize capture. The caller fails the
+    /// attempt only after repeated mismatches. A confirmed match resets state.
+    @discardableResult
+    public mutating func observe(matches: Bool) -> Bool {
+        if matches {
+            consecutiveMismatches = 0
+            return false
+        }
+        if consecutiveMismatches < Int.max { consecutiveMismatches += 1 }
+        return consecutiveMismatches >= requiredConsecutiveMismatches
+    }
+
+    public var hasPendingMismatch: Bool { consecutiveMismatches > 0 }
+}
