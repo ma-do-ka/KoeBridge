@@ -60,7 +60,7 @@ actor DeveloperDiagnosticsStore {
             payload["take_id"] = takeID.uuidString.lowercased()
             try append(line: Self.jsonLine(payload),
                        to: directory.appendingPathComponent("timeline.jsonl"),
-                       maximumBytes: 128 * 1024, resetWhenFull: false)
+                       maximumBytes: DeveloperDiagnosticsPolicy.maximumTimelineBytes, resetWhenFull: false)
             try trimRetention()
         } catch {
             // Diagnostics are best-effort and isolated from user input.
@@ -112,7 +112,7 @@ actor DeveloperDiagnosticsStore {
                 "audio_truncated": audioTruncated
             ]
             try writeJSONObject(object, to: directory.appendingPathComponent("recognition.json"),
-                                maximumBytes: 192 * 1024)
+                                maximumBytes: DeveloperDiagnosticsPolicy.maximumRecognitionBytes)
 
             if !pcm16LE.isEmpty {
                 let temporaryDirectory = Self.rootURL.appendingPathComponent(".tmp", isDirectory: true)
@@ -133,7 +133,7 @@ actor DeveloperDiagnosticsStore {
                 if fm.fileExists(atPath: destination.path) { try fm.removeItem(at: destination) }
                 let attributes = try fm.attributesOfItem(atPath: temporary.path)
                 let size = (attributes[.size] as? NSNumber)?.intValue ?? 0
-                guard size > 0, size <= 192 * 1024 else {
+                guard size > 0, size <= DeveloperDiagnosticsPolicy.maximumEncodedAudioBytes else {
                     recordEvent(takeID: takeID, stage: "audio_skipped",
                                 fields: ["reason": "encoded_size_out_of_bounds", "bytes": "\(size)"],
                                 token: token)
@@ -174,7 +174,7 @@ actor DeveloperDiagnosticsStore {
                 "observed_change_truncated": observed?.truncated ?? false
             ]
             try writeJSONObject(object, to: directory.appendingPathComponent("delivery.json"),
-                                maximumBytes: 96 * 1024)
+                                maximumBytes: DeveloperDiagnosticsPolicy.maximumDeliveryBytes)
             try enforceSessionLimit(directory)
             try trimRetention()
         } catch {
@@ -246,13 +246,17 @@ actor DeveloperDiagnosticsStore {
     }
 
     private func enforceSessionLimit(_ directory: URL) throws {
-        guard directorySize(directory) <= DeveloperDiagnosticsPolicy.maximumSessionBytes else {
-            // Audio is the only optional large artifact. Keep text/timelines if
-            // an unexpected encoder/container overhead exceeds the session cap.
-            let audio = directory.appendingPathComponent("audio.m4a")
-            if fm.fileExists(atPath: audio.path) { try fm.removeItem(at: audio) }
-            return
+        guard directorySize(directory) > DeveloperDiagnosticsPolicy.maximumSessionBytes else { return }
+        // Preserve the comparison summary first. Remove the largest optional
+        // evidence in a deterministic order if unexpected overhead/corruption
+        // exceeds the advertised per-session cap.
+        for name in ["audio.m4a", "input-trace.log", "timeline.jsonl"] {
+            let url = directory.appendingPathComponent(name)
+            if fm.fileExists(atPath: url.path) { try? fm.removeItem(at: url) }
+            if directorySize(directory) <= DeveloperDiagnosticsPolicy.maximumSessionBytes { return }
         }
+        // Never retain a session larger than the hard cap.
+        try fm.removeItem(at: directory)
     }
 
     private func trimRetention() throws {
