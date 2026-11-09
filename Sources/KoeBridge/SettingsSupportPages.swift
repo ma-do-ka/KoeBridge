@@ -226,7 +226,7 @@ struct SettingsAboutPage: View {
                                 .font(.system(.caption, design: .monospaced))
                                 .foregroundStyle(.secondary)
                                 .textSelection(.enabled)
-                            Text("音声：16 kHz / mono の認識入力から先頭最大20秒を AAC 24 kbps で保存。最大30録音・全体8 MiB・1録音512 KiB。上限を超える古い録音から削除します。")
+                            Text("音声：16 kHz / mono の認識入力から先頭最大20秒を AAC 24 kbps指定で保存。最大30録音・全体8 MiB・1録音512 KiB。上限を超える古い録音から削除します。")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
