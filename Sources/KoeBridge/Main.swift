@@ -139,6 +139,9 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
     private let recentHistoryMenu = NSMenu(title: "認識履歴（直近10件）")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // A prior crash must not leave contentful developer diagnostics behind
+        // after the user has already turned the mode off.
+        DeveloperDiagnostics.purgeStaleDataIfDisabled()
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "KoeBridge")
         let menu = NSMenu()
