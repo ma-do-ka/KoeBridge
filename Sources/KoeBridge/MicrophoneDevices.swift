@@ -25,8 +25,9 @@ enum MicrophoneDevices {
             return Snapshot(devices: [], defaultID: nil)
         }
         var ids = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
-        let result = ids.withUnsafeMutableBytes {
-            AudioObjectGetPropertyData(system, &address, 0, nil, &size, $0.baseAddress!)
+        let result: OSStatus = ids.withUnsafeMutableBytes { raw in
+            guard let baseAddress = raw.baseAddress else { return OSStatus(-1) }
+            return AudioObjectGetPropertyData(system, &address, 0, nil, &size, baseAddress)
         }
         guard result == noErr else { return Snapshot(devices: [], defaultID: nil) }
         let devices = ids.prefix(Int(size) / MemoryLayout<AudioObjectID>.size).compactMap { id -> MicrophoneDeviceOption? in
