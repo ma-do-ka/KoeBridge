@@ -208,8 +208,10 @@ Sources/KoeBridge/MicrophoneDevices.swift
 Sources/KoeBridge/MicrophoneSettingsRow.swift
 Sources/KoeBridge/KoeBridgeInAppUpdater.swift
 Sources/KoeBridgeCore/MicrophoneSelectionPolicy.swift
+Sources/KoeBridgeCore/MicrophoneBindingPolicy.swift
 Sources/KoeBridgeCore/SignedUpdateConfiguration.swift
 Tests/KoeBridgeCoreTests/MicrophoneSelectionPolicyTests.swift
+Tests/KoeBridgeCoreTests/MicrophoneBindingPolicyTests.swift
 scripts/embed_sparkle.sh
 scripts/prepare_signed_updates.sh
 scripts/validate_update_feed.py
