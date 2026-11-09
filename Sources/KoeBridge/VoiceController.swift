@@ -815,19 +815,21 @@ import KoeBridgeCore
             while true {
                 let ready = self.finished.drain()
                 guard !ready.isEmpty else { return }
+                var usageEngines: [EngineUsageSample] = []
+                var usageTokens: [GeminiTokenSample] = []
                 for (id, result) in ready {
-                    guard let take = self.inFlight[id] else {
-                        self.usageStore.append(engineEvents: result.usageEngines,
-                                               tokenEvents: result.usageTokens)
-                        continue
-                    }
+                    usageEngines.append(contentsOf: result.usageEngines)
+                    usageTokens.append(contentsOf: result.usageTokens)
+                    guard let take = self.inFlight[id] else { continue }
                     // Retain the whole ready prefix in inFlight while awaiting
                     // receipts, so rebasing reaches finished and recording takes.
                     await self.deliver(result, take: take)
-                    self.usageStore.append(engineEvents: result.usageEngines,
-                                           tokenEvents: result.usageTokens)
                     self.inFlight.removeValue(forKey: id)
                 }
+                // Telemetry is persisted once after every input in this ready
+                // prefix has had its chance to post. It never blocks a later
+                // take in the same batch.
+                self.usageStore.append(engineEvents: usageEngines, tokenEvents: usageTokens)
             }
         }
     }
