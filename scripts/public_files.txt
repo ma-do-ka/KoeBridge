@@ -30,6 +30,7 @@ Sources/KoeBridge/TextInsertion.swift
 Sources/KoeBridge/VoiceController.swift
 Sources/KoeBridge/Windows.swift
 Sources/KoeBridgeCore/AudioDurationPolicy.swift
+Sources/KoeBridgeCore/AudioConversionCapacity.swift
 Sources/KoeBridgeCore/AudioIntegrityState.swift
 Sources/KoeBridgeCore/DiagnosticFileStore.swift
 Sources/KoeBridgeCore/DiagnosticLogPolicy.swift
@@ -77,6 +78,7 @@ Sources/KoeBridgeSelfTest/StressTests.swift
 Sources/KoeBridgeSelfTest/TranscriptionStyleSelfTests.swift
 TEST_REPORT.md
 Tests/KoeBridgeCoreTests/AudioDurationTests.swift
+Tests/KoeBridgeCoreTests/AudioConversionCapacityTests.swift
 Tests/KoeBridgeCoreTests/DiagnosticLogPolicyTests.swift
 Tests/KoeBridgeCoreTests/DeveloperDiagnosticsPolicyTests.swift
 Tests/KoeBridgeCoreTests/DirectInputObservationTests.swift
