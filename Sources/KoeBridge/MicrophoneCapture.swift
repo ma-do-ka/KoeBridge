@@ -18,8 +18,12 @@ final class MicrophoneCapture: @unchecked Sendable {
     private var engineLease: MicrophoneEngineLifetime<AVAudioEngine>.Lease? // lifecycleQueue only
     private var engine: AVAudioEngine? { engineLease?.resource }
     private let selectedInputUID: String
+    private let diagnosticTakeID: UUID?
     private var selectedTarget: MicrophoneSelectionTarget? // lifecycleQueue only
-    init(selectedInputUID: String = "") { self.selectedInputUID = selectedInputUID }
+    init(selectedInputUID: String = "", diagnosticTakeID: UUID? = nil) {
+        self.selectedInputUID = selectedInputUID
+        self.diagnosticTakeID = diagnosticTakeID
+    }
     private let startupGate = MicrophoneStartupGate()
     private let stopLatch = MicrophoneStopLatch()
     private var tapInstalled = false // lifecycleQueue only
@@ -113,6 +117,7 @@ final class MicrophoneCapture: @unchecked Sendable {
         let beganAt = ProcessInfo.processInfo.systemUptime
         let deadline = beganAt + max(0, timeout)
         startupDiagnostics = DiagnosticLog.microphoneTrace(captureID: diagnosticID,
+                                                           takeID: diagnosticTakeID,
                                                            explicitSelection: !selectedInputUID.isEmpty)
         startupDiagnostics?.begin(.lifecycle)
         // This task runs independently of a blocked native audio call. It only
