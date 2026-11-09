@@ -82,10 +82,10 @@ enum DeveloperDiagnostics {
 
     static func writeInputTrace(takeID: UUID, lines: [String],
                                 token: DeveloperDiagnosticsToken?) {
-        guard allows(token) else { return }
+        guard let token, allows(token) else { return }
         Task {
             await DeveloperDiagnosticsStore.shared.writeInputTrace(
-                takeID: takeID, lines: lines, token: token!
+                takeID: takeID, lines: lines, token: token
             )
         }
     }
