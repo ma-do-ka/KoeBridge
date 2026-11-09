@@ -137,6 +137,10 @@ actor DeveloperDiagnosticsStore {
     func prepare(token: DeveloperDiagnosticsToken) throws {
         guard DeveloperDiagnostics.allows(token) else { return }
         try ensureRoot()
+        let temporary = Self.rootURL.appendingPathComponent(".tmp", isDirectory: true)
+        if fm.fileExists(atPath: temporary.path) {
+            try? fm.removeItem(at: temporary)
+        }
         try trimRetention()
     }
 
@@ -412,8 +416,13 @@ actor DeveloperDiagnosticsStore {
         guard !pcm16LE.isEmpty, pcm16LE.count.isMultiple(of: 2) else {
             throw CocoaError(.fileWriteUnknown)
         }
-        let temporary = FileManager.default.temporaryDirectory
-            .appendingPathComponent("koebridge-dev-\(UUID().uuidString).m4a")
+        let temporaryDirectory = Self.rootURL.appendingPathComponent(".tmp", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: temporaryDirectory, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: NSNumber(value: 0o700)]
+        )
+        let temporary = temporaryDirectory
+            .appendingPathComponent("audio-\(UUID().uuidString).m4a")
         guard let inputFormat = AVAudioFormat(commonFormat: .pcmFormatInt16,
                                               sampleRate: 16_000, channels: 1,
                                               interleaved: true) else {
