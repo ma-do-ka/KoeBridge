@@ -2,26 +2,45 @@
 import Foundation
 import KoeBridgeCore
 
-/// One recording's opt-in evidence. Capturing evidence does no disk I/O and
-/// never accepts transcript text, AX descriptions, window titles, or URLs.
-/// The owner flushes only after input and receipt reconciliation have ended.
+/// One recording's bounded evidence. Ordinary diagnostics and developer
+/// diagnostics use independent consent tokens and independent retention limits.
 @MainActor final class InputDiagnosticTrace {
     let takeID: UUID
-    private let consent: InputDiagnosticConsent.Token
+    private let standardConsent: InputDiagnosticConsent.Token?
+    private let developerConsent: DeveloperDiagnosticsToken?
     private let beganAt = ProcessInfo.processInfo.systemUptime
-    private var buffer: InputDiagnosticBuffer
+    private var standardBuffer: InputDiagnosticBuffer?
+    private var developerBuffer: InputDiagnosticBuffer?
     private var finished = false
 
-    init(takeID: UUID, consent: InputDiagnosticConsent.Token) {
+    init(takeID: UUID, standardConsent: InputDiagnosticConsent.Token?,
+         developerConsent: DeveloperDiagnosticsToken?) {
         self.takeID = takeID
-        self.consent = consent
-        buffer = InputDiagnosticBuffer(takeID: takeID)
+        self.standardConsent = standardConsent
+        self.developerConsent = developerConsent
+        if standardConsent != nil {
+            standardBuffer = InputDiagnosticBuffer(takeID: takeID)
+        }
+        if developerConsent != nil {
+            developerBuffer = InputDiagnosticBuffer(
+                takeID: takeID,
+                maximumEvents: DeveloperDiagnosticsPolicy.developerInputTraceEvents,
+                preservedInitialEvents: DeveloperDiagnosticsPolicy.developerInputTraceInitialEvents
+            )
+        }
     }
 
     var isCollecting: Bool {
         guard !finished else { return false }
-        guard DiagnosticLog.permitsInputTrace(consent) else {
-            buffer.discard()
+        if standardBuffer != nil, !DiagnosticLog.permitsInputTrace(standardConsent) {
+            standardBuffer?.discard()
+            standardBuffer = nil
+        }
+        if developerBuffer != nil, !DeveloperDiagnostics.allows(developerConsent) {
+            developerBuffer?.discard()
+            developerBuffer = nil
+        }
+        if standardBuffer == nil && developerBuffer == nil {
             finished = true
             return false
         }
@@ -35,15 +54,29 @@ import KoeBridgeCore
         let uptime = ProcessInfo.processInfo.systemUptime
         evidence[.uptimeMS] = .integer(uptime.isFinite
             ? Int(min(Double(Int.max / 2), max(0, uptime * 1_000))) : 0)
-        buffer.append(InputDiagnosticEvent(kind: kind, stage: stage, fields: evidence),
-                      elapsedMS: Self.milliseconds(since: beganAt))
+        let event = InputDiagnosticEvent(kind: kind, stage: stage, fields: evidence)
+        let elapsed = Self.milliseconds(since: beganAt)
+        standardBuffer?.append(event, elapsedMS: elapsed)
+        developerBuffer?.append(event, elapsedMS: elapsed)
     }
 
     func finish() {
         guard !finished else { return }
         finished = true
-        defer { buffer.discard() }
-        DiagnosticLog.writeInputTrace(buffer.renderedLines(), consent: consent)
+
+        if let standardBuffer, DiagnosticLog.permitsInputTrace(standardConsent) {
+            DiagnosticLog.writeInputTrace(standardBuffer.renderedLines(), consent: standardConsent!)
+        }
+        if let developerBuffer, DeveloperDiagnostics.allows(developerConsent) {
+            DeveloperDiagnostics.writeInputTrace(
+                takeID: takeID, lines: developerBuffer.renderedLines(),
+                token: developerConsent
+            )
+        }
+        standardBuffer?.discard()
+        developerBuffer?.discard()
+        standardBuffer = nil
+        developerBuffer = nil
     }
 
     static func milliseconds(since start: TimeInterval) -> Int {
