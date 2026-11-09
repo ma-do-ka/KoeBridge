@@ -27,6 +27,7 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
     var mic: MicrophoneCapture?
     var continuation: AsyncStream<Data>.Continuation?
     var worker: Task<Void, Never>?
+    var preparationTask: Task<Void, Never>?
     var permissionTask: Task<Void, Never>?
     var recordingTimeout: Task<Void, Never>?
     var finalizationTimeout: Task<Void, Never>?
@@ -113,6 +114,8 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
         permissionTask?.cancel()
         recordingTimeout?.cancel()
         finalizationTimeout?.cancel()
+        preparationTask?.cancel()
+        preparationTask = nil
         worker?.cancel()
         reviewSession?.cancel()
         // A capture may still be preparing; late callbacks are gated by
