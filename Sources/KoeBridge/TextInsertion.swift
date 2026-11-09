@@ -272,10 +272,11 @@ import KoeBridgeCore
             .sentChunks: .integer(sent), .eventsPosted: .flag(sent > 0), .outcome: .token(.unconfirmed)
         ])
         guard let before,
-              let expected = InsertionReceiptPolicy.expectedAfter(before: before, inserted: safeText),
-              !InsertionReceiptPolicy.sameText(before.text, expected.text) else {
+              let verification = InsertionReceiptPolicy.verificationPlan(before: before, inserted: safeText),
+              !InsertionReceiptPolicy.sameText(before.text, verification.expected.text) else {
             return report(.inserted, "posted_without_observable_edit")
         }
+        let expected = verification.expected
 
         // A short finite polling budget replaces fire-and-forget diagnostics.
         // AX timeouts also shrink with the remaining budget. Do not skip this
@@ -287,7 +288,7 @@ import KoeBridgeCore
             .timeoutMS: .integer(600), .expectedStart: .integer(expected.selection.location),
             .expectedLength: .integer(expected.selection.length), .valueUTF16: .integer(expected.text.utf16.count)
         ])
-        for _ in 0..<10 {
+        while ProcessInfo.processInfo.systemUptime < deadline {
             guard !Task.isCancelled, shouldContinue() else {
                 return report(.inserted, "delivery_cancelled_after_post")
             }
@@ -332,8 +333,9 @@ import KoeBridgeCore
                 diagnostics?.record(.receipt, stage: .receipt, [.polls: .integer(polls), .reason: .reason(observation.rawValue)])
             }
             guard let after = observed else { continue }
-            guard let proof = InsertionReceiptPolicy.verify(before: before, inserted: safeText,
-                                                            after: after, sameTarget: true) else { continue }
+            guard let proof = InsertionReceiptPolicy.verify(
+                verification, after: after, sameTarget: true
+            ) else { continue }
             // Focus may move while AX is answering. Recheck before accepting
             // the receipt, without imposing the already-replaced old caret.
             let finalFocus = target.focusCheck(requireOriginalSelection: false, timeout: timeout,
