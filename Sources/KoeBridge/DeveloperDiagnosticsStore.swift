@@ -116,12 +116,7 @@ actor DeveloperDiagnosticsStore {
 
             if !pcm16LE.isEmpty {
                 let temporaryDirectory = Self.rootURL.appendingPathComponent(".tmp", isDirectory: true)
-                try fm.createDirectory(
-                    at: temporaryDirectory, withIntermediateDirectories: true,
-                    attributes: [.posixPermissions: NSNumber(value: 0o700)]
-                )
-                try fm.setAttributes([.posixPermissions: NSNumber(value: 0o700)],
-                                     ofItemAtPath: temporaryDirectory.path)
+                try ensurePrivateDirectory(temporaryDirectory)
                 let temporary = temporaryDirectory
                     .appendingPathComponent("audio-\(UUID().uuidString).m4a")
                 try await Task.detached(priority: .utility) {
@@ -130,6 +125,7 @@ actor DeveloperDiagnosticsStore {
                 defer { try? FileManager.default.removeItem(at: temporary) }
                 guard DeveloperDiagnostics.allows(token) else { return }
                 let destination = directory.appendingPathComponent("audio.m4a")
+                try validateRegularFileIfPresent(destination)
                 if fm.fileExists(atPath: destination.path) { try fm.removeItem(at: destination) }
                 let attributes = try fm.attributesOfItem(atPath: temporary.path)
                 let size = (attributes[.size] as? NSNumber)?.intValue ?? 0
