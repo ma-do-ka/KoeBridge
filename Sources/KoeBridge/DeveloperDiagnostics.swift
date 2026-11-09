@@ -76,9 +76,19 @@ enum DeveloperDiagnostics {
         return current == candidate
     }
 
-    static func purgeStaleDataIfDisabled() {
-        guard !isEnabled else { return }
-        Task { try? await DeveloperDiagnosticsStore.shared.deleteAllIfStillDisabled() }
+    static func reconcileStorageOnLaunch() {
+        if let token {
+            Task {
+                do {
+                    try await DeveloperDiagnosticsStore.shared.prepare(token: token)
+                } catch {
+                    disablePreference()
+                    try? await DeveloperDiagnosticsStore.shared.deleteAllIfStillDisabled()
+                }
+            }
+        } else {
+            Task { try? await DeveloperDiagnosticsStore.shared.deleteAllIfStillDisabled() }
+        }
     }
 
     static func appendGlobal(_ event: String) {
