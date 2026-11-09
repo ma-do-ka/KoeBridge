@@ -11,28 +11,38 @@ struct DeveloperDiagnosticsToken: Equatable, Sendable {
 enum DeveloperDiagnostics {
     static let preferenceKey = "developerDiagnosticsEnabled"
     private static let epochKey = "developerDiagnosticsEpoch"
-    private static let tokenLock = NSLock()
+
+    private final class State: @unchecked Sendable {
+        let lock = NSLock()
+        var enabled: Bool
+        var epoch: String
+
+        init() {
+            let defaults = UserDefaults.standard
+            enabled = defaults.bool(forKey: DeveloperDiagnostics.preferenceKey)
+            epoch = defaults.string(forKey: DeveloperDiagnostics.epochKey) ?? UUID().uuidString
+        }
+    }
+    private static let state = State()
 
     static var isEnabled: Bool {
-        UserDefaults.standard.bool(forKey: preferenceKey)
+        state.lock.lock(); defer { state.lock.unlock() }
+        return state.enabled
     }
 
     static var token: DeveloperDiagnosticsToken? {
-        tokenLock.lock(); defer { tokenLock.unlock() }
-        let defaults = UserDefaults.standard
-        guard defaults.bool(forKey: preferenceKey) else { return nil }
-        var epoch = defaults.string(forKey: epochKey)
-        if epoch == nil {
-            epoch = UUID().uuidString
-            defaults.set(epoch, forKey: epochKey)
-        }
-        return epoch.map(DeveloperDiagnosticsToken.init(epoch:))
+        state.lock.lock(); defer { state.lock.unlock() }
+        guard state.enabled else { return nil }
+        return DeveloperDiagnosticsToken(epoch: state.epoch)
     }
 
     @discardableResult
     static func enablePreference() -> DeveloperDiagnosticsToken {
-        tokenLock.lock(); defer { tokenLock.unlock() }
         let epoch = UUID().uuidString
+        state.lock.lock()
+        state.enabled = true
+        state.epoch = epoch
+        state.lock.unlock()
         let defaults = UserDefaults.standard
         defaults.set(epoch, forKey: epochKey)
         defaults.set(true, forKey: preferenceKey)
@@ -40,19 +50,24 @@ enum DeveloperDiagnostics {
     }
 
     static func disablePreference() {
-        tokenLock.lock(); defer { tokenLock.unlock() }
+        let epoch = UUID().uuidString
+        state.lock.lock()
+        state.enabled = false
+        state.epoch = epoch
+        state.lock.unlock()
         let defaults = UserDefaults.standard
         defaults.set(false, forKey: preferenceKey)
-        defaults.set(UUID().uuidString, forKey: epochKey)
+        defaults.set(epoch, forKey: epochKey)
     }
 
     @discardableResult
     static func rotateEpochKeepingPreference() -> DeveloperDiagnosticsToken? {
-        tokenLock.lock(); defer { tokenLock.unlock() }
-        let defaults = UserDefaults.standard
-        guard defaults.bool(forKey: preferenceKey) else { return nil }
         let epoch = UUID().uuidString
-        defaults.set(epoch, forKey: epochKey)
+        state.lock.lock()
+        guard state.enabled else { state.lock.unlock(); return nil }
+        state.epoch = epoch
+        state.lock.unlock()
+        UserDefaults.standard.set(epoch, forKey: epochKey)
         return DeveloperDiagnosticsToken(epoch: epoch)
     }
 
