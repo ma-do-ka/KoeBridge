@@ -521,11 +521,27 @@ final class MicrophoneCapture: @unchecked Sendable {
 
     private func admit(_ pcm: Data) {
         let wasOverflowed = admission.overflowed
+        let wasOpened = admission.opened
         guard let speechDetector else {
             noteBufferLoss(conversionError: true)
             return
         }
-        if let admitted = admission.append(pcm, proof: speechDetector.evidence) { emit(admitted) }
+        let proof = speechDetector.evidence
+        if let admitted = admission.append(pcm, proof: proof) {
+            if !wasOpened && admission.opened {
+                DeveloperDiagnostics.recordEvent(
+                    takeID: diagnosticTakeID ?? diagnosticID,
+                    stage: "speech_gate_opened",
+                    fields: [
+                        "windows": "\(proof.windows)",
+                        "positive_windows": "\(proof.positiveWindows)",
+                        "max_confidence_permille": "\(Int((proof.maximumConfidence * 1_000).rounded()))",
+                        "released_pcm_bytes": "\(admitted.count)"
+                    ]
+                )
+            }
+            emit(admitted)
+        }
         if admission.overflowed && !wasOverflowed { noteBufferLoss(conversionError: true) }
     }
     private func emit(_ pcm: Data) {
