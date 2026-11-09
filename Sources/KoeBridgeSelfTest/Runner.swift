@@ -260,6 +260,11 @@ struct KoeBridgeSelfTest {
         await run("SettingsNavigationSelfTests.repeatedSearchAndUpdateRequestsStillScroll", { try SettingsNavigationSelfTests().repeatedSearchAndUpdateRequestsStillScroll() })
         await run("SettingsNavigationSelfTests.pageChangesDoNotReplayAStaleSearch", { try SettingsNavigationSelfTests().pageChangesDoNotReplayAStaleSearch() })
         await run("TranscriptReviewSelfTests.mixedLiteralBoundariesKeepStableUnicodeOffsets", { TranscriptReviewSelfTests().mixedLiteralBoundariesKeepStableUnicodeOffsets() })
+        await run("UsageSummaryTests.zeroFillsThroughToday", { UsageSummaryTests().zeroFillsThroughToday() })
+        await run("UsageSummaryTests.bucketsAtCalendarDayBoundaries", { UsageSummaryTests().bucketsAtCalendarDayBoundaries() })
+        await run("UsageSummaryTests.excludesAudioRechecks", { UsageSummaryTests().excludesAudioRechecks() })
+        await run("UsageSummaryTests.splitsEnginesAndCountsEveryOutcome", { UsageSummaryTests().splitsEnginesAndCountsEveryOutcome() })
+        await run("UsageSummaryTests.estimatesBlendedCost", { UsageSummaryTests().estimatesBlendedCost() })
         print("KoeBridge portable self-test: \(testCount) cases, \(TestRecorder.checked) assertions, \(TestRecorder.failures) failures")
         if TestRecorder.failures > 0 { exit(1) }
     }
