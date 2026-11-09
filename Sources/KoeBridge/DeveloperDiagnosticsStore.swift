@@ -191,31 +191,50 @@ actor DeveloperDiagnosticsStore {
     }
 
     private func ensureRoot() throws {
-        let root = Self.rootURL
-        try fm.createDirectory(at: root, withIntermediateDirectories: true,
-                               attributes: [.posixPermissions: NSNumber(value: 0o700)])
+        try ensurePrivateDirectory(Self.rootURL)
+    }
+
+    private func ensurePrivateDirectory(_ url: URL) throws {
+        if (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true {
+            throw StoreError.unsafePath
+        }
+        if fm.fileExists(atPath: url.path) {
+            let attributes = try fm.attributesOfItem(atPath: url.path)
+            guard attributes[.type] as? FileAttributeType == .typeDirectory else {
+                throw StoreError.unsafePath
+            }
+        } else {
+            try fm.createDirectory(at: url, withIntermediateDirectories: true,
+                                   attributes: [.posixPermissions: NSNumber(value: 0o700)])
+        }
         try fm.setAttributes([.posixPermissions: NSNumber(value: 0o700)],
-                             ofItemAtPath: root.path)
+                             ofItemAtPath: url.path)
+    }
+
+    private func validateRegularFileIfPresent(_ url: URL) throws {
+        if (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true {
+            throw StoreError.unsafePath
+        }
+        guard fm.fileExists(atPath: url.path) else { return }
+        let attributes = try fm.attributesOfItem(atPath: url.path)
+        guard attributes[.type] as? FileAttributeType == .typeRegular else {
+            throw StoreError.unsafePath
+        }
     }
 
     private func sessionDirectory(_ takeID: UUID) throws -> URL {
         try ensureRoot()
         let sessions = Self.rootURL.appendingPathComponent("sessions", isDirectory: true)
-        try fm.createDirectory(at: sessions, withIntermediateDirectories: true,
-                               attributes: [.posixPermissions: NSNumber(value: 0o700)])
-        try fm.setAttributes([.posixPermissions: NSNumber(value: 0o700)],
-                             ofItemAtPath: sessions.path)
+        try ensurePrivateDirectory(sessions)
         let directory = sessions.appendingPathComponent(takeID.uuidString.lowercased(), isDirectory: true)
-        try fm.createDirectory(at: directory, withIntermediateDirectories: true,
-                               attributes: [.posixPermissions: NSNumber(value: 0o700)])
-        try fm.setAttributes([.posixPermissions: NSNumber(value: 0o700)],
-                             ofItemAtPath: directory.path)
+        try ensurePrivateDirectory(directory)
         return directory
     }
 
     private func append(line: Data, to url: URL, maximumBytes: Int,
                         resetWhenFull: Bool) throws {
         guard line.count <= maximumBytes else { return }
+        try validateRegularFileIfPresent(url)
         let current = fileSize(url)
         let (nextSize, overflowed) = current.addingReportingOverflow(line.count)
         if overflowed || nextSize > maximumBytes {
@@ -238,6 +257,7 @@ actor DeveloperDiagnosticsStore {
 
     private func writeJSONObject(_ object: [String: Any], to url: URL,
                                  maximumBytes: Int) throws {
+        try validateRegularFileIfPresent(url)
         let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
         guard data.count <= maximumBytes else { return }
         try data.write(to: url, options: .atomic)
@@ -312,6 +332,10 @@ actor DeveloperDiagnosticsStore {
         var line = data
         line.append(0x0A)
         return line
+    }
+
+    enum StoreError: Error {
+        case unsafePath
     }
 
     private nonisolated static func encodeAAC(_ pcm16LE: Data, to temporary: URL) throws {
