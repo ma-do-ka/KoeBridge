@@ -25,6 +25,7 @@ final class MicrophoneCapture: @unchecked Sendable {
         self.diagnosticTakeID = diagnosticTakeID
     }
     private let startupGate = MicrophoneStartupGate()
+    private var routeStability = MicrophoneRouteStabilityGate() // lifecycleQueue only
     private let stopLatch = MicrophoneStopLatch()
     private var tapInstalled = false // lifecycleQueue only
     private var teardownStarted = false // lifecycleQueue only
@@ -193,10 +194,19 @@ final class MicrophoneCapture: @unchecked Sendable {
             Self.lifecycleQueue.async { [self] in
                 let running = engine?.isRunning == true
                 if lostBufferCount > 0 { startupGate.invalidate(.bufferDropped) }
-                if let engine, let selectedTarget,
-                   !MicrophoneDevices.isStillSelected(selectedTarget, node: engine.inputNode) {
-                    startupDiagnostics?.note(.inputRouteChanged)
-                    startupGate.invalidate(.inputRouteChanged)
+                if let engine, let selectedTarget {
+                    let matches = MicrophoneDevices.isStillSelected(selectedTarget, node: engine.inputNode)
+                    let repeatedMismatch = routeStability.observe(matches: matches)
+                    if !matches && !repeatedMismatch {
+                        // Preparation remains closed while CoreAudio settles.
+                        // Never release pre-roll on a transient mismatch.
+                        continuation.resume(returning: .waiting)
+                        return
+                    }
+                    if repeatedMismatch {
+                        startupDiagnostics?.note(.inputRouteChanged)
+                        startupGate.invalidate(.inputRouteChanged)
+                    }
                 }
                 var decision = startupGate.decision(
                     at: ProcessInfo.processInfo.systemUptime, deadline: deadline, engineRunning: running)
