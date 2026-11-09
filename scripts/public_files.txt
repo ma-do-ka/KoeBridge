@@ -75,6 +75,7 @@ Sources/KoeBridgeSelfTest/ResilienceTests.swift
 Sources/KoeBridgeSelfTest/Runner.swift
 Sources/KoeBridgeSelfTest/SessionTransitionsTests.swift
 Sources/KoeBridgeSelfTest/StressTests.swift
+Sources/KoeBridgeSelfTest/V2StabilitySelfTests.swift
 Sources/KoeBridgeSelfTest/TranscriptionStyleSelfTests.swift
 TEST_REPORT.md
 Tests/KoeBridgeCoreTests/AudioDurationTests.swift
