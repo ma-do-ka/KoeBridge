@@ -68,8 +68,16 @@ enum MicrophoneDevices {
             ? before
             : settledCurrentID(node, target: target.deviceID)
         diagnostics?.end(.deviceAfter, code: after == nil ? 0 : 1, matched: after == target.deviceID)
-        guard after == target.deviceID else {
-            if setStatus != noErr { throw DeviceError.selectionFailed(setStatus) }
+        switch MicrophoneBindingPolicy.outcome(
+            requestedID: target.deviceID,
+            readBackID: after,
+            setStatus: Int32(setStatus)
+        ) {
+        case .ready:
+            break
+        case .selectionFailed(let status):
+            throw DeviceError.selectionFailed(OSStatus(status))
+        case .selectionNotApplied:
             throw DeviceError.selectionNotApplied
         }
         // CoreAudio may report a transient non-zero status while a Bluetooth
