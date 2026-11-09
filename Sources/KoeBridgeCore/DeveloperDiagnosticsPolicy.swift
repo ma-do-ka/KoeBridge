@@ -29,6 +29,26 @@ public enum DeveloperDiagnosticsPolicy {
         return (String(decoding: bytes.prefix(end), as: UTF8.self), true)
     }
 
+    public static func changedSegment(before: String, after: String) -> (text: String, truncated: Bool)? {
+        guard before != after else { return nil }
+        let left = Array(before)
+        let right = Array(after)
+        var prefix = 0
+        while prefix < left.count, prefix < right.count, left[prefix] == right[prefix] {
+            prefix += 1
+        }
+        var suffix = 0
+        while suffix < left.count - prefix,
+              suffix < right.count - prefix,
+              left[left.count - 1 - suffix] == right[right.count - 1 - suffix] {
+            suffix += 1
+        }
+        let end = right.count - suffix
+        guard prefix <= end else { return nil }
+        let changed = String(right[prefix..<end])
+        return cappedText(changed)
+    }
+
     public static func mayRetainSession(fileBytes: Int, totalBytes: Int, retainedSessions: Int) -> Bool {
         fileBytes >= 0 && totalBytes >= 0 && retainedSessions >= 0
             && fileBytes <= maximumSessionBytes
