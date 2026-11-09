@@ -170,6 +170,14 @@ final class MicrophoneStartupGateTests: XCTestCase {
         XCTAssertEqual(policy.retryDelay(after: 2, elapsed: 1)!, 0.4, accuracy: 0.0001)
         XCTAssertEqual(policy.retryDelay(after: 3, elapsed: 1)!, 0.6, accuracy: 0.0001)
     }
+    func testRouteTransitionRetriesUseShortBoundedBackoff() {
+        let policy = MicrophoneStartupRetryPolicy()
+        XCTAssertEqual(policy.retryDelay(after: 1, elapsed: 1, routeTransition: true)!, 0.05, accuracy: 0.0001)
+        XCTAssertEqual(policy.retryDelay(after: 2, elapsed: 1, routeTransition: true)!, 0.10, accuracy: 0.0001)
+        XCTAssertEqual(policy.retryDelay(after: 3, elapsed: 1, routeTransition: true)!, 0.15, accuracy: 0.0001)
+        XCTAssertNil(policy.retryDelay(after: 4, elapsed: 1, routeTransition: true))
+    }
+
     func testNoRetryBeyondTotalBudget() {
         let policy = MicrophoneStartupRetryPolicy()
         XCTAssertNil(policy.retryDelay(after: 1, elapsed: 9.9))
