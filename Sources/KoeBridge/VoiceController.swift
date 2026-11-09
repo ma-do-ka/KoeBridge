@@ -339,9 +339,17 @@ import KoeBridgeCore
                     let elapsed = ProcessInfo.processInfo.systemUptime - preparationBegan
                     if let route = candidate.routeSnapshot {
                         DiagnosticLog.record("mic_prepare_route take=\(take.id.uuidString) attempt=\(attempts) \(route.diagnosticFields)")
+                        DeveloperDiagnostics.recordEvent(
+                            takeID: take.id, stage: "microphone_route",
+                            fields: ["attempt": "\(attempts)", "result": "failed", "route": route.diagnosticFields]
+                        )
                     }
                     if let format = candidate.formatSnapshot {
                         DiagnosticLog.record("mic_prepare_format take=\(take.id.uuidString) attempt=\(attempts) \(format.diagnosticFields)")
+                        DeveloperDiagnostics.recordEvent(
+                            takeID: take.id, stage: "microphone_format",
+                            fields: ["attempt": "\(attempts)", "result": "failed", "format": format.diagnosticFields]
+                        )
                     }
                     DiagnosticLog.record("mic_prepare_failed take=\(take.id.uuidString) attempt=\(attempts) category=\(category) code=\(errorCode) elapsed_ms=\(Int(elapsed * 1_000))")
                     DeveloperDiagnostics.recordEvent(
@@ -382,9 +390,17 @@ import KoeBridgeCore
             }
             if let route = capture.routeSnapshot {
                 DiagnosticLog.record("mic_prepare_route take=\(take.id.uuidString) attempt=\(attempts) \(route.diagnosticFields)")
+                DeveloperDiagnostics.recordEvent(
+                    takeID: take.id, stage: "microphone_route",
+                    fields: ["attempt": "\(attempts)", "result": "ready", "route": route.diagnosticFields]
+                )
             }
             if let format = capture.formatSnapshot {
                 DiagnosticLog.record("mic_prepare_format take=\(take.id.uuidString) attempt=\(attempts) \(format.diagnosticFields)")
+                DeveloperDiagnostics.recordEvent(
+                    takeID: take.id, stage: "microphone_format",
+                    fields: ["attempt": "\(attempts)", "result": "ready", "format": format.diagnosticFields]
+                )
             }
             if let timing = capture.startTimings {
                 DiagnosticLog.record("mic_prepare_ready take=\(take.id.uuidString) attempts=\(attempts) first_pcm_ms=\(Int(timing.firstBufferDelay * 1_000)) sample_rate=\(String(format: "%.0f", timing.sampleRate)) channels=\(timing.channels)")
