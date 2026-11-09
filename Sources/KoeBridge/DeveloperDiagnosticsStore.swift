@@ -217,7 +217,8 @@ actor DeveloperDiagnosticsStore {
                         resetWhenFull: Bool) throws {
         guard line.count <= maximumBytes else { return }
         let current = fileSize(url)
-        if current + line.count > maximumBytes {
+        let (nextSize, overflowed) = current.addingReportingOverflow(line.count)
+        if overflowed || nextSize > maximumBytes {
             guard resetWhenFull else { return }
             if fm.fileExists(atPath: url.path) { try fm.removeItem(at: url) }
         }
@@ -295,7 +296,9 @@ actor DeveloperDiagnosticsStore {
         for case let url as URL in enumerator {
             guard let values = try? url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey]),
                   values.isRegularFile == true else { continue }
-            total = min(Int.max, total + max(0, values.fileSize ?? 0))
+            let size = max(0, values.fileSize ?? 0)
+            let (next, overflowed) = total.addingReportingOverflow(size)
+            total = overflowed ? Int.max : next
         }
         return total
     }
