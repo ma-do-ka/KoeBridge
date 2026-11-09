@@ -54,19 +54,28 @@ enum MicrophoneDevices {
         diagnostics?.begin(.deviceBefore)
         let before = currentID(node)
         diagnostics?.end(.deviceBefore, code: before == nil ? 0 : 1, matched: before == target.deviceID)
+        var setStatus: OSStatus = noErr
         if before != target.deviceID {
             var id = AudioDeviceID(target.deviceID)
             diagnostics?.begin(.deviceSet)
-            let status = AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice,
-                                              kAudioUnitScope_Global, 0, &id,
-                                              UInt32(MemoryLayout<AudioDeviceID>.size))
-            diagnostics?.end(.deviceSet, code: Int(status))
-            guard status == noErr else { throw DeviceError.selectionFailed(status) }
+            setStatus = AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice,
+                                             kAudioUnitScope_Global, 0, &id,
+                                             UInt32(MemoryLayout<AudioDeviceID>.size))
+            diagnostics?.end(.deviceSet, code: Int(setStatus))
         }
         diagnostics?.begin(.deviceAfter)
-        let after = currentID(node)
+        let after = before == target.deviceID
+            ? before
+            : settledCurrentID(node, target: target.deviceID)
         diagnostics?.end(.deviceAfter, code: after == nil ? 0 : 1, matched: after == target.deviceID)
-        guard after == target.deviceID else { throw DeviceError.selectionNotApplied }
+        guard after == target.deviceID else {
+            if setStatus != noErr { throw DeviceError.selectionFailed(setStatus) }
+            throw DeviceError.selectionNotApplied
+        }
+        // CoreAudio may report a transient non-zero status while a Bluetooth
+        // route is still applying the requested device. Read-back is the
+        // authoritative safety gate: an error is accepted only when the Audio
+        // Unit demonstrably ended on the exact requested device.
     }
 
     static func isStillSelected(_ target: MicrophoneSelectionTarget, node: AVAudioInputNode) -> Bool {
@@ -77,6 +86,21 @@ enum MicrophoneDevices {
             devices: [MicrophoneDeviceOption(uid: uid, name: "", deviceID: id)],
             systemDefaultID: target.followsSystem ? MicrophoneRouteSnapshot.defaultInputDeviceID() : nil,
             actualUnitDeviceID: currentID(node))
+    }
+
+    private static func settledCurrentID(_ node: AVAudioInputNode,
+                                         target: UInt32) -> UInt32? {
+        var value = currentID(node)
+        if value == target { return value }
+        // Keep this bounded on the dedicated microphone lifecycle queue.
+        // The total 150 ms is shorter than tearing down and entering a full
+        // retry, while still requiring exact read-back before capture proceeds.
+        for delay in [0.025, 0.050, 0.075] {
+            Thread.sleep(forTimeInterval: delay)
+            value = currentID(node)
+            if value == target { return value }
+        }
+        return value
     }
 
     static func currentID(_ node: AVAudioInputNode) -> UInt32? {
@@ -113,6 +137,20 @@ enum MicrophoneDevices {
     }
     enum DeviceError: LocalizedError {
         case noAudioUnit, selectionFailed(OSStatus), selectionNotApplied
+
+        var diagnosticCategory: String {
+            switch self {
+            case .noAudioUnit: return "device_audio_unit_unavailable"
+            case .selectionFailed: return "device_selection_failed"
+            case .selectionNotApplied: return "device_selection_not_applied"
+            }
+        }
+
+        var osStatus: OSStatus? {
+            if case .selectionFailed(let status) = self { return status }
+            return nil
+        }
+
         var errorDescription: String? {
             switch self {
             case .noAudioUnit: return "マイクの入力装置を初期化できませんでした"
