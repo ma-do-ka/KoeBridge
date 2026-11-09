@@ -7,9 +7,25 @@ public struct GeminiTokenUsage: Equatable, Sendable {
     public let totalTokens: Int
 
     public init(promptTokens: Int?, responseTokens: Int?, totalTokens: Int) {
-        self.promptTokens = promptTokens
-        self.responseTokens = responseTokens
-        self.totalTokens = totalTokens
+        self.promptTokens = promptTokens.flatMap { $0 >= 0 ? $0 : nil }
+        self.responseTokens = responseTokens.flatMap { $0 >= 0 ? $0 : nil }
+        self.totalTokens = max(0, totalTokens)
+    }
+}
+
+public enum UsageAggregation {
+    /// Server counts are non-negative, but a corrupt archive or extreme remote
+    /// value must never trap Swift's checked Int addition in the UI.
+    public static func addingTokens(_ lhs: Int, _ rhs: Int) -> Int {
+        let left = max(0, lhs)
+        let right = max(0, rhs)
+        let (sum, overflowed) = left.addingReportingOverflow(right)
+        return overflowed ? Int.max : sum
+    }
+
+    public static func totalTokens<S: Sequence>(_ samples: S) -> Int
+        where S.Element == GeminiTokenSample {
+        samples.reduce(0) { addingTokens($0, $1.totalTokens) }
     }
 }
 
