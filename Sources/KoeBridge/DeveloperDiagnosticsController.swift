@@ -14,6 +14,12 @@ import Foundation
         enabled = DeveloperDiagnostics.isEnabled
     }
 
+    func failClosedFromStorage(_ error: Error) {
+        enabled = false
+        isDeleting = false
+        statusMessage = "開発用診断の保存先を安全に準備できなかったため停止しました：\(error.localizedDescription)"
+    }
+
     func enable() {
         let token = DeveloperDiagnostics.enablePreference()
         enabled = true
