@@ -219,8 +219,9 @@ public struct InputDiagnosticEvent: Equatable, Sendable {
     /// Values contain no whitespace or delimiter escapes; each field remains
     /// atomic when a long event is split across bounded physical log lines.
     var renderedFields: [String] {
-        fields.keys.sorted { $0.rawValue < $1.rawValue }.map {
-            "\($0.rawValue)=\(fields[$0]!.rendered)"
+        fields.keys.sorted { $0.rawValue < $1.rawValue }.compactMap { key in
+            guard let value = fields[key] else { return nil }
+            return "\(key.rawValue)=\(value.rendered)"
         }
     }
 }
