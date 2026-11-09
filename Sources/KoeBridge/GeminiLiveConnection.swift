@@ -58,7 +58,9 @@ private final class GeminiPingCompletion: @unchecked Sendable {
         guard !started, !closedByClient else { throw ConnectionError.disconnected }
         started = true
         try Task.checkCancellation()
-        var components = URLComponents(string: GeminiWire.endpoint)!
+        guard var components = URLComponents(string: GeminiWire.endpoint) else {
+            throw ConnectionError.badURL
+        }
         components.queryItems = [URLQueryItem(name: "key", value: apiKey)]
         guard let url = components.url else { throw ConnectionError.badURL }
         let connectionBeganAt = Date()
