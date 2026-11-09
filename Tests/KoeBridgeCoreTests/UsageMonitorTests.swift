@@ -91,4 +91,17 @@ struct UsageMonitorTests {
         #expect(GeminiWire.parseTokenUsage(#"{"usageMetadata":{"totalTokenCount":-1}}"#) == nil)
         #expect(GeminiWire.parseTokenUsage("bad json") == nil)
     }
+
+    @Test func tokenAggregationSaturatesInsteadOfOverflowing() {
+        #expect(UsageAggregation.addingTokens(Int.max, 1) == Int.max)
+        #expect(UsageAggregation.addingTokens(-100, 50) == 50)
+        let now = Date()
+        let samples = [
+            GeminiTokenSample(at: now, usage: GeminiTokenUsage(promptTokens: nil, responseTokens: nil, totalTokens: Int.max)),
+            GeminiTokenSample(at: now, usage: GeminiTokenUsage(promptTokens: -1, responseTokens: -2, totalTokens: 10))
+        ]
+        #expect(UsageAggregation.totalTokens(samples) == Int.max)
+        #expect(samples[1].promptTokens == nil)
+        #expect(samples[1].responseTokens == nil)
+    }
 }
