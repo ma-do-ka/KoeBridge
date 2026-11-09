@@ -484,9 +484,22 @@ final class MicrophoneCapture: @unchecked Sendable {
 
     private func admit(_ pcm: Data) {
         let wasOverflowed = admission.overflowed
-        if let admitted = admission.append(pcm, proof: speechDetector.evidence) { emit(admitted) }
+        let wasOpened = admission.opened
+        if let admitted = admission.append(pcm, proof: speechDetector.evidence) {
+            if !wasOpened { recordAdmissionOpened() }
+            emit(admitted)
+        }
         if admission.overflowed && !wasOverflowed { noteBufferLoss(conversionError: true) }
     }
+    private func recordAdmissionOpened() {
+        guard let geometry = admission.openGeometry else { return }
+        let firstSpeechMS = geometry.firstSpeechStart.map { Int($0 * 1_000) } ?? -1
+        let message = "admission_opened capture=\(diagnosticID.uuidString) first_speech_ms=\(firstSpeechMS) released_from_ms=\(Int(geometry.releasedFrom * 1_000)) buffered_ms=\(Int(geometry.bufferedDuration * 1_000))"
+        Task { @MainActor in
+            DiagnosticLog.recordMicrophoneEvidence(message)
+        }
+    }
+
     private func emit(_ pcm: Data) {
         // A long review-only take is replayed in bounded packets, not thousands
         // of 50ms synchronous yields that could overflow the 480-item ASR queue.
@@ -563,12 +576,22 @@ final class MicrophoneCapture: @unchecked Sendable {
         speechDetector.finish { [self] speech in
             self.processingQueue.async { [self] in
                 let digitalSilence = self.activityEvidence.classification == .nearSilence
-                if let remainder = self.admission.finish(proof: speech, isDigitalSilence: digitalSilence) { self.emit(remainder) }
+                if let remainder = self.admission.finish(proof: speech, isDigitalSilence: digitalSilence) {
+                    if speech.allowsTranscript {
+                        self.recordAdmissionOpened()
+                    } else {
+                        let message = "admission_recovered capture=\(self.diagnosticID.uuidString) buffered_ms=\(Int(Double(remainder.count) / 32_000 * 1_000))"
+                        Task { @MainActor in
+                            DiagnosticLog.recordMicrophoneEvidence(message)
+                        }
+                    }
+                    self.emit(remainder)
+                }
                 self.onAudio = nil
                 Task { @MainActor [self] in
                     if let trace = self.speechTrace, trace.isCollecting {
                         let score = Int((speech.maximumConfidence * 1_000).rounded())
-                        DiagnosticLog.recordMicrophoneEvidence("speech_classifier capture=\(self.diagnosticID.uuidString) state=\(speech.state.rawValue) windows=\(speech.windows) positives=\(speech.positiveWindows) max_permille=\(score) allowed=\(speech.allowsTranscript)")
+                        DiagnosticLog.recordMicrophoneEvidence("speech_classifier capture=\(self.diagnosticID.uuidString) state=\(speech.state.rawValue) windows=\(speech.windows) positives=\(speech.positiveWindows) max_permille=\(score) allowed=\(speech.allowsTranscript) first_speech_ms=\(speech.firstSpeechStart.map { Int($0 * 1_000) } ?? -1)")
                         trace.finish()
                     }
                 }

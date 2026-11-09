@@ -120,6 +120,9 @@ struct KoeBridgeSelfTest {
         await run("PermissionSetupPolicyTests.directInputRequiresActualProcessPermissionAndTarget", {
             PermissionSetupPolicyTests().directInputRequiresActualProcessPermissionAndTarget()
         })
+        await run("AudioActivityEvidenceTests.preRollGeometryPreservesOnsetAndReportsActualRelease", { AudioActivityEvidenceTests().preRollGeometryPreservesOnsetAndReportsActualRelease() })
+        await run("AudioActivityEvidenceTests.openGeometryReportsFallbackAndFinishConfirmation", { AudioActivityEvidenceTests().openGeometryReportsFallbackAndFinishConfirmation() })
+        await run("AudioActivityEvidenceTests.heldFeedbackExplainsHoldAndCopyAndPreservesOwnership", { AudioActivityEvidenceTests().heldFeedbackExplainsHoldAndCopyAndPreservesOwnership() })
         await run("AudioActivityEvidenceTests.silenceCannotBeConfirmedByModelText", { AudioActivityEvidenceTests().silenceCannotBeConfirmedByModelText() })
         await run("AudioActivityEvidenceTests.ambientNoiseAndClickRequireReview", { AudioActivityEvidenceTests().ambientNoiseAndClickRequireReview() })
         await run("AudioActivityEvidenceTests.speechAndWhisperCanBeInput", { AudioActivityEvidenceTests().speechAndWhisperCanBeInput() })

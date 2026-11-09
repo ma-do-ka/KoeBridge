@@ -6,6 +6,46 @@ import Testing
 #endif
 
 struct AudioActivityEvidenceTests {
+    @Test func preRollGeometryPreservesOnsetAndReportsActualRelease() {
+        for (start, releasedFrom) in [(2.0, 1.0), (0.5, 0.0)] {
+            var proof = SpeechVerification()
+            proof.started()
+            proof.observe(confidence: 0.95, start: start, duration: 0.5)
+            var buffer = SpeechAdmissionBuffer()
+            let audio = Data(repeating: 1, count: 96_000)
+            #expect(buffer.openGeometry == nil)
+            let released = buffer.append(audio, proof: proof)
+            #expect(released == audio.subdata(in: Int(releasedFrom * 32_000)..<audio.count))
+            #expect(buffer.openGeometry?.firstSpeechStart == start)
+            #expect(buffer.openGeometry?.releasedFrom == releasedFrom)
+            #expect(buffer.openGeometry?.bufferedDuration == 3.0)
+            let geometry = buffer.openGeometry
+            let pause = Data(repeating: 0, count: 3_200)
+            #expect(buffer.append(pause, proof: SpeechVerification()) == pause)
+            #expect(buffer.openGeometry == geometry)
+        }
+    }
+    @Test func openGeometryReportsFallbackAndFinishConfirmation() {
+        var proof = SpeechVerification()
+        proof.started()
+        proof.observe(confidence: 0.95, start: 10, duration: 0.5)
+        var buffer = SpeechAdmissionBuffer()
+        let audio = Data(repeating: 2, count: 3_200)
+        #expect(buffer.append(audio, proof: SpeechVerification()) == nil)
+        #expect(buffer.finish(proof: proof, isDigitalSilence: false) == audio)
+        #expect(buffer.openGeometry?.releasedFrom == 0)
+        #expect(buffer.openGeometry?.bufferedDuration == 0.1)
+        #expect(buffer.finish(proof: proof, isDigitalSilence: false) == nil)
+    }
+    @Test func heldFeedbackExplainsHoldAndCopyAndPreservesOwnership() {
+        #expect(OverlayFeedback.heldForReview.message.contains("保留"))
+        #expect(OverlayFeedback.heldForReview.message.contains("コピー"))
+        let id = UUID()
+        #expect(OverlayFeedback.mayUpdate(owner: id, resolved: id, newRecordingActive: false))
+        #expect(!OverlayFeedback.mayUpdate(owner: id, resolved: id, newRecordingActive: true))
+        #expect(!OverlayFeedback.mayUpdate(owner: UUID(), resolved: id, newRecordingActive: false))
+        #expect(!OverlayFeedback.mayUpdate(owner: nil, resolved: id, newRecordingActive: false))
+    }
     private func sample(_ samples: [Float], splitAt: Int? = nil) -> AudioActivityEvidence {
         var meter = AudioActivityMeter()
         if let splitAt {
@@ -105,7 +145,7 @@ struct AudioActivityEvidenceTests {
         let initial = Data(repeating: 1, count: 48_000)
         #expect(admission.append(initial, proof: SpeechVerification()) == nil)
         let admitted = admission.append(Data(repeating: 2, count: 1_600), proof: proof(start: 1))
-        #expect(admitted == initial.subdata(in: 24_000..<48_000) + Data(repeating: 2, count: 1_600))
+        #expect(admitted == initial + Data(repeating: 2, count: 1_600))
         let pause = Data(repeating: 0, count: 32_000)
         #expect(admission.append(pause, proof: SpeechVerification()) == pause)
         #expect(admission.finish(proof: proof(), isDigitalSilence: false) == nil)

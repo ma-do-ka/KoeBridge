@@ -766,11 +766,18 @@ import KoeBridgeCore
                                                         engine: take.usedMode, review: take.review,
                                                         recordedAt: take.requestedAt)
         let outcome: DictationDelivery.Outcome
+        var completionFeedback: OverlayFeedback = .saved
         if let skipped = DictationDelivery.skipped(suppressed: take.automaticDeliverySuppressed,
                                                   requiresReview: take.review?.status == .needsReview,
                                                   acousticReviewRequired: take.acousticReviewRequired,
                                                   shouldPaste: take.shouldPaste) {
             outcome = skipped
+            if take.acousticReviewRequired, !take.automaticDeliverySuppressed,
+               take.shouldPaste, skipped.delivery == .reviewRequired, !text.isEmpty {
+                TextInsertion.copy(text)
+                completionFeedback = .heldForReview
+                DiagnosticLog.recordMicrophoneEvidence("held_text_rescued take=\(id.uuidString.prefix(8)) chars=\(text.count) copied=1")
+            }
             take.inputDiagnostics?.record(.result, stage: .result, [
                 .outcome: .token(.skipped),
                 .reason: .reason(take.automaticDeliverySuppressed ? "system_suppressed"
@@ -803,7 +810,7 @@ import KoeBridgeCore
         if outcome.submitted, let stoppedAt = take.stoppingAt {
             lastStopToInputSeconds = Date().timeIntervalSince(stoppedAt)
         }
-        showCompletionFeedback(outcome.submitted ? .sent : .saved, for: id)
+        showCompletionFeedback(outcome.submitted ? .sent : completionFeedback, for: id)
         if active == nil {
             status = outcome.detail + (take.review?.status == .incomplete ? " 追加チェックは未完了です。" : "")
         }
@@ -817,7 +824,7 @@ import KoeBridgeCore
         overlayFeedback = feedback
         overlayDismissal?.cancel()
         overlayDismissal = Task { [weak self] in
-            let hold: Int = feedback == .noInput ? 330 : (feedback == .failed ? 1_000 : 520)
+            let hold: Int = feedback == .heldForReview ? 3_000 : (feedback == .noInput ? 330 : (feedback == .failed ? 1_000 : 520))
             do { try await Task.sleep(for: .milliseconds(hold)) } catch { return }
             guard let self, self.overlayOwner == id, self.active == nil else { return }
             self.hideOverlay()

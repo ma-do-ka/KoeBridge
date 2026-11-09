@@ -220,3 +220,4 @@ Tests/KoeBridgeCoreTests/MicrophonePreparationDiagnosticsTests.swift
 Sources/KoeBridgeCore/MicrophoneTapFormatPlan.swift
 Tests/KoeBridgeCoreTests/MicrophoneTapFormatPlanTests.swift
 docs/mic-log-retention.md
+docs/gate-tuning.md
