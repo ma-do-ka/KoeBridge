@@ -455,6 +455,13 @@ import KoeBridgeCore
                         throw CancellationError()
                     }
                     take.cloud = candidate
+                    DeveloperDiagnostics.recordEvent(
+                        takeID: take.id, stage: "recognizer_ready",
+                        fields: [
+                            "engine": "gemini",
+                            "since_recording_ms": "\(Int(max(0, Date().timeIntervalSince(take.startedAt ?? Date())) * 1_000))"
+                        ]
+                    )
                     candidate.onEvent = { [weak self, weak take, weak candidate] event in
                         guard let self, let take, !take.finished else { return }
                         switch event {
@@ -462,6 +469,14 @@ import KoeBridgeCore
                             take.partialText = candidate?.assembler.displayText ?? ""
                             if take.firstPreviewAt == nil, !take.partialText.isEmpty {
                                 take.firstPreviewAt = Date()
+                                DeveloperDiagnostics.recordEvent(
+                                    takeID: take.id, stage: "first_transcript",
+                                    fields: [
+                                        "engine": "gemini",
+                                        "since_recording_ms": "\(Int(max(0, Date().timeIntervalSince(take.startedAt ?? Date())) * 1_000))",
+                                        "utf16": "\(take.partialText.utf16.count)"
+                                    ]
+                                )
                             }
                             if self.active === take {
                                 self.previewText = AudioActivityPolicy.mayShowInterim(take.mic?.activityEvidence ?? take.acousticEvidence)
@@ -488,11 +503,19 @@ import KoeBridgeCore
                 } catch {
                     candidate.cancel()
                     DiagnosticLog.record("gemini setup failed; using local for THIS take")
+                    DeveloperDiagnostics.recordEvent(
+                        takeID: take.id, stage: "recognizer_setup_failed",
+                        fields: ["engine": "gemini", "fallback": "apple"]
+                    )
                     take.fellBackToApple = true
                     actual = .local
                 }
             } else {
                 DiagnosticLog.record("gemini key unavailable; using local for THIS take")
+                DeveloperDiagnostics.recordEvent(
+                    takeID: take.id, stage: "recognizer_setup_failed",
+                    fields: ["engine": "gemini", "reason": "key_unavailable", "fallback": "apple"]
+                )
                 take.fellBackToApple = true
                 actual = .local
             }
@@ -508,10 +531,27 @@ import KoeBridgeCore
                 throw CancellationError()
             }
             take.local = recognizer
+            DeveloperDiagnostics.recordEvent(
+                takeID: take.id, stage: "recognizer_ready",
+                fields: [
+                    "engine": "apple",
+                    "since_recording_ms": "\(Int(max(0, Date().timeIntervalSince(take.startedAt ?? Date())) * 1_000))"
+                ]
+            )
             recognizer.onUpdate = { [weak self, weak take] text in
                 guard let self, let take, !take.finished else { return }
                 take.partialText = text
-                if take.firstPreviewAt == nil, !text.isEmpty { take.firstPreviewAt = Date() }
+                if take.firstPreviewAt == nil, !text.isEmpty {
+                    take.firstPreviewAt = Date()
+                    DeveloperDiagnostics.recordEvent(
+                        takeID: take.id, stage: "first_transcript",
+                        fields: [
+                            "engine": "apple",
+                            "since_recording_ms": "\(Int(max(0, Date().timeIntervalSince(take.startedAt ?? Date())) * 1_000))",
+                            "utf16": "\(text.utf16.count)"
+                        ]
+                    )
+                }
                 if self.active === take {
                     self.previewText = AudioActivityPolicy.mayShowInterim(take.mic?.activityEvidence ?? take.acousticEvidence)
                         ? text : ""
@@ -781,6 +821,15 @@ import KoeBridgeCore
             if overlayOwner == take.id && !noInput { hideOverlay() }
             previewText = ""
         }
+        DeveloperDiagnostics.recordEvent(
+            takeID: take.id, stage: "recognition_resolved",
+            fields: [
+                "engine": take.successfulEngine?.rawValue ?? "unknown",
+                "success": text?.isEmpty == false ? "1" : "0",
+                "utf16": "\(text?.utf16.count ?? 0)",
+                "stop_to_resolve_ms": "\(Int(max(0, take.stoppingAt.map { Date().timeIntervalSince($0) } ?? 0) * 1_000))"
+            ]
+        )
         let usageSamples = take.usageSamples(
             succeeded: text?.isEmpty == false,
             cancelled: noInput || reason == "録音をキャンセルしました"
