@@ -306,7 +306,18 @@ import KoeBridgeCore
                     if error is CancellationError { throw error }
                     // A missing explicit choice must never become another mic.
                     if error is MicrophoneSelectionError { throw error }
-                    let category = (error as? MicrophoneCapture.CaptureError)?.diagnosticCategory ?? "engine_start_failed"
+                    let category: String
+                    let errorCode: Int
+                    if let captureError = error as? MicrophoneCapture.CaptureError {
+                        category = captureError.diagnosticCategory
+                        errorCode = (captureError as NSError).code
+                    } else if let deviceError = error as? MicrophoneDevices.DeviceError {
+                        category = deviceError.diagnosticCategory
+                        errorCode = deviceError.osStatus.map(Int.init) ?? (deviceError as NSError).code
+                    } else {
+                        category = "engine_start_failed"
+                        errorCode = (error as NSError).code
+                    }
                     let elapsed = ProcessInfo.processInfo.systemUptime - preparationBegan
                     if let route = candidate.routeSnapshot {
                         DiagnosticLog.record("mic_prepare_route take=\(take.id.uuidString) attempt=\(attempts) \(route.diagnosticFields)")
@@ -314,7 +325,16 @@ import KoeBridgeCore
                     if let format = candidate.formatSnapshot {
                         DiagnosticLog.record("mic_prepare_format take=\(take.id.uuidString) attempt=\(attempts) \(format.diagnosticFields)")
                     }
-                    DiagnosticLog.record("mic_prepare_failed take=\(take.id.uuidString) attempt=\(attempts) category=\(category) code=\((error as NSError).code) elapsed_ms=\(Int(elapsed * 1_000))")
+                    DiagnosticLog.record("mic_prepare_failed take=\(take.id.uuidString) attempt=\(attempts) category=\(category) code=\(errorCode) elapsed_ms=\(Int(elapsed * 1_000))")
+                    DeveloperDiagnostics.recordEvent(
+                        takeID: take.id, stage: "microphone_attempt_failed",
+                        fields: [
+                            "attempt": "\(attempts)",
+                            "category": category,
+                            "code": "\(errorCode)",
+                            "elapsed_ms": "\(Int(elapsed * 1_000))"
+                        ]
+                    )
                     guard let delay = retryPolicy.retryDelay(after: attempts, elapsed: elapsed) else { throw error }
                     status = "マイクの接続準備を待っています…（\(attempts + 1)/\(retryPolicy.maximumAttempts)）"
                     try await Task.sleep(for: .seconds(delay))
