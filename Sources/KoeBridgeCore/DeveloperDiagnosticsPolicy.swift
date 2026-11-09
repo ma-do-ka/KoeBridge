@@ -11,8 +11,12 @@ public enum DeveloperDiagnosticsPolicy {
     public static let maximumTotalBytes = 8 * 1024 * 1024
     public static let maximumSessionBytes = 512 * 1024
     public static let maximumGlobalLogBytes = 256 * 1024
-    public static let maximumInputTraceBytes = 256 * 1024
-    public static let maximumTextUTF8Bytes = 32 * 1024
+    public static let maximumTimelineBytes = 64 * 1024
+    public static let maximumInputTraceBytes = 160 * 1024
+    public static let maximumRecognitionBytes = 96 * 1024
+    public static let maximumDeliveryBytes = 64 * 1024
+    public static let maximumEncodedAudioBytes = 96 * 1024
+    public static let maximumTextUTF8Bytes = 16 * 1024
     public static let developerInputTraceEvents = 512
     public static let developerInputTraceInitialEvents = 64
 
