@@ -7,6 +7,7 @@ import Foundation
     static let shared = DeveloperDiagnosticsController()
 
     @Published private(set) var enabled: Bool
+    @Published private(set) var isDeleting = false
     @Published private(set) var statusMessage = ""
 
     private init() {
@@ -32,19 +33,23 @@ import Foundation
     }
 
     func disableAndDelete() {
+        guard !isDeleting else { return }
         DeveloperDiagnostics.disablePreference()
         enabled = false
+        isDeleting = true
         statusMessage = "開発用診断を停止し、保存データを削除しています…"
         Task {
             do {
                 try await DeveloperDiagnosticsStore.shared.deleteAllIfStillDisabled()
                 await MainActor.run {
+                    self.isDeleting = false
                     self.statusMessage = DeveloperDiagnostics.isEnabled
                         ? "開発用診断は再度有効になったため、新しい診断データは保持します。"
                         : "開発用診断を停止し、保存データを削除しました。"
                 }
             } catch {
                 await MainActor.run {
+                    self.isDeleting = false
                     self.statusMessage = "開発用診断は停止しましたが、保存データを削除できません：\(error.localizedDescription)"
                 }
             }
@@ -52,7 +57,9 @@ import Foundation
     }
 
     func deleteData() {
+        guard !isDeleting else { return }
         _ = DeveloperDiagnostics.rotateEpochKeepingPreference()
+        isDeleting = true
         statusMessage = "開発用診断データを削除しています…"
         Task {
             do {
@@ -61,10 +68,12 @@ import Foundation
                     try await DeveloperDiagnosticsStore.shared.prepare(token: token)
                 }
                 await MainActor.run {
+                    self.isDeleting = false
                     self.statusMessage = "開発用診断データを削除しました。"
                 }
             } catch {
                 await MainActor.run {
+                    self.isDeleting = false
                     self.statusMessage = "開発用診断データを削除できません：\(error.localizedDescription)"
                 }
             }
