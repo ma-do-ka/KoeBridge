@@ -14,6 +14,7 @@ README_EN.md
 SECURITY.md
 Sources/KoeBridge/AppleLocalTranscriber.swift
 Sources/KoeBridge/Diagnostics.swift
+Sources/KoeBridge/DeveloperDiagnostics.swift
 Sources/KoeBridge/DictationTake.swift
 Sources/KoeBridge/HistoryView.swift
 Sources/KoeBridge/PreviewView.swift
@@ -30,6 +31,7 @@ Sources/KoeBridgeCore/AudioDurationPolicy.swift
 Sources/KoeBridgeCore/AudioIntegrityState.swift
 Sources/KoeBridgeCore/DiagnosticFileStore.swift
 Sources/KoeBridgeCore/DiagnosticLogPolicy.swift
+Sources/KoeBridgeCore/DeveloperDiagnosticsPolicy.swift
 Sources/KoeBridgeCore/DirectInputObservation.swift
 Sources/KoeBridgeCore/FinalizationPolicy.swift
 Sources/KoeBridgeCore/GeminiWire.swift
@@ -74,6 +76,7 @@ Sources/KoeBridgeSelfTest/TranscriptionStyleSelfTests.swift
 TEST_REPORT.md
 Tests/KoeBridgeCoreTests/AudioDurationTests.swift
 Tests/KoeBridgeCoreTests/DiagnosticLogPolicyTests.swift
+Tests/KoeBridgeCoreTests/DeveloperDiagnosticsPolicyTests.swift
 Tests/KoeBridgeCoreTests/DirectInputObservationTests.swift
 Tests/KoeBridgeCoreTests/DirectTypingPlanTests.swift
 Tests/KoeBridgeCoreTests/GeminiFailureTests.swift
