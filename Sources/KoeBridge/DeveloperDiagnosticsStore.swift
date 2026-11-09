@@ -14,12 +14,7 @@ actor DeveloperDiagnosticsStore {
     }
 
     private let fm = FileManager.default
-    private let encoder = JSONEncoder()
-
-    private init() {
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
-    }
+    private init() {}
 
     func prepare(token: DeveloperDiagnosticsToken) throws {
         guard DeveloperDiagnostics.allows(token) else { return }
@@ -120,8 +115,17 @@ actor DeveloperDiagnosticsStore {
                                 maximumBytes: 192 * 1024)
 
             if !pcm16LE.isEmpty {
-                let temporary = try await Task.detached(priority: .utility) {
-                    try Self.encodeAAC(pcm16LE)
+                let temporaryDirectory = Self.rootURL.appendingPathComponent(".tmp", isDirectory: true)
+                try fm.createDirectory(
+                    at: temporaryDirectory, withIntermediateDirectories: true,
+                    attributes: [.posixPermissions: NSNumber(value: 0o700)]
+                )
+                try fm.setAttributes([.posixPermissions: NSNumber(value: 0o700)],
+                                     ofItemAtPath: temporaryDirectory.path)
+                let temporary = temporaryDirectory
+                    .appendingPathComponent("audio-\(UUID().uuidString).m4a")
+                try await Task.detached(priority: .utility) {
+                    try Self.encodeAAC(pcm16LE, to: temporary)
                 }.value
                 defer { try? FileManager.default.removeItem(at: temporary) }
                 guard DeveloperDiagnostics.allows(token) else { return }
@@ -155,7 +159,7 @@ actor DeveloperDiagnosticsStore {
         guard DeveloperDiagnostics.allows(token) else { return }
         do {
             let directory = try sessionDirectory(takeID)
-            let transport = transportText.map(DeveloperDiagnosticsPolicy.cappedText)
+            let transport = transportText.map { DeveloperDiagnosticsPolicy.cappedText($0) }
             let detailCapped = DeveloperDiagnosticsPolicy.cappedText(detail)
             let observed = observedDelta.map { DeveloperDiagnosticsPolicy.cappedText($0) }
             let object: [String: Any] = [
@@ -303,17 +307,13 @@ actor DeveloperDiagnosticsStore {
         return line
     }
 
-    private nonisolated static func encodeAAC(_ pcm16LE: Data) throws -> URL {
+    private nonisolated static func encodeAAC(_ pcm16LE: Data, to temporary: URL) throws {
         guard !pcm16LE.isEmpty, pcm16LE.count.isMultiple(of: 2) else {
             throw CocoaError(.fileWriteUnknown)
         }
-        let temporaryDirectory = Self.rootURL.appendingPathComponent(".tmp", isDirectory: true)
-        try FileManager.default.createDirectory(
-            at: temporaryDirectory, withIntermediateDirectories: true,
-            attributes: [.posixPermissions: NSNumber(value: 0o700)]
-        )
-        let temporary = temporaryDirectory
-            .appendingPathComponent("audio-\(UUID().uuidString).m4a")
+        guard FileManager.default.fileExists(atPath: temporary.deletingLastPathComponent().path) else {
+            throw CocoaError(.fileNoSuchFile)
+        }
         guard let inputFormat = AVAudioFormat(commonFormat: .pcmFormatInt16,
                                               sampleRate: 16_000, channels: 1,
                                               interleaved: true) else {
@@ -340,7 +340,6 @@ actor DeveloperDiagnosticsStore {
             }
         }
         try output.write(from: buffer)
-        return temporary
     }
 }
 #endif
