@@ -45,7 +45,9 @@ final class MicrophoneCapture: @unchecked Sendable {
     private var activityMeter = AudioActivityMeter()
     private var cachedActivity = AudioActivityMeter().evidence
     private var admission = SpeechAdmissionBuffer() // processingQueue only
-    private let speechDetector = NativeSpeechDetector()
+    // Created only after the microphone route is verified. Failed startup
+    // attempts never pay the SoundAnalysis initialization cost.
+    private var speechDetector: NativeSpeechDetector?
     private let diagnosticID = UUID()
     @MainActor private var speechTrace: InputDiagnosticTrace?
     // Assigned once before dispatching startBlocking, then read-only across queues.
@@ -84,8 +86,9 @@ final class MicrophoneCapture: @unchecked Sendable {
     var activityEvidence: AudioActivityEvidence {
         healthLock.lock()
         let energy = cachedActivity
+        let detector = speechDetector
         healthLock.unlock()
-        return energy.withSpeechVerification(speechDetector.evidence)
+        return energy.withSpeechVerification(detector?.evidence ?? SpeechVerification())
     }
     /// Captured duration is independent of the leading-silence admission buffer.
     /// Provider usage continues to count only bytes actually sent by that provider.
@@ -135,9 +138,6 @@ final class MicrophoneCapture: @unchecked Sendable {
         } else { diagnosticWatch = nil }
         defer { diagnosticWatch?.cancel() }
         speechTrace = DiagnosticLog.inputTrace(takeID: diagnosticID)
-        if speechTrace?.isCollecting == true {
-            DiagnosticLog.record("speech_classifier_started capture=\(diagnosticID.uuidString) build=\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown")")
-        }
         do {
             try await withTaskCancellationHandler {
                 try Task.checkCancellation()
@@ -217,6 +217,14 @@ final class MicrophoneCapture: @unchecked Sendable {
                         let pending = startupBuffers
                         startupBuffers.removeAll(keepingCapacity: false)
                         startupFrames = 0
+                        let detector = NativeSpeechDetector()
+                        healthLock.lock()
+                        speechDetector = detector
+                        healthLock.unlock()
+                        Task { @MainActor [weak self] in
+                            guard let self, let trace = self.speechTrace, trace.isCollecting else { return }
+                            DiagnosticLog.record("speech_classifier_started capture=\(self.diagnosticID.uuidString) build=\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown")")
+                        }
                         // Preserve the start of speech without exposing PCM from
                         // a failed preparation to SoundAnalysis or either ASR.
                         for buffer in pending { consume(buffer) }
@@ -498,6 +506,10 @@ final class MicrophoneCapture: @unchecked Sendable {
         cachedActivity = energy
         capturedPCMBytes += pcm.count
         healthLock.unlock()
+        guard let speechDetector else {
+            noteBufferLoss(conversionError: true)
+            return
+        }
         speechDetector.append(target) // target is independently owned, never recycled
         carry.append(pcm)
         while carry.count >= chunkBytes {
@@ -509,6 +521,10 @@ final class MicrophoneCapture: @unchecked Sendable {
 
     private func admit(_ pcm: Data) {
         let wasOverflowed = admission.overflowed
+        guard let speechDetector else {
+            noteBufferLoss(conversionError: true)
+            return
+        }
         if let admitted = admission.append(pcm, proof: speechDetector.evidence) { emit(admitted) }
         if admission.overflowed && !wasOverflowed { noteBufferLoss(conversionError: true) }
     }
@@ -578,9 +594,14 @@ final class MicrophoneCapture: @unchecked Sendable {
         }
         startupDiagnostics?.end(.leaseRelease)
         guard flushPendingAudio else {
-            speechDetector.cancel()
+            speechDetector?.cancel()
             startupDiagnostics?.finish()
             stopLatch.finish(losses: lostBufferCount)
+            return
+        }
+        guard let speechDetector else {
+            startupDiagnostics?.finish()
+            stopLatch.finish(losses: lostBufferCount + 1)
             return
         }
         // Do not hold lifecycleQueue while a stopped take completes inference.
