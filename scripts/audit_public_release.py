@@ -24,6 +24,9 @@ APPROVED_BINARY_BLOBS = {
     'Resources/KoeBridge_AppIcon.icns': 'b3c6586c44da783e823d165b4b4fa4f7b885b740',
     'Resources/KoeBridge_AppIcon_1024.png': 'f5cafb8a82d3496ea3aa8487928b1ebf5e2d7a69',
     'docs/images/koebridge-hero.webp': 'ff3a1762cc464e91d29033388348bfab659adffa',
+    'docs/images/koebridge-intro-inline.webp': 'f1e291a4a24bcade825f055dd1b65ea7e55a106b',
+    'docs/images/koebridge-intro-thumbnail.jpg': '0617b672ea2e8a7e15cbd82ed5560e9b2de3e67c',
+    'docs/videos/koebridge-intro.mp4': 'c7ef090fb04c70e48209527b07822e8300e04aa9',
 }
 OMIT_DIRS = {'.git', '.build', 'dist', '.swiftpm', 'DerivedData', '__pycache__'}
 

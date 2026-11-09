@@ -259,7 +259,7 @@ import KoeBridgeCore
                 // Own preparation, not just a successfully started microphone.
                 // discard()/releaseResources() can now stop it immediately.
                 take.mic = candidate
-                DiagnosticLog.record("mic_prepare_attempt take=\(take.id.uuidString) attempt=\(attempts)")
+                DiagnosticLog.recordMicrophoneEvidence("mic_prepare_attempt take=\(take.id.uuidString) attempt=\(attempts)")
                 do {
                     try await candidate.start(timeout: timeout, onAudio: { [weak self, weak take] data in
                         let delivery = continuation.yield(data)
@@ -290,12 +290,12 @@ import KoeBridgeCore
                     let category = (error as? MicrophoneCapture.CaptureError)?.diagnosticCategory ?? "engine_start_failed"
                     let elapsed = ProcessInfo.processInfo.systemUptime - preparationBegan
                     if let route = candidate.routeSnapshot {
-                        DiagnosticLog.record("mic_prepare_route take=\(take.id.uuidString) attempt=\(attempts) \(route.diagnosticFields)")
+                        DiagnosticLog.recordMicrophoneEvidence("mic_prepare_route take=\(take.id.uuidString) attempt=\(attempts) \(route.diagnosticFields)")
                     }
                     if let format = candidate.formatSnapshot {
-                        DiagnosticLog.record("mic_prepare_format take=\(take.id.uuidString) attempt=\(attempts) \(format.diagnosticFields)")
+                        DiagnosticLog.recordMicrophoneEvidence("mic_prepare_format take=\(take.id.uuidString) attempt=\(attempts) \(format.diagnosticFields)")
                     }
-                    DiagnosticLog.record("mic_prepare_failed take=\(take.id.uuidString) attempt=\(attempts) category=\(category) code=\((error as NSError).code) elapsed_ms=\(Int(elapsed * 1_000))")
+                    DiagnosticLog.recordMicrophoneEvidence("mic_prepare_failed take=\(take.id.uuidString) attempt=\(attempts) category=\(category) code=\((error as NSError).code) elapsed_ms=\(Int(elapsed * 1_000))")
                     guard let delay = retryPolicy.retryDelay(after: attempts, elapsed: elapsed) else { throw error }
                     status = "マイクの接続準備を待っています…（\(attempts + 1)/\(retryPolicy.maximumAttempts)）"
                     try await Task.sleep(for: .seconds(delay))
@@ -314,13 +314,13 @@ import KoeBridgeCore
                 await self.transmit(stream, take: take)
             }
             if let route = capture.routeSnapshot {
-                DiagnosticLog.record("mic_prepare_route take=\(take.id.uuidString) attempt=\(attempts) \(route.diagnosticFields)")
+                DiagnosticLog.recordMicrophoneEvidence("mic_prepare_route take=\(take.id.uuidString) attempt=\(attempts) \(route.diagnosticFields)")
             }
             if let format = capture.formatSnapshot {
-                DiagnosticLog.record("mic_prepare_format take=\(take.id.uuidString) attempt=\(attempts) \(format.diagnosticFields)")
+                DiagnosticLog.recordMicrophoneEvidence("mic_prepare_format take=\(take.id.uuidString) attempt=\(attempts) \(format.diagnosticFields)")
             }
             if let timing = capture.startTimings {
-                DiagnosticLog.record("mic_prepare_ready take=\(take.id.uuidString) attempts=\(attempts) first_pcm_ms=\(Int(timing.firstBufferDelay * 1_000)) sample_rate=\(String(format: "%.0f", timing.sampleRate)) channels=\(timing.channels)")
+                DiagnosticLog.recordMicrophoneEvidence("mic_prepare_ready take=\(take.id.uuidString) attempts=\(attempts) first_pcm_ms=\(Int(timing.firstBufferDelay * 1_000)) sample_rate=\(String(format: "%.0f", timing.sampleRate)) channels=\(timing.channels)")
             }
             take.startedAt = Date()
             lastStartupSeconds = take.startedAt?.timeIntervalSince(take.requestedAt)
@@ -330,7 +330,7 @@ import KoeBridgeCore
             take.permissionTask?.cancel()
             take.permissionTask = nil
             if let t = capture.startTimings {
-                DiagnosticLog.record("mic startup; total=\(String(format: "%.3f", t.total))s prepare=\(String(format: "%.3f", t.microphonePreparation))s engineStart=\(String(format: "%.3f", t.engineStart))s")
+                DiagnosticLog.recordMicrophoneEvidence("mic startup; total=\(String(format: "%.3f", t.total))s prepare=\(String(format: "%.3f", t.microphonePreparation))s engineStart=\(String(format: "%.3f", t.engineStart))s")
             }
             DiagnosticLog.record("session recording; recognizer=pending; pending=\(finished.count)")
             status = "録音中。\(shortcutChoice.label) でもう一度押すと確定"
@@ -494,8 +494,8 @@ import KoeBridgeCore
                         .modulationPct: .integer(Int((Double(evidence.modulation) * 100).rounded())),
                         .invalidSamples: .integer(evidence.invalidSamples)
                     ])
-                    DiagnosticLog.record("audio activity; classification=\(evidence.classification.rawValue) frames=\(evidence.frames) active=\(evidence.activeFrames) rms_ppm=\(Int(Double(evidence.maximumFrameRMS) * 1_000_000))")
-                    DiagnosticLog.record("mic stopped; pcmBytes=\(pcmBytes) audioSeconds=\(String(format: "%.2f", seconds)) peak=\(String(format: "%.4f", peak)) losses=\(losses)")
+                    DiagnosticLog.recordMicrophoneEvidence("audio activity; classification=\(evidence.classification.rawValue) frames=\(evidence.frames) active=\(evidence.activeFrames) rms_ppm=\(Int(Double(evidence.maximumFrameRMS) * 1_000_000))")
+                    DiagnosticLog.recordMicrophoneEvidence("mic stopped; pcmBytes=\(pcmBytes) audioSeconds=\(String(format: "%.2f", seconds)) peak=\(String(format: "%.4f", peak)) losses=\(losses)")
                     let lostAudio = losses > 0 || take.audioIntegrity.droppedChunks > 0
                     // Audio-loss errors and real transcribed text are never
                     // hidden by the accidental-tap UX.

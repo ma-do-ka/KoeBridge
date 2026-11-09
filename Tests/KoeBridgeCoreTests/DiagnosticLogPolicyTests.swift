@@ -127,4 +127,74 @@ struct DiagnosticLogPolicyTests {
         let contents = try String(contentsOf: marker, encoding: .utf8)
         #expect(contents == "unchanged")
     }
+
+    @Test func threeGenerationsRotateAndDeleteAll() throws {
+        let fm = FileManager.default
+        let directory = fm.temporaryDirectory.appendingPathComponent("koebridge-diag-three-\(UUID())")
+        defer { try? fm.removeItem(at: directory) }
+        let store = DiagnosticFileStore(fileURL: directory.appendingPathComponent("KoeBridge.log"),
+                                        maximumFileBytes: 64, maximumGenerations: 3)
+        let second = store.fileURL.appendingPathExtension("2")
+        let third = store.fileURL.appendingPathExtension("3")
+        // Each timestamped event fits alone, but two cannot fit in 64 bytes.
+        try store.appendBatch(["event=oldest", "event=second", "event=third", "event=latest"],
+                              at: Date(timeIntervalSince1970: 0))
+        #expect(fm.fileExists(atPath: store.rotatedURL.path))
+        #expect(fm.fileExists(atPath: second.path))
+        #expect(!fm.fileExists(atPath: third.path))
+        for (url, event) in [(second, "event=second"), (store.rotatedURL, "event=third"),
+                             (store.fileURL, "event=latest")] {
+            let contents = try String(contentsOf: url, encoding: .utf8)
+            #expect(contents.contains(event))
+            #expect(!contents.contains("event=oldest"))
+            #expect(store.fileSize(url) <= 64)
+            let attributes = try fm.attributesOfItem(atPath: url.path)
+            #expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+        }
+        // Deletion also removes generations left by a larger prior limit.
+        try Data("previous limit".utf8).write(to: third)
+        try store.deleteAll()
+        #expect(try fm.contentsOfDirectory(atPath: directory.path).isEmpty)
+    }
+
+    @Test func oversizedOlderGenerationIsRemovedAndPermissionsAreEnforced() throws {
+        let fm = FileManager.default
+        let directory = fm.temporaryDirectory.appendingPathComponent("koebridge-diag-older-\(UUID())")
+        defer { try? fm.removeItem(at: directory) }
+        let store = DiagnosticFileStore(fileURL: directory.appendingPathComponent("KoeBridge.log"),
+                                        maximumFileBytes: 128, maximumGenerations: 3)
+        try store.append("event=before")
+        let older = store.fileURL.appendingPathExtension("2")
+        try Data(repeating: 0x78, count: 129).write(to: older)
+        try store.append("event=after")
+        #expect(!fm.fileExists(atPath: older.path))
+        try Data("retained".utf8).write(to: older)
+        try fm.setAttributes([.posixPermissions: NSNumber(value: 0o644)], ofItemAtPath: older.path)
+        try store.append("event=last")
+        let attributes = try fm.attributesOfItem(atPath: older.path)
+        #expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+        try store.deleteAll()
+        #expect(try fm.contentsOfDirectory(atPath: directory.path).isEmpty)
+    }
+
+    @Test func defaultStoreLimitsAndRetentionPresets() throws {
+        let fm = FileManager.default
+        let directory = fm.temporaryDirectory.appendingPathComponent("koebridge-diag-default-\(UUID())")
+        defer { try? fm.removeItem(at: directory) }
+        let store = DiagnosticFileStore(fileURL: directory.appendingPathComponent("KoeBridge.log"))
+        #expect(store.maximumFileBytes == 192 * 1024)
+        #expect(store.maximumGenerations == 2)
+        try store.appendBatch((0..<2_000).map { "event=\($0) " + String(repeating: "x", count: 250) })
+        #expect(Set(try fm.contentsOfDirectory(atPath: directory.path)) == Set(["KoeBridge.log", "KoeBridge.log.1"]))
+        for url in [store.fileURL, store.rotatedURL] {
+            #expect(store.fileSize(url) > 0 && store.fileSize(url) <= 192 * 1024)
+        }
+        let main = DiagnosticLogPolicy.main
+        let microphone = DiagnosticLogPolicy.microphone
+        #expect(main.maximumFileBytes == 256 * 1024 && main.maximumGenerations == 3)
+        #expect(microphone.maximumFileBytes == 256 * 1024 && microphone.maximumGenerations == 8)
+        #expect(microphone.maximumFileBytes * microphone.maximumGenerations > main.maximumFileBytes * main.maximumGenerations)
+        #expect(DiagnosticLogPolicy.needsRotation(existingBytes: 60, incomingBytes: 5, maximumFileBytes: 64))
+        #expect(!DiagnosticLogPolicy.needsRotation(existingBytes: 60, incomingBytes: 4, maximumFileBytes: 64))
+    }
 }

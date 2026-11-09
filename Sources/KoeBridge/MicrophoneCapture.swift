@@ -130,7 +130,7 @@ final class MicrophoneCapture: @unchecked Sendable {
         defer { diagnosticWatch?.cancel() }
         speechTrace = DiagnosticLog.inputTrace(takeID: diagnosticID)
         if speechTrace?.isCollecting == true {
-            DiagnosticLog.record("speech_classifier_started capture=\(diagnosticID.uuidString) build=\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown")")
+            DiagnosticLog.recordMicrophoneEvidence("speech_classifier_started capture=\(diagnosticID.uuidString) build=\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown")")
         }
         do {
             try await withTaskCancellationHandler {
@@ -239,7 +239,7 @@ final class MicrophoneCapture: @unchecked Sendable {
         // Never stop/deallocate an engine in its notification callback.
         DispatchQueue.main.async { [weak self] in
             guard let self, !self.startupGate.isStopped else { return }
-            DiagnosticLog.record("mic_interrupted capture=\(self.diagnosticID.uuidString) category=\(reason.rawValue)")
+            DiagnosticLog.recordMicrophoneEvidence("mic_interrupted capture=\(self.diagnosticID.uuidString) category=\(reason.rawValue)")
             onDeviceChanged()
         }
     }
@@ -568,7 +568,7 @@ final class MicrophoneCapture: @unchecked Sendable {
                 Task { @MainActor [self] in
                     if let trace = self.speechTrace, trace.isCollecting {
                         let score = Int((speech.maximumConfidence * 1_000).rounded())
-                        DiagnosticLog.record("speech_classifier capture=\(self.diagnosticID.uuidString) state=\(speech.state.rawValue) windows=\(speech.windows) positives=\(speech.positiveWindows) max_permille=\(score) allowed=\(speech.allowsTranscript)")
+                        DiagnosticLog.recordMicrophoneEvidence("speech_classifier capture=\(self.diagnosticID.uuidString) state=\(speech.state.rawValue) windows=\(speech.windows) positives=\(speech.positiveWindows) max_permille=\(score) allowed=\(speech.allowsTranscript)")
                         trace.finish()
                     }
                 }
