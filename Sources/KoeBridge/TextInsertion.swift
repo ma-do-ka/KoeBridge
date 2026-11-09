@@ -143,6 +143,7 @@ import KoeBridgeCore
                         diagnostics: InputDiagnosticTrace? = nil,
                         shouldContinue: @MainActor () -> Bool = { true }) async -> Report {
         let beganAt = ProcessInfo.processInfo.systemUptime
+        let collectDeveloperObservedDelta = DeveloperDiagnostics.isEnabled
         var sent = 0
         var planned = 0
         var polls = 0
@@ -314,7 +315,7 @@ import KoeBridgeCore
                                           diagnostics: diagnostics, stage: .receipt)
             guard focus.allowed else { return report(.inserted, "posted_then_" + focus.reason) }
             let observed = target.observedSnapshot(timeout: timeout, diagnostics: diagnostics, stage: .receipt)?.snapshot
-            if DeveloperDiagnostics.isEnabled, let observed, let before,
+            if collectDeveloperObservedDelta, let observed, let before,
                let delta = DeveloperDiagnosticsPolicy.changedSegment(
                     before: before.text, after: observed.text) {
                 developerObservedDelta = delta.text
