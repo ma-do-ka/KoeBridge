@@ -137,6 +137,17 @@ struct InsertionReceiptPolicyTests {
         #expect(Policy.expectedAfter(before: before, inserted: "") == nil)
     }
 
+    @Test func precomputedVerificationPlanMatchesLegacyVerification() throws {
+        let before = state("prefix", 6)
+        let after = state("prefix入力", 8)
+        let plan = try #require(Policy.verificationPlan(before: before, inserted: "入力"))
+        #expect(plan.expected == after)
+        let planned = try #require(Policy.verify(plan, after: after, sameTarget: true))
+        let legacy = try #require(Policy.verify(before: before, inserted: "入力",
+                                                after: after, sameTarget: true))
+        #expect(planned == legacy)
+    }
+
     @Test func verifiesOnlyTheSanitizedTransportText() throws {
         let original = "a\nb\tc\r\n"
         let safe = UnicodeTypingPlan.safeText(original)
