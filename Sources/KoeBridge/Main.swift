@@ -141,7 +141,7 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // A prior crash must not leave contentful developer diagnostics behind
         // after the user has already turned the mode off.
-        DeveloperDiagnostics.purgeStaleDataIfDisabled()
+        DeveloperDiagnostics.reconcileStorageOnLaunch()
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "KoeBridge")
         let menu = NSMenu()
