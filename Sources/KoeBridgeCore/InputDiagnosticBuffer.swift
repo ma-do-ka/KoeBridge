@@ -7,6 +7,8 @@ import Foundation
 public struct InputDiagnosticBuffer: Sendable {
     public static let maximumEvents = 128
     public static let preservedInitialEvents = 32
+    private let retentionLimit: Int
+    private let initialRetentionLimit: Int
 
     public struct Entry: Equatable, Sendable {
         public let sequence: Int
@@ -66,18 +68,23 @@ public struct InputDiagnosticBuffer: Sendable {
         }
     }
 
-    public init(takeID: UUID) { self.takeID = takeID }
+    public init(takeID: UUID, maximumEvents: Int = Self.maximumEvents,
+                preservedInitialEvents: Int = Self.preservedInitialEvents) {
+        self.takeID = takeID
+        retentionLimit = max(1, maximumEvents)
+        initialRetentionLimit = max(0, min(preservedInitialEvents, max(1, maximumEvents) - 1))
+    }
 
     public mutating func append(_ event: InputDiagnosticEvent, elapsedMS: Int) {
         if totalCount < Int.max { totalCount += 1 }
         let entry = Entry(sequence: totalCount, elapsedMS: max(0, elapsedMS), event: event)
         observeMilestone(entry)
         entries.append(entry)
-        if entries.count > Self.maximumEvents {
+        if entries.count > retentionLimit {
             // A fixed number of slots cannot occupy the entire 96-event tail.
             // Retain first capture evidence AND decisions around actual posting.
             let protected = Set(milestones.values.map(\.sequence))
-            if let removal = entries.indices.dropFirst(Self.preservedInitialEvents)
+            if let removal = entries.indices.dropFirst(initialRetentionLimit)
                 .first(where: { !protected.contains(entries[$0].sequence) }) {
                 entries.remove(at: removal)
             }
