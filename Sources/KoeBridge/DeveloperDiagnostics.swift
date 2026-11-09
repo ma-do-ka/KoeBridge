@@ -63,7 +63,7 @@ enum DeveloperDiagnostics {
 
     static func purgeStaleDataIfDisabled() {
         guard !isEnabled else { return }
-        Task { try? await DeveloperDiagnosticsStore.shared.deleteAll() }
+        Task { try? await DeveloperDiagnosticsStore.shared.deleteAllIfStillDisabled() }
     }
 
     static func appendGlobal(_ event: String) {
