@@ -685,6 +685,7 @@ import KoeBridgeCore
             guard !result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 throw AppleLocalTranscriber.LocalError.empty(nil)
             }
+            take.rawRecognizedText = result
             let original = take.preferred == .gemini && take.style == .agent
                 ? AgentInstructionFormatting.format(result) : result
             // Only an actually confirmed primary result can survive a review
@@ -744,7 +745,7 @@ import KoeBridgeCore
             takeID: take.id,
             recordedAt: take.requestedAt,
             engine: take.usedMode,
-            primaryText: take.reviewSession?.originalText,
+            primaryText: take.rawRecognizedText ?? take.reviewSession?.originalText,
             finalText: text,
             partialText: partial.isEmpty ? nil : partial,
             alternativeText: take.review?.alternativeText,
