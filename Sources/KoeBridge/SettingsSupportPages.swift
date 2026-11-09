@@ -92,8 +92,9 @@ struct SettingsAboutPage: View {
                             Text("macOS用音声入力アプリ / MIT License")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
-                            Link("公式GitHubリポジトリ",
-                                 destination: URL(string: "https://github.com/ma-do-ka/KoeBridge")!)
+                            if let repositoryURL = URL(string: "https://github.com/ma-do-ka/KoeBridge") {
+                                Link("公式GitHubリポジトリ", destination: repositoryURL)
+                            }
                         }
                         Spacer(minLength: 0)
                     }
