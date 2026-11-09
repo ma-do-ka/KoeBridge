@@ -256,6 +256,8 @@ struct KoeBridgeSelfTest {
         await run("V2StabilitySelfTests.routeRetryBackoffIsShortAndBounded", { V2StabilitySelfTests().routeRetryBackoffIsShortAndBounded() })
         await run("V2StabilitySelfTests.audioConversionCapacityFailsClosed", { V2StabilitySelfTests().audioConversionCapacityFailsClosed() })
         await run("V2StabilitySelfTests.developerDiagnosticsBoundsAndUnicodeAreStable", { V2StabilitySelfTests().developerDiagnosticsBoundsAndUnicodeAreStable() })
+        await run("V2StabilitySelfTests.developerDiagnosticsDeclaredFilesFitHardCap", { V2StabilitySelfTests().developerDiagnosticsDeclaredFilesFitHardCap() })
+        await run("V2StabilitySelfTests.tokenAggregationCannotOverflow", { V2StabilitySelfTests().tokenAggregationCannotOverflow() })
         await run("V2StabilitySelfTests.receiptVerificationPlanPreservesExactSemantics", { try V2StabilitySelfTests().receiptVerificationPlanPreservesExactSemantics() })
         print("KoeBridge portable self-test: \(testCount) cases, \(TestRecorder.checked) assertions, \(TestRecorder.failures) failures")
         if TestRecorder.failures > 0 { exit(1) }
