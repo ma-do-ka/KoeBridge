@@ -59,6 +59,23 @@ struct V2StabilitySelfTests {
         check(DeveloperDiagnosticsPolicy.changedSegment(before: "same", after: "same") == nil)
     }
 
+    func developerDiagnosticsDeclaredFilesFitHardCap() {
+        let declared = DeveloperDiagnosticsPolicy.maximumTimelineBytes
+            + DeveloperDiagnosticsPolicy.maximumInputTraceBytes
+            + DeveloperDiagnosticsPolicy.maximumRecognitionBytes
+            + DeveloperDiagnosticsPolicy.maximumDeliveryBytes
+            + DeveloperDiagnosticsPolicy.maximumEncodedAudioBytes
+        check(declared <= DeveloperDiagnosticsPolicy.maximumSessionBytes)
+        let estimatedAACBytes = Int(DeveloperDiagnosticsPolicy.maximumAudioSeconds
+            * Double(DeveloperDiagnosticsPolicy.audioBitRate) / 8.0)
+        check(estimatedAACBytes <= DeveloperDiagnosticsPolicy.maximumEncodedAudioBytes)
+    }
+
+    func tokenAggregationCannotOverflow() {
+        check(UsageAggregation.addingTokens(Int.max, 1) == Int.max)
+        check(UsageAggregation.addingTokens(-100, 50) == 50)
+    }
+
     func receiptVerificationPlanPreservesExactSemantics() throws {
         let before = InsertionReceiptPolicy.Snapshot(
             text: "📎案：", selection: .init(location: 4, length: 0))
