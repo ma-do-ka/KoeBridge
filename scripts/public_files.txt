@@ -186,6 +186,7 @@ Sources/KoeBridgeSelfTest/InputReceiptObservationTests.swift
 Tests/KoeBridgeCoreTests/InputDiagnosticTests.swift
 Tests/KoeBridgeCoreTests/InputReceiptObservationTests.swift
 docs/input-diagnostics.md
+docs/developer-diagnostics.md
 docs/releases/v1.1.2.md
 .github/workflows/release-v1.1.3.yml
 Sources/KoeBridgeCore/AudioActivityEvidence.swift
