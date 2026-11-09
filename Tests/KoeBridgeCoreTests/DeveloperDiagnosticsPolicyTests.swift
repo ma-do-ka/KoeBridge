@@ -64,4 +64,16 @@ struct DeveloperDiagnosticsPolicyTests {
             retainedSessions: DeveloperDiagnosticsPolicy.maximumSessions + 1
         ))
     }
+
+    @Test func advertisedPerSessionLimitsFitInsideHardCap() {
+        let declared = DeveloperDiagnosticsPolicy.maximumTimelineBytes
+            + DeveloperDiagnosticsPolicy.maximumInputTraceBytes
+            + DeveloperDiagnosticsPolicy.maximumRecognitionBytes
+            + DeveloperDiagnosticsPolicy.maximumDeliveryBytes
+            + DeveloperDiagnosticsPolicy.maximumEncodedAudioBytes
+        #expect(declared <= DeveloperDiagnosticsPolicy.maximumSessionBytes)
+        let estimatedAACBytes = Int(DeveloperDiagnosticsPolicy.maximumAudioSeconds
+            * Double(DeveloperDiagnosticsPolicy.audioBitRate) / 8.0)
+        #expect(estimatedAACBytes <= DeveloperDiagnosticsPolicy.maximumEncodedAudioBytes)
+    }
 }
