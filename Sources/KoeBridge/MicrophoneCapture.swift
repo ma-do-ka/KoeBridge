@@ -423,7 +423,17 @@ final class MicrophoneCapture: @unchecked Sendable {
             invalidateStartup(.formatChanged, onDeviceChanged: onDeviceChanged)
             return
         }
-        let capacity = AVAudioFrameCount(ceil(Double(incoming.frameLength) * 16_000.0 / incoming.format.sampleRate)) + 128
+        guard let plannedCapacity = AudioConversionCapacity.frames(
+            inputFrames: Int(incoming.frameLength),
+            inputRate: incoming.format.sampleRate,
+            outputRate: output.sampleRate,
+            maximum: Int(AVAudioFrameCount.max)
+        ) else {
+            noteBufferLoss(conversionError: true)
+            invalidateStartup(.conversionFailed, onDeviceChanged: onDeviceChanged)
+            return
+        }
+        let capacity = AVAudioFrameCount(plannedCapacity)
         guard let target = AVAudioPCMBuffer(pcmFormat: output, frameCapacity: capacity) else {
             noteBufferLoss(conversionError: true)
             invalidateStartup(.conversionFailed, onDeviceChanged: onDeviceChanged)
