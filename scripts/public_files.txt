@@ -221,3 +221,8 @@ Sources/KoeBridgeCore/MicrophoneTapFormatPlan.swift
 Tests/KoeBridgeCoreTests/MicrophoneTapFormatPlanTests.swift
 docs/mic-log-retention.md
 docs/gate-tuning.md
+Sources/KoeBridge/StatusPopoverView.swift
+Sources/KoeBridgeCore/UsageSummary.swift
+Tests/KoeBridgeCoreTests/UsageSummaryTests.swift
+Sources/KoeBridgeSelfTest/UsageSummaryTests.swift
+docs/menu-popover.md

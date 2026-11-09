@@ -1,5 +1,6 @@
 #if os(macOS)
 import AppKit
+import Combine
 import Carbon
 import Darwin
 import KoeBridgePOSIX
@@ -128,7 +129,7 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
     }
 }
 
-@MainActor final class KoeBridgeAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+@MainActor final class KoeBridgeAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var item: NSStatusItem!
     private var shortcut: GlobalShortcut?
     private let windows = AppWindows()
@@ -136,15 +137,39 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
     private var workspaceObservers: [NSObjectProtocol] = []
     private var windowKeyMonitor: Any?
     private var updateCheckTimer: Timer?
-    private let recentHistoryMenu = NSMenu(title: "認識履歴（直近10件）")
+    private let statusPopover = NSPopover()
+    private var recordingObservation: AnyCancellable?
+    private var lastPopoverClosedAt: Date?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "KoeBridge")
-        let menu = NSMenu()
-        menu.delegate = self
-        recentHistoryMenu.delegate = self
-        item.menu = menu
+        if let button = item.button {
+            button.target = self
+            button.action = #selector(statusItemClicked(_:))
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        }
+        statusPopover.behavior = .transient
+        statusPopover.delegate = self
+        statusPopover.animates = true
+        let hosting = NSHostingController(rootView: StatusPopoverView(
+            controller: controller, guide: PermissionGuide.shared,
+            onOpenSettings: { [weak self] in self?.showSettings() },
+            onOpenHistory: { [weak self] in self?.showHistory() },
+            onOpenPermissions: { [weak self] in self?.showPermissions() },
+            onCheckForUpdates: { [weak self] in self?.checkForUpdates() },
+            onQuit: { [weak self] in self?.quit() },
+            onToggleRecording: { [weak self] in self?.afterClosingPopover { $0.controller.toggle() } },
+            onDiscard: { [weak self] in self?.afterClosingPopover { $0.controller.discard() } },
+            onCopyRecord: { [weak self] record in self?.copyRecentHistory(record) }
+        ))
+        hosting.sizingOptions = [.preferredContentSize]
+        statusPopover.contentViewController = hosting
+        recordingObservation = controller.$isRecording.sink { [weak self] recording in
+            self?.item.button?.image = NSImage(
+                systemSymbolName: recording ? "record.circle" : "waveform",
+                accessibilityDescription: "KoeBridge")
+        }
 
         // This never activates KoeBridge or takes keyboard focus from the text field.
         controller.onShowPreview = { [weak self] in self?.windows.showPreview() }
@@ -244,69 +269,52 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
         if let windowKeyMonitor { NSEvent.removeMonitor(windowKeyMonitor); self.windowKeyMonitor = nil }
     }
 
-    func menuNeedsUpdate(_ menu: NSMenu) {
-        if menu === recentHistoryMenu {
-            populateRecentHistoryMenu(menu)
-            return
-        }
-        guard menu === item.menu else { return }
-        menu.removeAllItems()
-        let title = controller.isRecording ? "■ 音声入力を確定" : "● 音声入力を開始"
-        add(menu, title, #selector(toggle))
-        // Native AppKit submenus open on mouse hover or keyboard navigation.
-        let historyItem = NSMenuItem(title: "認識履歴（直近10件）", action: nil, keyEquivalent: "")
-        historyItem.submenu = recentHistoryMenu
-        menu.addItem(historyItem)
-        add(menu, "設定…", #selector(showSettings))
-        add(menu, "アップデートを確認…", #selector(checkForUpdates))
-        add(menu, "マイク・自動入力の権限…", #selector(showPermissions))
-        if controller.busy { add(menu, "録音を破棄", #selector(discard)) }
-        menu.addItem(.separator())
-        add(menu, "KoeBridgeを終了", #selector(quit))
-    }
-
-    private func populateRecentHistoryMenu(_ menu: NSMenu) {
-        menu.removeAllItems()
-        let entries = RecentHistoryMenuPolicy.entries(from: controller.history)
-        if entries.isEmpty {
-            let title = controller.historyProblem.isEmpty
-                ? "保存された認識履歴はありません" : "履歴を読み込めません"
-            let empty = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-            empty.isEnabled = false
-            menu.addItem(empty)
+    @objc private func statusItemClicked(_ sender: NSStatusBarButton) {
+        let event = NSApp.currentEvent
+        if event?.type == .rightMouseUp || event?.modifierFlags.contains(.control) == true {
+            statusPopover.performClose(nil)
+            let menu = NSMenu()
+            add(menu, "設定…", #selector(showSettings))
+            add(menu, "アップデートを確認…", #selector(checkForUpdates))
+            menu.addItem(.separator())
+            add(menu, "KoeBridgeを終了", #selector(quit))
+            // Anchored NSMenu.popUp runs native menu tracking without assigning
+            // item.menu or recursively invoking the status button action.
+            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.minY), in: sender)
+        } else if statusPopover.isShown {
+            statusPopover.performClose(nil)
         } else {
-            for (index, entry) in entries.enumerated() {
-                let date = entry.recordedAt.formatted(date: .abbreviated, time: .shortened)
-                let row = NSMenuItem(
-                    title: "\(index + 1). \(date)  \(entry.preview)",
-                    action: #selector(copyRecentHistory(_:)), keyEquivalent: ""
-                )
-                row.target = self
-                row.representedObject = entry.recordID.uuidString
-                row.toolTip = entry.copyHelp
-                menu.addItem(row)
+            // A transient popover closes on the button's mouseDown, before this
+            // mouseUp action runs; without this guard, the click that closed it
+            // would immediately reopen it instead of toggling it shut.
+            if let closedAt = lastPopoverClosedAt, Date().timeIntervalSince(closedAt) < 0.2 { return }
+            PermissionGuide.shared.refresh()
+            if let hosting = statusPopover.contentViewController {
+                statusPopover.contentSize = hosting.view.fittingSize
             }
+            statusPopover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
         }
-        menu.addItem(.separator())
-        add(menu, "履歴をすべて表示…", #selector(showHistory))
     }
 
-    /// A click copies the exact stored text. No typing, app activation,
-    /// clipboard modification on hover, or new transcription is performed.
-    @objc private func copyRecentHistory(_ sender: NSMenuItem) {
-        let copied: Bool
-        if let raw = sender.representedObject as? String,
-           let id = UUID(uuidString: raw),
-           let record = controller.history.first(where: { $0.id == id }) {
-            copied = controller.copyRecord(record)
-        } else {
-            copied = false // A record may have been deleted while the menu was open.
-        }
-        // Let native menu tracking close before presenting a no-focus HUD.
+    func popoverDidClose(_ notification: Notification) {
+        lastPopoverClosedAt = Date()
+    }
+
+    /// Close first so insertion-target capture sees the user's original editor.
+    private func afterClosingPopover(_ action: @escaping (KoeBridgeAppDelegate) -> Void) {
+        statusPopover.performClose(nil)
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(100))
             guard let self else { return }
-            self.windows.showClipboardFeedback(success: copied, statusButton: self.item.button)
+            action(self)
+        }
+    }
+
+    private func copyRecentHistory(_ record: TranscriptRecord) {
+        afterClosingPopover { delegate in
+            let current = delegate.controller.history.first { $0.id == record.id }
+            let copied = current.map { delegate.controller.copyRecord($0) } ?? false
+            delegate.windows.showClipboardFeedback(success: copied, statusButton: delegate.item.button)
         }
     }
 
@@ -314,18 +322,30 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
         let menuItem = menu.addItem(withTitle: title, action: selector, keyEquivalent: "")
         menuItem.target = self
     }
-    @objc private func toggle() { controller.toggle() }
-    @objc private func showHistory() { windows.showHistory() }
-    @objc private func showSettings() { windows.showSettings() }
+    @objc private func showHistory() {
+        statusPopover.performClose(nil)
+        windows.showHistory()
+    }
+    @objc private func showSettings() {
+        statusPopover.performClose(nil)
+        windows.showSettings()
+    }
     @objc private func checkForUpdates() {
+        statusPopover.performClose(nil)
         windows.showSettings()
         let updater = KoeBridgeUpdateManager.shared
         updater.requestUpdatePage()
         Task { await updater.checkNow() }
     }
-    @objc private func showPermissions() { windows.showPermissions() }
-    @objc private func discard() { controller.discard() }
-    @objc private func quit() { controller.discard(); NSApp.terminate(nil) }
+    @objc private func showPermissions() {
+        statusPopover.performClose(nil)
+        windows.showPermissions()
+    }
+    @objc private func quit() {
+        statusPopover.performClose(nil)
+        controller.discard()
+        NSApp.terminate(nil)
+    }
 }
 
 /// Carbon for standard combinations, Quartz event tap for bare right-side
