@@ -64,8 +64,9 @@ import KoeBridgeCore
         guard !finished else { return }
         finished = true
 
-        if let standardBuffer, DiagnosticLog.permitsInputTrace(standardConsent) {
-            DiagnosticLog.writeInputTrace(standardBuffer.renderedLines(), consent: standardConsent!)
+        if let standardBuffer, let standardConsent,
+           DiagnosticLog.permitsInputTrace(standardConsent) {
+            DiagnosticLog.writeInputTrace(standardBuffer.renderedLines(), consent: standardConsent)
         }
         if let developerBuffer, DeveloperDiagnostics.allows(developerConsent) {
             DeveloperDiagnostics.writeInputTrace(
