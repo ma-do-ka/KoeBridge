@@ -89,7 +89,8 @@ struct UsageMonitorView: View {
     private var tokenBars: [TokenBar] {
         var grouped: [Date: Int] = [:]
         for sample in controller.monitorTokens where sample.at >= startOfRange {
-            grouped[bucket(sample.at), default: 0] += sample.totalTokens
+            let key = bucket(sample.at)
+            grouped[key] = UsageAggregation.addingTokens(grouped[key] ?? 0, sample.totalTokens)
         }
         return grouped.map { TokenBar(bucket: $0.key, tokens: $0.value) }
             .sorted { $0.bucket < $1.bucket }
@@ -219,7 +220,7 @@ struct UsageMonitorView: View {
                                 .id("token")
                                 .font(.subheadline.weight(.semibold))
                             Spacer()
-                            Text("計 \(controller.monitorTokens.filter { $0.at >= startOfRange }.reduce(0) { $0 + $1.totalTokens }.formatted())")
+                            Text("計 \(UsageAggregation.totalTokens(controller.monitorTokens.lazy.filter { $0.at >= startOfRange }).formatted())")
                                 .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                         }
                         if tokenBars.isEmpty {
