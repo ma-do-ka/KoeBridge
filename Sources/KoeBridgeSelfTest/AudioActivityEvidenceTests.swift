@@ -2,6 +2,46 @@ import Foundation
 import KoeBridgeCore
 
 struct AudioActivityEvidenceTests {
+    func preRollGeometryPreservesOnsetAndReportsActualRelease() {
+        for (start, releasedFrom) in [(2.0, 1.0), (0.5, 0.0)] {
+            var proof = SpeechVerification()
+            proof.started()
+            proof.observe(confidence: 0.95, start: start, duration: 0.5)
+            var buffer = SpeechAdmissionBuffer()
+            let audio = Data(repeating: 1, count: 96_000)
+            check(buffer.openGeometry == nil)
+            let released = buffer.append(audio, proof: proof)
+            check(released == audio.subdata(in: Int(releasedFrom * 32_000)..<audio.count))
+            check(buffer.openGeometry?.firstSpeechStart == start)
+            check(buffer.openGeometry?.releasedFrom == releasedFrom)
+            check(buffer.openGeometry?.bufferedDuration == 3.0)
+            let geometry = buffer.openGeometry
+            let pause = Data(repeating: 0, count: 3_200)
+            check(buffer.append(pause, proof: SpeechVerification()) == pause)
+            check(buffer.openGeometry == geometry)
+        }
+    }
+    func openGeometryReportsFallbackAndFinishConfirmation() {
+        var proof = SpeechVerification()
+        proof.started()
+        proof.observe(confidence: 0.95, start: 10, duration: 0.5)
+        var buffer = SpeechAdmissionBuffer()
+        let audio = Data(repeating: 2, count: 3_200)
+        check(buffer.append(audio, proof: SpeechVerification()) == nil)
+        check(buffer.finish(proof: proof, isDigitalSilence: false) == audio)
+        check(buffer.openGeometry?.releasedFrom == 0)
+        check(buffer.openGeometry?.bufferedDuration == 0.1)
+        check(buffer.finish(proof: proof, isDigitalSilence: false) == nil)
+    }
+    func heldFeedbackExplainsHoldAndCopyAndPreservesOwnership() {
+        check(OverlayFeedback.heldForReview.message.contains("保留"))
+        check(OverlayFeedback.heldForReview.message.contains("コピー"))
+        let id = UUID()
+        check(OverlayFeedback.mayUpdate(owner: id, resolved: id, newRecordingActive: false))
+        check(!OverlayFeedback.mayUpdate(owner: id, resolved: id, newRecordingActive: true))
+        check(!OverlayFeedback.mayUpdate(owner: UUID(), resolved: id, newRecordingActive: false))
+        check(!OverlayFeedback.mayUpdate(owner: nil, resolved: id, newRecordingActive: false))
+    }
     private func sample(_ samples: [Float]) -> AudioActivityEvidence {
         var meter = AudioActivityMeter()
         samples.withUnsafeBufferPointer { meter.observe($0) }

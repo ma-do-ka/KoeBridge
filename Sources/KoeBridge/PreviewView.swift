@@ -26,6 +26,7 @@ struct PreviewView: View {
         case .noInput: return "mic.slash"
         case .sent: return "arrow.up.circle.fill"
         case .saved: return "clock.arrow.circlepath"
+        case .heldForReview: return "doc.on.clipboard"
         case .failed: return "exclamationmark.triangle.fill"
         }
     }

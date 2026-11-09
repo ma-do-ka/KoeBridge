@@ -341,7 +341,7 @@ import KoeBridgeCore
         return report(.inserted, "posted_receipt_timeout")
     }
 
-    /// Only explicit user action in the History panel uses the clipboard.
+    /// Shared clipboard helper for History actions and acoustic-held text rescue.
     @discardableResult static func copy(_ text: String) -> Bool {
         let board = NSPasteboard.general
         board.clearContents()

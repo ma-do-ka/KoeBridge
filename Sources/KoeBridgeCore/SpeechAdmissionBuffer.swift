@@ -4,6 +4,13 @@ import Foundation
 /// parallel, but receives no PCM until independent speech evidence arrives.
 /// Once admitted, pauses never close the stream or cut the user's sentence.
 public struct SpeechAdmissionBuffer: Sendable {
+    public static let preRollSeconds = 1.0
+    public struct OpenGeometry: Equatable, Sendable {
+        public let firstSpeechStart: TimeInterval?
+        public let releasedFrom: TimeInterval
+        public let bufferedDuration: TimeInterval
+    }
+    public private(set) var openGeometry: OpenGeometry?
     public static let maximumBytes = 490 * 32_000
     public private(set) var opened = false
     public private(set) var overflowed = false
@@ -36,13 +43,17 @@ public struct SpeechAdmissionBuffer: Sendable {
     private mutating func open(proof: SpeechVerification) -> Data? {
         guard !pending.isEmpty else { return nil }
         opened = true
-        // Keep 250ms before the first classified speech window, including the
-        // first syllable. Do not replay minutes of unrelated leading room noise.
-        let start = max(0, (proof.firstSpeechStart ?? 0) - 0.25)
+        // Admission still requires independent speech proof. Longer pre-roll
+        // only protects the first syllable after confirmation.
+        let start = max(0, (proof.firstSpeechStart ?? 0) - Self.preRollSeconds)
         let rawOffset = min(Double(pending.count), start * 32_000)
         let offset = (Int(rawOffset) / 2) * 2
         // Invalid geometry never drops all captured speech.
-        let result = offset < pending.count ? pending.subdata(in: offset..<pending.count) : pending
+        let actualOffset = offset < pending.count ? offset : 0
+        openGeometry = OpenGeometry(firstSpeechStart: proof.firstSpeechStart,
+                                    releasedFrom: Double(actualOffset) / 32_000,
+                                    bufferedDuration: Double(pending.count) / 32_000)
+        let result = pending.subdata(in: actualOffset..<pending.count)
         pending = Data()
         return result
     }

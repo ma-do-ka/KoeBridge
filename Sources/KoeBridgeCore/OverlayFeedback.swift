@@ -12,6 +12,7 @@ public enum OverlayFeedback: String, Equatable, Sendable {
     case noInput
     case sent
     case saved
+    case heldForReview
     case failed
 
     public var message: String {
@@ -25,6 +26,7 @@ public enum OverlayFeedback: String, Equatable, Sendable {
         case .noInput: return "音声入力なし"
         case .sent: return "入力イベントを送信しました"
         case .saved: return "文字起こしを履歴に保存しました"
+        case .heldForReview: return "発話を確認できず保留しました。文章をコピーしました"
         case .failed: return "文字起こしを確認できませんでした"
         }
     }
