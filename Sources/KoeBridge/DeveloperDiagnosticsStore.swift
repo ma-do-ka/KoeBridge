@@ -33,6 +33,14 @@ actor DeveloperDiagnosticsStore {
         }
     }
 
+    /// Used by delayed OFF/startup cleanup. If the user has already enabled
+    /// developer diagnostics again, an older cleanup task must not erase the
+    /// new session's files.
+    func deleteAllIfStillDisabled() throws {
+        guard !DeveloperDiagnostics.isEnabled else { return }
+        try deleteAll()
+    }
+
     func appendGlobal(_ event: String, token: DeveloperDiagnosticsToken) {
         guard DeveloperDiagnostics.allows(token) else { return }
         do {
