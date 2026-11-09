@@ -49,6 +49,7 @@ import KoeBridgeCore
         let reason: String
         let receipt: Receipt?
         let eventsPosted: Bool
+        let developerObservedDelta: String?
         fileprivate let target: InsertionTarget?
         fileprivate let diagnostics: InputDiagnosticTrace?
 
@@ -152,6 +153,7 @@ import KoeBridgeCore
         var receiptStartedAt: TimeInterval?
         var deadlineExceeded = false
         var budgetInsufficient = false
+        var developerObservedDelta: String?
         func report(_ outcome: Result, _ reason: String, receipt: Receipt? = nil) -> Report {
             if let receiptStartedAt {
                 diagnostics?.record(.receipt, stage: .receipt, [
@@ -171,7 +173,9 @@ import KoeBridgeCore
                 .totalMS: .integer(InputDiagnosticTrace.milliseconds(since: beganAt))
             ])
             return Report(outcome: outcome, reason: reason, receipt: receipt,
-                          eventsPosted: sent > 0, target: target, diagnostics: diagnostics)
+                          eventsPosted: sent > 0,
+                          developerObservedDelta: developerObservedDelta,
+                          target: target, diagnostics: diagnostics)
         }
         guard !Task.isCancelled, shouldContinue() else {
             return report(.cancelled, "delivery_cancelled_before_post")
@@ -309,6 +313,11 @@ import KoeBridgeCore
                                           diagnostics: diagnostics, stage: .receipt)
             guard focus.allowed else { return report(.inserted, "posted_then_" + focus.reason) }
             let observed = target.observedSnapshot(timeout: timeout, diagnostics: diagnostics, stage: .receipt)?.snapshot
+            if DeveloperDiagnostics.isEnabled, let observed, let before,
+               let delta = DeveloperDiagnosticsPolicy.changedSegment(
+                    before: before.text, after: observed.text) {
+                developerObservedDelta = delta.text
+            }
             // Diagnostic classification never grants input/rebase permission.
             // The exact, existing receipt verification below remains the gate.
             if diagnostics?.isCollecting == true {
