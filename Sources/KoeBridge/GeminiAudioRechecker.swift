@@ -30,7 +30,10 @@ private final class RecheckSessionDelegate: NSObject, URLSessionTaskDelegate {
         let delegate = RecheckSessionDelegate()
         let session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
         defer { session.invalidateAndCancel() }
-        var request = URLRequest(url: URL(string: GeminiRecheckWire.endpoint)!)
+        guard let endpoint = URL(string: GeminiRecheckWire.endpoint) else {
+            throw GeminiRecheckWire.RecheckError.invalidResponse
+        }
+        var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.timeoutInterval = timeout
         request.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
