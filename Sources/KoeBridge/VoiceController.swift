@@ -886,7 +886,8 @@ import KoeBridgeCore
             ? UnicodeTypingPlan.safeText(text) : nil
         DeveloperDiagnostics.recordDelivery(
             takeID: id, delivery: outcome.delivery.rawValue,
-            detail: outcome.detail, transportText: developerTransport
+            detail: outcome.detail, transportText: developerTransport,
+            observedDelta: outcome.report?.developerObservedDelta
         )
         if let recordID { updateRemembered(recordID, delivery: outcome.delivery, detail: outcome.detail) }
         if outcome.submitted, let stoppedAt = take.stoppingAt {
