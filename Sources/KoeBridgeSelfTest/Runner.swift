@@ -111,6 +111,9 @@ struct KoeBridgeSelfTest {
         await run("LoginItemRegistrationPolicyTests.unregisterOnlyWhenActuallyRegistered", {
             LoginItemRegistrationPolicyTests().unregisterOnlyWhenActuallyRegistered()
         })
+        await run("PermissionSetupPolicyTests.requestActionsCoverFullDecisionMatrix", {
+            PermissionSetupPolicyTests().requestActionsCoverFullDecisionMatrix()
+        })
         await run("PermissionSetupPolicyTests.neverClaimsSetupDoneWithoutBothGrants", {
             PermissionSetupPolicyTests().neverClaimsSetupDoneWithoutBothGrants()
         })

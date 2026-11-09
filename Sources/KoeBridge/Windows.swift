@@ -231,30 +231,56 @@ private struct ClipboardFeedbackBubble: View {
     func requestAccessibility() {
         _ = TextInsertion.requestAccessibility()
         refresh()
-        message = accessibilityGranted
-            ? "アクセシビリティは許可されています。"
-            : "macOSの許可画面でKoeBridgeをONにしてください。必要ならアプリを終了して再起動します。"
+        if PermissionSetupPolicy.accessibilityAction(granted: accessibilityGranted) == .openAccessibilitySettings {
+            openPrivacySettings("Accessibility")
+        } else {
+            message = "アクセシビリティは許可されています。"
+        }
     }
 
     func requestPostEvent() {
         refresh()
-        guard accessibilityGranted else {
+        guard PermissionSetupPolicy.postEventAction(
+            accessibilityGranted: accessibilityGranted,
+            postEventGranted: postEventGranted) != .needsAccessibilityFirst else {
             message = "まず『入力先へのアクセスを許可』の設定が必要です。"
             return
         }
         _ = TextInsertion.requestPostEventAccess()
         refresh()
-        message = postEventGranted
-            ? "入力イベントの送信が許可されました。"
-            : "文字の入力操作は未許可です。macOSが再度ダイアログを出さない場合、プライバシー設定でKoeBridgeを確認してください。"
+        switch PermissionSetupPolicy.postEventAction(
+            accessibilityGranted: accessibilityGranted, postEventGranted: postEventGranted) {
+        case .openAccessibilitySettings:
+            openPrivacySettings("Accessibility")
+        case .needsAccessibilityFirst:
+            message = "まず『入力先へのアクセスを許可』の設定が必要です。"
+        default:
+            message = "入力イベントの送信が許可されました。"
+        }
+    }
+
+    private func openPrivacySettings(_ pane: String) {
+        let name = pane == "Accessibility" ? "アクセシビリティ" : "マイク"
+        let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_\(pane)")!
+        if NSWorkspace.shared.open(url) {
+            message = "システム設定の「\(name)」を開きました。一覧でKoeBridgeをONにしてください。"
+        } else {
+            message = "システム設定を開けませんでした。「プライバシーとセキュリティ」の「\(name)」でKoeBridgeをONにしてください。"
+        }
     }
 
     func requestMicrophone() {
         refresh()
-        guard microphoneStatus == .notDetermined, !microphoneRequestInProgress else {
-            message = microphoneStatus == .authorized
-                ? "マイクは許可されています。"
-                : "マイクの利用を拒否済みの場合はmacOSのプライバシー設定から変更してください。"
+        switch PermissionSetupPolicy.microphoneAction(status: microphoneStatus.rawValue) {
+        case .none:
+            message = "マイクは許可されています。"
+            return
+        case .openMicrophoneSettings:
+            openPrivacySettings("Microphone")
+            return
+        case .showMicrophonePrompt:
+            guard !microphoneRequestInProgress else { return }
+        default:
             return
         }
         microphoneRequestInProgress = true
@@ -264,9 +290,14 @@ private struct ClipboardFeedbackBubble: View {
             guard let self else { return }
             self.microphoneRequestInProgress = false
             self.refresh()
-            self.message = self.microphoneStatus == .authorized
-                ? "マイクの使用が許可されました。"
-                : "マイクは未許可です。macOSのプライバシー設定でKoeBridgeのマイクを確認してください。"
+            switch PermissionSetupPolicy.microphoneAction(status: self.microphoneStatus.rawValue) {
+            case .none:
+                self.message = "マイクの使用が許可されました。"
+            case .openMicrophoneSettings:
+                self.openPrivacySettings("Microphone")
+            default:
+                self.message = "マイクは未許可です。macOSのプライバシー設定でKoeBridgeのマイクを確認してください。"
+            }
         }
     }
 
