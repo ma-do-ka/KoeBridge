@@ -205,21 +205,21 @@ actor DeveloperDiagnosticsStore {
         guard DeveloperDiagnostics.allows(token) else { return }
         do {
             let directory = try sessionDirectory(takeID)
-            let primary = primaryText.map(DeveloperDiagnosticsPolicy.cappedText)
-            let final = finalText.map(DeveloperDiagnosticsPolicy.cappedText)
-            let partial = partialText.map(DeveloperDiagnosticsPolicy.cappedText)
-            let alternative = alternativeText.map(DeveloperDiagnosticsPolicy.cappedText)
+            let primary = primaryText.map { DeveloperDiagnosticsPolicy.cappedText($0) }
+            let final = finalText.map { DeveloperDiagnosticsPolicy.cappedText($0) }
+            let partial = partialText.map { DeveloperDiagnosticsPolicy.cappedText($0) }
+            let alternative = alternativeText.map { DeveloperDiagnosticsPolicy.cappedText($0) }
             let object: [String: Any] = [
                 "take_id": takeID.uuidString.lowercased(),
                 "recorded_at": ISO8601DateFormatter().string(from: recordedAt),
                 "engine": engine,
-                "primary_text": primary?.text ?? NSNull(),
+                "primary_text": primary?.text as Any? ?? NSNull(),
                 "primary_text_truncated": primary?.truncated ?? false,
-                "final_text": final?.text ?? NSNull(),
+                "final_text": final?.text as Any? ?? NSNull(),
                 "final_text_truncated": final?.truncated ?? false,
-                "partial_text": partial?.text ?? NSNull(),
+                "partial_text": partial?.text as Any? ?? NSNull(),
                 "partial_text_truncated": partial?.truncated ?? false,
-                "alternative_text": alternative?.text ?? NSNull(),
+                "alternative_text": alternative?.text as Any? ?? NSNull(),
                 "alternative_text_truncated": alternative?.truncated ?? false,
                 "audio_source": "pcm_submitted_to_recognizer_prefix",
                 "audio_pcm_seconds": Double(pcm16LE.count) / Double(DeveloperDiagnosticsPolicy.pcmBytesPerSecond),
@@ -236,7 +236,8 @@ actor DeveloperDiagnosticsStore {
                 guard DeveloperDiagnostics.allows(token) else { return }
                 let destination = directory.appendingPathComponent("audio.m4a")
                 if fm.fileExists(atPath: destination.path) { try fm.removeItem(at: destination) }
-                let size = (try fm.attributesOfItem(atPath: temporary.path)[.size] as? NSNumber)?.intValue ?? 0
+                let attributes = try fm.attributesOfItem(atPath: temporary.path)
+                let size = (attributes[.size] as? NSNumber)?.intValue ?? 0
                 guard size > 0, size <= 192 * 1024 else {
                     recordEvent(takeID: takeID, stage: "audio_skipped",
                                 fields: ["reason": "encoded_size_out_of_bounds", "bytes": "\(size)"],
@@ -270,7 +271,7 @@ actor DeveloperDiagnosticsStore {
                 "delivery": delivery,
                 "detail": detailCapped.text,
                 "detail_truncated": detailCapped.truncated,
-                "transport_text": transport?.text ?? NSNull(),
+                "transport_text": transport?.text as Any? ?? NSNull(),
                 "transport_text_truncated": transport?.truncated ?? false
             ]
             try writeJSONObject(object, to: directory.appendingPathComponent("delivery.json"),
