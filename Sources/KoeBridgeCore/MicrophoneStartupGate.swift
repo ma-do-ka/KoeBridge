@@ -23,9 +23,15 @@ public struct MicrophoneStartupRetryPolicy: Sendable {
 
     /// `completedAttempts` includes the attempt that just failed.
     public func retryDelay(after completedAttempts: Int,
-                           elapsed: TimeInterval) -> TimeInterval? {
+                           elapsed: TimeInterval,
+                           routeTransition: Bool = false) -> TimeInterval? {
         guard completedAttempts > 0, completedAttempts < maximumAttempts else { return nil }
-        let delay = min(0.8, 0.2 * Double(completedAttempts))
+        // Bluetooth/CoreAudio route transitions often fail quickly and then
+        // become valid on the next read-back. Avoid adding 1.2 seconds of
+        // artificial backoff while retaining the same attempt/timeout bounds.
+        let step = routeTransition ? 0.05 : 0.2
+        let ceiling = routeTransition ? 0.20 : 0.8
+        let delay = min(ceiling, step * Double(completedAttempts))
         guard remaining(at: elapsed) > delay else { return nil }
         return delay
     }
