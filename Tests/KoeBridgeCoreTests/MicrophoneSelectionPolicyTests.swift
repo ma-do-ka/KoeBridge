@@ -76,6 +76,25 @@ final class MicrophoneSelectionPolicyTests: XCTestCase {
         let empty = MicrophoneDeviceOption(uid: "", name: "A", deviceID: 1)
         XCTAssertThrowsError(try MicrophoneSelectionPolicy.resolve(uid: "", devices: [empty], systemDefaultID: 1))
     }
+
+func testRouteStabilityNeedsThreeConsecutiveMismatches() {
+        var gate = MicrophoneRouteStabilityGate()
+        XCTAssertFalse(gate.observe(matches: false))
+        XCTAssertTrue(gate.hasPendingMismatch)
+        XCTAssertFalse(gate.observe(matches: false))
+        XCTAssertTrue(gate.observe(matches: false))
+    }
+
+    func testRouteStabilityMatchResetsTransientMismatch() {
+        var gate = MicrophoneRouteStabilityGate()
+        XCTAssertFalse(gate.observe(matches: false))
+        XCTAssertFalse(gate.observe(matches: false))
+        XCTAssertFalse(gate.observe(matches: true))
+        XCTAssertFalse(gate.hasPendingMismatch)
+        XCTAssertFalse(gate.observe(matches: false))
+        XCTAssertFalse(gate.observe(matches: false))
+        XCTAssertTrue(gate.observe(matches: false))
+    }
 }
 
 final class SignedUpdateConfigurationTests: XCTestCase {
@@ -102,23 +121,4 @@ final class SignedUpdateConfigurationTests: XCTestCase {
     func testTimeBasedSignatureBypassRejected() { XCTAssertFalse(ready(expiry: 1728000)) }
     func testMissingExpirationPolicyRejected() { XCTAssertFalse(ready(expiry: nil)) }
     func testKeyWhitespaceRejected() { XCTAssertFalse(ready(key: key + "\n")) }
-
-    func testRouteStabilityNeedsThreeConsecutiveMismatches() {
-        var gate = MicrophoneRouteStabilityGate()
-        XCTAssertFalse(gate.observe(matches: false))
-        XCTAssertTrue(gate.hasPendingMismatch)
-        XCTAssertFalse(gate.observe(matches: false))
-        XCTAssertTrue(gate.observe(matches: false))
-    }
-
-    func testRouteStabilityMatchResetsTransientMismatch() {
-        var gate = MicrophoneRouteStabilityGate()
-        XCTAssertFalse(gate.observe(matches: false))
-        XCTAssertFalse(gate.observe(matches: false))
-        XCTAssertFalse(gate.observe(matches: true))
-        XCTAssertFalse(gate.hasPendingMismatch)
-        XCTAssertFalse(gate.observe(matches: false))
-        XCTAssertFalse(gate.observe(matches: false))
-        XCTAssertTrue(gate.observe(matches: false))
-    }
 }
