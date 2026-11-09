@@ -7,6 +7,14 @@ public enum DiagnosticLogPolicy {
     public static let maximumFileBytes = 192 * 1024
     public static let maximumFiles = 2
 
+    public struct StoreLimits: Sendable {
+        public let maximumFileBytes: Int
+        public let maximumGenerations: Int
+    }
+
+    public static let main = StoreLimits(maximumFileBytes: 256 * 1024, maximumGenerations: 3)
+    public static let microphone = StoreLimits(maximumFileBytes: 256 * 1024, maximumGenerations: 8)
+
     public static func isEnabled(storedValue: Bool?) -> Bool { storedValue == true }
 
     /// Log one short *diagnostic code*, not recognized text, URL or credentials.
@@ -18,7 +26,8 @@ public enum DiagnosticLogPolicy {
         return safe
     }
 
-    public static func needsRotation(existingBytes: Int, incomingBytes: Int) -> Bool {
+    public static func needsRotation(existingBytes: Int, incomingBytes: Int,
+                                     maximumFileBytes: Int = DiagnosticLogPolicy.maximumFileBytes) -> Bool {
         existingBytes > 0 && incomingBytes > 0 &&
         (existingBytes >= maximumFileBytes || incomingBytes > maximumFileBytes - existingBytes)
     }

@@ -8,7 +8,36 @@ public struct DiagnosticFileStore {
         fileURL.deletingLastPathComponent().appendingPathComponent(fileURL.lastPathComponent + ".1")
     }
 
-    public init(fileURL: URL) { self.fileURL = fileURL }
+    public let maximumFileBytes: Int
+    public let maximumGenerations: Int
+
+    public init(fileURL: URL,
+                maximumFileBytes: Int = DiagnosticLogPolicy.maximumFileBytes,
+                maximumGenerations: Int = DiagnosticLogPolicy.maximumFiles) {
+        precondition(maximumFileBytes > 0 && maximumGenerations > 0)
+        self.fileURL = fileURL
+        self.maximumFileBytes = maximumFileBytes
+        self.maximumGenerations = maximumGenerations
+    }
+
+    private func generationURL(_ generation: Int) -> URL {
+        generation == 0 ? fileURL : fileURL.appendingPathExtension(String(generation))
+    }
+
+    /// Include older generations left by a store with a larger retention limit.
+    private func allGenerationURLs() throws -> [URL] {
+        let directory = fileURL.deletingLastPathComponent()
+        guard FileManager.default.fileExists(atPath: directory.path) else { return [fileURL] }
+        let prefix = fileURL.lastPathComponent + "."
+        let older = try FileManager.default.contentsOfDirectory(at: directory,
+                                                              includingPropertiesForKeys: nil).filter {
+            let name = $0.lastPathComponent
+            guard name.hasPrefix(prefix) else { return false }
+            let suffix = name.dropFirst(prefix.count)
+            return !suffix.isEmpty && suffix.allSatisfy { $0 >= "0" && $0 <= "9" }
+        }
+        return [fileURL] + older
+    }
 
     public func append(_ event: String, at timestamp: Date = Date()) throws {
         try appendBatch([event], at: timestamp)
@@ -20,16 +49,17 @@ public struct DiagnosticFileStore {
         let safeEvents = events.compactMap(DiagnosticLogPolicy.sanitizedEvent)
         guard !safeEvents.isEmpty else { return }
         let date = ISO8601DateFormatter().string(from: timestamp)
-        let cap = DiagnosticLogPolicy.maximumFileBytes
+        let cap = maximumFileBytes
         let fm = FileManager.default
         try fm.createDirectory(at: fileURL.deletingLastPathComponent(),
                                withIntermediateDirectories: true)
         // Never follow a user-controlled symlink into an unrelated file.
-        for url in [fileURL, rotatedURL] {
+        let generations = try allGenerationURLs()
+        for url in generations {
             try validateRegularFileIfPresent(url)
         }
-        for url in [fileURL, rotatedURL] where fm.fileExists(atPath: url.path) {
-            // Apply the advertised limit to both generations, including an
+        for url in generations where fm.fileExists(atPath: url.path) {
+            // Apply the advertised limit to every generation, including an
             // oversized old file left by another version or external edits.
             if fileSize(url) > cap {
                 try fm.removeItem(at: url)
@@ -44,11 +74,20 @@ public struct DiagnosticFileStore {
         for safe in safeEvents {
             let bytes = Data("\(date) \(safe)\n".utf8)
             guard bytes.count <= cap else { continue }
-            if DiagnosticLogPolicy.needsRotation(existingBytes: current, incomingBytes: bytes.count) {
+            if DiagnosticLogPolicy.needsRotation(existingBytes: current, incomingBytes: bytes.count,
+                                                maximumFileBytes: cap) {
                 try writer?.close()
                 writer = nil
-                if fm.fileExists(atPath: rotatedURL.path) { try fm.removeItem(at: rotatedURL) }
-                try fm.moveItem(at: fileURL, to: rotatedURL)
+                let oldest = generationURL(maximumGenerations - 1)
+                if fm.fileExists(atPath: oldest.path) { try fm.removeItem(at: oldest) }
+                if maximumGenerations > 1 {
+                    for generation in stride(from: maximumGenerations - 2, through: 0, by: -1) {
+                        let source = generationURL(generation)
+                        if fm.fileExists(atPath: source.path) {
+                            try fm.moveItem(at: source, to: generationURL(generation + 1))
+                        }
+                    }
+                }
                 current = 0
             }
             if writer == nil {
@@ -68,7 +107,7 @@ public struct DiagnosticFileStore {
 
     public func deleteAll() throws {
         let fm = FileManager.default
-        for url in [fileURL, rotatedURL] {
+        for url in try allGenerationURLs() {
             if fm.fileExists(atPath: url.path) || (try? isSymbolicLink(url)) == true {
                 try fm.removeItem(at: url)
             }
