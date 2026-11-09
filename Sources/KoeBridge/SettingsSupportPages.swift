@@ -112,7 +112,6 @@ struct SettingsAboutPage: View {
                             Toggle("自動更新確認", isOn: $updater.automaticChecksEnabled)
                                 .labelsHidden()
                                 .toggleStyle(.switch)
-                                .disabled(developerDiagnostics.isDeleting)
                         }
                         Divider()
                         SettingsRow("アップデートを自動的にダウンロードしてインストール",
@@ -221,6 +220,7 @@ struct SettingsAboutPage: View {
                                 ))
                                 .labelsHidden()
                                 .toggleStyle(.switch)
+                                .disabled(developerDiagnostics.isDeleting)
                             }
                             Divider()
                             Text("保存先：~/Library/Application Support/KoeBridge/DeveloperDiagnostics")
