@@ -137,7 +137,7 @@ final class MicrophoneCapture: @unchecked Sendable {
             }
         } else { diagnosticWatch = nil }
         defer { diagnosticWatch?.cancel() }
-        speechTrace = DiagnosticLog.inputTrace(takeID: diagnosticID)
+        speechTrace = DiagnosticLog.inputTrace(takeID: diagnosticTakeID ?? diagnosticID)
         do {
             try await withTaskCancellationHandler {
                 try Task.checkCancellation()
