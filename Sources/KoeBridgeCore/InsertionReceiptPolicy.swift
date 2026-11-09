@@ -46,6 +46,18 @@ public enum InsertionReceiptPolicy {
         }
     }
 
+    public struct VerificationPlan: Sendable {
+        public let before: Snapshot
+        public let inserted: String
+        public let expected: Snapshot
+
+        fileprivate init(before: Snapshot, inserted: String, expected: Snapshot) {
+            self.before = before
+            self.inserted = inserted
+            self.expected = expected
+        }
+    }
+
     public enum Reconciliation: Equatable, Sendable {
         case unchanged
         case rebased(Snapshot)
@@ -76,16 +88,26 @@ public enum InsertionReceiptPolicy {
         return replacingSelection(before, with: Array(inserted.utf16))
     }
 
-    public static func verify(before: Snapshot, inserted: String, after: Snapshot?,
+    public static func verificationPlan(before: Snapshot, inserted: String) -> VerificationPlan? {
+        guard let expected = expectedAfter(before: before, inserted: inserted) else { return nil }
+        return VerificationPlan(before: before, inserted: inserted, expected: expected)
+    }
+
+    public static func verify(_ plan: VerificationPlan, after: Snapshot?,
                               sameTarget: Bool, cancelled: Bool = false) -> Receipt? {
-        guard sameTarget, !cancelled,
-              let after, let expected = expectedAfter(before: before, inserted: inserted),
-              expected == after,
+        guard sameTarget, !cancelled, let after,
+              plan.expected == after,
               // Replacing selected text with the identical text has no visible
               // text edit to attribute to us. A collapsed selection alone is
               // insufficient evidence that the receiving app accepted input.
-              !sameText(before.text, after.text) else { return nil }
-        return Receipt(before: before, after: after, inserted: inserted)
+              !sameText(plan.before.text, after.text) else { return nil }
+        return Receipt(before: plan.before, after: after, inserted: plan.inserted)
+    }
+
+    public static func verify(before: Snapshot, inserted: String, after: Snapshot?,
+                              sameTarget: Bool, cancelled: Bool = false) -> Receipt? {
+        guard let plan = verificationPlan(before: before, inserted: inserted) else { return nil }
+        return verify(plan, after: after, sameTarget: sameTarget, cancelled: cancelled)
     }
 
     /// Reconcile only a concurrent recording for the exact same target. A
