@@ -43,6 +43,9 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
     var appleAudioBytes = 0
     var successfulEngine: RecognitionMode?
     var partialText = ""
+    // Developer diagnostics only. This is the provider-confirmed text before
+    // AI-agent formatting or optional local context cleanup.
+    var rawRecognizedText: String?
     var startedAt: Date?
     var stoppingAt: Date?
     var firstPreviewAt: Date?
