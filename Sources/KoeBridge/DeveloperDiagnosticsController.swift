@@ -22,7 +22,7 @@ import Foundation
                 try await DeveloperDiagnosticsStore.shared.prepare(token: token)
             } catch {
                 DeveloperDiagnostics.disablePreference()
-                try? await DeveloperDiagnosticsStore.shared.deleteAll()
+                try? await DeveloperDiagnosticsStore.shared.deleteAllIfStillDisabled()
                 await MainActor.run {
                     self.enabled = false
                     self.statusMessage = "開発用診断を開始できなかったため停止しました：\(error.localizedDescription)"
@@ -37,9 +37,11 @@ import Foundation
         statusMessage = "開発用診断を停止し、保存データを削除しています…"
         Task {
             do {
-                try await DeveloperDiagnosticsStore.shared.deleteAll()
+                try await DeveloperDiagnosticsStore.shared.deleteAllIfStillDisabled()
                 await MainActor.run {
-                    self.statusMessage = "開発用診断を停止し、保存データを削除しました。"
+                    self.statusMessage = DeveloperDiagnostics.isEnabled
+                        ? "開発用診断は再度有効になったため、新しい診断データは保持します。"
+                        : "開発用診断を停止し、保存データを削除しました。"
                 }
             } catch {
                 await MainActor.run {
