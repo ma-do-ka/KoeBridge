@@ -21,8 +21,11 @@ import Foundation
             do {
                 try await DeveloperDiagnosticsStore.shared.prepare(token: token)
             } catch {
+                DeveloperDiagnostics.disablePreference()
+                try? await DeveloperDiagnosticsStore.shared.deleteAll()
                 await MainActor.run {
-                    self.statusMessage = "開発用診断フォルダーを準備できません：\(error.localizedDescription)"
+                    self.enabled = false
+                    self.statusMessage = "開発用診断を開始できなかったため停止しました：\(error.localizedDescription)"
                 }
             }
         }
