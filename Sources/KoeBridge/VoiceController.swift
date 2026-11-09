@@ -100,6 +100,8 @@ import KoeBridgeCore
         let reason: String?
         let partial: String
         let noInput: Bool
+        let usageEngines: [EngineUsageSample]
+        let usageTokens: [GeminiTokenSample]
     }
 
     private init() {
@@ -190,6 +192,15 @@ import KoeBridgeCore
         ])
         inFlight[take.id] = take
         active = take
+        DeveloperDiagnostics.recordEvent(
+            takeID: take.id,
+            stage: "requested",
+            fields: [
+                "preferred_engine": take.preferred.rawValue,
+                "style": take.style.rawValue,
+                "automatic_input": take.shouldPaste ? "1" : "0"
+            ]
+        )
         overlayDismissal?.cancel()
         overlayDismissal = nil
         overlayOwner = take.id
@@ -214,7 +225,7 @@ import KoeBridgeCore
             guard let self, let take, self.active === take, self.phase == .preparing else { return }
             self.resolve(take, text: nil, reason: "マイクの準備が40秒以内に終わりませんでした")
         }
-        Task { [weak self, weak take] in
+        take.preparationTask = Task { [weak self, weak take] in
             guard let self, let take else { return }
             await self.startPrepared(take)
         }
@@ -230,6 +241,7 @@ import KoeBridgeCore
 
     private func startPrepared(_ take: DictationTake) async {
         guard active === take, !take.finished else { return }
+        defer { take.preparationTask = nil }
         let beforePermission = Date()
         let selectedInputUID = MicrophoneDeviceStore.shared.selectedUID
         guard await microphoneAllowed() else {
@@ -255,11 +267,18 @@ import KoeBridgeCore
                 let timeout = retryPolicy.timeoutForNextAttempt(elapsed: elapsed)
                 guard timeout > 0 else { throw MicrophoneCapture.CaptureError.notReady(.noBuffers) }
                 attempts += 1
-                let candidate = MicrophoneCapture(selectedInputUID: selectedInputUID)
+                let candidate = MicrophoneCapture(
+                    selectedInputUID: selectedInputUID,
+                    diagnosticTakeID: take.id
+                )
                 // Own preparation, not just a successfully started microphone.
                 // discard()/releaseResources() can now stop it immediately.
                 take.mic = candidate
                 DiagnosticLog.record("mic_prepare_attempt take=\(take.id.uuidString) attempt=\(attempts)")
+                DeveloperDiagnostics.recordEvent(
+                    takeID: take.id, stage: "microphone_attempt",
+                    fields: ["attempt": "\(attempts)", "timeout_ms": "\(Int(timeout * 1_000))"]
+                )
                 do {
                     try await candidate.start(timeout: timeout, onAudio: { [weak self, weak take] data in
                         let delivery = continuation.yield(data)
@@ -324,6 +343,13 @@ import KoeBridgeCore
             }
             take.startedAt = Date()
             lastStartupSeconds = take.startedAt?.timeIntervalSince(take.requestedAt)
+            DeveloperDiagnostics.recordEvent(
+                takeID: take.id, stage: "microphone_ready",
+                fields: [
+                    "attempts": "\(attempts)",
+                    "request_to_ready_ms": "\(Int((lastStartupSeconds ?? 0) * 1_000))"
+                ]
+            )
             phase = .recording
             isRecording = true
             if overlayOwner == take.id { overlayFeedback = .recording }
@@ -379,6 +405,16 @@ import KoeBridgeCore
                             }
                         case .error:
                             DiagnosticLog.record("gemini receiver failure during take")
+                            DeveloperDiagnostics.recordEvent(
+                                takeID: take.id, stage: "gemini_receiver_failure"
+                            )
+                            // During an active recording, a dead receiver would
+                            // otherwise leave the UI recording until the user
+                            // notices. Stop capture and let the existing local
+                            // recovery path consume the audio already retained.
+                            if self.active === take, self.phase == .recording {
+                                self.stop()
+                            }
                         default: break
                         }
                     }
@@ -456,6 +492,10 @@ import KoeBridgeCore
         status = quickExitCandidate ? "録音を終了しています…" :
             "文字起こしを確定中。録音キーでもう一度押すと次の録音を開始できます"
         DiagnosticLog.record("session stopped; UI idle immediately; background finalization; pending=\(finished.count)")
+        DeveloperDiagnostics.recordEvent(
+            takeID: take.id, stage: "recording_stopped",
+            fields: ["recorded_ms": "\(Int(max(0, recordedSeconds) * 1_000))"]
+        )
         take.finalizationTimeout = Task { [weak self, weak take] in
             do { try await Task.sleep(for: .seconds(TranscriptReviewDeadline.totalSeconds)) } catch { return }
             guard let self, let take, !take.finished else { return }
@@ -676,8 +716,23 @@ import KoeBridgeCore
             if overlayOwner == take.id && !noInput { hideOverlay() }
             previewText = ""
         }
+        let usageSamples = take.usageSamples(
+            succeeded: text?.isEmpty == false,
+            cancelled: noInput || reason == "録音をキャンセルしました"
+        )
+        DeveloperDiagnostics.recordRecognition(
+            takeID: take.id,
+            recordedAt: take.requestedAt,
+            engine: take.usedMode,
+            primaryText: take.reviewSession?.originalText,
+            finalText: text,
+            partialText: partial.isEmpty ? nil : partial,
+            alternativeText: take.review?.alternativeText,
+            pcm16LE: take.audioBackup
+        )
         let accepted = finished.finish(take.id, result: Completion(
-            text: text, reason: reason, partial: partial, noInput: noInput))
+            text: text, reason: reason, partial: partial, noInput: noInput,
+            usageEngines: usageSamples.engines, usageTokens: usageSamples.tokens))
         // Persist now, even if an older delivery is awaiting its receipt. An
         // app exit must not discard a completed result waiting in the sender.
         if accepted, !noInput {
@@ -696,19 +751,11 @@ import KoeBridgeCore
         // older take is still finalizing in the ordered delivery buffer.
         if noInput { showCompletionFeedback(.noInput, for: take.id) }
         // Safety first: persist recoverable text before posting input events.
-        // Usage telemetry is secondary and must not delay those key events.
+        // Usage samples were snapshotted above, but disk persistence is deferred
+        // until after this take's input attempt so telemetry cannot add latency.
         deliverOrderedResults()
         if noInput && active == nil && overlayOwner == take.id { status = "音声入力なし" }
-        recordUsage(take, succeeded: text?.isEmpty == false,
-                    cancelled: noInput || reason == "録音をキャンセルしました")
         take.releaseResources()
-    }
-
-    /// Called exactly once per take, including failures and fallback.
-    /// No transcript, audio, credentials, or platform error messages are stored.
-    private func recordUsage(_ take: DictationTake, succeeded: Bool, cancelled: Bool) {
-        let samples = take.usageSamples(succeeded: succeeded, cancelled: cancelled)
-        usageStore.append(engineEvents: samples.engines, tokenEvents: samples.tokens)
     }
 
     private func deliverOrderedResults() {
@@ -720,10 +767,16 @@ import KoeBridgeCore
                 let ready = self.finished.drain()
                 guard !ready.isEmpty else { return }
                 for (id, result) in ready {
-                    guard let take = self.inFlight[id] else { continue }
+                    guard let take = self.inFlight[id] else {
+                        self.usageStore.append(engineEvents: result.usageEngines,
+                                               tokenEvents: result.usageTokens)
+                        continue
+                    }
                     // Retain the whole ready prefix in inFlight while awaiting
                     // receipts, so rebasing reaches finished and recording takes.
                     await self.deliver(result, take: take)
+                    self.usageStore.append(engineEvents: result.usageEngines,
+                                           tokenEvents: result.usageTokens)
                     self.inFlight.removeValue(forKey: id)
                 }
             }
@@ -746,6 +799,10 @@ import KoeBridgeCore
                 .outcome: .token(.skipped), .reason: .reason("no_input"), .eventsPosted: .flag(false)
             ])
             DiagnosticLog.record("empty rapid recording discarded; id=\(id.uuidString.prefix(8))")
+            DeveloperDiagnostics.recordDelivery(
+                takeID: id, delivery: "no_input",
+                detail: "音声入力なし", transportText: nil
+            )
             return
         }
         guard let text = result.text, !text.isEmpty else {
@@ -758,6 +815,11 @@ import KoeBridgeCore
                              engine: take.usedMode, review: take.review)
             }
             DiagnosticLog.record("session failure; id=\(id.uuidString.prefix(8)); reason=\(Self.safeFailureCode(result.reason))")
+            DeveloperDiagnostics.recordDelivery(
+                takeID: id, delivery: "recognition_interrupted",
+                detail: result.reason ?? "文字起こしに失敗しました",
+                transportText: nil
+            )
             showCompletionFeedback(.failed, for: id)
             if active == nil { status = result.reason ?? "文字起こしに失敗しました（履歴を確認）" }
             return
@@ -799,6 +861,12 @@ import KoeBridgeCore
                 DiagnosticLog.record("delivery resolved; id=\(id.uuidString.prefix(8)); outcome=\(outcome.delivery.rawValue); reason=\(report.reason)")
             }
         }
+        let developerTransport = outcome.report?.eventsPosted == true
+            ? UnicodeTypingPlan.safeText(text) : nil
+        DeveloperDiagnostics.recordDelivery(
+            takeID: id, delivery: outcome.delivery.rawValue,
+            detail: outcome.detail, transportText: developerTransport
+        )
         if let recordID { updateRemembered(recordID, delivery: outcome.delivery, detail: outcome.detail) }
         if outcome.submitted, let stoppedAt = take.stoppingAt {
             lastStopToInputSeconds = Date().timeIntervalSince(stoppedAt)
