@@ -84,6 +84,9 @@ enum DeveloperDiagnostics {
                 } catch {
                     disablePreference()
                     try? await DeveloperDiagnosticsStore.shared.deleteAllIfStillDisabled()
+                    await MainActor.run {
+                        DeveloperDiagnosticsController.shared.failClosedFromStorage(error)
+                    }
                 }
             }
         } else {
