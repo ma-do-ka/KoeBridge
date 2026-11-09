@@ -121,6 +121,9 @@ Tests/KoeBridgeCoreTests/UsageMonitorTests.swift
 V101C_SETTINGS_COPY.md
 V101C_STATUS_MONITOR.md
 docs/images/koebridge-hero.webp
+docs/images/koebridge-intro-inline.webp
+docs/images/koebridge-intro-thumbnail.jpg
+docs/videos/koebridge-intro.mp4
 docs/releases/v1.0.1.md
 docs/releases/v1.0.1b.md
 docs/releases/v1.0.1c.md
