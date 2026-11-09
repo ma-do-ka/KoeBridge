@@ -32,6 +32,16 @@ struct DeveloperDiagnosticsPolicyTests {
         #expect(!result.truncated)
     }
 
+    @Test func observedDeltaKeepsOnlyChangedCharacters() {
+        let delta = DeveloperDiagnosticsPolicy.changedSegment(
+            before: "prefix OLD suffix",
+            after: "prefix NEW text suffix"
+        )
+        #expect(delta?.text == "NEW text")
+        #expect(delta?.truncated == false)
+        #expect(DeveloperDiagnosticsPolicy.changedSegment(before: "same", after: "same") == nil)
+    }
+
     @Test func retentionLimitsAreFailClosed() {
         #expect(DeveloperDiagnosticsPolicy.mayRetainSession(
             fileBytes: DeveloperDiagnosticsPolicy.maximumSessionBytes,
