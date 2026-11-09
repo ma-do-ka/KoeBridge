@@ -15,6 +15,8 @@ SECURITY.md
 Sources/KoeBridge/AppleLocalTranscriber.swift
 Sources/KoeBridge/Diagnostics.swift
 Sources/KoeBridge/DeveloperDiagnostics.swift
+Sources/KoeBridge/DeveloperDiagnosticsController.swift
+Sources/KoeBridge/DeveloperDiagnosticsStore.swift
 Sources/KoeBridge/DictationTake.swift
 Sources/KoeBridge/HistoryView.swift
 Sources/KoeBridge/PreviewView.swift
