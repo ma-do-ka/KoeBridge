@@ -308,15 +308,33 @@ import KoeBridgeCore
                     if error is MicrophoneSelectionError { throw error }
                     let category: String
                     let errorCode: Int
+                    let routeTransition: Bool
                     if let captureError = error as? MicrophoneCapture.CaptureError {
                         category = captureError.diagnosticCategory
                         errorCode = (captureError as NSError).code
+                        if case .notReady(let failure) = captureError {
+                            switch failure {
+                            case .configurationChanged, .inputRouteChanged, .formatChanged, .engineStopped:
+                                routeTransition = true
+                            default:
+                                routeTransition = false
+                            }
+                        } else {
+                            routeTransition = false
+                        }
                     } else if let deviceError = error as? MicrophoneDevices.DeviceError {
                         category = deviceError.diagnosticCategory
                         errorCode = deviceError.osStatus.map(Int.init) ?? (deviceError as NSError).code
+                        switch deviceError {
+                        case .selectionFailed, .selectionNotApplied:
+                            routeTransition = true
+                        case .noAudioUnit:
+                            routeTransition = false
+                        }
                     } else {
                         category = "engine_start_failed"
                         errorCode = (error as NSError).code
+                        routeTransition = false
                     }
                     let elapsed = ProcessInfo.processInfo.systemUptime - preparationBegan
                     if let route = candidate.routeSnapshot {
@@ -335,7 +353,17 @@ import KoeBridgeCore
                             "elapsed_ms": "\(Int(elapsed * 1_000))"
                         ]
                     )
-                    guard let delay = retryPolicy.retryDelay(after: attempts, elapsed: elapsed) else { throw error }
+                    guard let delay = retryPolicy.retryDelay(
+                        after: attempts, elapsed: elapsed, routeTransition: routeTransition
+                    ) else { throw error }
+                    DeveloperDiagnostics.recordEvent(
+                        takeID: take.id, stage: "microphone_retry_scheduled",
+                        fields: [
+                            "attempt": "\(attempts)",
+                            "route_transition": routeTransition ? "1" : "0",
+                            "delay_ms": "\(Int(delay * 1_000))"
+                        ]
+                    )
                     status = "マイクの接続準備を待っています…（\(attempts + 1)/\(retryPolicy.maximumAttempts)）"
                     try await Task.sleep(for: .seconds(delay))
                 }
