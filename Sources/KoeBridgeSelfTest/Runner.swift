@@ -251,6 +251,12 @@ struct KoeBridgeSelfTest {
         await run("SettingsNavigationSelfTests.repeatedSearchAndUpdateRequestsStillScroll", { try SettingsNavigationSelfTests().repeatedSearchAndUpdateRequestsStillScroll() })
         await run("SettingsNavigationSelfTests.pageChangesDoNotReplayAStaleSearch", { try SettingsNavigationSelfTests().pageChangesDoNotReplayAStaleSearch() })
         await run("TranscriptReviewSelfTests.mixedLiteralBoundariesKeepStableUnicodeOffsets", { TranscriptReviewSelfTests().mixedLiteralBoundariesKeepStableUnicodeOffsets() })
+        await run("V2StabilitySelfTests.microphoneBindingRequiresExactReadback", { V2StabilitySelfTests().microphoneBindingRequiresExactReadback() })
+        await run("V2StabilitySelfTests.routeStabilityRejectsTransientMismatchesWithoutAuthorizing", { V2StabilitySelfTests().routeStabilityRejectsTransientMismatchesWithoutAuthorizing() })
+        await run("V2StabilitySelfTests.routeRetryBackoffIsShortAndBounded", { V2StabilitySelfTests().routeRetryBackoffIsShortAndBounded() })
+        await run("V2StabilitySelfTests.audioConversionCapacityFailsClosed", { V2StabilitySelfTests().audioConversionCapacityFailsClosed() })
+        await run("V2StabilitySelfTests.developerDiagnosticsBoundsAndUnicodeAreStable", { V2StabilitySelfTests().developerDiagnosticsBoundsAndUnicodeAreStable() })
+        await run("V2StabilitySelfTests.receiptVerificationPlanPreservesExactSemantics", { try V2StabilitySelfTests().receiptVerificationPlanPreservesExactSemantics() })
         print("KoeBridge portable self-test: \(testCount) cases, \(TestRecorder.checked) assertions, \(TestRecorder.failures) failures")
         if TestRecorder.failures > 0 { exit(1) }
     }
