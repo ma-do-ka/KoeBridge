@@ -283,7 +283,7 @@ extension InputDiagnosticTests {
         var ordinary = InputDiagnosticBuffer(takeID: take)
         var developer = InputDiagnosticBuffer(takeID: take, maximumEvents: 512,
                                               preservedInitialEvents: 64)
-        let event = InputDiagnosticEvent(kind: .session, stage: .requested)
+        let event = InputDiagnosticEvent(kind: .session, stage: .requested, fields: [:])
         for i in 0..<600 {
             ordinary.append(event, elapsedMS: i)
             developer.append(event, elapsedMS: i)
