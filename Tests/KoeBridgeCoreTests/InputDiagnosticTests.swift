@@ -277,4 +277,19 @@ extension InputDiagnosticTests {
             #expect(summaries.flatMap { $0.split(separator: " ") }.filter { $0.hasPrefix(field.rawValue + "=") }.count == 1)
         }
     }
+
+    @Test func configurableRetentionDoesNotChangeDefaultLimit() {
+        let take = UUID()
+        var ordinary = InputDiagnosticBuffer(takeID: take)
+        var developer = InputDiagnosticBuffer(takeID: take, maximumEvents: 512,
+                                              preservedInitialEvents: 64)
+        let event = InputDiagnosticEvent(kind: .session, stage: .requested)
+        for i in 0..<600 {
+            ordinary.append(event, elapsedMS: i)
+            developer.append(event, elapsedMS: i)
+        }
+        #expect(ordinary.retainedCount == InputDiagnosticBuffer.maximumEvents)
+        #expect(developer.retainedCount == 512)
+        #expect(ordinary.droppedCount > developer.droppedCount)
+    }
 }
