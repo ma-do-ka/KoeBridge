@@ -239,3 +239,9 @@ docs/input-gestures-and-snippets.md
 Sources/KoeBridgeCore/HistorySearch.swift
 Sources/KoeBridgeSelfTest/HistorySearchTests.swift
 Tests/KoeBridgeCoreTests/HistorySearchTests.swift
+
+Sources/KoeBridgeCore/GeminiPrewarm.swift
+Sources/KoeBridge/GeminiLivePrewarmer.swift
+Tests/KoeBridgeCoreTests/GeminiPrewarmPolicyTests.swift
+Sources/KoeBridgeSelfTest/GeminiPrewarmPolicyTests.swift
+docs/gemini-prewarm.md

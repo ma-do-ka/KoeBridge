@@ -55,6 +55,11 @@ struct SettingsGeminiPage: View {
                 }
                 GroupBox {
                     VStack(spacing: 0) {
+                        SettingsRow("録音前に接続を準備する",
+                                    description: "録音開始前に接続だけを準備しておき、押し始めの待ち時間をなくします。録音するまで音声は送信されません。準備した接続は5分で破棄されます。", icon: "bolt.horizontal") {
+                            Toggle("録音前に接続を準備する", isOn: $controller.geminiPrewarmEnabled).labelsHidden()
+                        }
+                        Divider()
                         SettingsRow("日本語での認識を優先する",
                                     description: "日本語を中心に話す場合に有効にしてください。Geminiに日本語の言語設定を送ります。オフでは言語を指定しません。", icon: "character.book.closed") {
                             Toggle("日本語での認識を優先する", isOn: $controller.japaneseHint)

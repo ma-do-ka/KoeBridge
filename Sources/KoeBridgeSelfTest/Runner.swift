@@ -61,6 +61,11 @@ struct KoeBridgeSelfTest {
             do { try await action() }
             catch { TestRecorder.assertion(false, file: #fileID, line: #line, message: "test threw: \(error)") }
         }
+        await run("GeminiPrewarmPolicyTests.maximumWarmAgeIsFiveMinutes", { GeminiPrewarmPolicyTests().maximumWarmAgeIsFiveMinutes() })
+        await run("GeminiPrewarmPolicyTests.matchingSnapshotWithinAgeLimit", { GeminiPrewarmPolicyTests().matchingSnapshotWithinAgeLimit() })
+        await run("GeminiPrewarmPolicyTests.everySnapshotFieldMustMatch", { GeminiPrewarmPolicyTests().everySnapshotFieldMustMatch() })
+        await run("GeminiPrewarmPolicyTests.expiredAndFutureConnectionsAreUnusable", { GeminiPrewarmPolicyTests().expiredAndFutureConnectionsAreUnusable() })
+        await run("GeminiPrewarmPolicyTests.fingerprintIsStableFNV1a", { GeminiPrewarmPolicyTests().fingerprintIsStableFNV1a() })
         await run("SnippetExpanderTests.singleReplacement", { SnippetExpanderTests().singleReplacement() })
         await run("SnippetExpanderTests.allOccurrences", { SnippetExpanderTests().allOccurrences() })
         await run("SnippetExpanderTests.longestTriggerFirst", { SnippetExpanderTests().longestTriggerFirst() })

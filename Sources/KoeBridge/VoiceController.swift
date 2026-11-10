@@ -16,17 +16,38 @@ import KoeBridgeCore
     @Published private(set) var lastStartupSeconds: TimeInterval?
     @Published private(set) var lastStopToInputSeconds: TimeInterval?
     @Published var requestedMode: RecognitionMode {
-        didSet { UserDefaults.standard.set(requestedMode.rawValue, forKey: "engine") }
+        didSet {
+            UserDefaults.standard.set(requestedMode.rawValue, forKey: "engine")
+            if requestedMode != .gemini {
+                warmScheduleTask?.cancel()
+                prewarmer.shutdown()
+            }
+            else { scheduleWarmGemini() }
+        }
+    }
+    @Published var geminiPrewarmEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(geminiPrewarmEnabled, forKey: "geminiPrewarm")
+            if geminiPrewarmEnabled { scheduleWarmGemini() }
+            else {
+                warmScheduleTask?.cancel()
+                prewarmer.shutdown()
+            }
+        }
     }
     @Published var transcriptionStyle: TranscriptionStyle {
         didSet {
             UserDefaults.standard.set(transcriptionStyle.rawValue, forKey: "transcriptionStyle")
             // Continue maintaining the legacy setting for a safe downgrade.
             UserDefaults.standard.set(transcriptionStyle == .readable, forKey: "smart")
+            scheduleWarmGemini()
         }
     }
     @Published var japaneseHint: Bool {
-        didSet { UserDefaults.standard.set(japaneseHint, forKey: "japanese") }
+        didSet {
+            UserDefaults.standard.set(japaneseHint, forKey: "japanese")
+            scheduleWarmGemini()
+        }
     }
     @Published var automaticPaste: Bool {
         didSet { UserDefaults.standard.set(automaticPaste, forKey: "autoPaste") }
@@ -52,13 +73,22 @@ import KoeBridgeCore
     }
     var onInputConfigurationChange: (() -> Void)?
     @Published var vocabulary: String {
-        didSet { UserDefaults.standard.set(vocabulary, forKey: "vocabulary") }
+        didSet {
+            UserDefaults.standard.set(vocabulary, forKey: "vocabulary")
+            scheduleWarmGemini()
+        }
     }
     @Published var registeredVocabularyEnabled: Bool {
-        didSet { UserDefaults.standard.set(registeredVocabularyEnabled, forKey: "registeredVocabularyEnabled") }
+        didSet {
+            UserDefaults.standard.set(registeredVocabularyEnabled, forKey: "registeredVocabularyEnabled")
+            scheduleWarmGemini()
+        }
     }
     @Published var topicVocabularyEnabled: Bool {
-        didSet { UserDefaults.standard.set(topicVocabularyEnabled, forKey: "topicVocabularyEnabled") }
+        didSet {
+            UserDefaults.standard.set(topicVocabularyEnabled, forKey: "topicVocabularyEnabled")
+            scheduleWarmGemini()
+        }
     }
     @Published var textContextCheckEnabled: Bool {
         didSet { UserDefaults.standard.set(textContextCheckEnabled, forKey: "textContextCheckEnabled") }
@@ -98,6 +128,8 @@ import KoeBridgeCore
             monitorProblem = usageStore.problem
         }
     }
+    private let prewarmer = GeminiLivePrewarmer()
+    private var warmScheduleTask: Task<Void, Never>?
     private var active: DictationTake?
     private var inFlight: [UUID: DictationTake] = [:]
     private var finished = OrderedResultBuffer<Completion>(maximumPending: 8)
@@ -132,6 +164,7 @@ import KoeBridgeCore
             storedStyle: d.string(forKey: "transcriptionStyle"),
             legacySmart: d.bool(forKey: "smart")
         )
+        geminiPrewarmEnabled = d.object(forKey: "geminiPrewarm") == nil ? true : d.bool(forKey: "geminiPrewarm")
         japaneseHint = d.object(forKey: "japanese") == nil ? true : d.bool(forKey: "japanese")
         automaticPaste = d.object(forKey: "autoPaste") == nil ? true : d.bool(forKey: "autoPaste")
         vocabulary = d.string(forKey: "vocabulary") ?? "GitHub\nn8n\nPython\nDeepSeek\nGemini\nCodex"
@@ -151,6 +184,30 @@ import KoeBridgeCore
         monitorEvents = usageStore.engineEvents
         monitorTokens = usageStore.tokenEvents
         monitorProblem = usageStore.problem
+        scheduleWarmGemini()
+    }
+
+    private func scheduleWarmGemini() {
+        warmScheduleTask?.cancel()
+        warmScheduleTask = Task { [weak self] in
+            do { try await Task.sleep(for: .milliseconds(600)) }
+            catch { return }
+            self?.warmGeminiIfNeeded()
+        }
+    }
+
+    private func warmGeminiIfNeeded() {
+        prewarmer.warmIfNeeded { [self] in
+            guard geminiPrewarmEnabled, requestedMode == .gemini, active == nil,
+                  !inFlight.values.contains(where: { !$0.finished }),
+                  let key = KeychainStore.load() else { return nil }
+            let terms = AgentVocabulary.terms(user: vocabulary.components(separatedBy: .newlines),
+                                             registeredEnabled: registeredVocabularyEnabled,
+                                             topicEnabled: topicVocabularyEnabled)
+            return (GeminiPrewarmSnapshot(vocabulary: terms, style: transcriptionStyle,
+                                         japaneseHint: japaneseHint,
+                                         apiKeyFingerprint: GeminiPrewarmSnapshot.fingerprint(apiKey: key)), key)
+        }
     }
 
     var hasKey: Bool { KeychainStore.load() != nil }
@@ -383,15 +440,22 @@ import KoeBridgeCore
         var actual = take.preferred
         if actual == .gemini {
             if let key = KeychainStore.load() {
-                let candidate = GeminiLiveConnection()
+                let snapshot = GeminiPrewarmSnapshot(
+                    vocabulary: take.vocabulary, style: take.style, japaneseHint: take.japaneseHint,
+                    apiKeyFingerprint: GeminiPrewarmSnapshot.fingerprint(apiKey: key))
+                let warmed = geminiPrewarmEnabled ? prewarmer.adopt(current: snapshot) : nil
+                DiagnosticLog.record(warmed == nil ? "gemini prewarm miss" : "gemini prewarm adopted")
+                let candidate = warmed ?? GeminiLiveConnection()
                 take.geminiAttempted = true
                 take.geminiStartedAt = Date()
                 take.cloud = candidate
                 do {
-                    try await candidate.connect(apiKey: key,
-                                                vocabulary: take.vocabulary,
-                                                style: take.style,
-                                                japaneseHint: take.japaneseHint)
+                    if warmed == nil {
+                        try await candidate.connect(apiKey: key,
+                                                    vocabulary: take.vocabulary,
+                                                    style: take.style,
+                                                    japaneseHint: take.japaneseHint)
+                    }
                     guard !take.finished, !Task.isCancelled else {
                         candidate.cancel()
                         throw CancellationError()
@@ -747,6 +811,7 @@ import KoeBridgeCore
         recordUsage(take, succeeded: text?.isEmpty == false,
                     cancelled: noInput || reason == "録音をキャンセルしました")
         take.releaseResources()
+        scheduleWarmGemini()
     }
 
     /// Called exactly once per take, including failures and fallback.
@@ -991,10 +1056,15 @@ import KoeBridgeCore
 
     func saveKey(_ key: String) throws {
         try KeychainStore.save(key)
+        warmScheduleTask?.cancel()
+        prewarmer.shutdown()
+        scheduleWarmGemini()
         objectWillChange.send()
     }
     func deleteKey() throws {
         try KeychainStore.delete()
+        warmScheduleTask?.cancel()
+        prewarmer.shutdown()
         objectWillChange.send()
     }
     func copyLastText() { TextInsertion.copy(history.first?.text ?? previewText) }
