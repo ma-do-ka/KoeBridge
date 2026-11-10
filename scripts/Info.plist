@@ -11,7 +11,7 @@
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>1.1.6</string>
   <key>KoeBridgeReleaseLabel</key><string>1.1.6</string>
-  <key>CFBundleVersion</key><string>52</string>
+  <key>CFBundleVersion</key><string>53</string>
   <key>LSMinimumSystemVersion</key><string>15.0</string>
   <key>LSUIElement</key><true/>
   <key>NSMicrophoneUsageDescription</key><string>音声入力のためにマイク音声を取得します。GeminiモードではGoogle APIへ送信します。</string>

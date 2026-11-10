@@ -284,6 +284,8 @@ struct KoeBridgeSelfTest {
         await run("GeminiWireTests.decodedFrameRetainsUsageAndOptionalFrames", { try GeminiWireTests().decodedFrameRetainsUsageAndOptionalFrames() })
         await run("GeminiWireTests.malformedFrameFailsInsteadOfBecomingEmptyMessage", { GeminiWireTests().malformedFrameFailsInsteadOfBecomingEmptyMessage() })
         await run("GeminiWireTests.decodedErrorKeepsDiagnosticsContentFree", { try GeminiWireTests().decodedErrorKeepsDiagnosticsContentFree() })
+        await run("LocalRecognitionStateTests.structuredPreviewPreservesFinalizedPrefix", { LocalRecognitionStateTests().structuredPreviewPreservesFinalizedPrefix() })
+        await run("LocalRecognitionStateTests.unchangedTextStillTransitionsToFinal", { LocalRecognitionStateTests().unchangedTextStillTransitionsToFinal() })
         await run("LocalRecognitionStateTests.cancelledPermissionCannotStartRecognition", { LocalRecognitionStateTests().cancelledPermissionCannotStartRecognition() })
         await run("LocalRecognitionStateTests.cancelledRecognitionIgnoresDelayedCallbacks", { LocalRecognitionStateTests().cancelledRecognitionIgnoresDelayedCallbacks() })
         await run("LocalRecognitionStateTests.acceptedFinalCannotBeReplacedByLatePartialOrError", { LocalRecognitionStateTests().acceptedFinalCannotBeReplacedByLatePartialOrError() })

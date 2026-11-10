@@ -1,3 +1,14 @@
+/// Recognizer stability for display only; never authorizes document insertion.
+public struct RecognitionPreview: Equatable, Sendable {
+    public let finalizedPrefix: String
+    public let volatileTail: String
+    public init(finalizedPrefix: String = "", volatileTail: String = "") {
+        self.finalizedPrefix = finalizedPrefix
+        self.volatileTail = volatileTail
+    }
+    public var text: String { finalizedPrefix + volatileTail }
+}
+
 /// Lifecycle of one on-device recognition request. Kept separate from the
 /// Speech framework so cancellation and delayed callbacks can be exercised
 /// without a microphone or a permission prompt.
@@ -8,6 +19,7 @@ public struct LocalRecognitionState: Sendable {
 
     public private(set) var phase: Phase = .idle
     public private(set) var transcript = ""
+    public private(set) var preview = RecognitionPreview()
     public private(set) var failure: String?
 
     public init() {}
@@ -35,10 +47,30 @@ public struct LocalRecognitionState: Sendable {
         return true
     }
 
+    /// Legacy cumulative request updates; no segment stability is inferred.
     @discardableResult public mutating func receive(_ text: String, isFinal: Bool) -> Bool {
         guard acceptsUpdates else { return false }
         transcript = text
+        preview = isFinal ? RecognitionPreview(finalizedPrefix: text)
+            : RecognitionPreview(volatileTail: text)
         if isFinal { phase = .completed }
+        return true
+    }
+
+    /// Segment finals append; hypotheses replace only the volatile tail.
+    /// Request completion folds the supplied last tail into the prefix.
+    /// A finalized segment replaces the previous hypothesis, including an empty
+    /// final at stream end; only provider-final text then remains accepted.
+    @discardableResult public mutating func receiveSegment(_ text: String, finalized: Bool,
+                                                          completesRequest: Bool = false) -> Bool {
+        guard acceptsUpdates else { return false }
+        var prefix = preview.finalizedPrefix
+        var tail = text
+        if finalized { prefix += text; tail = "" }
+        if completesRequest { prefix += tail; tail = "" }
+        preview = RecognitionPreview(finalizedPrefix: prefix, volatileTail: tail)
+        transcript = preview.text
+        if completesRequest { phase = .completed }
         return true
     }
 

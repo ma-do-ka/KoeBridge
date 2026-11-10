@@ -54,6 +54,12 @@ public struct TranscriptAssembler {
         }
     }
 
+    /// Preserve the assembler's existing spacing, including the tail separator.
+    public var preview: RecognitionPreview {
+        RecognitionPreview(finalizedPrefix: finalized,
+                           volatileTail: String(displayText.dropFirst(finalized.count)))
+    }
+
     public var committedText: String { finalized }
 
     /// Failed recognition is saved as *partial* history, never auto-inserted.

@@ -1,9 +1,10 @@
 #if os(macOS)
 import Foundation
+import KoeBridgeCore
 
 @MainActor protocol LocalTranscribing: AnyObject {
     var transcript: String { get }
-    var onUpdate: ((String) -> Void)? { get set }
+    var onUpdate: ((RecognitionPreview) -> Void)? { get set }
     var requiresSpeechAuthorization: Bool { get }
     func start() async throws
     func appendPCM16(_ data: Data) throws

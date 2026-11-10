@@ -13,7 +13,7 @@ import KoeBridgeCore
     private var recognitionTask: SFSpeechRecognitionTask?
     private var state = LocalRecognitionState()
     var transcript: String { state.transcript }
-    var onUpdate: ((String) -> Void)?
+    var onUpdate: ((RecognitionPreview) -> Void)?
     private let audioFormat = AVAudioFormat(commonFormat: .pcmFormatInt16,
                                             sampleRate: 16_000, channels: 1, interleaved: true)!
 
@@ -49,7 +49,7 @@ import KoeBridgeCore
                                                      isFinal: result.isFinal)
                     }
                     if let error { self.state.receiveFailure(error.localizedDescription) }
-                    if updated { self.onUpdate?(self.transcript) }
+                    if updated { self.onUpdate?(self.state.preview) }
                 }
             }
         } catch {
