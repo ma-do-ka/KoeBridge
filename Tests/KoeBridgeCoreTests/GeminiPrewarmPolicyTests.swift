@@ -9,9 +9,13 @@ struct GeminiPrewarmPolicyTests {
                               apiKeyFingerprint: "test-fingerprint")
     }
 
+    @Test func maximumWarmAgeIsFiveMinutes() {
+        #expect(GeminiPrewarmPolicy.maximumWarmAge == 300)
+    }
+
     @Test func matchingSnapshotWithinAgeLimit() {
         let current = snapshot()
-        for age: TimeInterval in [0, 1, 479.999] {
+        for age: TimeInterval in [0, 1, GeminiPrewarmPolicy.maximumWarmAge - 0.001] {
             let usable = GeminiPrewarmPolicy.isUsable(snapshot: current, current: current,
                                                      warmedAt: now.addingTimeInterval(-age), now: now)
             #expect(usable)
@@ -34,7 +38,8 @@ struct GeminiPrewarmPolicyTests {
 
     @Test func expiredAndFutureConnectionsAreUnusable() {
         let current = snapshot()
-        for age: TimeInterval in [480, 481, 1000, -0.001, -480] {
+        for age: TimeInterval in [GeminiPrewarmPolicy.maximumWarmAge, GeminiPrewarmPolicy.maximumWarmAge + 1,
+                                 1000, -0.001, -GeminiPrewarmPolicy.maximumWarmAge] {
             let usable = GeminiPrewarmPolicy.isUsable(snapshot: current, current: current,
                                                      warmedAt: now.addingTimeInterval(-age), now: now)
             #expect(!usable)

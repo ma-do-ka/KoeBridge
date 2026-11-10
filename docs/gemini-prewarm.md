@@ -7,12 +7,13 @@ it never sends audio or starts a speech activity before recording. No audio
 leaves the Mac before recording.
 
 Preparation starts after controller setup when Gemini is selected and a key is
-available, and after a Gemini take completes and releases its resources, provided
+available, and after a take completes and releases its resources, provided
 no take is active. Idle changes to vocabulary, vocabulary assistance, style,
-Japanese preference, engine, or API key also refresh preparation.
+Japanese preference, engine, or API key also refresh preparation. All preparation
+triggers are debounced by 600 milliseconds and use the current settings.
 
-A prepared connection is discarded after eight minutes. Adoption independently
-requires an age of at least zero and strictly less than 480 seconds, exact matching
+A prepared connection is discarded after five minutes. Adoption independently
+requires an age of at least zero and strictly less than 300 seconds, exact matching
 vocabulary (including order), transcription style, Japanese hint, and API key
 fingerprint, plus a healthy connection. Missing, expired, mismatched, failed, or
 unfinished preparation uses the existing cold connect/setup path without waiting

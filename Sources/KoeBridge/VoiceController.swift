@@ -18,15 +18,21 @@ import KoeBridgeCore
     @Published var requestedMode: RecognitionMode {
         didSet {
             UserDefaults.standard.set(requestedMode.rawValue, forKey: "engine")
-            if requestedMode != .gemini { prewarmer.shutdown() }
-            else { warmGeminiIfNeeded() }
+            if requestedMode != .gemini {
+                warmScheduleTask?.cancel()
+                prewarmer.shutdown()
+            }
+            else { scheduleWarmGemini() }
         }
     }
     @Published var geminiPrewarmEnabled: Bool {
         didSet {
             UserDefaults.standard.set(geminiPrewarmEnabled, forKey: "geminiPrewarm")
-            if geminiPrewarmEnabled { warmGeminiIfNeeded() }
-            else { prewarmer.shutdown() }
+            if geminiPrewarmEnabled { scheduleWarmGemini() }
+            else {
+                warmScheduleTask?.cancel()
+                prewarmer.shutdown()
+            }
         }
     }
     @Published var transcriptionStyle: TranscriptionStyle {
@@ -34,13 +40,13 @@ import KoeBridgeCore
             UserDefaults.standard.set(transcriptionStyle.rawValue, forKey: "transcriptionStyle")
             // Continue maintaining the legacy setting for a safe downgrade.
             UserDefaults.standard.set(transcriptionStyle == .readable, forKey: "smart")
-            warmGeminiIfNeeded()
+            scheduleWarmGemini()
         }
     }
     @Published var japaneseHint: Bool {
         didSet {
             UserDefaults.standard.set(japaneseHint, forKey: "japanese")
-            warmGeminiIfNeeded()
+            scheduleWarmGemini()
         }
     }
     @Published var automaticPaste: Bool {
@@ -69,19 +75,19 @@ import KoeBridgeCore
     @Published var vocabulary: String {
         didSet {
             UserDefaults.standard.set(vocabulary, forKey: "vocabulary")
-            warmGeminiIfNeeded()
+            scheduleWarmGemini()
         }
     }
     @Published var registeredVocabularyEnabled: Bool {
         didSet {
             UserDefaults.standard.set(registeredVocabularyEnabled, forKey: "registeredVocabularyEnabled")
-            warmGeminiIfNeeded()
+            scheduleWarmGemini()
         }
     }
     @Published var topicVocabularyEnabled: Bool {
         didSet {
             UserDefaults.standard.set(topicVocabularyEnabled, forKey: "topicVocabularyEnabled")
-            warmGeminiIfNeeded()
+            scheduleWarmGemini()
         }
     }
     @Published var textContextCheckEnabled: Bool {
@@ -123,6 +129,7 @@ import KoeBridgeCore
         }
     }
     private let prewarmer = GeminiLivePrewarmer()
+    private var warmScheduleTask: Task<Void, Never>?
     private var active: DictationTake?
     private var inFlight: [UUID: DictationTake] = [:]
     private var finished = OrderedResultBuffer<Completion>(maximumPending: 8)
@@ -177,7 +184,16 @@ import KoeBridgeCore
         monitorEvents = usageStore.engineEvents
         monitorTokens = usageStore.tokenEvents
         monitorProblem = usageStore.problem
-        warmGeminiIfNeeded()
+        scheduleWarmGemini()
+    }
+
+    private func scheduleWarmGemini() {
+        warmScheduleTask?.cancel()
+        warmScheduleTask = Task { [weak self] in
+            do { try await Task.sleep(for: .milliseconds(600)) }
+            catch { return }
+            self?.warmGeminiIfNeeded()
+        }
     }
 
     private func warmGeminiIfNeeded() {
@@ -795,7 +811,7 @@ import KoeBridgeCore
         recordUsage(take, succeeded: text?.isEmpty == false,
                     cancelled: noInput || reason == "録音をキャンセルしました")
         take.releaseResources()
-        if take.preferred == .gemini { warmGeminiIfNeeded() }
+        scheduleWarmGemini()
     }
 
     /// Called exactly once per take, including failures and fallback.
@@ -1040,12 +1056,14 @@ import KoeBridgeCore
 
     func saveKey(_ key: String) throws {
         try KeychainStore.save(key)
+        warmScheduleTask?.cancel()
         prewarmer.shutdown()
-        warmGeminiIfNeeded()
+        scheduleWarmGemini()
         objectWillChange.send()
     }
     func deleteKey() throws {
         try KeychainStore.delete()
+        warmScheduleTask?.cancel()
         prewarmer.shutdown()
         objectWillChange.send()
     }

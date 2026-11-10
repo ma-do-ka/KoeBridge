@@ -54,7 +54,7 @@ private final class GeminiPingCompletion: @unchecked Sendable {
     private var receivedFrames = 0
     private var unrecognizedFrames = 0
 
-    var isUsableForPrewarm: Bool { ready && !closedByClient && failure == nil }
+    var isUsableForPrewarm: Bool { ready && !closedByClient && failure == nil && socket?.state == .running }
 
     func connect(apiKey: String, vocabulary: [String], style: TranscriptionStyle, japaneseHint: Bool) async throws {
         guard !started, !closedByClient else { throw ConnectionError.disconnected }

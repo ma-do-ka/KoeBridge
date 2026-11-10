@@ -26,7 +26,8 @@ public struct GeminiPrewarmSnapshot: Equatable, Sendable {
 }
 
 public enum GeminiPrewarmPolicy {
-    public static let maximumWarmAge: TimeInterval = 480
+    /// 5 minutes, comfortably inside the ~10-minute Live connection limit.
+    public static let maximumWarmAge: TimeInterval = 300
 
     public static func isUsable(snapshot: GeminiPrewarmSnapshot, current: GeminiPrewarmSnapshot,
                                 warmedAt: Date, now: Date) -> Bool {
