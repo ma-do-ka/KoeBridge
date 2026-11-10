@@ -33,7 +33,12 @@ struct SettingsAppProfilesPage: View {
     private func addProfile() {
         let bundle = bundleToAdd
         guard !bundle.isEmpty else { return }
-        if let existing = controller.appProfiles.first(where: { $0.bundleIdentifier == bundle }) {
+        let isManualEntry = !manualBundle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if let existing = controller.appProfiles.first(where: {
+            isManualEntry
+                ? $0.bundleIdentifier.caseInsensitiveCompare(bundle) == .orderedSame
+                : $0.bundleIdentifier == bundle
+        }) {
             expandedProfile = existing.id
         } else {
             let profile = AppProfile(bundleIdentifier: bundle,
@@ -41,6 +46,7 @@ struct SettingsAppProfilesPage: View {
             controller.appProfiles.append(profile)
             expandedProfile = profile.id
         }
+        selectedBundle = ""
         manualBundle = ""
     }
 
