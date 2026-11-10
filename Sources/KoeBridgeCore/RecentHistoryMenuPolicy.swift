@@ -12,9 +12,13 @@ public struct RecentHistoryMenuEntry: Equatable, Sendable {
 
 public enum RecentHistoryMenuPolicy {
     public static let maximumPreviewCharacters = 44
+    /// Presentation bound for menus/popovers. Storage keeps up to
+    /// RecentTranscriptArchive.maximumRecords; quick-glance surfaces show only
+    /// the newest few (Karter's decision, 2026-11-10: storage 500, display 10).
+    public static let maximumDisplayedRecords = 10
 
     public static func entries(from history: [TranscriptRecord]) -> [RecentHistoryMenuEntry] {
-        history.prefix(RecentTranscriptArchive.maximumRecords).map { record in
+        history.prefix(maximumDisplayedRecords).map { record in
             let needsReview = record.delivery == .reviewRequired || record.review?.status == .needsReview
             let interrupted = record.delivery == .interruptedDelivery
             let marker = (needsReview ? "［要確認・元の文］" : "")

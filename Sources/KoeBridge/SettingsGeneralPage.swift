@@ -113,7 +113,7 @@ struct SettingsGeneralPage: View {
                             Button("使い方を確認") { navigate(.help) }
                             Button("保存した文章を見る") { controller.onShowHistory?() }
                         }
-                        Text("入力できなかった文章は「認識履歴（直近10件）」で確認できます。")
+                        Text("入力できなかった文章は「認識履歴」で確認できます。")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     .font(.callout)

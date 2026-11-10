@@ -40,7 +40,7 @@ struct StressTests {
         }
     }
 
-    func aThousandTranscriptWritesRetainTheNewestTen() throws {
+    func aThousandTranscriptWritesRetainTheNewestMaximum() throws {
         let folder = FileManager.default.temporaryDirectory
             .appendingPathComponent("KoeBridgeStress-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: folder) }
@@ -51,9 +51,9 @@ struct StressTests {
                                           isPartial: false, delivery: .attemptedUnconfirmed)
             try store.insert(record)
         }
-        check(store.entries.count == 10)
+        check(store.entries.count == RecentTranscriptArchive.maximumRecords)
         check(store.entries.first?.text == "発話999")
-        check(store.entries.last?.text == "発話990")
+        check(store.entries.last?.text == "発話\(1000 - RecentTranscriptArchive.maximumRecords)")
         let reopened = try RecentTranscriptArchive(fileURL: url)
         check(reopened.entries == store.entries)
     }

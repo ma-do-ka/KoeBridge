@@ -50,7 +50,7 @@ import KoeBridgeCore
                 historyExpanded.toggle()
             } label: {
                 HStack {
-                    Text("認識履歴（直近10件）")
+                    Text("認識履歴（直近\(RecentHistoryMenuPolicy.maximumDisplayedRecords)件）")
                     Spacer()
                     Image(systemName: historyExpanded ? "chevron.down" : "chevron.right")
                 }

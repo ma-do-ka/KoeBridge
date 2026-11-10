@@ -15,8 +15,8 @@ struct SettingsPrivacyPage: View {
             VStack(alignment: .leading, spacing: 18) {
                 GroupBox {
                     VStack(alignment: .leading, spacing: 10) {
-                        SettingsRow("保存件数：\(historyCount) / 10件",
-                                    description: "直近10件の文字起こし結果をMacに保存します。音声やAPIキーは保存しません。") {
+                        SettingsRow("保存件数：\(historyCount) / \(RecentTranscriptArchive.maximumRecords)件",
+                                    description: "直近\(RecentTranscriptArchive.maximumRecords)件の文字起こし結果をMacに保存します。音声やAPIキーは保存しません。") {
                             SettingsRowActionButton("文章を見る") { showHistory() }
                         }
                         .id("history")
