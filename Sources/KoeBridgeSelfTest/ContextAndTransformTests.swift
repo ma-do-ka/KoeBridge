@@ -52,20 +52,15 @@ struct ContextAndTransformTests {
         check((parts[0]["text"] as? String)?.hasSuffix("選択") == true)
         check((parts[1]["text"] as? String)?.hasSuffix("英語にして") == true)
         let good = Data(#"{"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":"private thought","thought":true},{"text":" rewritten "}]}}]}"#.utf8)
-        check(try GeminiTransformWire.response(good) == "rewritten")
+        let parsed = try? GeminiTransformWire.response(good)
+        check(parsed == "rewritten")
         for invalid in [
             #"{"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":" "}]}}]}"#,
             #"{"candidates":[{"finishReason":"MAX_TOKENS","content":{"parts":[{"text":"partial"}]}}]}"#,
             #"{"candidates":[]}"#, #"{"error":{"message":"failed"}}"#, "garbage"
         ] {
-            do {
-                _ = try GeminiTransformWire.response(Data(invalid.utf8))
-                check(false)
-            } catch { check(true) }
+            check((try? GeminiTransformWire.response(Data(invalid.utf8))) == nil)
         }
-        do {
-            _ = try GeminiTransformWire.response(Data(repeating: 0, count: GeminiRecheckWire.maximumResponseBytes + 1))
-            check(false)
-        } catch { check(true) }
+        check((try? GeminiTransformWire.response(Data(repeating: 0, count: GeminiRecheckWire.maximumResponseBytes + 1))) == nil)
     }
 }
