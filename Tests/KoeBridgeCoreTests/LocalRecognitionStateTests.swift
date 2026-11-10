@@ -111,7 +111,8 @@ struct LocalRecognitionStateTests {
 
     @Test func structuredPreviewPreservesFinalizedPrefix() {
         var state = listeningState()
-        #expect(state.receiveSegment("確定", finalized: true))
+        let finalizedSegmentAccepted = state.receiveSegment("確定", finalized: true)
+        #expect(finalizedSegmentAccepted)
         #expect(state.preview.finalizedPrefix == "確定")
         state.receiveSegment("長い仮説", finalized: false)
         state.receiveSegment("短", finalized: false)
@@ -126,14 +127,16 @@ struct LocalRecognitionStateTests {
         #expect(state.preview.finalizedPrefix == "確定短末尾")
         #expect(state.preview.volatileTail.isEmpty)
         #expect(state.isFinal)
-        #expect(!state.receiveSegment("遅延", finalized: true))
+        let delayedSegmentAccepted = state.receiveSegment("遅延", finalized: true)
+        #expect(!delayedSegmentAccepted)
     }
 
     @Test func unchangedTextStillTransitionsToFinal() {
         var state = listeningState()
         state.receiveSegment("同じ文字", finalized: false)
         let before = state.preview
-        #expect(state.receiveSegment("同じ文字", finalized: true))
+        let finalizationAccepted = state.receiveSegment("同じ文字", finalized: true)
+        #expect(finalizationAccepted)
         #expect(state.transcript == before.text)
         #expect(state.preview != before)
         #expect(state.preview.finalizedPrefix == before.text)
