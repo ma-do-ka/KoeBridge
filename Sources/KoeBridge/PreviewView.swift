@@ -18,6 +18,27 @@ struct PreviewView: View {
         return full.count > 180 ? "…" + String(full.suffix(180)) : full
     }
 
+    private var styledTranscript: Text {
+        guard controller.progressivePreviewEnabled,
+              controller.overlayFeedback == .recording,
+              !controller.previewText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return Text(visibleTranscript)
+        }
+        // Trim and clip the combined text exactly as the single-style preview does,
+        // while preserving the provider boundary within the visible suffix.
+        let prefix = controller.previewFinalizedText
+        let tail = controller.previewVolatileText
+        let full = prefix + tail
+        let leading = full.count - full.drop(while: { $0.isWhitespace }).count
+        let trimmed = full.trimmingCharacters(in: .whitespacesAndNewlines)
+        let skipped = leading + max(0, trimmed.count - 180)
+        let visible = String(trimmed.suffix(180))
+        let finalCount = min(visible.count, max(0, prefix.count - skipped))
+        return Text(trimmed.count > 180 ? "…" : "")
+            + Text(String(visible.prefix(finalCount)))
+            + Text(String(visible.dropFirst(finalCount))).foregroundColor(.secondary)
+    }
+
     private var feedbackSymbol: String {
         switch controller.overlayFeedback {
         case .hidden, .preparing: return "mic"
@@ -49,7 +70,7 @@ struct PreviewView: View {
                         .accessibilityHidden(true)
                 }
             }
-            Text(visibleTranscript)
+            styledTranscript
                 .font(.system(size: 14, weight: .medium, design: .default))
                 .foregroundStyle(.primary)
                 .lineLimit(3)

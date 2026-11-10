@@ -109,6 +109,55 @@ struct LocalRecognitionStateTests {
         }
     }
 
+    @Test func structuredPreviewPreservesFinalizedPrefix() {
+        var state = listeningState()
+        #expect(state.receiveSegment("確定", finalized: true))
+        #expect(state.preview.finalizedPrefix == "確定")
+        state.receiveSegment("長い仮説", finalized: false)
+        state.receiveSegment("短", finalized: false)
+        #expect(state.preview.finalizedPrefix == "確定")
+        #expect(state.preview.volatileTail == "短")
+        state.receiveSegment("短", finalized: true)
+        #expect(state.preview.finalizedPrefix == "確定短")
+        #expect(state.preview.volatileTail.isEmpty)
+        state.receiveSegment("末尾", finalized: false)
+        state.endAudio()
+        state.receiveSegment("末尾", finalized: false, completesRequest: true)
+        #expect(state.preview.finalizedPrefix == "確定短末尾")
+        #expect(state.preview.volatileTail.isEmpty)
+        #expect(state.isFinal)
+        #expect(!state.receiveSegment("遅延", finalized: true))
+    }
+
+    @Test func unchangedTextStillTransitionsToFinal() {
+        var state = listeningState()
+        state.receiveSegment("同じ文字", finalized: false)
+        let before = state.preview
+        #expect(state.receiveSegment("同じ文字", finalized: true))
+        #expect(state.transcript == before.text)
+        #expect(state.preview != before)
+        #expect(state.preview.finalizedPrefix == before.text)
+        // Legacy SFSpeech has no segment finality before request completion.
+        var legacy = listeningState()
+        legacy.receive("累積結果", isFinal: false)
+        #expect(legacy.preview.finalizedPrefix.isEmpty)
+        #expect(legacy.preview.volatileTail == "累積結果")
+        legacy.receive("累積結果", isFinal: true)
+        #expect(legacy.preview.finalizedPrefix == "累積結果")
+        #expect(legacy.preview.volatileTail.isEmpty)
+        var assembler = TranscriptAssembler()
+        assembler.apply(.final("hello"))
+        assembler.apply(.interim("world"))
+        #expect(assembler.preview.finalizedPrefix == "hello")
+        #expect(assembler.preview.volatileTail == " world")
+        #expect(assembler.preview.text == assembler.displayText)
+        let hypothesis = assembler.preview
+        assembler.apply(.final("world"))
+        #expect(assembler.preview.text == hypothesis.text)
+        #expect(assembler.preview != hypothesis)
+        #expect(assembler.preview.volatileTail.isEmpty)
+    }
+
     private func listeningState() -> LocalRecognitionState {
         var state = LocalRecognitionState()
         state.beginAuthorization()

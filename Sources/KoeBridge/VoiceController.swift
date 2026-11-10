@@ -11,7 +11,16 @@ import KoeBridgeCore
     typealias Phase = VoiceSessionPhase
     @Published private(set) var phase: Phase = .idle
     @Published var status = "待機中"
-    @Published var previewText = ""
+    @Published var previewFinalizedText = ""
+    @Published var previewVolatileText = ""
+    @Published var previewText = "" {
+        didSet {
+            if previewText.isEmpty { previewFinalizedText = ""; previewVolatileText = "" }
+        }
+    }
+    @Published var progressivePreviewEnabled = UserDefaults.standard.object(forKey: "progressivePreviewEnabled") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(progressivePreviewEnabled, forKey: "progressivePreviewEnabled") }
+    }
     @Published var isRecording = false
     @Published private(set) var overlayFeedback: OverlayFeedback = .hidden
     @Published private(set) var lastStartupSeconds: TimeInterval?
@@ -820,12 +829,13 @@ import KoeBridgeCore
                         switch event {
                         case .interim, .final:
                             take.partialText = candidate?.assembler.displayText ?? ""
+                            take.previewFinalizedText = candidate?.assembler.preview.finalizedPrefix ?? ""
+                            take.previewVolatileText = candidate?.assembler.preview.volatileTail ?? ""
                             if take.firstPreviewAt == nil, !take.partialText.isEmpty {
                                 take.firstPreviewAt = Date()
                             }
                             if self.active === take {
-                                self.previewText = AudioActivityPolicy.mayShowInterim(take.mic?.activityEvidence ?? take.acousticEvidence)
-                                    ? take.partialText : ""
+                                self.updatePreview(for: take)
                             }
                         case .error:
                             DiagnosticLog.record("gemini receiver failure during take")
@@ -871,13 +881,14 @@ import KoeBridgeCore
                 throw CancellationError()
             }
             take.local = recognizer
-            recognizer.onUpdate = { [weak self, weak take] text in
+            recognizer.onUpdate = { [weak self, weak take] update in
                 guard let self, let take, !take.finished else { return }
-                take.partialText = text
-                if take.firstPreviewAt == nil, !text.isEmpty { take.firstPreviewAt = Date() }
+                take.partialText = update.text
+                take.previewFinalizedText = update.finalizedPrefix
+                take.previewVolatileText = update.volatileTail
+                if take.firstPreviewAt == nil, !update.text.isEmpty { take.firstPreviewAt = Date() }
                 if self.active === take {
-                    self.previewText = AudioActivityPolicy.mayShowInterim(take.mic?.activityEvidence ?? take.acousticEvidence)
-                        ? text : ""
+                    self.updatePreview(for: take)
                 }
             }
         }
@@ -1414,6 +1425,17 @@ import KoeBridgeCore
             showCompletionFeedback(.transformFailed, for: take.id)
             if active == nil { status = "選択テキストの変換に失敗しました。選択範囲は変更していません。" }
         }
+    }
+
+    /// Both display styles share the existing acoustic preview gate.
+    private func updatePreview(for take: DictationTake) {
+        guard AudioActivityPolicy.mayShowInterim(take.mic?.activityEvidence ?? take.acousticEvidence) else {
+            previewText = ""
+            return
+        }
+        previewText = take.partialText
+        previewFinalizedText = take.previewFinalizedText
+        previewVolatileText = take.previewVolatileText
     }
 
     /// Feedback never claims that the receiving app accepted synthetic key events.

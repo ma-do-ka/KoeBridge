@@ -84,6 +84,55 @@ struct LocalRecognitionStateTests {
         }
     }
 
+    func structuredPreviewPreservesFinalizedPrefix() {
+        var state = listeningState()
+        check(state.receiveSegment("確定", finalized: true))
+        check(state.preview.finalizedPrefix == "確定")
+        state.receiveSegment("長い仮説", finalized: false)
+        state.receiveSegment("短", finalized: false)
+        check(state.preview.finalizedPrefix == "確定")
+        check(state.preview.volatileTail == "短")
+        state.receiveSegment("短", finalized: true)
+        check(state.preview.finalizedPrefix == "確定短")
+        check(state.preview.volatileTail.isEmpty)
+        state.receiveSegment("末尾", finalized: false)
+        state.endAudio()
+        state.receiveSegment("末尾", finalized: false, completesRequest: true)
+        check(state.preview.finalizedPrefix == "確定短末尾")
+        check(state.preview.volatileTail.isEmpty)
+        check(state.isFinal)
+        check(!state.receiveSegment("遅延", finalized: true))
+    }
+
+    func unchangedTextStillTransitionsToFinal() {
+        var state = listeningState()
+        state.receiveSegment("同じ文字", finalized: false)
+        let before = state.preview
+        check(state.receiveSegment("同じ文字", finalized: true))
+        check(state.transcript == before.text)
+        check(state.preview != before)
+        check(state.preview.finalizedPrefix == before.text)
+        // Legacy SFSpeech has no segment finality before request completion.
+        var legacy = listeningState()
+        legacy.receive("累積結果", isFinal: false)
+        check(legacy.preview.finalizedPrefix.isEmpty)
+        check(legacy.preview.volatileTail == "累積結果")
+        legacy.receive("累積結果", isFinal: true)
+        check(legacy.preview.finalizedPrefix == "累積結果")
+        check(legacy.preview.volatileTail.isEmpty)
+        var assembler = TranscriptAssembler()
+        assembler.apply(.final("hello"))
+        assembler.apply(.interim("world"))
+        check(assembler.preview.finalizedPrefix == "hello")
+        check(assembler.preview.volatileTail == " world")
+        check(assembler.preview.text == assembler.displayText)
+        let hypothesis = assembler.preview
+        assembler.apply(.final("world"))
+        check(assembler.preview.text == hypothesis.text)
+        check(assembler.preview != hypothesis)
+        check(assembler.preview.volatileTail.isEmpty)
+    }
+
     private func listeningState() -> LocalRecognitionState {
         var state = LocalRecognitionState()
         state.beginAuthorization()

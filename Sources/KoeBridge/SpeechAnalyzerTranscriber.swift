@@ -10,13 +10,12 @@ import KoeBridgeCore
     let requiresSpeechAuthorization = false
     private var state = LocalRecognitionState()
     var transcript: String { state.transcript }
-    var onUpdate: ((String) -> Void)?
+    var onUpdate: ((RecognitionPreview) -> Void)?
     private var analyzer: SpeechAnalyzer?
     private var continuation: AsyncStream<AnalyzerInput>.Continuation?
     private var resultsTask: Task<Void, Never>?
     private var finalizationTask: Task<Void, Never>?
     private var converter: AVAudioConverter?
-    private var finalizedText = ""
     private let audioFormat = AVAudioFormat(commonFormat: .pcmFormatInt16,
                                             sampleRate: 16_000, channels: 1, interleaved: true)!
 
@@ -62,12 +61,11 @@ import KoeBridgeCore
                     for try await result in transcriber.results {
                         guard let self, self.state.acceptsUpdates, !Task.isCancelled else { return }
                         let text = String(result.text.characters)
-                        if result.isFinal { self.finalizedText += text }
-                        self.receive(self.finalizedText + (result.isFinal ? "" : text), isFinal: false)
+                        self.receiveSegment(text, finalized: result.isFinal)
                     }
                     guard let self, !Task.isCancelled else { return }
                     if self.state.phase == .finishing {
-                        self.receive(self.finalizedText, isFinal: true)
+                        self.receiveSegment("", finalized: true, completesRequest: true)
                     } else if self.state.acceptsAudio {
                         self.state.receiveFailure(LocalError.endedBeforeAudio.localizedDescription)
                     }
@@ -88,9 +86,11 @@ import KoeBridgeCore
         guard state.phase != .cancelled else { throw CancellationError() }
     }
 
-    private func receive(_ text: String, isFinal: Bool) {
-        let changed = text != transcript
-        if state.receive(text, isFinal: isFinal), changed { onUpdate?(transcript) }
+    private func receiveSegment(_ text: String, finalized: Bool, completesRequest: Bool = false) {
+        // Notify on every accepted provider update, including stability-only changes.
+        if state.receiveSegment(text, finalized: finalized, completesRequest: completesRequest) {
+            onUpdate?(state.preview)
+        }
     }
 
     func appendPCM16(_ data: Data) throws {

@@ -20,6 +20,17 @@ struct SettingsGeneralPage: View {
             VStack(alignment: .leading, spacing: 18) {
                 generalControlsCard
                     .id("general")
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Toggle("確定した部分をプレビューで区別する", isOn: $controller.progressivePreviewEnabled)
+                        Text("濃い文字は認識エンジンが確定した部分、薄い文字はまだ変わる可能性がある部分です。入力はすべての確認が終わった後、最後に一度だけ行います。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(8)
+                } label: {
+                    Label("録音プレビュー", systemImage: "text.bubble")
+                }
                 generalReadinessCard
                 GroupBox {
                     VStack(alignment: .leading, spacing: 9) {

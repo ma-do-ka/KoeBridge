@@ -283,3 +283,5 @@ Sources/KoeBridge/LastDeliveryAnchor.swift
 Sources/KoeBridgeSelfTest/LearnedTermsTests.swift
 Tests/KoeBridgeCoreTests/LearnedTermsTests.swift
 docs/learning-and-fix.md
+
+docs/progressive-preview.md

@@ -51,6 +51,9 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
     var appleAudioBytes = 0
     var successfulEngine: RecognitionMode?
     var partialText = ""
+    // Display state only; delivery and review continue to use whole-take results.
+    var previewFinalizedText = ""
+    var previewVolatileText = ""
     var startedAt: Date?
     var stoppingAt: Date?
     var firstPreviewAt: Date?
