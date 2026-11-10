@@ -3,6 +3,13 @@ import Testing
 @testable import KoeBridgeCore
 
 struct LearnedTermsTests {
+    @Test func fragmentWhitespaceHintPreservesLiteralMatching() {
+        #expect(LearnedTermPolicy.validationHint(fragment: " \twrong\n", term: "Right", recordText: "wrong") == "前後の空白を取り除いてください")
+        #expect(LearnedTermPolicy.validationHint(fragment: " missing ", term: "Right", recordText: "wrong") == "誤りは履歴の文章に含まれる部分を入力してください")
+        #expect(LearnedTermPolicy.validationHint(fragment: " wrong ", term: "Right", recordText: "a wrong word") == nil)
+        #expect(LearnedTermPolicy.validationHint(fragment: " Wrong ", term: "Right", recordText: "wrong") == "誤りは履歴の文章に含まれる部分を入力してください")
+    }
+
     @Test func normalizationValidationAndPersistence() throws {
         #expect(LearnedTermPolicy.normalized("  Café\n") == "cafe")
         #expect(LearnedTermPolicy.normalized(" \t") == "")

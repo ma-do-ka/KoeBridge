@@ -26,7 +26,13 @@ public enum LearnedTermPolicy {
     public static func validationHint(fragment: String, term: String, recordText: String) -> String? {
         guard !normalized(fragment).isEmpty, !normalized(term).isEmpty else { return "誤りと正しい表記を入力してください" }
         guard term.count <= 60 else { return "正しい表記は60文字以内にしてください" }
-        guard recordText.range(of: fragment, options: .literal) != nil else { return "誤りは履歴の文章に含まれる部分を入力してください" }
+        guard recordText.range(of: fragment, options: .literal) != nil else {
+            let trimmed = fragment.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed != fragment, recordText.range(of: trimmed, options: .literal) != nil {
+                return "前後の空白を取り除いてください"
+            }
+            return "誤りは履歴の文章に含まれる部分を入力してください"
+        }
         return nil
     }
 

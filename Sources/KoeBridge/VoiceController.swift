@@ -1391,6 +1391,7 @@ import KoeBridgeCore
                 }
                 return
             }
+            let sourceRecordID = lastDeliveryAnchor?.sourceRecordID
             lastDeliveryAnchor = nil
             deliveringTakeID = take.id
             let report = await TextInsertion.deliver(output.text, to: target, diagnostics: take.inputDiagnostics) {
@@ -1398,7 +1399,7 @@ import KoeBridgeCore
             }
             deliveringTakeID = nil
             if take.isFixLastInput, report.outcome == .verifiedInserted, let receipt = report.receipt {
-                lastDeliveryAnchor = LastDeliveryAnchor(receipt: receipt, sourceRecordID: nil)
+                lastDeliveryAnchor = LastDeliveryAnchor(receipt: receipt, sourceRecordID: sourceRecordID)
             }
             for other in inFlight.values where other.id != take.id && other.transformSelection == nil {
                 if let candidate = other.target { other.target = report.reconciled(candidate) }

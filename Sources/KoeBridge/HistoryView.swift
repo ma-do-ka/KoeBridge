@@ -206,6 +206,13 @@ private struct HistoryLearningEditor: View {
         .padding(20).frame(width: 480)
         .onChange(of: fragment) { saved = false }
         .onChange(of: term) { saved = false }
+        .task(id: saved) {
+            guard saved else { return }
+            do {
+                try await Task.sleep(for: .milliseconds(800))
+                dismiss()
+            } catch { }
+        }
     }
 }
 #endif
