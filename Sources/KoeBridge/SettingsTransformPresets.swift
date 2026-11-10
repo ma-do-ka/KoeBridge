@@ -4,8 +4,40 @@ import KoeBridgeCore
 
 struct SettingsTransformPresets: View {
     @ObservedObject var controller: VoiceController
-    @State private var editedStep: Int?
+    private struct EditorStep: Identifiable {
+        let id = UUID()
+        var text: String
+    }
+
+    @State private var stepsByPreset: [UUID: [EditorStep]]
+    @State private var editedStep: UUID?
     @State private var editedPreset: UUID?
+
+    init(controller: VoiceController) {
+        self.controller = controller
+        _stepsByPreset = State(initialValue: Dictionary(uniqueKeysWithValues:
+            controller.transformPresets.map { preset in
+                (preset.id, preset.steps.map { EditorStep(text: $0) })
+            }))
+    }
+
+    private func updateSteps(_ steps: [EditorStep], for id: UUID) {
+        stepsByPreset[id] = steps
+        guard let index = controller.transformPresets.firstIndex(where: { $0.id == id }) else { return }
+        controller.transformPresets[index].steps = steps.map(\.text)
+    }
+
+    private func stepText(_ stepID: UUID, in presetID: UUID) -> Binding<String> {
+        Binding {
+            stepsByPreset[presetID]?.first(where: { $0.id == stepID })?.text ?? ""
+        } set: { text in
+            guard var steps = stepsByPreset[presetID],
+                  let index = steps.firstIndex(where: { $0.id == stepID }) else { return }
+            steps[index].text = text
+            updateSteps(steps, for: presetID)
+            editedPreset = presetID; editedStep = stepID
+        }
+    }
 
     private func movePreset(_ id: UUID, by offset: Int) {
         guard let index = controller.transformPresets.firstIndex(where: { $0.id == id }),
@@ -16,12 +48,16 @@ struct SettingsTransformPresets: View {
     private func insert(_ instruction: String) {
         let id = editedPreset ?? controller.selectedTransformPresetID ?? controller.transformPresets.first?.id
         guard let index = controller.transformPresets.firstIndex(where: { $0.id == id }) else { return }
-        if let step = editedStep, controller.transformPresets[index].steps.indices.contains(step) {
-            controller.transformPresets[index].steps[step] += instruction
+        let presetID = controller.transformPresets[index].id
+        var steps = stepsByPreset[presetID] ?? []
+        if let index = steps.firstIndex(where: { $0.id == editedStep }) {
+            steps[index].text += instruction
         } else {
-            controller.transformPresets[index].steps.append(instruction)
-            editedStep = controller.transformPresets[index].steps.count - 1
+            let step = EditorStep(text: instruction)
+            steps.append(step)
+            editedStep = step.id
         }
+        updateSteps(steps, for: presetID)
         editedPreset = id
     }
 
@@ -54,6 +90,7 @@ struct SettingsTransformPresets: View {
                                 .help("プリセットを下へ移動").accessibilityLabel("プリセットを下へ移動")
                             Button(role: .destructive) {
                                 controller.transformPresets.removeAll { $0.id == preset.id }
+                                stepsByPreset.removeValue(forKey: preset.id)
                                 if controller.selectedTransformPresetID == preset.id { controller.selectedTransformPresetID = nil }
                                 if editedPreset == preset.id { editedPreset = nil; editedStep = nil }
                             } label: { Image(systemName: "trash") }
@@ -63,30 +100,39 @@ struct SettingsTransformPresets: View {
                             Text("ステップがありません。自由な言葉で指示を追加してください。")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
-                        ForEach(preset.steps.indices, id: \.self) { index in
+                        let steps = stepsByPreset[preset.id] ?? []
+                        ForEach(steps) { step in
+                            let index = steps.firstIndex(where: { $0.id == step.id }) ?? 0
                             HStack {
                                 Text("\(index + 1)").monospacedDigit()
-                                TextField("変換の指示", text: $preset.steps[index])
+                                TextField("変換の指示", text: stepText(step.id, in: preset.id))
                                     .textFieldStyle(.roundedBorder)
-                                    .onChange(of: preset.steps[index]) { _, _ in
-                                        editedPreset = preset.id; editedStep = index
-                                    }
                                     .simultaneousGesture(TapGesture().onEnded {
-                                        editedPreset = preset.id; editedStep = index
+                                        editedPreset = preset.id; editedStep = step.id
                                     })
-                                Button { preset.steps.swapAt(index, index - 1); editedStep = nil } label: { Image(systemName: "arrow.up") }
+                                Button {
+                                    var reordered = steps
+                                    reordered.swapAt(index, index - 1)
+                                    updateSteps(reordered, for: preset.id)
+                                } label: { Image(systemName: "arrow.up") }
                                     .disabled(index == 0).help("ステップを上へ移動").accessibilityLabel("ステップを上へ移動")
-                                Button { preset.steps.swapAt(index, index + 1); editedStep = nil } label: { Image(systemName: "arrow.down") }
-                                    .disabled(index == preset.steps.count - 1).help("ステップを下へ移動").accessibilityLabel("ステップを下へ移動")
+                                Button {
+                                    var reordered = steps
+                                    reordered.swapAt(index, index + 1)
+                                    updateSteps(reordered, for: preset.id)
+                                } label: { Image(systemName: "arrow.down") }
+                                    .disabled(index == steps.count - 1).help("ステップを下へ移動").accessibilityLabel("ステップを下へ移動")
                                 Button(role: .destructive) {
-                                    preset.steps.remove(at: index); editedStep = nil
+                                    updateSteps(steps.filter { $0.id != step.id }, for: preset.id)
+                                    if editedStep == step.id { editedStep = nil }
                                 } label: { Image(systemName: "trash") }
                                 .help("ステップを削除").accessibilityLabel("ステップを削除")
                             }
                         }
                         Button("ステップを追加") {
-                            preset.steps.append("")
-                            editedPreset = preset.id; editedStep = preset.steps.count - 1
+                            let step = EditorStep(text: "")
+                            updateSteps(steps + [step], for: preset.id)
+                            editedPreset = preset.id; editedStep = step.id
                         }
                         if !preset.isValid {
                             Text("名前と1つ以上のステップを入力してください。空の指示は実行できません。")
@@ -99,7 +145,9 @@ struct SettingsTransformPresets: View {
                     let preset = TransformPreset(name: "", steps: [""])
                     controller.transformPresets.append(preset)
                     controller.selectedTransformPresetID = preset.id
-                    editedPreset = preset.id; editedStep = 0
+                    let step = EditorStep(text: "")
+                    stepsByPreset[preset.id] = [step]
+                    editedPreset = preset.id; editedStep = step.id
                 } label: { Label("プリセットを追加", systemImage: "plus") }
                 Text("最後に編集したステップへ挿入（未編集なら選択中のプリセットへ追加）")
                     .font(.caption).foregroundStyle(.secondary)

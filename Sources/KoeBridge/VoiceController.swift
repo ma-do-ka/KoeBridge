@@ -167,7 +167,7 @@ import KoeBridgeCore
             return
         }
         guard selected.count <= ContextTextPolicy.maximumCharacters else {
-            status = "変換する選択テキストは2,000文字以内にしてください"
+            status = translating ? "翻訳する選択テキストは2,000文字以内にしてください" : "変換する選択テキストは2,000文字以内にしてください"
             return
         }
         guard let key = KeychainStore.load() else { status = AppError.noKey.localizedDescription; return }

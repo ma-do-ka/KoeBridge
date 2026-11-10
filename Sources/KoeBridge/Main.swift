@@ -568,7 +568,9 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
         // Rebuild the monitor rather than returning true without doing anything.
         if choice.usesEventTap {
             let generation = UUID()
-            let candidate = ModifierShortcutMonitor(choice: choice, mode: action == .translateSelection ? .hold : VoiceController.shared.shortcutActivationMode) { [weak self] pressed, time in
+            let oneShot = action == .translateSelection ||
+                (action == .transformSelection && controller.transformMode == .preset)
+            let candidate = ModifierShortcutMonitor(choice: choice, mode: oneShot ? .hold : controller.shortcutActivationMode) { [weak self] pressed, time in
                 guard let self, self.monitorGeneration == generation else { return }
                 self.route(pressed: pressed, at: time)
             }
