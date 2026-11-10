@@ -163,7 +163,7 @@ import KoeBridgeCore
                 contentRect: NSRect(x: 0, y: 0, width: 790, height: 520),
                 styleMask: [.titled, .closable, .resizable, .miniaturizable],
                 backing: .buffered, defer: false)
-            window.title = "KoeBridge 認識履歴（直近10件）"
+            window.title = "KoeBridge 認識履歴（直近\(RecentTranscriptArchive.maximumRecords)件）"
             window.center()
             window.contentView = NSHostingView(rootView: HistoryView(controller: .shared))
             window.isReleasedWhenClosed = false

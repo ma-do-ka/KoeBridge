@@ -55,10 +55,10 @@ public struct TranscriptRecord: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
-/// Stores only the ten newest textual results; an unreadable old file is never overwritten.
+/// Stores only the newest textual results, bounded by maximumRecords; an unreadable old file is never overwritten.
 /// The directory and JSON file are made private to the current macOS account.
 public struct RecentTranscriptArchive {
-    public static let maximumRecords = 10
+    public static let maximumRecords = 500
     // Defensive bound for a corrupt or unexpectedly huge history file.
     public static let maximumFileBytes = 12 * 1024 * 1024
     public private(set) var entries: [TranscriptRecord]

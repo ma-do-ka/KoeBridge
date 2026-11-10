@@ -161,19 +161,20 @@ struct PersistenceRecoveryTests {
         try damaged.write(to: url)
         var store = TranscriptHistoryStore(fileURL: url)
         let now = Date()
-        for index in (0..<12).reversed() {
+        let total = RecentTranscriptArchive.maximumRecords + 2
+        for index in (0..<total).reversed() {
             store.remember("文章\(index)", isPartial: true, delivery: .recognitionInterrupted,
-                           engine: "Apple", recordedAt: now.addingTimeInterval(Double(index - 12)))
+                           engine: "Apple", recordedAt: now.addingTimeInterval(Double(index - total)))
         }
         check(!store.problem.isEmpty)
         check(store.entries.count == RecentTranscriptArchive.maximumRecords)
-        check(store.entries.first?.text == "文章11")
+        check(store.entries.first?.text == "文章\(RecentTranscriptArchive.maximumRecords + 1)")
         check(store.entries.last?.text == "文章2")
         let id = try require(store.entries.first?.id)
         store.updateDelivery(id, to: .blockedFocus)
         check(store.entries.first?.delivery == .blockedFocus)
         store.delete(id)
-        check(store.entries.count == 9)
+        check(store.entries.count == RecentTranscriptArchive.maximumRecords - 1)
         store.deleteAll()
         check(store.entries.isEmpty)
         try check(try Data(contentsOf: url) == damaged)

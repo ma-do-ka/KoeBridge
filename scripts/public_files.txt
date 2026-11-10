@@ -236,3 +236,6 @@ Tests/KoeBridgeCoreTests/ShortcutActivationPolicyTests.swift
 Sources/KoeBridgeSelfTest/SnippetExpanderTests.swift
 Sources/KoeBridgeSelfTest/ShortcutActivationPolicyTests.swift
 docs/input-gestures-and-snippets.md
+Sources/KoeBridgeCore/HistorySearch.swift
+Sources/KoeBridgeSelfTest/HistorySearchTests.swift
+Tests/KoeBridgeCoreTests/HistorySearchTests.swift

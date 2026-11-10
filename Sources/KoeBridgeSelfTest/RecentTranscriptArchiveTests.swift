@@ -9,16 +9,16 @@ struct RecentTranscriptArchiveTests {
             .appendingPathComponent("recent-transcripts.json")
     }
 
-    func persistsNewestTenAcrossRestarts() throws {
+    func persistsNewestMaximumAcrossRestarts() throws {
         let url = temporaryArchiveURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         var store = try RecentTranscriptArchive(fileURL: url)
-        for i in 0..<12 {
+        for i in 0..<(RecentTranscriptArchive.maximumRecords + 2) {
             try store.insert(TranscriptRecord(engine: "Gemini", text: "文章\(i)",
                                               isPartial: false, delivery: .pending))
         }
-        check(store.entries.count == 10)
-        check(store.entries.first?.text == "文章11")
+        check(store.entries.count == RecentTranscriptArchive.maximumRecords)
+        check(store.entries.first?.text == "文章\(RecentTranscriptArchive.maximumRecords + 1)")
         check(store.entries.last?.text == "文章2")
         let restored = try RecentTranscriptArchive(fileURL: url)
         check(restored.entries == store.entries)

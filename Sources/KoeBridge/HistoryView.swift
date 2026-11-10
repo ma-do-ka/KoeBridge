@@ -7,18 +7,29 @@ struct HistoryView: View {
     @ObservedObject var controller: VoiceController
     @State private var selectedID: UUID?
     @State private var confirmDeleteAll = false
+    @State private var query = ""
+
+    private var filteredHistory: [TranscriptRecord] {
+        HistorySearch.filter(controller.history, query: query)
+    }
+
+    private var isSearching: Bool {
+        !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 
     private var selected: TranscriptRecord? {
-        controller.history.first(where: { $0.id == selectedID }) ?? controller.history.first
+        filteredHistory.first(where: { $0.id == selectedID }) ?? filteredHistory.first
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("保存した文章：\(controller.history.count) / 10件")
+                Text(isSearching
+                     ? "\(filteredHistory.count)件が一致（全\(controller.history.count)件）"
+                     : "保存した文章：\(controller.history.count) / \(RecentTranscriptArchive.maximumRecords)件")
                     .font(.headline)
                 Spacer()
-                Text("直近10件を保存。音声データ・APIキーは保存しません")
+                Text("直近\(RecentTranscriptArchive.maximumRecords)件を保存。音声データ・APIキーは保存しません")
                     .font(.caption).foregroundStyle(.secondary)
             }
             if !controller.historyProblem.isEmpty {
@@ -26,6 +37,26 @@ struct HistoryView: View {
                     .font(.caption).foregroundStyle(.red)
                     .textSelection(.enabled)
             }
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                TextField("履歴を検索", text: $query)
+                    .textFieldStyle(.plain)
+                    .accessibilityLabel("履歴を検索")
+                if !query.isEmpty {
+                    Button { query = "" } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("検索をクリア")
+                }
+            }
+            .padding(8)
+            .background(Color.secondary.opacity(0.07))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            Text("文章内を検索します。空白で区切ると、すべての語句を含む履歴を表示します。")
+                .font(.caption).foregroundStyle(.secondary)
             if controller.history.isEmpty {
                 Spacer()
                 Text("保存された文字起こしはありません")
@@ -34,28 +65,36 @@ struct HistoryView: View {
                 Spacer()
             } else {
                 HStack(alignment: .top, spacing: 12) {
-                    ScrollView {
-                        LazyVStack(spacing: 6) {
-                            ForEach(controller.history) { record in
-                                Button {
-                                    selectedID = record.id
-                                } label: {
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text(record.recordedAt.formatted(date: .abbreviated, time: .shortened))
-                                            .font(.caption2).foregroundStyle(.secondary)
-                                        Text(record.text.replacingOccurrences(of: "\n", with: " "))
-                                            .lineLimit(2).font(.body)
-                                        Text(record.delivery.label)
-                                            .font(.caption2).foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 6) {
+                        if filteredHistory.isEmpty {
+                            Text("「\(query.trimmingCharacters(in: .whitespacesAndNewlines))」に一致する履歴はありません")
+                                .foregroundStyle(.secondary)
+                            Text("検索する語句を減らすか、検索欄をクリアしてください。")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        ScrollView {
+                            LazyVStack(spacing: 6) {
+                                ForEach(filteredHistory) { record in
+                                    Button {
+                                        selectedID = record.id
+                                    } label: {
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text(record.recordedAt.formatted(date: .abbreviated, time: .shortened))
+                                                .font(.caption2).foregroundStyle(.secondary)
+                                            Text(record.text.replacingOccurrences(of: "\n", with: " "))
+                                                .lineLimit(2).font(.body)
+                                            Text(record.delivery.label)
+                                                .font(.caption2).foregroundStyle(.secondary)
+                                        }
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .padding(10)
+                                        .background(selected?.id == record.id
+                                                    ? Color.accentColor.opacity(0.14)
+                                                    : Color.secondary.opacity(0.07))
+                                        .clipShape(RoundedRectangle(cornerRadius: 8))
                                     }
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(10)
-                                    .background(selected?.id == record.id
-                                                ? Color.accentColor.opacity(0.14)
-                                                : Color.secondary.opacity(0.07))
-                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                                    .buttonStyle(.plain)
                                 }
-                                .buttonStyle(.plain)
                             }
                         }
                     }.frame(width: 255)
@@ -101,7 +140,7 @@ struct HistoryView: View {
                                 Button("この文章を削除", role: .destructive) {
                                     let removing = selected.id
                                     controller.deleteRecord(removing)
-                                    selectedID = controller.history.first?.id
+                                    selectedID = filteredHistory.first?.id
                                 }
                             }
                         }
@@ -119,7 +158,7 @@ struct HistoryView: View {
         }
         .padding(16)
         .frame(minWidth: 650, minHeight: 390)
-        .alert("保存した10件の履歴をすべて削除しますか？", isPresented: $confirmDeleteAll) {
+        .alert("保存した履歴（\(controller.history.count)件）をすべて削除しますか？", isPresented: $confirmDeleteAll) {
             Button("削除", role: .destructive) { controller.clearHistory(); selectedID = nil }
             Button("キャンセル", role: .cancel) {}
         } message: {
