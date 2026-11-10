@@ -14,43 +14,23 @@ struct SettingsVoicePage: View {
                         SettingsRow("文字起こしの方法",
                                     description: "音声を文字に変換する方法を選びます。GeminiはGoogleのAPIを使用し、AppleはこのMac内で処理します。") {
                             SettingsRecognitionPicker("文字起こしの方法", selection: $controller.requestedMode)
+                            .settingsControlFocus("engine")
                             .pickerStyle(.segmented)
                             .frame(width: 245)
                         }
-                        .id("engine")
+                        .settingsTarget("engine")
                         Divider()
+                        Text(controller.localBackendStatus).font(.caption).foregroundStyle(.secondary)
                         MicrophoneSettingsRow(controller: controller)
                         Divider()
-                        SettingsRow("録音の開始・終了キー",
-                                    description: "選んだキーと下の動作設定で録音を操作します。ほかのアプリのキー操作と競合する場合があります。") {
-                            SettingsShortcutPicker("録音の開始・終了キー", selection: Binding(
-                                get: { controller.shortcutChoice },
-                                set: { controller.selectShortcut($0) }
-                            ))
-                            .frame(width: 250)
-                        }
-                        .id("shortcut")
-                        SettingsInputControls(controller: controller)
-                        if !controller.shortcutProblem.isEmpty {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text(controller.shortcutProblem)
-                                    .font(.caption)
-                                    .foregroundStyle(.red)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                SettingsRow("録音キーを再登録",
-                                            description: "設定したキーが反応しない場合に、ショートカットの登録をやり直します。") {
-                                    SettingsRowActionButton("再登録") { controller.retryShortcutRegistration() }
-                                }
-                            }
-                        }
                         Divider()
                         SettingsRow("認識した文章を自動入力する",
                                     description: "録音終了後、元の入力欄への入力を試みます。オフの場合は文章を履歴に保存し、あとからコピーできます。", icon: "text.cursor") {
                             Toggle("認識した文章を自動入力する", isOn: $controller.automaticPaste)
-                                .labelsHidden()
+                                .settingsControlFocus("autopaste").labelsHidden()
                                 .toggleStyle(.switch)
                         }
-                        .id("autopaste")
+                        .settingsTarget("autopaste")
                     }
                     .padding(8)
                 } label: {
@@ -58,7 +38,7 @@ struct SettingsVoicePage: View {
                 }
                 GroupBox {
                     VStack(alignment: .leading, spacing: 12) {
-                        Toggle("音声コマンドを有効にする", isOn: $controller.voiceCommandsEnabled)
+                        Toggle("音声コマンドを有効にする", isOn: $controller.voiceCommandsEnabled).settingsControlFocus("voice-commands")
                         Text(controller.voiceCommandsEnabled
                              ? "発話全体が固定フレーズと一致した場合だけ実行します。"
                              : "音声コマンドはオフです。有効にすると、各コマンドを個別に選べます。発話全体の一致が必要です。")
@@ -82,16 +62,17 @@ struct SettingsVoicePage: View {
                     }.padding(8)
                 } label: {
                     Label("音声コマンド", systemImage: "waveform")
-                }
-                SettingsAppProfilesPage(controller: controller)
-                    .id("app-profiles")
-                SettingsSnippetsPage(controller: controller)
-                SettingsTransformPresets(controller: controller)
+                }.settingsTarget("voice-commands")
+                SettingsSnippetsPage(controller: controller).settingsTarget("snippets")
+                GroupBox("録音プレビュー") {
+                    Toggle("確定した部分をプレビューで区別する", isOn: $controller.progressivePreviewEnabled).settingsControlFocus("preview")
+                    Text("濃い文字は確定部分、薄い文字は暫定部分です。入力は確認後に一度だけ行います。").font(.caption)
+                }.settingsTarget("preview")
+                MeetingAndRetentionSettings(showMeeting: true).settingsTarget("meeting")
                 GroupBox {
                     VStack(alignment: .leading, spacing: 5) {
                         Text("クリップボードを使わず、認識した文章をキー入力として送信します。")
                         Text("入力先の変更や権限不足が検出された場合は自動入力を中止し、文章を直近\(RecentTranscriptArchive.maximumRecords)件の履歴に保存します。")
-                        Text("右Commandなどの単独キーには入力監視の許可が必要な場合があります。FnキーはmacOSの割当と競合する場合があります。")
                     }
                     .font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

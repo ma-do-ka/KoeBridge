@@ -106,8 +106,7 @@ struct UsageMonitorView: View {
     }
 
     var body: some View {
-        ScrollViewReader { proxy in
-            SettingsIndicatedScrollView {
+        Group {
                 VStack(alignment: .leading, spacing: 15) {
                 HStack {
                     Spacer()
@@ -151,7 +150,7 @@ struct UsageMonitorView: View {
                         }
                     }
                     .labelsHidden()
-                    .pickerStyle(.segmented)
+                    .settingsControlFocus("usage").pickerStyle(.segmented).settingsTarget("usage")
                     .frame(width: 210)
                     Text(scale.rangeLabel).font(.caption).foregroundStyle(.secondary)
                 }
@@ -159,7 +158,7 @@ struct UsageMonitorView: View {
                 GroupBox {
                     VStack(alignment: .leading, spacing: 7) {
                         Text("GeminiとAppleの利用回数")
-                            .id("usage")
+
                             .font(.subheadline.weight(.semibold))
                         Text("どの時間帯にどちらの音声認識を試みたかを表示します。自動切替した録音は両方に計上されます。")
                             .font(.caption).foregroundStyle(.secondary)
@@ -215,8 +214,8 @@ struct UsageMonitorView: View {
                 GroupBox {
                     VStack(alignment: .leading, spacing: 7) {
                         HStack {
-                            Text("Gemini APIのトークン使用量")
-                                .id("token")
+                            Text("Gemini APIのトークン使用量").settingsTarget("token")
+
                                 .font(.subheadline.weight(.semibold))
                             Spacer()
                             Text("計 \(controller.monitorTokens.filter { $0.at >= startOfRange }.reduce(0) { $0 + $1.totalTokens }.formatted())")
@@ -243,28 +242,17 @@ struct UsageMonitorView: View {
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer()
-                    Button("利用記録を削除", role: .destructive) { confirmDelete = true }
+                    Button("利用記録を削除", role: .destructive) { confirmDelete = true }.settingsControlFocus("token")
                 }
             }
             .padding(18)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .onAppear {
-                if let focusRequest { proxy.scrollTo(focusRequest.id, anchor: .top) }
-            }
-            .onChange(of: focusRequest) { _, target in
-                if let target {
-                    withAnimation(.easeInOut(duration: 0.18)) {
-                        proxy.scrollTo(target.id, anchor: .top)
-                    }
-                }
-            }
         }
-        .alert("利用統計を削除しますか？", isPresented: $confirmDelete) {
+        .alert("利用統計をすべて削除しますか？", isPresented: $confirmDelete) {
             Button("削除", role: .destructive) { controller.clearUsageMonitor() }
             Button("キャンセル", role: .cancel) {}
         } message: {
-            Text("利用回数・音声秒数・トークン統計のみを削除します。認識履歴や設定には影響しません。")
+            Text("対象：利用回数・音声秒数・トークン統計のみ。履歴・保存音声・診断ログ・設定は変更しません。削除は取り消せません。")
         }
     }
 

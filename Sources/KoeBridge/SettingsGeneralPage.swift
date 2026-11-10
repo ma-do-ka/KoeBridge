@@ -5,7 +5,7 @@ import Speech
 import SwiftUI
 import KoeBridgeCore
 
-/// The overview edits the same persisted preferences as the detailed pages.
+/// Status and startup only; preference editors have one owning page.
 struct SettingsGeneralPage: View {
     @ObservedObject var controller: VoiceController
     @ObservedObject var guide: PermissionGuide
@@ -18,20 +18,8 @@ struct SettingsGeneralPage: View {
     var body: some View {
         SettingsPageScrollView(section: .general, focusRequest: focusRequest) {
             VStack(alignment: .leading, spacing: 18) {
-                generalControlsCard
-                    .id("general")
-                GroupBox {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Toggle("確定した部分をプレビューで区別する", isOn: $controller.progressivePreviewEnabled)
-                        Text("濃い文字は認識エンジンが確定した部分、薄い文字はまだ変わる可能性がある部分です。入力はすべての確認が終わった後、最後に一度だけ行います。")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(8)
-                } label: {
-                    Label("録音プレビュー", systemImage: "text.bubble")
-                }
                 generalReadinessCard
+                    .settingsTarget("general")
                 GroupBox {
                     VStack(alignment: .leading, spacing: 9) {
                         SettingsRow("ログイン時に自動起動",
@@ -42,11 +30,11 @@ struct SettingsGeneralPage: View {
                                     get: { loginItem.isRequested },
                                     set: { loginItem.setRequested($0) }
                                    ))
-                                .labelsHidden()
+                                .settingsControlFocus("launchAtLogin").labelsHidden()
                                 .toggleStyle(.switch)
                                 .disabled(!loginItem.canChange)
                         }
-                        .id("launchAtLogin")
+                        .settingsTarget("launchAtLogin")
                         Divider()
                         HStack(spacing: 10) {
                             Label("ログイン項目：\(loginItem.statusLabel)",
@@ -85,7 +73,6 @@ struct SettingsGeneralPage: View {
                 } label: {
                     Label("起動と常駐", systemImage: "power")
                 }
-                generalUpdatesCard
                 GroupBox {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("録音キーを押してからマイクが使えるまでと、録音停止から入力処理が終わるまでの実測時間を表示します。")
@@ -106,6 +93,7 @@ struct SettingsGeneralPage: View {
                                 .monospacedDigit()
                         }
                         .frame(minHeight: 34)
+                        Button("音声入力の設定") { navigate(.voice) }.settingsControlFocus("timings")
                         Text("端末や接続環境により変動します。入力イベント送信後の確認待ち時間を含みます。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -114,26 +102,8 @@ struct SettingsGeneralPage: View {
                     .padding(8)
                 } label: {
                     Label("直近の処理時間", systemImage: "speedometer")
-                }
-                GroupBox {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Label("1. 入力したい欄をクリック", systemImage: "cursorarrow.click.2")
-                        Label("2. \(controller.shortcutChoice.label) で録音開始", systemImage: "mic")
-                        Label("3. 同じキーでもう一度押して確定", systemImage: "checkmark.circle")
-                        HStack(spacing: 12) {
-                            Button("使い方を確認") { navigate(.help) }
-                            Button("保存した文章を見る") { controller.onShowHistory?() }
-                        }
-                        Text("入力できなかった文章は「認識履歴」で確認できます。")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(8)
-                } label: {
-                    Label("はじめに", systemImage: "book")
-                }
+                }.settingsTarget("timings")
+
             }
             .padding(18)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -146,70 +116,6 @@ struct SettingsGeneralPage: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             loginItem.refresh()
             guide.refresh()
-        }
-    }
-
-    /// Primary controls are editable here. The Voice/Gemini pages remain
-    /// available for detailed descriptions, rather than being the only route.
-    private var generalControlsCard: some View {
-        GroupBox {
-            VStack(spacing: 0) {
-                SettingsRow("文字起こしの方法",
-                            description: "Gemini API またはMac内でのApple認識を選択します。",
-                            icon: "waveform") {
-                    SettingsRecognitionPicker("認識方法", selection: $controller.requestedMode)
-                    .frame(width: 168)
-                }
-                Group {
-                    if #available(macOS 26, *) {
-                        Text("ローカル認識エンジン: SpeechAnalyzer（macOS 26の新しいオンデバイス認識）")
-                    } else {
-                        Text("ローカル認識エンジン: SFSpeechRecognizer（従来のオンデバイス認識）")
-                    }
-                }
-                .font(.caption).foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.bottom, 8)
-                Divider()
-                SettingsRow("録音の開始・終了キー",
-                            description: "今の設定：\(controller.shortcutChoice.label)。下の動作設定で録音の操作方法を選びます。",
-                            icon: "keyboard") {
-                    SettingsShortcutPicker("録音キー", selection: Binding(
-                        get: { controller.shortcutChoice },
-                        set: { controller.selectShortcut($0) }
-                    ))
-                    .frame(width: 198)
-                }
-                SettingsInputControls(controller: controller)
-                if !controller.shortcutProblem.isEmpty {
-                    HStack {
-                        Text(controller.shortcutProblem)
-                            .font(.caption).foregroundStyle(.red)
-                        Spacer()
-                        Button("再登録") { controller.retryShortcutRegistration() }
-                    }
-                }
-                Divider()
-                SettingsRow("認識した文章を自動入力",
-                            description: "OFFの場合、結果は履歴に保存して後からコピーできます。",
-                            icon: "text.cursor") {
-                    Toggle("自動入力", isOn: $controller.automaticPaste)
-                        .labelsHidden()
-                        .toggleStyle(.switch)
-                }
-                if controller.requestedMode == .gemini {
-                    Divider()
-                    SettingsRow("文字起こしスタイル",
-                                description: controller.transcriptionStyle.explanation,
-                                icon: "text.alignleft") {
-                        SettingsTranscriptionStylePicker("スタイル", selection: $controller.transcriptionStyle)
-                        .frame(width: 192)
-                    }
-                }
-            }
-            .padding(8)
-        } label: {
-            Label("音声入力をすぐ使う", systemImage: "mic.fill")
         }
     }
 
@@ -234,7 +140,7 @@ struct SettingsGeneralPage: View {
                           systemImage: "exclamationmark.circle.fill")
                         .foregroundStyle(.orange)
                 } else if !controller.automaticPaste {
-                    Label("文字起こしの準備を確認しました（自動入力はOFF・履歴保存）",
+                    Label("文字起こしの準備を確認しました",
                           systemImage: "checkmark.circle.fill")
                         .foregroundStyle(.green)
                 } else {
@@ -245,27 +151,29 @@ struct SettingsGeneralPage: View {
                 HStack(spacing: 12) {
                     Label(guide.microphoneStatus == .authorized ? "マイク許可済み" : "マイク要確認",
                           systemImage: "mic")
-                    Label(!controller.automaticPaste ? "自動入力OFF"
-                          : (guide.accessibilityGranted && guide.postEventGranted
+                    Label((guide.accessibilityGranted && guide.postEventGranted
                              ? "入力操作許可済み" : "入力操作要確認"),
                           systemImage: "keyboard")
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 10) {
                     if controller.requestedMode == .gemini {
-                        Label(controller.hasKey ? "Geminiキー登録済み" : "Geminiキー未登録",
-                              systemImage: "key")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Button("APIキー設定") { navigate(.gemini) }
+                        HStack {
+                            Label(controller.hasKey ? "Geminiキー登録済み" : "Geminiキー未登録", systemImage: "key")
+                                .font(.caption).foregroundStyle(.secondary)
+                            Button("APIキー設定") { navigate(.gemini) }.settingsControlFocus("general")
+                        }
                     }
-                    Spacer()
-                    Button("許可を再確認") {
-                        guide.refreshFromSettings()
-                        generalPermissionCheckedAt = Date()
+                    HStack(spacing: 10) {
+                        Button("音声入力の設定") { navigate(.voice) }
+                            .settingsControlFocus(ids: controller.requestedMode == .gemini ? [] : ["general"])
+                        Button("許可を再確認") {
+                            guide.refreshFromSettings()
+                            generalPermissionCheckedAt = Date()
+                        }
+                        Button("対処方法") { navigate(.permissions) }
                     }
-                    Button("対処方法") { navigate(.permissions) }
                 }
                 .controlSize(.small)
                 if let checked = generalPermissionCheckedAt {
@@ -283,28 +191,5 @@ struct SettingsGeneralPage: View {
         }
     }
 
-    private var generalUpdatesCard: some View {
-        GroupBox {
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("現在：v\(updater.installedLabel)（Stable）")
-                        .font(.system(size: 14, weight: .semibold))
-                    Text(updater.statusMessage)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer(minLength: 12)
-                Button("更新を確認") {
-                    updater.requestUpdatePage()
-                    Task { await updater.checkNow() }
-                }
-                .disabled(updater.state == .checking)
-            }
-            .padding(8)
-        } label: {
-            Label("アップデート", systemImage: "arrow.triangle.2.circlepath")
-        }
-    }
 }
 #endif

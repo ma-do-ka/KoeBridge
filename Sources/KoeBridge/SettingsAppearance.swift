@@ -9,23 +9,23 @@ extension SettingsSection {
         case .general: return Color(red: 0.53, green: 0.55, blue: 0.60)
         case .voice: return Color(red: 0.06, green: 0.61, blue: 0.99)
         case .gemini: return Color(red: 0.56, green: 0.31, blue: 0.99)
-        case .usage: return Color(red: 0.16, green: 0.78, blue: 0.36)
+        case .shortcuts: return Color(red: 0.16, green: 0.78, blue: 0.36)
         case .history: return Color(red: 0.08, green: 0.73, blue: 0.81)
         case .permissions: return Color(red: 0.95, green: 0.27, blue: 0.33)
-        case .help: return Color(red: 0.98, green: 0.58, blue: 0.17)
+        case .profiles: return Color(red: 0.98, green: 0.58, blue: 0.17)
         case .about: return Color(red: 0.43, green: 0.36, blue: 0.94)
         }
     }
 
     var pageDescription: String {
         switch self {
-        case .general: return "録音・文字入力の操作、利用許可、起動状態をまとめて確認できます。"
+        case .general: return "起動状態、準備状況と直近の処理時間を確認できます。"
         case .voice: return "話した内容を文字に変換し、元の入力欄への入力を試みます。"
-        case .gemini: return "Geminiを使うための接続情報と文字起こし方法を設定します。Appleの音声認識には適用されません。"
-        case .usage: return "GeminiとAppleの使用回数、処理した音声の長さ、APIの利用状況を確認できます。"
+        case .gemini: return "Gemini接続、辞書、再照合と変換を設定します。LLM後処理はApple認識にも適用できます（エージェントスタイルを除く）。"
+        case .shortcuts: return "録音・変換・翻訳・直前入力修正のキーと操作方法を設定します。"
         case .history: return "文字起こし履歴の確認と、不具合調査用の動作記録を管理します。"
         case .permissions: return "録音と文字入力に必要なmacOSの許可状態を確認します。許可はmacOSが管理します。"
-        case .help: return "使い方と、うまく動作しないときの確認先です。"
+        case .profiles: return "アプリごとの継承と上書きを設定します。"
         case .about: return "バージョン、公式リポジトリ、アップデートの確認と設定です。"
         }
     }

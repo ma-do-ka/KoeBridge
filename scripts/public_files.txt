@@ -300,3 +300,9 @@ Tests/KoeBridgeCoreTests/MeetingRetentionTests.swift
 Tests/KoeBridgeTests/RetainedAudioStoreTests.swift
 docs/meeting-and-retention.md
 Tests/KoeBridgeTests/MeetingSessionTests.swift
+
+docs/ui-rebuild-score.md
+
+Sources/KoeBridge/SettingsShortcutsPage.swift
+
+Tests/KoeBridgeCoreTests/SettingsPersistenceTests.swift

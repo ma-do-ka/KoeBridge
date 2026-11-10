@@ -186,11 +186,11 @@ struct HistoryView: View {
         .sheet(item: $learningRecord) { record in
             HistoryLearningEditor(controller: controller, record: record)
         }
-        .alert("保存した履歴（\(controller.history.count)件）をすべて削除しますか？", isPresented: $confirmDeleteAll) {
+        .alert("文字起こし履歴をすべて削除しますか？", isPresented: $confirmDeleteAll) {
             Button("削除", role: .destructive) { controller.clearHistory(); selectedID = nil }
             Button("キャンセル", role: .cancel) {}
         } message: {
-            Text("削除した文字起こしはKoeBridgeから復元できません。")
+            Text("対象：文字起こし履歴のみ。保存音声・利用統計・診断ログ・設定は変更しません。削除は取り消せません。")
         }
     }
 }

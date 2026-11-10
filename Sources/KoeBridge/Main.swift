@@ -155,6 +155,8 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
     private var updateCheckTimer: Timer?
     private let statusPopover = NSPopover()
     private var recordingObservation: AnyCancellable?
+    private var popoverMonitors: [Any] = []
+    private var popoverActivationObserver: NSObjectProtocol?
     private var lastPopoverClosedAt: Date?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -168,18 +170,27 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
         statusPopover.behavior = .transient
         statusPopover.delegate = self
         statusPopover.animates = true
-        let hosting = NSHostingController(rootView: StatusPopoverView(
+        let content = StatusPopoverView(
             controller: controller, guide: PermissionGuide.shared,
             onOpenSettings: { [weak self] in self?.showSettings() },
             onOpenHistory: { [weak self] in self?.showHistory() },
-            onOpenPermissions: { [weak self] in self?.showPermissions() },
+            onOpenPermissions: { [weak self] in self?.showSettingsDestination("accessibility") },
+            onOpenUsage: { [weak self] in self?.showSettingsDestination("usage") },
             onCheckForUpdates: { [weak self] in self?.checkForUpdates() },
             onQuit: { [weak self] in self?.quit() },
             onToggleRecording: { [weak self] in self?.afterClosingPopover { $0.controller.toggle() } },
+            onToggleMeeting: { [weak self] in self?.afterClosingPopover { $0.controller.toggleMeeting() } },
             onDiscard: { [weak self] in self?.afterClosingPopover { $0.controller.discard() } },
-            onCopyRecord: { [weak self] record in self?.copyRecentHistory(record) }
-        ))
-        hosting.sizingOptions = [.preferredContentSize]
+            onCopyRecord: { [weak self] record in self?.copyRecentHistory(record) },
+            onContentSizeChange: { [weak self] size in
+                guard let self, self.statusPopover.isShown else { return }
+                // Keep intrinsic expansion (recent history / status) when using
+                // a custom hosting view instead of NSHostingController sizing.
+                self.statusPopover.contentSize = size
+            }
+        )
+        let hosting = NSViewController()
+        hosting.view = FirstMouseHostingView(rootView: content)
         statusPopover.contentViewController = hosting
         recordingObservation = controller.$isRecording.sink { [weak self] recording in
             self?.item.button?.image = NSImage(
@@ -365,7 +376,59 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
         }
     }
 
+    func popoverDidShow(_ notification: Notification) {
+        // No activation: capture must still see the original editor in App X.
+        stopPopoverMonitors()
+        let mouseMask: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        if let monitor = NSEvent.addGlobalMonitorForEvents(matching: mouseMask, handler: { [weak self] _ in
+            self?.closePopoverIfOutside()
+        }) { popoverMonitors.append(monitor) }
+        if let monitor = NSEvent.addLocalMonitorForEvents(matching: mouseMask.union(.keyDown), handler: { [weak self] event in
+            guard let self else { return event }
+            if event.type == .keyDown && event.keyCode == 53 {
+                self.statusPopover.performClose(nil)
+                return nil
+            }
+            if event.type != .keyDown { self.closePopoverIfOutside() }
+            return event
+        }) { popoverMonitors.append(monitor) }
+        // Global key monitoring also handles Esc while App X remains key.
+        if let monitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown, handler: { [weak self] event in
+            if event.keyCode == 53 { self?.statusPopover.performClose(nil) }
+        }) { popoverMonitors.append(monitor) }
+        popoverActivationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+        ) { [weak self] notification in
+            guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                  app.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return }
+            self?.statusPopover.performClose(nil)
+        }
+    }
+
+    private func closePopoverIfOutside() {
+        guard statusPopover.isShown,
+              let window = statusPopover.contentViewController?.view.window else { return }
+        if !window.frame.contains(NSEvent.mouseLocation) { statusPopover.performClose(nil) }
+    }
+
+    private func stopPopoverMonitors() {
+        popoverMonitors.forEach { NSEvent.removeMonitor($0) }
+        popoverMonitors.removeAll()
+        if let observer = popoverActivationObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+            popoverActivationObserver = nil
+        }
+    }
+
+    private func showSettingsDestination(_ id: String) {
+        statusPopover.performClose(nil)
+        SettingsDestination.pending = id
+        windows.showSettings()
+        NotificationCenter.default.post(name: .settingsDestinationRequested, object: id)
+    }
+
     func popoverDidClose(_ notification: Notification) {
+        stopPopoverMonitors()
         lastPopoverClosedAt = Date()
     }
 

@@ -22,6 +22,7 @@ struct SettingsView: View {
              : Color(red: 0.916, green: 0.932, blue: 0.955)
     }
     @AppStorage("diagnosticsEnabled") private var diagnosticsEnabled = false
+    @StateObject private var presetEditor = TransformPresetEditorState()
     @State private var apiKeyDraft = ""
     @State private var apiKeyNotice = ""
     @State private var logNotice = ""
@@ -73,7 +74,7 @@ struct SettingsView: View {
         }
         .groupBoxStyle(ContrastSettingsGroupBoxStyle(dark: dark))
         .frame(minWidth: 820, minHeight: 570)
-        .alert("動作記録を削除しますか？", isPresented: $confirmDeleteLog) {
+        .alert("診断ログをすべて削除しますか？", isPresented: $confirmDeleteLog) {
             Button("削除", role: .destructive) {
                 do {
                     try DiagnosticLog.deleteExistingFiles()
@@ -84,7 +85,7 @@ struct SettingsView: View {
             }
             Button("キャンセル", role: .cancel) {}
         } message: {
-            Text("KoeBridge.log と古いログ1件を削除します。文字起こし履歴や設定は削除されません。")
+            Text("対象：KoeBridge.log と古いログ1件のみ。履歴・利用統計・保存音声・設定は変更しません。削除は取り消せません。")
         }
         .alert("Gemini APIキーを削除しますか？", isPresented: $confirmDeleteKey) {
             Button("削除", role: .destructive) {
@@ -102,7 +103,19 @@ struct SettingsView: View {
         }
         // The menu can open Settings before SwiftUI subscribes.
         // Handle that pending request on view appearance as well.
+        .onReceive(NotificationCenter.default.publisher(for: .settingsDestinationRequested)) { note in
+            if let id = note.object as? String,
+               let entry = SettingsSearchCatalog.entries.first(where: { $0.id == id }) {
+                navigation.focus(entry)
+                SettingsDestination.pending = nil
+            }
+        }
         .onAppear {
+            if let id = SettingsDestination.pending,
+               let entry = SettingsSearchCatalog.entries.first(where: { $0.id == id }) {
+                navigation.focus(entry)
+                SettingsDestination.pending = nil
+            }
             Task { @MainActor in openPendingUpdatePage() }
         }
         .onReceive(updater.$requestedUpdatePage) { request in
@@ -127,6 +140,12 @@ struct SettingsView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
+    }
+
+    private func openFirstSearchResult() {
+        guard let result = SettingsSearchCatalog.find(searchText).first else { return }
+        navigation.focus(result)
+        searchText = ""
     }
 
     private func go(_ section: SettingsSection) {
@@ -179,6 +198,8 @@ struct SettingsView: View {
                 TextField("設定を検索", text: $searchText)
                     .textFieldStyle(.plain)
                     .accessibilityLabel("設定を検索")
+                    .onSubmit { openFirstSearchResult() }
+                    .onKeyPress(.downArrow) { openFirstSearchResult(); return .handled }
                 if !searchText.isEmpty {
                     Button {
                         searchText = ""
@@ -205,11 +226,11 @@ struct SettingsView: View {
             SettingsIndicatedScrollView {
                 VStack(alignment: .leading, spacing: 17) {
                     if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        sidebarGroup("基本", pages: [.general, .voice, .gemini, .usage])
+                        sidebarGroup("基本", pages: [.general, .voice, .gemini, .shortcuts, .profiles])
                         Divider().padding(.horizontal, 16)
                         sidebarGroup("データと安全", pages: [.history, .permissions])
                         Divider().padding(.horizontal, 16)
-                        sidebarGroup("サポート", pages: [.help, .about])
+                        sidebarGroup("サポート", pages: [.about])
                     } else {
                         Text("検索結果")
                             .font(.caption.weight(.semibold))
@@ -307,14 +328,18 @@ struct SettingsView: View {
             SettingsVoicePage(controller: controller, focusRequest: navigation.focusRequest)
         case .gemini:
             SettingsGeminiPage(
-                controller: controller, apiKeyDraft: $apiKeyDraft, apiKeyNotice: $apiKeyNotice,
+                controller: controller, presetEditor: presetEditor, apiKeyDraft: $apiKeyDraft, apiKeyNotice: $apiKeyNotice,
                 focusRequest: navigation.focusRequest, requestKeyDeletion: { confirmDeleteKey = true }
             )
-        case .usage:
-            UsageMonitorView(controller: controller, focusRequest: navigation.focusRequest)
+        case .shortcuts:
+            SettingsShortcutsPage(controller: controller, focusRequest: navigation.focusRequest)
+        case .profiles:
+            SettingsPageScrollView(section: .profiles, focusRequest: navigation.focusRequest) {
+                SettingsAppProfilesPage(controller: controller).settingsTarget("app-profiles").padding(18)
+            }
         case .history:
             SettingsPrivacyPage(
-                historyCount: controller.history.count, diagnosticsEnabled: $diagnosticsEnabled,
+                controller: controller, historyCount: controller.history.count, diagnosticsEnabled: $diagnosticsEnabled,
                 logNotice: logNotice, focusRequest: navigation.focusRequest,
                 showHistory: { controller.onShowHistory?() },
                 requestLogDeletion: { confirmDeleteLog = true }
@@ -324,13 +349,8 @@ struct SettingsView: View {
                 guide: guide, focusRequest: navigation.focusRequest,
                 showPermissions: { controller.onShowPermissions?() }
             )
-        case .help:
-            SettingsHelpPage(
-                shortcutLabel: controller.shortcutChoice.label,
-                focusRequest: navigation.focusRequest, navigate: go
-            )
         case .about:
-            SettingsAboutPage(updater: updater, focusRequest: navigation.focusRequest)
+            SettingsAboutPage(updater: updater, focusRequest: navigation.focusRequest, shortcutLabel: controller.shortcutChoice.label, navigate: go)
         }
     }
 }

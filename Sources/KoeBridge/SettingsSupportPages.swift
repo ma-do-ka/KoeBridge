@@ -9,13 +9,13 @@ struct SettingsHelpPage: View {
     let navigate: (SettingsSection) -> Void
 
     var body: some View {
-        SettingsPageScrollView(section: .help, focusRequest: focusRequest) {
+        Group {
             VStack(alignment: .leading, spacing: 18) {
                 GroupBox {
                     VStack(alignment: .leading, spacing: 10) {
                         Label("1. 文字を入力したいアプリの入力欄を選びます。", systemImage: "cursorarrow.click.2")
                         Label("2. 設定したキーで録音を開始します。", systemImage: "mic")
-                        Label("3. 同じキーで録音を終了し、確定処理が終わると自動入力を試みます。", systemImage: "checkmark.circle")
+                        Label("3. トグルは再度押して確定、ホールドは離して確定、ハイブリッドは短押しで固定・長押し後に離して確定します。", systemImage: "checkmark.circle")
                         Text("現在の録音キー：\(shortcutLabel)")
                             .font(.caption).foregroundStyle(.secondary)
                     }
@@ -28,7 +28,7 @@ struct SettingsHelpPage: View {
                             .font(.headline)
                         Text("利用許可を確認し、マイクと文字の入力操作が許可されているか確認してください。")
                             .font(.caption).foregroundStyle(.secondary)
-                        Button("利用許可を確認") { navigate(.permissions) }
+                        Button("利用許可を確認") { navigate(.permissions) }.settingsControlFocus("help")
                         Divider()
                         Text("自動入力だけができないとき")
                             .font(.headline)
@@ -46,7 +46,7 @@ struct SettingsHelpPage: View {
                     .padding(8)
                 } label: { Label("トラブル対処", systemImage: "wrench.and.screwdriver") }
             }
-            .id("help")
+            .settingsTarget("help")
             .padding(18)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -57,6 +57,9 @@ struct SettingsAboutPage: View {
     @ObservedObject var updater: KoeBridgeUpdateManager
     @ObservedObject private var nativeUpdater = KoeBridgeInAppUpdater.shared
     let focusRequest: SettingsFocusRequest?
+
+    let shortcutLabel: String
+    let navigate: (SettingsSection) -> Void
 
     var body: some View {
         SettingsPageScrollView(section: .about, focusRequest: focusRequest) {
@@ -89,7 +92,7 @@ struct SettingsAboutPage: View {
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                             Link("公式GitHubリポジトリ",
-                                 destination: URL(string: "https://github.com/ma-do-ka/KoeBridge")!)
+                                 destination: URL(string: "https://github.com/ma-do-ka/KoeBridge")!).settingsControlFocus("about")
                         }
                         Spacer(minLength: 0)
                     }
@@ -98,14 +101,14 @@ struct SettingsAboutPage: View {
                 } label: {
                     Label("アプリについて", systemImage: "info.circle")
                 }
-                .id("about")
+                .settingsTarget("about")
 
                 GroupBox {
                     VStack(alignment: .leading, spacing: 0) {
                         SettingsRow("アップデートを自動的に確認",
                                     description: "1日1回を上限に、正式リリースと公式ソースの更新を確認します。自動インストールはしません。",
                                     icon: "arrow.clockwise") {
-                            Toggle("自動更新確認", isOn: $updater.automaticChecksEnabled)
+                            Toggle("自動更新確認", isOn: $updater.automaticChecksEnabled).settingsControlFocus("updates")
                                 .labelsHidden()
                                 .toggleStyle(.switch)
                         }
@@ -194,7 +197,8 @@ struct SettingsAboutPage: View {
                 } label: {
                     Label("アップデート", systemImage: "arrow.triangle.2.circlepath")
                 }
-                .id("updates")
+                .settingsTarget("updates")
+                SettingsHelpPage(shortcutLabel: shortcutLabel, focusRequest: focusRequest, navigate: navigate)
             }
             .padding(18)
             .frame(maxWidth: .infinity, alignment: .leading)

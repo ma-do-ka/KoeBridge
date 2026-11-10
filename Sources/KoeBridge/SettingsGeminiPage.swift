@@ -6,6 +6,7 @@ import KoeBridgeCore
 /// discard a pending API key. Recognition choices bind directly to the controller.
 struct SettingsGeminiPage: View {
     @ObservedObject var controller: VoiceController
+    @ObservedObject var presetEditor: TransformPresetEditorState
     @State private var editingLearnedTerm: LearnedTerm?
     @Binding var apiKeyDraft: String
     @Binding var apiKeyNotice: String
@@ -25,7 +26,7 @@ struct SettingsGeminiPage: View {
                         }
                         SecureField("Gemini APIキーを入力", text: $apiKeyDraft)
                             .textFieldStyle(.roundedBorder)
-                            .id("apikey")
+                            .settingsControlFocus("apikey").settingsTarget("apikey")
                         HStack(spacing: 10) {
                             Label(controller.hasKey ? "キーチェーンに登録済み" : "APIキー未登録",
                                   systemImage: controller.hasKey ? "checkmark.circle.fill" : "circle.dashed")
@@ -58,25 +59,26 @@ struct SettingsGeminiPage: View {
                     VStack(spacing: 0) {
                         SettingsRow("録音前に接続を準備する",
                                     description: "録音開始前に接続だけを準備しておき、押し始めの待ち時間をなくします。録音するまで音声は送信されません。準備した接続は5分で破棄されます。", icon: "bolt.horizontal") {
-                            Toggle("録音前に接続を準備する", isOn: $controller.geminiPrewarmEnabled).labelsHidden()
+                            Toggle("録音前に接続を準備する", isOn: $controller.geminiPrewarmEnabled).settingsControlFocus("prewarm").labelsHidden()
                         }
+                        .settingsTarget("prewarm")
                         Divider()
                         SettingsRow("日本語での認識を優先する",
                                     description: "日本語を中心に話す場合に有効にしてください。Geminiに日本語の言語設定を送ります。オフでは言語を指定しません。", icon: "character.book.closed") {
-                            Toggle("日本語での認識を優先する", isOn: $controller.japaneseHint)
+                            Toggle("日本語での認識を優先する", isOn: $controller.japaneseHint).settingsControlFocus("japanese")
                                 .labelsHidden().toggleStyle(.switch)
                         }
-                        .id("japanese")
+                        .settingsTarget("japanese")
                         Divider()
                         SettingsRow("文字起こしスタイル",
                                     description: controller.transcriptionStyle.explanation,
                                     icon: "text.alignleft") {
                             SettingsTranscriptionStylePicker("文字起こしスタイル", selection: $controller.transcriptionStyle)
-                            .pickerStyle(.menu)
+                            .settingsControlFocus("smart").pickerStyle(.menu)
                             .frame(width: 220)
                             .accessibilityLabel("文字起こしスタイル")
                         }
-                        .id("smart")
+                        .settingsTarget("smart")
                         if controller.transcriptionStyle == .agent {
                             Text("AIエージェント指示ではGeminiの逐語認識を使います。専門用語の補助は、選択した項目だけを使用します。音声の聞き間違いや文字列の完全一致までは保証できません。")
                                 .font(.caption)
@@ -85,22 +87,30 @@ struct SettingsGeminiPage: View {
                                 .padding(.horizontal, 14)
                                 .padding(.bottom, 8)
                         }
-                        Divider()
+                    }.padding(8)
+                } label: { Label("接続準備と言語・スタイル", systemImage: "waveform") }
+                GroupBox {
+                    VStack(spacing: 0) {
                         SettingsRow("LLM後処理",
-                                    description: "認識結果が確定したあと、別のLLM処理で文を整えます。失敗した場合は元の認識結果がそのまま入力されます。エージェントスタイルでは適用されません。") {
-                            Toggle("LLM後処理", isOn: $controller.postProcessEnabled)
+                                    description: "Appleの認識結果にも適用できます（Gemini APIキーが必要）。認識結果が確定したあと、別のLLM処理で文を整えます。失敗した場合は元の認識結果がそのまま入力されます。エージェントスタイルでは適用されません。") {
+                            Toggle("LLM後処理", isOn: $controller.postProcessEnabled).settingsControlFocus(ids: controller.postProcessEnabled ? ["post-processing"] : ["post-processing", "post-mode"])
                                 .labelsHidden().toggleStyle(.switch)
                         }
+                        .settingsTarget("post-processing")
                         SettingsRow("後処理モード", description: "Appleの認識結果にも適用できます。Gemini APIキーが必要です。") {
                             Picker("後処理モード", selection: $controller.postProcessMode) {
                                 ForEach(PostProcessingMode.allCases.filter { $0 != .off }, id: \.self) { mode in
                                     Text(mode.label).tag(mode)
                                 }
                             }
-                            .pickerStyle(.menu).frame(width: 220)
+                            .settingsControlFocus(ids: controller.postProcessEnabled ? ["post-mode"] : []).pickerStyle(.menu).frame(width: 220)
                             .disabled(!controller.postProcessEnabled)
                         }
-                        Divider()
+                        .settingsTarget("post-mode")
+                    }.padding(8)
+                } label: { Label("認識後の文章整形", systemImage: "text.badge.checkmark") }
+                GroupBox {
+                    VStack(spacing: 0) {
                         vocabularyAssistanceSettings
                         Divider()
                         VStack(alignment: .leading, spacing: 8) {
@@ -110,7 +120,7 @@ struct SettingsGeminiPage: View {
                                 .font(.system(size: 12)).foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
                             TextEditor(text: $controller.vocabulary)
-                                .id("words")
+                                .settingsControlFocus("words").settingsTarget("words")
                                 .font(.system(.body, design: .monospaced))
                                 .frame(minHeight: 125)
                                 .overlay {
@@ -122,6 +132,7 @@ struct SettingsGeminiPage: View {
                         Divider()
                         VStack(alignment: .leading, spacing: 8) {
                             Text("学習した語彙（\(controller.learnedTerms.count)語）").font(.headline)
+                            Button("履歴から修正して学習") { controller.onShowHistory?() }.settingsControlFocus("learned-terms")
                             if controller.learnedTerms.isEmpty {
                                 Text("まだありません。履歴の「修正して学習」から追加できます。")
                                     .foregroundStyle(.secondary)
@@ -142,13 +153,34 @@ struct SettingsGeminiPage: View {
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                         .padding(.vertical, 8)
-                        Divider()
+                        .settingsTarget("learned-terms")
+                    }.padding(8)
+                } label: { Label("辞書と学習", systemImage: "character.book.closed") }
+                GroupBox {
+                    VStack(spacing: 0) {
                         contextCheckSettings
                     }
                     .padding(8)
                 } label: {
-                    Label("文字起こしの調整", systemImage: "text.badge.checkmark")
+                    Label("Mac内の整理・音声の再照合と文脈", systemImage: "checkmark.shield")
                 }
+                GroupBox("翻訳") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Picker("翻訳の方向", selection: $controller.translationDirection) {
+                            Text("自動判定").tag(TranslationDirection.auto)
+                            Text("日本語 → 英語").tag(TranslationDirection.jaToEn)
+                            Text("英語 → 日本語").tag(TranslationDirection.enToJa)
+                        }
+                        .settingsControlFocus("translation")
+                        Text("翻訳キーは1回押すと実行します。録音はしません。自動判定では、ひらがな・カタカナ・漢字を含む選択は英語へ、それ以外は日本語へ翻訳します。選択テキストはGeminiへ送信されます。")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Button("翻訳キーの設定") {
+                            SettingsDestination.pending = "translate-shortcut"
+                            NotificationCenter.default.post(name: .settingsDestinationRequested, object: "translate-shortcut")
+                        }
+                    }.padding(8)
+                }.settingsTarget("translation")
+                SettingsTransformPresets(controller: controller, editor: presetEditor).settingsTarget("presets")
                 GroupBox {
                     Text("Geminiの利用中は録音した音声がGoogleのAPIへ送信されます。料金や利用制限はGoogle側の契約・課金条件に従います。")
                         .font(.callout).foregroundStyle(.secondary)
@@ -162,6 +194,7 @@ struct SettingsGeminiPage: View {
             .padding(18)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .onAppear { presetEditor.initialize(controller.transformPresets) }
         .sheet(item: $editingLearnedTerm) { entry in
             LearnedTermEditor(controller: controller, entry: entry)
         }
@@ -175,12 +208,13 @@ struct SettingsGeminiPage: View {
                 Text("登録した用語を使う")
                     .fixedSize(horizontal: false, vertical: true)
             }
-            .toggleStyle(.checkbox)
+            .settingsControlFocus("vocabulary-assistance", "registered-vocabulary").toggleStyle(.checkbox).settingsTarget("registered-vocabulary")
             Toggle(isOn: $controller.topicVocabularyEnabled) {
                 Text("開発・ITの用語を使う")
                     .fixedSize(horizontal: false, vertical: true)
             }
             .toggleStyle(.checkbox)
+            .settingsControlFocus("topic-vocabulary").settingsTarget("topic-vocabulary")
             Text("GitHub、Pythonなど、アプリ内の開発・IT用語を認識の候補として使います。")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
@@ -193,32 +227,34 @@ struct SettingsGeminiPage: View {
         .font(.system(size: 14))
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 12)
-        .id("vocabulary-assistance")
+        .settingsTarget("vocabulary-assistance")
     }
 
     private var contextCheckSettings: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("文脈チェック")
+            Text("Mac内の句読点整理")
                 .font(.system(size: 14, weight: .medium))
             Toggle(isOn: $controller.textContextCheckEnabled) {
-                Text("文章のつながりと句読点を確認する")
+                Text("Mac内で句読点を整理する")
                     .fixedSize(horizontal: false, vertical: true)
             }
-            .toggleStyle(.checkbox)
+            .settingsControlFocus("context-check").toggleStyle(.checkbox)
             Text("「という。こと」など、限られた日本語の区切りをMac内で整えます。語句の追加や言い換えは行いません。追加の通信・API料金はありません。")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            Divider()
             Toggle(isOn: $controller.audioRecheckEnabled) {
                 Text("音声を再認識して照合する")
                     .fixedSize(horizontal: false, vertical: true)
             }
-            .toggleStyle(.checkbox)
+            .settingsControlFocus(ids: controller.audioRecheckEnabled ? ["audio-recheck"] : ["audio-recheck", "audio-policy"]).toggleStyle(.checkbox)
+            .settingsTarget("audio-recheck")
             Text("同じ録音をGoogleのAPIへもう一度送り、認識結果を比べます。追加の通信・待ち時間・API料金が発生します。語句が異なる場合は自動入力せず、元の文章と候補を履歴に残します。")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            if controller.audioRecheckEnabled {
+            Group {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("音声と照合するタイミング")
                         .font(.system(size: 13, weight: .medium))
@@ -231,6 +267,9 @@ struct SettingsGeminiPage: View {
                     .pickerStyle(.menu)
                     .frame(maxWidth: 270, alignment: .leading)
                     .accessibilityLabel("音声と照合するタイミング")
+                    .settingsControlFocus(ids: controller.audioRecheckEnabled ? ["audio-policy"] : [])
+                    .settingsTarget("audio-policy")
+                    .disabled(!controller.audioRecheckEnabled)
                     Text("長い音声・通信待ちでは未完了となり、元の確定文を使います。")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
@@ -240,11 +279,11 @@ struct SettingsGeminiPage: View {
             }
             Divider().padding(.vertical, 4)
             Toggle("文脈を使って再チェックを補助する", isOn: $controller.recheckContextEnabled)
-                .toggleStyle(.checkbox)
+                .settingsControlFocus(ids: controller.recheckContextEnabled ? ["context"] : ["context", "context-app", "context-selection", "context-surrounding"]).toggleStyle(.checkbox).settingsTarget("context")
             VStack(alignment: .leading, spacing: 8) {
-                Toggle("アプリ名", isOn: $controller.contextAppEnabled)
-                Toggle("選択テキスト", isOn: $controller.contextSelectionEnabled)
-                Toggle("周辺テキスト", isOn: $controller.contextSurroundingEnabled)
+                Toggle("アプリ名", isOn: $controller.contextAppEnabled).settingsControlFocus(ids: controller.recheckContextEnabled ? ["context-app"] : []).settingsTarget("context-app")
+                Toggle("選択テキスト", isOn: $controller.contextSelectionEnabled).settingsControlFocus(ids: controller.recheckContextEnabled ? ["context-selection"] : []).settingsTarget("context-selection")
+                Toggle("周辺テキスト", isOn: $controller.contextSurroundingEnabled).settingsControlFocus(ids: controller.recheckContextEnabled ? ["context-surrounding"] : []).settingsTarget("context-surrounding")
             }
             .toggleStyle(.checkbox)
             .disabled(!controller.recheckContextEnabled)
@@ -255,7 +294,7 @@ struct SettingsGeminiPage: View {
             Text("選択・周辺テキストは各2,000文字まで。読み取れない項目は送信しません。音声の再認識が有効な場合に使用します。")
                 .font(.system(size: 12)).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            Text("両方を外すと、追加の文脈チェックを行いません。Geminiで認識できた録音に適用し、Appleローカルで認識した場合は実行しません。設定の選択は保持されます。")
+            Text("句読点整理と音声の再照合を両方オフにすると、追加の確認を行いません。Geminiで認識できた録音に適用し、Appleローカルで認識した場合は実行しません。設定の選択は保持されます。")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -263,7 +302,7 @@ struct SettingsGeminiPage: View {
         .font(.system(size: 14))
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 12)
-        .id("context-check")
+        .settingsTarget("context-check")
     }
 }
 private struct LearnedTermEditor: View {

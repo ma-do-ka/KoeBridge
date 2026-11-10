@@ -606,6 +606,19 @@ import KoeBridgeCore
     private var active: DictationTake?
     private var inFlight: [UUID: DictationTake] = [:]
     private var finished = OrderedResultBuffer<Completion>(maximumPending: 8)
+    /// Presentation only: report a live fallback accurately; idle text names the OS default.
+    var localBackendStatus: String {
+        if let local = active?.local {
+            return local.requiresSpeechAuthorization
+                ? "使用中のローカル認識: SFSpeechRecognizer"
+                : "使用中のローカル認識: SpeechAnalyzer"
+        }
+        if #available(macOS 26, *) {
+            return "ローカル認識: SpeechAnalyzer（開始に失敗した場合はSFSpeechRecognizerへ切替）"
+        }
+        return "ローカル認識: SFSpeechRecognizer"
+    }
+
     private var localRecoveryBusy = false
     private var overlayOwner: UUID?
     private var overlayDismissal: Task<Void, Never>?
