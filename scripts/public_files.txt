@@ -260,3 +260,8 @@ Sources/KoeBridge/GeminiTextTransformer.swift
 Sources/KoeBridgeSelfTest/ContextAndTransformTests.swift
 Tests/KoeBridgeCoreTests/ContextAndTransformTests.swift
 docs/context-and-transform.md
+Sources/KoeBridgeCore/PostProcessing.swift
+Sources/KoeBridgeCore/GeminiPostProcessWire.swift
+Sources/KoeBridgeSelfTest/PostProcessingTests.swift
+Tests/KoeBridgeCoreTests/PostProcessingTests.swift
+docs/post-processing.md

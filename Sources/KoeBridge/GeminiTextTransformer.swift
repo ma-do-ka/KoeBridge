@@ -20,6 +20,18 @@ private final class TransformSessionDelegate: NSObject, URLSessionTaskDelegate {
 
     static func transform(selectedText: String, instruction: String, apiKey: String,
                           timeout: TimeInterval = 30) async throws -> Result {
+        try await send(body: GeminiTransformWire.request(selectedText: selectedText, instruction: instruction),
+                       apiKey: apiKey, timeout: timeout, postProcess: false)
+    }
+
+    static func postProcess(text: String, mode: PostProcessingMode, apiKey: String,
+                            timeout: TimeInterval) async throws -> Result {
+        try await send(body: GeminiPostProcessWire.request(text: text, mode: mode),
+                       apiKey: apiKey, timeout: timeout, postProcess: true)
+    }
+
+    private static func send(body: Data, apiKey: String, timeout: TimeInterval,
+                             postProcess: Bool) async throws -> Result {
         try Task.checkCancellation()
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = timeout
@@ -35,7 +47,7 @@ private final class TransformSessionDelegate: NSObject, URLSessionTaskDelegate {
         request.timeoutInterval = timeout
         request.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try GeminiTransformWire.request(selectedText: selectedText, instruction: instruction)
+        request.httpBody = body
         let (bytes, response) = try await session.bytes(for: request, delegate: delegate)
         try Task.checkCancellation()
         guard let http = response as? HTTPURLResponse else { throw GeminiRecheckWire.RecheckError.invalidResponse }
@@ -46,7 +58,15 @@ private final class TransformSessionDelegate: NSObject, URLSessionTaskDelegate {
             session.invalidateAndCancel()
         }
         try Task.checkCancellation()
-        let text = try GeminiTransformWire.response(data)
+        let text: String
+        if postProcess {
+            guard let processed = try GeminiPostProcessWire.response(data) else {
+                throw GeminiRecheckWire.RecheckError.incompleteResponse
+            }
+            text = processed
+        } else {
+            text = try GeminiTransformWire.response(data)
+        }
         let usage = String(data: data, encoding: .utf8).flatMap(GeminiWire.parseTokenUsage)
         return Result(text: text, usage: usage)
     }

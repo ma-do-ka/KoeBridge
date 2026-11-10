@@ -85,6 +85,21 @@ struct SettingsGeminiPage: View {
                                 .padding(.bottom, 8)
                         }
                         Divider()
+                        SettingsRow("LLM後処理",
+                                    description: "認識結果が確定したあと、別のLLM処理で文を整えます。失敗した場合は元の認識結果がそのまま入力されます。エージェントスタイルでは適用されません。") {
+                            Toggle("LLM後処理", isOn: $controller.postProcessEnabled)
+                                .labelsHidden().toggleStyle(.switch)
+                        }
+                        SettingsRow("後処理モード", description: "Appleの認識結果にも適用できます。Gemini APIキーが必要です。") {
+                            Picker("後処理モード", selection: $controller.postProcessMode) {
+                                ForEach(PostProcessingMode.allCases, id: \.self) { mode in
+                                    Text(mode.label).tag(mode)
+                                }
+                            }
+                            .pickerStyle(.menu).frame(width: 220)
+                            .disabled(!controller.postProcessEnabled)
+                        }
+                        Divider()
                         vocabularyAssistanceSettings
                         Divider()
                         VStack(alignment: .leading, spacing: 8) {
