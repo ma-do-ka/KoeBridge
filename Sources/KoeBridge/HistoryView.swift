@@ -30,7 +30,7 @@ struct HistoryView: View {
                      : "保存した文章：\(controller.history.count) / \(RecentTranscriptArchive.maximumRecords)件")
                     .font(.headline)
                 Spacer()
-                Text("直近\(RecentTranscriptArchive.maximumRecords)件を保存。音声データ・APIキーは保存しません")
+                Text("直近\(RecentTranscriptArchive.maximumRecords)件を保存。音声保存は個別設定・APIキーは履歴に保存しません")
                     .font(.caption).foregroundStyle(.secondary)
             }
             if !controller.historyProblem.isEmpty {
@@ -104,7 +104,7 @@ struct HistoryView: View {
                         if let selected {
                             Text("\(selected.engine) / \(selected.isPartial ? "認識途中" : "確定結果")")
                                 .font(.caption).foregroundStyle(.secondary)
-                            Text(selected.delivery.label)
+                            Text(selected.kind == "meeting" ? "会議の文字起こし（履歴に保存）" : selected.delivery.label)
                                 .font(.caption).foregroundStyle(.secondary)
                             if let detail = selected.deliveryDetail {
                                 Text(detail).font(.caption).foregroundStyle(.secondary)
@@ -116,11 +116,34 @@ struct HistoryView: View {
                                     .foregroundStyle(review.status == .needsReview ? Color.orange : Color.secondary)
                                     .textSelection(.enabled)
                             }
+                            if selected.audioAsset != nil {
+                                HStack {
+                                    Menu("音声から再文字起こし") {
+                                        Button("Apple（このMac内・50秒以内）") { controller.replay(selected, engine: .local) }
+                                        Button("Gemini（Googleへ音声＋辞書語句を送信）") { controller.replay(selected, engine: .gemini) }
+                                    }.disabled(controller.replayRecordID != nil)
+                                    if controller.replayRecordID == selected.id {
+                                        ProgressView().controlSize(.small)
+                                        Button("キャンセル") { controller.cancelReplay() }
+                                    }
+                                }
+                                Text("Apple：このMac内で再認識。Gemini：保存音声と現在の辞書語句をGoogleへ送信します。")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            } else if let reason = selected.audioUnavailableReason {
+                                Text(reason).font(.caption).foregroundStyle(.secondary)
+                            }
+                            if !controller.replayStatus.isEmpty { Text(controller.replayStatus).font(.caption) }
                             ScrollView {
                                 VStack(alignment: .leading, spacing: 12) {
                                     Text(selected.text)
                                         .frame(maxWidth: .infinity, alignment: .leading)
                                         .textSelection(.enabled)
+                                    ForEach(Array(selected.retranscriptions.enumerated()), id: \.offset) { _, result in
+                                        Divider()
+                                        Text("\(result.engine)・\(result.date.formatted())").font(.caption).foregroundStyle(.secondary)
+                                        Text(result.text).textSelection(.enabled)
+                                        Button("再文字起こし結果をコピー") { TextInsertion.copy(result.text) }
+                                    }
                                     if let original = selected.review?.originalText, original != selected.text {
                                         Divider()
                                         Text("追加チェック前の文章").font(.caption).foregroundStyle(.secondary)

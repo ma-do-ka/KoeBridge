@@ -23,6 +23,8 @@ let package = Package(
             linkerSettings: [.unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"],
                                           .when(platforms: [.macOS]))]),
         .testTarget(name: "KoeBridgeCoreTests", dependencies: ["KoeBridgeCore"]),
+        .testTarget(name: "KoeBridgeTests", dependencies: ["KoeBridge", "KoeBridgeCore"],
+                    swiftSettings: [.swiftLanguageMode(.v5)]),
         .executableTarget(name: "KoeBridgeSelfTest", dependencies: ["KoeBridgeCore", "KoeBridgePOSIX"],
                           swiftSettings: [.swiftLanguageMode(.v5)])
     ] + additionalTargets

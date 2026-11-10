@@ -22,13 +22,13 @@ public struct TranscriptHistoryStore {
 
     @discardableResult public mutating func remember(
         _ text: String, isPartial: Bool, delivery: TranscriptRecord.Delivery,
-        engine: String, review: TranscriptReview? = nil, recordedAt: Date = Date()
+        engine: String, review: TranscriptReview? = nil, recordedAt: Date = Date(), kind: String? = nil
     ) -> UUID? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         let record = TranscriptRecord(recordedAt: recordedAt, engine: engine,
                                       text: trimmed, isPartial: isPartial,
-                                      delivery: delivery, review: review)
+                                      delivery: delivery, review: review, kind: kind)
         guard archive != nil else {
             entries.insert(record, at: 0)
             entries.sort { $0.recordedAt > $1.recordedAt }
@@ -53,6 +53,27 @@ public struct TranscriptHistoryStore {
         }
         changeArchive(failure: "履歴の状態更新に失敗しました") {
             try $0.updateDelivery(id: id, to: delivery, detail: detail)
+        }
+    }
+
+    public mutating func updateAudio(_ id: UUID, asset: TranscriptRecord.AudioAsset?, reason: String? = nil) {
+        guard let i = entries.firstIndex(where: { $0.id == id }) else { return }
+        if archive == nil {
+            entries[i].audioAsset = asset; entries[i].audioUnavailableReason = reason
+        } else {
+            changeArchive(failure: "保存音声の参照更新に失敗しました") {
+                try $0.updateAudio(id: id, asset: asset, reason: reason)
+            }
+        }
+    }
+
+    public mutating func appendRetranscription(_ id: UUID, result: TranscriptRecord.Retranscription) {
+        guard let i = entries.firstIndex(where: { $0.id == id }) else { return }
+        if archive == nil { entries[i].retranscriptions.append(result) }
+        else {
+            changeArchive(failure: "再文字起こし結果の保存に失敗しました") {
+                try $0.appendRetranscription(id: id, result: result)
+            }
         }
     }
 

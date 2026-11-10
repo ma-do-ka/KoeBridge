@@ -61,6 +61,9 @@ struct KoeBridgeSelfTest {
             do { try await action() }
             catch { TestRecorder.assertion(false, file: #fileID, line: #line, message: "test threw: \(error)") }
         }
+        await run("MeetingRetentionTests.canonicalWAVRoundTripAndMalformedHeaders", { try MeetingRetentionTests().canonicalWAVRoundTripAndMalformedHeaders() })
+        await run("MeetingRetentionTests.backwardCompatibilityAndAppendOnlyResults", { try MeetingRetentionTests().backwardCompatibilityAndAppendOnlyResults() })
+        await run("MeetingRetentionTests.independentSourceTimelineSortsByCaptureRatherThanCompletion", { MeetingRetentionTests().independentSourceTimelineSortsByCaptureRatherThanCompletion() })
         await run("LearnedTermsTests.normalizationValidationAndPersistence", { try LearnedTermsTests().normalizationValidationAndPersistence() })
         await run("LearnedTermsTests.fullFixSelectionAndManualLimit", { try LearnedTermsTests().fullFixSelectionAndManualLimit() })
         await run("LearnedTermsTests.vocabularyOrderingAndCap", { LearnedTermsTests().vocabularyOrderingAndCap() })

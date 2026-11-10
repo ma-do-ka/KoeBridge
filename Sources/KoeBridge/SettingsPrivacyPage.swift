@@ -13,10 +13,11 @@ struct SettingsPrivacyPage: View {
     var body: some View {
         SettingsPageScrollView(section: .history, focusRequest: focusRequest) {
             VStack(alignment: .leading, spacing: 18) {
+                MeetingAndRetentionSettings()
                 GroupBox {
                     VStack(alignment: .leading, spacing: 10) {
                         SettingsRow("保存件数：\(historyCount) / \(RecentTranscriptArchive.maximumRecords)件",
-                                    description: "直近\(RecentTranscriptArchive.maximumRecords)件の文字起こし結果をMacに保存します。音声やAPIキーは保存しません。") {
+                                    description: "直近\(RecentTranscriptArchive.maximumRecords)件の文字起こし結果をMacに保存します。音声は保存設定を有効にした場合のみ別ファイルに保存します。APIキーは履歴に保存しません。") {
                             SettingsRowActionButton("文章を見る") { showHistory() }
                         }
                         .id("history")

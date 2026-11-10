@@ -56,7 +56,8 @@ Failure statuses:
 - API/recognition/delivery failures use the existing transform feedback and
   clipboard fallback. Successful fixes offer no extra learning prompt.
 
-Deferred: passive learning/post-delivery monitoring, one-level undo, retained-audio
-re-recognition, and anchors for manual transform/translate/chain deliveries.
+Deferred: passive learning/post-delivery monitoring, one-level undo, and anchors
+for manual transform/translate/chain deliveries. Build 55 adds independently opt-in
+retained-audio re-recognition in History; see [meeting and retention](meeting-and-retention.md).
 No audio is retained for fixing; the instruction is a new recording. Anchor
 snapshots are memory-only and not added to the History archive.

@@ -45,6 +45,7 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
     var cloud: GeminiLiveConnection?
     var local: LocalTranscribing?
     var audioIntegrity = AudioIntegrityState()
+    var retainAudioGeneration: UUID?
     var audioBackup = Data()
     var geminiAttempted = false
     var appleAttempted = false

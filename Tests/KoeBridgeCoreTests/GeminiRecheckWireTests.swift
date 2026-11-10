@@ -6,6 +6,7 @@ struct GeminiRecheckWireTests {
     @Test func waveHeaderAndSelectedVocabularyAreExact() throws {
         let pcm = Data([0, 1, 255, 127])
         let wave = try GeminiRecheckWire.wav(pcm16LE: pcm)
+        #expect(try PCM16WAV.extractPCM(wave) == pcm)
         #expect(wave.count == 48)
         #expect(String(data: wave.prefix(4), encoding: .ascii) == "RIFF")
         #expect(Array(wave[4..<8]) == [40, 0, 0, 0])

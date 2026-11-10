@@ -437,6 +437,149 @@ import KoeBridgeCore
     var onShowHistory: (() -> Void)?
     var onShowPermissions: (() -> Void)?
 
+    @Published var meetingModeEnabled = UserDefaults.standard.bool(forKey: "meetingModeEnabled") {
+        didSet {
+            UserDefaults.standard.set(meetingModeEnabled, forKey: "meetingModeEnabled")
+            if meetingModeEnabled { PermissionGuide.shared.requestScreenRecording(enabled: true) }
+            else { meetingSession?.stop() }
+        }
+    }
+    @Published private(set) var meetingRunning = false
+    @Published private(set) var meetingStatus = ""
+    private var meetingSession: MeetingSession?
+    private var meetingStatusTask: Task<Void, Never>?
+    var canStartMeeting: Bool { meetingModeEnabled && CGPreflightScreenCaptureAccess() }
+    func toggleMeeting() {
+        if let meetingSession { meetingSession.stop(); return }
+        guard !KoeBridgeUpdateManager.shared.blocksRecording else {
+            status = "更新画面を閉じるか、更新の完了後に会議モードを開始してください"; return
+        }
+        guard canStartMeeting else { status = "会議モードと画面収録の許可を設定してください"; return }
+        guard phase == .idle, active == nil, inFlight.isEmpty, !textOperationRunning else {
+            status = "音声入力・処理の完了後に会議モードを開始してください"; return
+        }
+        if requestedMode == .gemini, !hasKey { status = AppError.noKey.localizedDescription; return }
+        meetingRunning = true
+        microphoneWarmKeeper.suspend(reason: "meeting")
+        warmScheduleTask?.cancel(); prewarmer.shutdown()
+        let session = MeetingSession(engine: requestedMode, vocabulary: currentAudioVocabulary,
+            style: transcriptionStyle, japaneseHint: japaneseHint, apiKey: KeychainStore.load(),
+            microphoneUID: MicrophoneDeviceStore.shared.selectedUID)
+        meetingSession = session
+        meetingStatus = session.liveStatus
+        session.onStatus = { [weak self] in self?.meetingStatus = $0 }
+        session.onFinished = { [weak self, weak session] text, partial in
+            guard let self, let session, meetingSession === session else { return }
+            // Saved-only is the existing non-failure status; no target or delivery queue.
+            _ = historyStore.remember(text, isPartial: partial, delivery: .automaticPasteDisabled,
+                engine: session.engine.label, recordedAt: session.recordedAt, kind: "meeting")
+            refreshRetainedAudio()
+            meetingSession = nil; meetingRunning = false
+            meetingStatusTask?.cancel(); meetingStatusTask = nil
+            status = text.isEmpty ? "会議モードを終了しました（文字起こしなし）" : "会議の文字起こしを履歴に保存しました"
+            meetingStatus = status
+            resumeMicrophoneWarm(); scheduleWarmGemini()
+        }
+        meetingStatusTask = Task { [weak self, weak session] in
+            guard let self, let session else { return }
+            let allowed = await microphoneAllowed()
+            guard meetingSession === session else { return }
+            guard allowed else {
+                // Stop and save through the meeting's mic-failure completion without starting chunks.
+                session.microphonePermissionDenied()
+                return
+            }
+            session.start()
+            while meetingSession === session {
+                meetingStatus = session.liveStatus
+                if !CGPreflightScreenCaptureAccess() { session.systemPermissionRevoked() }
+                do { try await Task.sleep(for: .seconds(1)) } catch { return }
+            }
+        }
+    }
+
+    @Published var retainAudioEnabled = UserDefaults.standard.bool(forKey: "retainAudioEnabled") {
+        didSet {
+            UserDefaults.standard.set(retainAudioEnabled, forKey: "retainAudioEnabled")
+            if !retainAudioEnabled { clearRetainedAudio() }
+        }
+    }
+    @Published var replayRecordID: UUID?
+    @Published var replayStatus = ""
+    @Published var retentionStatus = ""
+    private let retainedAudio = RetainedAudioStore()
+    private var retentionGeneration = UUID()
+    private var replayTask: Task<Void, Never>?
+    private var replayLocal: LocalTranscribing?
+
+    func clearRetainedAudio() {
+        retentionGeneration = UUID()
+        cancelReplay()
+        retainedAudio.clear(history: &historyStore)
+        refreshRetainedAudio()
+    }
+    private func refreshRetainedAudio() {
+        retainedAudio.sweep(history: &historyStore)
+        if let id = replayRecordID, !historyStore.entries.contains(where: { $0.id == id && $0.audioAsset != nil }) {
+            cancelReplay()
+        }
+        retentionStatus = "\(retainedAudio.bytesUsed) / 250,000,000 bytes・\(retainedAudio.fileCount)ファイル・7日間"
+    }
+    func cancelReplay() {
+        let wasRunning = replayRecordID != nil
+        replayJob = UUID()
+        replayTask?.cancel(); replayTask = nil
+        replayLocal?.cancel(); replayLocal = nil
+        replayRecordID = nil
+        if wasRunning { replayStatus = "再文字起こしをキャンセルしました" }
+    }
+    func replay(_ record: TranscriptRecord, engine: RecognitionMode) {
+        cancelReplay()
+        let job = UUID()
+        replayJob = job
+        replayRecordID = record.id
+        replayStatus = "音声から再文字起こし中…"
+        replayTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if replayJob == job { replayRecordID = nil; replayLocal?.cancel(); replayLocal = nil; replayTask = nil }
+            }
+            do {
+                let pcm = try retainedAudio.read(record.id, history: &historyStore)
+                refreshRetainedAudio()
+                let text: String
+                if engine == .local {
+                    guard pcm.count <= 50 * 32_000 else { throw RetainedAudioStore.ReplayError.localLimit }
+                    let local = LocalTranscriberFactory.make()
+                    replayLocal = local
+                    try await local.start()
+                    for offset in stride(from: 0, to: pcm.count, by: 3_200) {
+                        try Task.checkCancellation()
+                        try local.appendPCM16(pcm.subdata(in: offset..<min(offset + 3_200, pcm.count)))
+                        await Task.yield()
+                    }
+                    text = try await local.endAudioAndAwaitFinal()
+                } else {
+                    guard let key = KeychainStore.load() else { throw AppError.noKey }
+                    text = try await GeminiAudioRechecker.recognize(pcm16LE: pcm,
+                        vocabulary: currentAudioVocabulary, style: transcriptionStyle,
+                        japaneseHint: japaneseHint, apiKey: key, timeout: 60).text
+                }
+                try Task.checkCancellation()
+                guard replayJob == job, historyStore.entries.contains(where: { $0.id == record.id }) else { return }
+                historyStore.appendRetranscription(record.id, result: .init(engine: engine.label, text: text))
+                replayStatus = "再文字起こし結果を履歴に追加しました"
+            } catch {
+                if replayJob == job, !Task.isCancelled { replayStatus = error.localizedDescription }
+            }
+        }
+    }
+    private var replayJob = UUID()
+    private var currentAudioVocabulary: [String] {
+        AgentVocabulary.terms(user: vocabulary.components(separatedBy: .newlines), learned: learnedTerms.map(\.term),
+            registeredEnabled: registeredVocabularyEnabled, topicEnabled: topicVocabularyEnabled)
+    }
+
     private var historyStore: TranscriptHistoryStore {
         didSet {
             history = historyStore.entries
@@ -453,6 +596,7 @@ import KoeBridgeCore
     private let microphoneWarmKeeper = MicrophoneWarmKeeper()
     private var microphoneStoreObservation: AnyCancellable?
     private func resumeMicrophoneWarm(reason: String = "teardown") {
+        guard !meetingRunning else { return }
         microphoneWarmKeeper.resume(enabled: bluetoothMicWarmEnabled,
             selectedUID: MicrophoneDeviceStore.shared.selectedUID, takeActive: busy, reason: reason)
     }
@@ -522,6 +666,7 @@ import KoeBridgeCore
         monitorEvents = usageStore.engineEvents
         monitorTokens = usageStore.tokenEvents
         monitorProblem = usageStore.problem
+        if retainAudioEnabled { refreshRetainedAudio() } else { clearRetainedAudio() }
         scheduleWarmGemini()
         microphoneWarmKeeper.onConfigurationChange = { [weak self] in
             self?.resumeMicrophoneWarm(reason: "configuration")
@@ -546,7 +691,7 @@ import KoeBridgeCore
 
     private func warmGeminiIfNeeded() {
         prewarmer.warmIfNeeded { [self] in
-            guard geminiPrewarmEnabled, requestedMode == .gemini, active == nil,
+            guard !meetingRunning, geminiPrewarmEnabled, requestedMode == .gemini, active == nil,
                   !inFlight.values.contains(where: { !$0.finished }),
                   let key = KeychainStore.load() else { return nil }
             let terms = AgentVocabulary.terms(user: vocabulary.components(separatedBy: .newlines), learned: learnedTerms.map(\.term),
@@ -561,7 +706,7 @@ import KoeBridgeCore
     var hasKey: Bool { KeychainStore.load() != nil }
     var busy: Bool { active != nil }
     // Updating must not terminate background recognition or pending delivery.
-    var hasPendingWork: Bool { active != nil || !inFlight.isEmpty || deliveryWorker != nil || textOperationRunning }
+    var hasPendingWork: Bool { active != nil || !inFlight.isEmpty || deliveryWorker != nil || textOperationRunning || meetingRunning || replayRecordID != nil }
 
     func shortcutPressBegan() {
         if phase == .idle { beginRecording() }
@@ -589,6 +734,7 @@ import KoeBridgeCore
     }
 
     private func beginRecording(transformTarget: InsertionTarget? = nil, selection: String? = nil, fixingLastInput: Bool = false) {
+        guard !meetingRunning else { status = "会議モード中は通常の音声入力を開始できません"; return }
         guard active == nil, phase == .idle else { return }
         cancelTextOperation()
         guard !KoeBridgeUpdateManager.shared.blocksRecording else {
@@ -628,6 +774,7 @@ import KoeBridgeCore
                                 japaneseHint: japaneseHint,
                                 vocabulary: selectedVocabulary,
                                 shouldPaste: automaticPaste, options: options)
+        take.retainAudioGeneration = retainAudioEnabled ? retentionGeneration : nil
         take.appBundleIdentifier = bundleIdentifier
         take.appProfileName = profile?.displayName
         take.voiceCommandsEnabled = voiceCommandsEnabled
@@ -1088,7 +1235,7 @@ import KoeBridgeCore
             for await chunk in stream {
                 guard !take.finished, !Task.isCancelled else { return }
                 // 16kHz PCM is at most ~15 MB for a complete eight-minute take.
-                // Keep it only in RAM for on-device recovery, never in history.
+                // Keep admitted PCM in RAM for recovery; opt-in retention writes it only after a text record exists.
                 take.audioBackup.append(chunk)
                 if mode == .gemini {
                     guard let remote = take.cloud else { throw AppError.connectionLost }
@@ -1265,6 +1412,11 @@ import KoeBridgeCore
         if noInput && active == nil && overlayOwner == take.id { status = "音声入力なし" }
         recordUsage(take, succeeded: text?.isEmpty == false,
                     cancelled: noInput || reason == "録音をキャンセルしました")
+        if retainAudioEnabled, take.retainAudioGeneration == retentionGeneration,
+           let id = take.historyRecordID, let record = historyStore.entries.first(where: { $0.id == id }) {
+            retainedAudio.write(pcm: take.audioBackup, record: record, history: &historyStore)
+        }
+        refreshRetainedAudio()
         let stoppingCapture = take.mic
         take.releaseResources()
         if let stoppingCapture {
@@ -1566,6 +1718,8 @@ import KoeBridgeCore
 
     /// Never paste delayed transcripts after sleep, user switch or shutdown.
     func interruptForSystemEvent(_ reason: String) {
+        meetingSession?.interrupt(reason)
+        cancelReplay()
         cancelTextOperation()
         let outstanding = Array(inFlight.values)
         // Also suppress already-finalized results waiting behind an older take.
@@ -1645,9 +1799,11 @@ import KoeBridgeCore
                                               engine: String? = nil,
                                               review: TranscriptReview? = nil,
                                               recordedAt: Date = Date()) -> UUID? {
-        historyStore.remember(text, isPartial: isPartial, delivery: delivery,
+        let id = historyStore.remember(text, isPartial: isPartial, delivery: delivery,
                               engine: engine ?? (usedMode.isEmpty ? requestedMode.label : usedMode),
                               review: review, recordedAt: recordedAt)
+        refreshRetainedAudio()
+        return id
     }
 
     private func updateRemembered(_ id: UUID, delivery: TranscriptRecord.Delivery, detail: String? = nil) {
@@ -1655,8 +1811,11 @@ import KoeBridgeCore
     }
 
     @discardableResult func copyRecord(_ record: TranscriptRecord) -> Bool { TextInsertion.copy(record.text) }
-    func deleteRecord(_ id: UUID) { historyStore.delete(id) }
-    func clearHistory() { historyStore.deleteAll() }
+    func deleteRecord(_ id: UUID) {
+        if replayRecordID == id { cancelReplay() }
+        historyStore.delete(id); refreshRetainedAudio()
+    }
+    func clearHistory() { cancelReplay(); historyStore.deleteAll(); refreshRetainedAudio() }
     func clearUsageMonitor() { usageStore.deleteAll() }
 
     func saveKey(_ key: String) throws {
