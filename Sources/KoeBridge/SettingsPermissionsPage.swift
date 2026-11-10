@@ -15,30 +15,34 @@ struct SettingsPermissionsPage: View {
     var body: some View {
         SettingsPageScrollView(section: .permissions, focusRequest: focusRequest) {
             VStack(alignment: .leading, spacing: 18) {
+                GroupBox("音声認識と入力監視") {
+                    Button("権限の案内を開く") { showPermissions() }.settingsControlFocus("permission-guide")
+                    Text("macOS 26未満のApple認識は、マイクとは別に音声認識の許可が必要です。右Commandなどの単独キーやマウスボタンは入力監視の許可が必要な場合があります。FnキーはmacOSの割当も確認してください。")
+                }.settingsTarget("permission-guide")
                 GroupBox {
                     VStack(spacing: 0) {
                         permissionRow("入力先へのアクセスを許可",
                                       description: "文字を入力する場所を確認し、意図しない入力を防ぐために必要です。macOSのアクセシビリティ機能を利用します。",
-                                      icon: "hand.raised.fill",
+                                      icon: "hand.raised.fill", focusID: "accessibility",
                                       status: guide.accessibilityGranted ? .granted : .needsReview,
                                       canRequest: !guide.accessibilityGranted) {
                             guide.requestAccessibility()
                         }
-                        .id("accessibility")
+                        .settingsTarget("accessibility")
                         Divider()
                         permissionRow("文字の入力操作を許可",
                                       description: "認識した文章を、ほかのアプリへキーボード入力として送信するために必要です。",
-                                      icon: "keyboard.fill",
+                                      icon: "keyboard.fill", focusID: "post",
                                       status: guide.postEventGranted ? .granted
                                           : (guide.accessibilityGranted ? .needsReview : .prerequisite),
                                       canRequest: !guide.postEventGranted && guide.accessibilityGranted) {
                             guide.requestPostEvent()
                         }
-                        .id("post")
+                        .settingsTarget("post")
                         Divider()
                         permissionRow("マイクの使用を許可",
                                       description: "音声を録音して文字起こしするために必要です。音声は選択した認識方法に従って処理されます。",
-                                      icon: "mic.fill",
+                                      icon: "mic.fill", focusID: "microphone",
                                       status: guide.microphoneStatus == .authorized ? .granted
                                           : (guide.microphoneStatus == .denied ? .denied
                                              : (guide.microphoneStatus == .restricted ? .restricted : .needsReview)),
@@ -47,7 +51,7 @@ struct SettingsPermissionsPage: View {
                                           ? "許可を求める" : "対処方法") {
                             guide.requestMicrophone()
                         }
-                        .id("microphone")
+                        .settingsTarget("microphone")
                     }
                     .padding(8)
                 } label: {
@@ -152,7 +156,7 @@ struct SettingsPermissionsPage: View {
     }
 
     private func permissionRow(
-        _ title: String, description: String, icon: String,
+        _ title: String, description: String, icon: String, focusID: String,
         status: SettingsPermissionDisplayState, canRequest: Bool,
         buttonTitle: String = "許可を求める",
         action: @escaping () -> Void
@@ -175,16 +179,18 @@ struct SettingsPermissionsPage: View {
             VStack(alignment: .trailing, spacing: 9) {
                 SettingsPermissionStatusBadge(status: status)
                 if status == .granted {
+                    Button("案内を開く") { showPermissions() }.settingsControlFocus(focusID)
                     Text("操作不要")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else if status == .prerequisite {
+                    Button("案内を開く") { showPermissions() }.settingsControlFocus(focusID)
                     Text("上の許可を先に設定")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: true, vertical: false)
                 } else {
-                    SettingsRowActionButton(buttonTitle, action: action)
+                    SettingsRowActionButton(buttonTitle, action: action).settingsControlFocus(focusID)
                         .disabled(!canRequest)
                 }
             }

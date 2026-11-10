@@ -21,23 +21,24 @@ struct MicrophoneSettingsRow: View {
                         Text(device.name).tag(device.uid)
                     }
                 }
-                .labelsHidden()
+                .settingsControlFocus("microphone-device").labelsHidden()
                 .frame(width: 250)
                 .disabled(controller.busy || !microphones.loaded)
                 .help("Mac全体の入力設定は変更しません。準備中・録音中は変更できません。")
             }
             SettingsRow("Bluetoothマイクの接続を温めておく",
                         description: "Bluetoothヘッドセットの音声経路を開いたままにし、録音開始時の接続待ちをなくします。有効な間はマイク使用中インジケーターが点灯します。待機中の音声は録音・保存・送信されません。", icon: "mic") {
-                Toggle("Bluetoothマイクの接続を温めておく", isOn: $controller.bluetoothMicWarmEnabled)
+                Toggle("Bluetoothマイクの接続を温めておく", isOn: $controller.bluetoothMicWarmEnabled).settingsControlFocus("bluetooth-warm")
                     .labelsHidden()
             }
+            .settingsTarget("bluetooth-warm")
             if microphones.selectedDeviceMissing {
                 Text("選択したマイクが接続されていません。別のマイクには自動で切り替えません。")
                     .font(.caption).foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .id("microphone")
+        .settingsTarget("microphone-device")
         .task {
             while !Task.isCancelled {
                 await microphones.refresh()

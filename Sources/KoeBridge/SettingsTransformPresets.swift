@@ -2,23 +2,36 @@
 import SwiftUI
 import KoeBridgeCore
 
+final class TransformPresetEditorState: ObservableObject {
+    @Published var stepsByPreset: [UUID: [SettingsTransformPresets.EditorStep]] = [:]
+    @Published var editedStep: UUID?
+    @Published var editedPreset: UUID?
+    func initialize(_ presets: [TransformPreset]) {
+        for preset in presets where stepsByPreset[preset.id] == nil {
+            stepsByPreset[preset.id] = preset.steps.map { .init(text: $0) }
+        }
+    }
+}
+
 struct SettingsTransformPresets: View {
     @ObservedObject var controller: VoiceController
-    private struct EditorStep: Identifiable {
+    struct EditorStep: Identifiable {
         let id = UUID()
         var text: String
     }
 
-    @State private var stepsByPreset: [UUID: [EditorStep]]
-    @State private var editedStep: UUID?
-    @State private var editedPreset: UUID?
-
-    init(controller: VoiceController) {
-        self.controller = controller
-        _stepsByPreset = State(initialValue: Dictionary(uniqueKeysWithValues:
-            controller.transformPresets.map { preset in
-                (preset.id, preset.steps.map { EditorStep(text: $0) })
-            }))
+    @ObservedObject var editor: TransformPresetEditorState
+    private var stepsByPreset: [UUID: [EditorStep]] {
+        get { editor.stepsByPreset }
+        nonmutating set { editor.stepsByPreset = newValue }
+    }
+    private var editedStep: UUID? {
+        get { editor.editedStep }
+        nonmutating set { editor.editedStep = newValue }
+    }
+    private var editedPreset: UUID? {
+        get { editor.editedPreset }
+        nonmutating set { editor.editedPreset = newValue }
     }
 
     private func updateSteps(_ steps: [EditorStep], for id: UUID) {
@@ -67,13 +80,14 @@ struct SettingsTransformPresets: View {
                 Picker("変換キーの動作", selection: $controller.transformMode) {
                     Text("音声で指示").tag(TransformMode.spoken)
                     Text("プリセットを使う").tag(TransformMode.preset)
-                }.pickerStyle(.segmented)
+                }.settingsControlFocus("presets", "transform-mode").pickerStyle(.segmented).settingsTarget("transform-mode")
                 Picker("実行するプリセット", selection: $controller.selectedTransformPresetID) {
                     Text("選択してください").tag(Optional<UUID>.none)
                     ForEach(controller.transformPresets) { preset in
                         Text(preset.name.isEmpty ? "名前未入力" : preset.name).tag(Optional(preset.id))
                     }
                 }
+                .settingsControlFocus("selected-preset").settingsTarget("selected-preset")
                 if controller.transformPresets.isEmpty {
                     Text("プリセットはありません。追加して、順番に実行する指示を入力してください。")
                         .foregroundStyle(.secondary)
@@ -82,19 +96,19 @@ struct SettingsTransformPresets: View {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
                             TextField("プリセット名", text: $preset.name).textFieldStyle(.roundedBorder)
-                            Button { movePreset(preset.id, by: -1) } label: { Image(systemName: "arrow.up") }
+                            Button { movePreset(preset.id, by: -1) } label: { Text("上へ") }
                                 .disabled(controller.transformPresets.first?.id == preset.id)
-                                .help("プリセットを上へ移動").accessibilityLabel("プリセットを上へ移動")
-                            Button { movePreset(preset.id, by: 1) } label: { Image(systemName: "arrow.down") }
+                                .help("プリセットを上へ移動").accessibilityLabel("プリセット「\(preset.name)」を上へ移動")
+                            Button { movePreset(preset.id, by: 1) } label: { Text("下へ") }
                                 .disabled(controller.transformPresets.last?.id == preset.id)
-                                .help("プリセットを下へ移動").accessibilityLabel("プリセットを下へ移動")
+                                .help("プリセットを下へ移動").accessibilityLabel("プリセット「\(preset.name)」を下へ移動")
                             Button(role: .destructive) {
                                 controller.transformPresets.removeAll { $0.id == preset.id }
                                 stepsByPreset.removeValue(forKey: preset.id)
                                 if controller.selectedTransformPresetID == preset.id { controller.selectedTransformPresetID = nil }
                                 if editedPreset == preset.id { editedPreset = nil; editedStep = nil }
                             } label: { Image(systemName: "trash") }
-                            .help("プリセットを削除").accessibilityLabel("プリセットを削除")
+                            .help("プリセットを削除").accessibilityLabel("プリセット「\(preset.name)」を削除")
                         }
                         if preset.steps.isEmpty {
                             Text("ステップがありません。自由な言葉で指示を追加してください。")
@@ -114,19 +128,19 @@ struct SettingsTransformPresets: View {
                                     var reordered = steps
                                     reordered.swapAt(index, index - 1)
                                     updateSteps(reordered, for: preset.id)
-                                } label: { Image(systemName: "arrow.up") }
-                                    .disabled(index == 0).help("ステップを上へ移動").accessibilityLabel("ステップを上へ移動")
+                                } label: { Text("上へ") }
+                                    .disabled(index == 0).help("ステップを上へ移動").accessibilityLabel("ステップ\(index + 1)を上へ移動")
                                 Button {
                                     var reordered = steps
                                     reordered.swapAt(index, index + 1)
                                     updateSteps(reordered, for: preset.id)
-                                } label: { Image(systemName: "arrow.down") }
-                                    .disabled(index == steps.count - 1).help("ステップを下へ移動").accessibilityLabel("ステップを下へ移動")
+                                } label: { Text("下へ") }
+                                    .disabled(index == steps.count - 1).help("ステップを下へ移動").accessibilityLabel("ステップ\(index + 1)を下へ移動")
                                 Button(role: .destructive) {
                                     updateSteps(steps.filter { $0.id != step.id }, for: preset.id)
                                     if editedStep == step.id { editedStep = nil }
                                 } label: { Image(systemName: "trash") }
-                                .help("ステップを削除").accessibilityLabel("ステップを削除")
+                                .help("ステップを削除").accessibilityLabel("ステップ\(index + 1)を削除")
                             }
                         }
                         Button("ステップを追加") {

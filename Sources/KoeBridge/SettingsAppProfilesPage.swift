@@ -3,7 +3,7 @@ import AppKit
 import SwiftUI
 import KoeBridgeCore
 
-/// Inline editor with immediate persistence, following the snippets section.
+/// Dedicated app-profile page; optional overrides keep their inherit semantics.
 struct SettingsAppProfilesPage: View {
     @ObservedObject var controller: VoiceController
     @State private var expandedProfile: UUID?
@@ -54,6 +54,11 @@ struct SettingsAppProfilesPage: View {
         GroupBox {
             ScrollViewReader { proxy in
                 VStack(alignment: .leading, spacing: 12) {
+                    Picker("起動中のアプリ", selection: $selectedBundle) {
+                        Text("アプリを選択").tag("")
+                        ForEach(runningApps) { app in Text(app.name).tag(app.id) }
+                    }
+                    .settingsControlFocus("app-profiles")
                     if controller.appProfiles.isEmpty {
                         Text("プロファイルはまだありません。よく使うアプリごとに、エンジンや文体を切り替えられます。")
                             .foregroundStyle(.secondary)
@@ -63,19 +68,21 @@ struct SettingsAppProfilesPage: View {
                             HStack {
                                 Toggle("有効", isOn: $profile.isEnabled)
                                     .toggleStyle(.switch).fixedSize()
+                                    .accessibilityLabel("プロファイル「\(profile.displayName)」を有効にする")
                                 Button {
                                     expandedProfile = expandedProfile == profile.id ? nil : profile.id
                                 } label: {
                                     Label(profile.displayName, systemImage: expandedProfile == profile.id ? "chevron.down" : "chevron.right")
                                 }
                                 .buttonStyle(.plain)
+                                .accessibilityLabel("プロファイル「\(profile.displayName)」を編集")
                                 Spacer()
                                 Button(role: .destructive) {
                                     controller.appProfiles.removeAll { $0.id == profile.id }
                                     if expandedProfile == profile.id { expandedProfile = nil }
                                 } label: { Image(systemName: "trash") }
                                 .help("このプロファイルを削除")
-                                .accessibilityLabel("プロファイルを削除")
+                                .accessibilityLabel("プロファイル「\(profile.displayName)」を削除")
                             }
                             Text(profile.bundleIdentifier).font(.caption).foregroundStyle(.secondary)
                             if expandedProfile == profile.id {
@@ -84,10 +91,6 @@ struct SettingsAppProfilesPage: View {
                             Divider()
                         }
                         .id(profile.id)
-                    }
-                    Picker("起動中のアプリ", selection: $selectedBundle) {
-                        Text("アプリを選択").tag("")
-                        ForEach(runningApps) { app in Text(app.name).tag(app.id) }
                     }
                     HStack {
                         TextField("またはバンドルIDを入力（例：com.apple.TextEdit）", text: $manualBundle)
@@ -122,39 +125,48 @@ private struct AppProfileFields: View {
         VStack(alignment: .leading, spacing: 10) {
             TextField("表示名", text: $profile.displayName)
                 .textFieldStyle(.roundedBorder)
-                .accessibilityLabel("プロファイルの表示名")
+                .accessibilityLabel("プロファイル「\(profile.displayName)」の表示名")
             Picker("エンジン", selection: $profile.engine) {
                 Text("グローバルに従う").tag(nil as String?)
                 Text("Gemini").tag(Optional("gemini"))
                 Text("Apple").tag(Optional("local"))
             }
+            .accessibilityLabel("プロファイル「\(profile.displayName)」のエンジン")
             Picker("文体", selection: $profile.style) {
                 Text("グローバルに従う").tag(nil as String?)
                 Text("そのまま").tag(Optional("verbatim"))
                 Text("読みやすく").tag(Optional("readable"))
                 Text("エージェント").tag(Optional("agent"))
             }
+            .accessibilityLabel("プロファイル「\(profile.displayName)」の文体")
             Text("追加の用語（1行に1語）").font(.caption).foregroundStyle(.secondary)
             TextEditor(text: $profile.additionalVocabulary)
                 .frame(minHeight: 72, maxHeight: 120)
                 .border(Color.secondary.opacity(0.25))
-                .accessibilityLabel("追加の用語")
+                .accessibilityLabel("プロファイル「\(profile.displayName)」の追加の用語")
             Text("追加の用語は、グローバルの登録用語がオフでも使用します。用語・文体の補助はGeminiで使用します。")
                 .font(.caption).foregroundStyle(.secondary)
             ProfileOverridePicker(title: "登録した用語を使う", selection: $profile.registeredVocabularyEnabled)
+                .accessibilityLabel("プロファイル「\(profile.displayName)」の登録した用語を使う")
             ProfileOverridePicker(title: "開発・ITの用語を使う", selection: $profile.topicVocabularyEnabled)
-            ProfileOverridePicker(title: "文脈チェック", selection: $profile.textContextCheckEnabled)
+                .accessibilityLabel("プロファイル「\(profile.displayName)」の開発・ITの用語を使う")
+            ProfileOverridePicker(title: "Mac内の句読点整理", selection: $profile.textContextCheckEnabled)
+                .accessibilityLabel("プロファイル「\(profile.displayName)」のMac内の句読点整理")
             ProfileOverridePicker(title: "音声の再チェック", selection: $profile.audioRecheckEnabled)
+                .accessibilityLabel("プロファイル「\(profile.displayName)」の音声の再チェック")
             ProfileOverridePicker(title: "音声を毎回再チェック", selection: $profile.audioRecheckAlways)
+                .accessibilityLabel("プロファイル「\(profile.displayName)」の音声を毎回再チェック")
             Text("「音声を毎回再チェック」がオフの場合は、疑わしい箇所があるときだけ再チェックします。")
                 .font(.caption).foregroundStyle(.secondary)
             ProfileOverridePicker(title: "後処理", selection: $profile.postProcessEnabled)
+                .accessibilityLabel("プロファイル「\(profile.displayName)」の後処理")
             Picker("後処理のモード", selection: $profile.postProcessMode) {
                 Text("グローバルに従う").tag(nil as String?)
                 ForEach(PostProcessingMode.allCases, id: \.rawValue) { mode in
                     Text(mode.label).tag(Optional(mode.rawValue))
                 }
             }
+            .accessibilityLabel("プロファイル「\(profile.displayName)」の後処理のモード")
         }
         .pickerStyle(.menu)
     }

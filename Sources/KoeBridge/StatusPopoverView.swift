@@ -4,17 +4,33 @@ import AVFoundation
 import SwiftUI
 import KoeBridgeCore
 
+/// All popover actions, disclosure and engine selection use SwiftUI Buttons;
+/// no AppKit segmented picker or switch bypasses this first-mouse boundary.
+final class FirstMouseHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
+extension Notification.Name {
+    static let settingsDestinationRequested = Notification.Name("KoeBridge.settingsDestinationRequested")
+}
+@MainActor enum SettingsDestination {
+    static var pending: String?
+}
+
 @MainActor struct StatusPopoverView: View {
     @ObservedObject var controller: VoiceController
     @ObservedObject var guide: PermissionGuide
     let onOpenSettings: () -> Void
     let onOpenHistory: () -> Void
     let onOpenPermissions: () -> Void
+    let onOpenUsage: () -> Void
     let onCheckForUpdates: () -> Void
     let onQuit: () -> Void
     let onToggleRecording: () -> Void
+    let onToggleMeeting: () -> Void
     let onDiscard: () -> Void
     let onCopyRecord: (TranscriptRecord) -> Void
+    let onContentSizeChange: (CGSize) -> Void
     @State private var historyExpanded = false
 
     var body: some View {
@@ -38,13 +54,13 @@ import KoeBridgeCore
             }
             if controller.meetingModeEnabled || controller.meetingRunning {
                 Button(controller.meetingRunning ? "会議モードを停止" : "会議モードを開始") {
-                    controller.toggleMeeting()
+                    onToggleMeeting()
                 }.disabled(!controller.meetingRunning && !controller.canStartMeeting)
                 if !controller.meetingStatus.isEmpty {
                     Text(controller.meetingStatus).font(.caption).foregroundStyle(.secondary)
                 }
             }
-            usageCard
+            Button(action: onOpenUsage) { usageCard }.buttonStyle(.plain)
             Button(action: onOpenPermissions) {
                 VStack(alignment: .leading, spacing: 5) {
                     Label(guide.needsAttention ? "権限の確認が必要です" : "権限はすべて正常",
@@ -57,6 +73,9 @@ import KoeBridgeCore
                     }.font(.caption2)
                 }.frame(maxWidth: .infinity, alignment: .leading)
             }.buttonStyle(.plain)
+                .padding(8)
+                .background(guide.needsAttention ? Color.orange.opacity(0.14) : Color.clear,
+                            in: RoundedRectangle(cornerRadius: 10))
             Divider()
             Button {
                 historyExpanded.toggle()
@@ -94,19 +113,23 @@ import KoeBridgeCore
                 Button("履歴をすべて表示…", action: onOpenHistory).font(.caption)
             }
             Divider()
-            Button(action: onOpenSettings) {
-                HStack { Text("設定…"); Spacer(); Text("⌘,").foregroundStyle(.secondary) }
-            }.buttonStyle(.plain)
-            Button("アップデートを確認…", action: onCheckForUpdates).buttonStyle(.plain)
-            Divider()
             HStack {
-                Button("マイク・自動入力の権限…", action: onOpenPermissions)
+                Button("設定…", action: onOpenSettings).help("⌘,")
+                Spacer()
+                Button("アップデート…", action: onCheckForUpdates)
                 Spacer()
                 Button("終了", action: onQuit)
             }.font(.caption).buttonStyle(.plain).foregroundStyle(.secondary)
         }
         .padding(16).frame(width: 348).fixedSize(horizontal: false, vertical: true)
         .background(.regularMaterial)
+        .background {
+            GeometryReader { geometry in
+                Color.clear
+                    .onAppear { onContentSizeChange(geometry.size) }
+                    .onChange(of: geometry.size) { _, size in onContentSizeChange(size) }
+            }
+        }
     }
 
     private var header: some View {
@@ -158,7 +181,7 @@ import KoeBridgeCore
             }
             if controller.monitorEvents.isEmpty {
                 Text("まだ利用記録がありません").font(.caption2).foregroundStyle(.secondary)
-            } else {
+            }
                 HStack(alignment: .bottom, spacing: 6) {
                     ForEach(days, id: \.dayStart) { day in
                         RoundedRectangle(cornerRadius: 3)
@@ -168,7 +191,6 @@ import KoeBridgeCore
                             .accessibilityLabel("\(day.dayStart.formatted(date: .abbreviated, time: .omitted)): \(day.totalSeconds / 60)分")
                     }
                 }.frame(height: 30)
-            }
         }.padding(10).background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
     }
 

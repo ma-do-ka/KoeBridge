@@ -18,9 +18,12 @@ struct SettingsPageScrollView<Content: View>: View {
 
     var body: some View {
         ScrollViewReader { proxy in
-            SettingsIndicatedScrollView { content }
-                .onAppear { scrollToRequestedSetting(using: proxy) }
-                .onChange(of: focusRequest) { _, _ in scrollToRequestedSetting(using: proxy) }
+            SettingsIndicatedScrollView { content.environment(\.settingsFocusRequest, focusRequest) }
+                .task(id: focusRequest) {
+                    await Task.yield() // Let the selected page lay out its anchor tree first.
+                    guard !Task.isCancelled else { return }
+                    scrollToRequestedSetting(using: proxy)
+                }
         }
     }
 
@@ -30,6 +33,63 @@ struct SettingsPageScrollView<Content: View>: View {
             proxy.scrollTo(focusRequest.id, anchor: .top)
         }
     }
+}
+
+
+private struct SettingsFocusRequestKey: EnvironmentKey {
+    static let defaultValue: SettingsFocusRequest? = nil
+}
+extension EnvironmentValues {
+    var settingsFocusRequest: SettingsFocusRequest? {
+        get { self[SettingsFocusRequestKey.self] }
+        set { self[SettingsFocusRequestKey.self] = newValue }
+    }
+}
+
+private struct SettingsTarget: ViewModifier {
+    let id: String
+    @Environment(\.settingsFocusRequest) private var request
+    @State private var highlighted = false
+    func body(content: Content) -> some View {
+        content.id(id)
+            .overlay {
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(Color.accentColor.opacity(highlighted ? 0.8 : 0), lineWidth: 2)
+                    .allowsHitTesting(false)
+            }
+            .task(id: request) {
+                highlighted = false
+                guard request?.id == id else { return }
+                do {
+                    try await Task.sleep(for: .milliseconds(220))
+                    highlighted = true
+                    try await Task.sleep(for: .seconds(1.4))
+                    withAnimation { highlighted = false }
+                } catch { highlighted = false }
+            }
+    }
+}
+
+/// Apply to the first actual interactive control, separately from the card anchor.
+private struct SettingsControlFocus: ViewModifier {
+    let ids: [String]
+    @Environment(\.settingsFocusRequest) private var request
+    @FocusState private var focused: Bool
+    func body(content: Content) -> some View {
+        content.focused($focused)
+            .task(id: request) {
+                guard let request, ids.contains(request.id) else { return }
+                do {
+                    try await Task.sleep(for: .milliseconds(240))
+                    focused = true
+                } catch { }
+            }
+    }
+}
+extension View {
+    func settingsTarget(_ id: String) -> some View { modifier(SettingsTarget(id: id)) }
+    func settingsControlFocus(_ ids: String...) -> some View { modifier(SettingsControlFocus(ids: ids)) }
+    func settingsControlFocus(ids: [String]) -> some View { modifier(SettingsControlFocus(ids: ids)) }
 }
 
 /// Each setting has a plain-language label and a short secondary explanation.
