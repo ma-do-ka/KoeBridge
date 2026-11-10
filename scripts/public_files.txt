@@ -226,3 +226,13 @@ Sources/KoeBridgeCore/UsageSummary.swift
 Tests/KoeBridgeCoreTests/UsageSummaryTests.swift
 Sources/KoeBridgeSelfTest/UsageSummaryTests.swift
 docs/menu-popover.md
+Sources/KoeBridgeCore/Snippets.swift
+Sources/KoeBridgeCore/ShortcutActivationPolicy.swift
+Sources/KoeBridge/MouseShortcutMonitor.swift
+Sources/KoeBridge/SettingsInputControls.swift
+Sources/KoeBridge/SettingsSnippetsPage.swift
+Tests/KoeBridgeCoreTests/SnippetExpanderTests.swift
+Tests/KoeBridgeCoreTests/ShortcutActivationPolicyTests.swift
+Sources/KoeBridgeSelfTest/SnippetExpanderTests.swift
+Sources/KoeBridgeSelfTest/ShortcutActivationPolicyTests.swift
+docs/input-gestures-and-snippets.md
