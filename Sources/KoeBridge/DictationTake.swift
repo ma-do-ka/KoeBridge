@@ -31,7 +31,7 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
     var recordingTimeout: Task<Void, Never>?
     var finalizationTimeout: Task<Void, Never>?
     var cloud: GeminiLiveConnection?
-    var local: AppleLocalTranscriber?
+    var local: LocalTranscribing?
     var audioIntegrity = AudioIntegrityState()
     var audioBackup = Data()
     var geminiAttempted = false
