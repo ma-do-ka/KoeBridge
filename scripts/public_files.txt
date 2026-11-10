@@ -245,3 +245,6 @@ Sources/KoeBridge/GeminiLivePrewarmer.swift
 Tests/KoeBridgeCoreTests/GeminiPrewarmPolicyTests.swift
 Sources/KoeBridgeSelfTest/GeminiPrewarmPolicyTests.swift
 docs/gemini-prewarm.md
+Sources/KoeBridge/LocalTranscribing.swift
+Sources/KoeBridge/SpeechAnalyzerTranscriber.swift
+docs/local-engines.md

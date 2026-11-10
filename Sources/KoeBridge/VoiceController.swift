@@ -494,11 +494,24 @@ import KoeBridgeCore
             }
         }
         if actual == .local {
-            let recognizer = AppleLocalTranscriber()
+            var recognizer: LocalTranscribing = LocalTranscriberFactory.make()
             take.appleAttempted = true
             take.appleStartedAt = Date()
             take.local = recognizer
-            try await recognizer.start()
+            do {
+                try await recognizer.start()
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                guard !recognizer.requiresSpeechAuthorization else { throw error }
+                DiagnosticLog.record("speechAnalyzer start failed; falling back to sfSpeech for THIS take")
+                recognizer.cancel()
+                try Task.checkCancellation()
+                guard !take.finished else { throw CancellationError() }
+                recognizer = AppleLocalTranscriber()
+                take.local = recognizer
+                try await recognizer.start()
+            }
             guard !take.finished, !Task.isCancelled else {
                 recognizer.cancel()
                 throw CancellationError()
@@ -645,12 +658,13 @@ import KoeBridgeCore
         localRecoveryBusy = true
         defer { localRecoveryBusy = false }
         // Never bring up a permission prompt during a following dictation.
-        // Recovery is only allowed when Speech Recognition was authorized.
-        guard SFSpeechRecognizer.authorizationStatus() == .authorized else {
+        // The legacy backend requires a prior grant; SpeechAnalyzer does not.
+        let local = LocalTranscriberFactory.make()
+        guard !local.requiresSpeechAuthorization ||
+                SFSpeechRecognizer.authorizationStatus() == .authorized else {
             DiagnosticLog.record("local recovery unavailable; speech permission not granted")
             throw AppleLocalTranscriber.LocalError.permission
         }
-        let local = AppleLocalTranscriber()
         // If a deadline cancels this worker while start() awaits macOS, the
         // take may already have released its resources. Always close this
         // local owner as well, including recognizers that finish starting late.

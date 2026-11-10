@@ -149,6 +149,16 @@ struct SettingsGeneralPage: View {
                     SettingsRecognitionPicker("認識方法", selection: $controller.requestedMode)
                     .frame(width: 168)
                 }
+                Group {
+                    if #available(macOS 26, *) {
+                        Text("ローカル認識エンジン: SpeechAnalyzer（macOS 26の新しいオンデバイス認識）")
+                    } else {
+                        Text("ローカル認識エンジン: SFSpeechRecognizer（従来のオンデバイス認識）")
+                    }
+                }
+                .font(.caption).foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.bottom, 8)
                 Divider()
                 SettingsRow("録音の開始・終了キー",
                             description: "今の設定：\(controller.shortcutChoice.label)。下の動作設定で録音の操作方法を選びます。",
@@ -202,7 +212,7 @@ struct SettingsGeneralPage: View {
                     Label("Gemini APIキーが未登録です。Apple認識への切替が必要な場合があります。",
                           systemImage: "exclamationmark.circle.fill")
                         .foregroundStyle(.orange)
-                } else if controller.requestedMode == .local &&
+                } else if #unavailable(macOS 26), controller.requestedMode == .local &&
                             SFSpeechRecognizer.authorizationStatus() != .authorized {
                     Label("Appleの音声認識への許可を確認してください。マイク許可とは別に管理されます。",
                           systemImage: "exclamationmark.circle.fill")

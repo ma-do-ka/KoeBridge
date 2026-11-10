@@ -6,7 +6,8 @@ import KoeBridgeCore
 
 /// Offline fallback for macOS 15+. Not all locales/devices have an on-device model.
 /// Never silently invoke Apple's server-side recognition.
-@MainActor final class AppleLocalTranscriber {
+@MainActor final class AppleLocalTranscriber: LocalTranscribing {
+    let requiresSpeechAuthorization = true
     private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "ja-JP"))
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
