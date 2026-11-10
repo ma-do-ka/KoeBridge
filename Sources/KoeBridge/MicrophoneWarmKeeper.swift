@@ -37,11 +37,6 @@ import KoeBridgeCore
 
         func resume(enabled: Bool, uid: String, takeActive: Bool, reason: String,
                     changed: @escaping @Sendable () -> Void) {
-            guard MicWarmPolicy.shouldWarm(enabled: enabled, selectedDeviceIsBluetooth: true,
-                                           takeActive: takeActive) else {
-                stop(reason: reason)
-                return
-            }
             let snapshot = MicrophoneDevices.snapshot()
             guard let selected = try? MicrophoneSelectionPolicy.resolve(uid: uid,
                 devices: snapshot.devices, systemDefaultID: snapshot.defaultID) else {
@@ -50,7 +45,7 @@ import KoeBridgeCore
                 return
             }
             guard MicWarmPolicy.shouldWarm(enabled: enabled,
-                selectedDeviceIsBluetooth: MicrophoneDevices.isBluetooth(uid: selected.uid, devices: snapshot.devices),
+                selectedDeviceIsBluetooth: MicrophoneDevices.isBluetooth(deviceID: selected.deviceID),
                 takeActive: takeActive) else { stop(reason: "policy"); return }
             if let lease, target == selected, lease.resource.isRunning,
                MicrophoneDevices.isStillSelected(selected, node: lease.resource.inputNode) { return }
@@ -65,16 +60,12 @@ import KoeBridgeCore
                 let node = engine.inputNode
                 try MicrophoneDevices.bind(selected, to: node)
                 let hardware = node.inputFormat(forBus: 0)
-                guard let plan = MicrophoneTapFormatPlan(hardwareSampleRate: hardware.sampleRate,
-                                                        hardwareChannels: hardware.channelCount),
-                      let format = AVAudioFormat(commonFormat: .pcmFormatFloat32,
-                          sampleRate: plan.sampleRate, channels: plan.channelCount, interleaved: false),
-                      engine.outputConnectionPoints(for: node, outputBus: 0).isEmpty else {
+                guard engine.outputConnectionPoints(for: node, outputBus: 0).isEmpty else {
                     stop(reason: "format")
                     return
                 }
                 // Deliberately no buffer access, conversion, storage or analysis.
-                node.installTap(onBus: 0, bufferSize: 1024, format: format) { _, _ in }
+                node.installTap(onBus: 0, bufferSize: 1024, format: hardware) { _, _ in }
                 tapInstalled = true
                 engine.prepare()
                 if !engine.isRunning { try engine.start() }

@@ -43,9 +43,8 @@ enum MicrophoneDevices {
                         defaultID: MicrophoneRouteSnapshot.defaultInputDeviceID())
     }
 
-    static func isBluetooth(uid: String, devices: [MicrophoneDeviceOption]) -> Bool {
-        guard let device = devices.first(where: { $0.uid == uid }),
-              let transport = uint32(device.deviceID, kAudioDevicePropertyTransportType) else { return false }
+    static func isBluetooth(deviceID: AudioObjectID) -> Bool {
+        guard let transport = uint32(deviceID, kAudioDevicePropertyTransportType) else { return false }
         return transport == kAudioDeviceTransportTypeBluetooth || transport == kAudioDeviceTransportTypeBluetoothLE
     }
 

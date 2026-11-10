@@ -5,7 +5,9 @@ OFF and is saved as `bluetoothMicWarm`. When enabled, microphone permission
 must already be granted. Warming never opens a permission prompt. The selected
 input must resolve to a Bluetooth transport (`blth` or `blea`). Selection uses
 the same device store and selection policy as dictation, including following
-the system default and refusing fallback for a missing explicit device.
+the system default and refusing fallback for a missing explicit device. The
+system-default selection is resolved to a concrete device before checking that
+device's Bluetooth transport.
 
 Between takes the warmer exclusively leases the same process-retained
 AVAudioEngine used by MicrophoneCapture, binds the input, and installs an empty
@@ -23,11 +25,14 @@ The engine remains retained for process lifetime. The handoff necessarily
 stops/restarts it because capture requires a stopped engine; real Bluetooth
 hardware must confirm how much startup latency this saves.
 
-Resume re-evaluates selection and policy at launch after store setup, after
-microphone teardown (including cancellation/failure), on toggle changes, on
+Resume re-evaluates selection and policy at launch after store setup, when a
+take's capture has fully stopped at recording stop, again after take teardown
+(including cancellation/failure), on toggle changes, on
 store publications (including the existing two-second settings-page refresh),
 and on warm-engine configuration changes. There is no new idle polling cadence.
-A new active take prevents warming even if an older take has just torn down.
+The Core policy prevents warming while a take is active, and the engine's
+single-lease ownership ensures the warmer never overlaps a take. A new active
+take prevents warming even if an older take has just torn down.
 Permission is rechecked on each resume. Device/bind/start failures silently stay
 cold and cannot turn into a take error. Diagnostics contain only `mic warm
 start` / `mic warm stop` and plain reason tokens, never device names or UIDs.
