@@ -3,6 +3,7 @@ import Foundation
 /// UI feedback is deliberately separate from the session state machine.
 /// "sent" means key events were submitted, not that another app accepted them.
 public enum OverlayFeedback: String, Equatable, Sendable {
+    case transforming, transformCopied, transformFailed
     case hidden
     case preparing
     case recording
@@ -17,6 +18,9 @@ public enum OverlayFeedback: String, Equatable, Sendable {
 
     public var message: String {
         switch self {
+        case .transforming: return "選択テキストを変換中…"
+        case .transformCopied: return "変換結果をコピーしました。入力先を確認してください"
+        case .transformFailed: return "選択テキストの変換を完了できませんでした"
         case .hidden: return ""
         case .preparing: return "マイクを準備しています…"
         case .recording: return "話してください…"

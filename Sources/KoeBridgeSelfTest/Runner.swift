@@ -61,6 +61,9 @@ struct KoeBridgeSelfTest {
             do { try await action() }
             catch { TestRecorder.assertion(false, file: #fileID, line: #line, message: "test threw: \(error)") }
         }
+        await run("ContextAndTransformTests.contextCapsPreserveStartAndUnicode", { ContextAndTransformTests().contextCapsPreserveStartAndUnicode() })
+        await run("ContextAndTransformTests.recheckContextIsOptionalAdditionalPart", { try ContextAndTransformTests().recheckContextIsOptionalAdditionalPart() })
+        await run("ContextAndTransformTests.transformRequestAndResponse", { try ContextAndTransformTests().transformRequestAndResponse() })
         await run("MicWarmPolicyTests.allInputCombinations", { MicWarmPolicyTests().allInputCombinations() })
         await run("GeminiPrewarmPolicyTests.maximumWarmAgeIsFiveMinutes", { GeminiPrewarmPolicyTests().maximumWarmAgeIsFiveMinutes() })
         await run("GeminiPrewarmPolicyTests.matchingSnapshotWithinAgeLimit", { GeminiPrewarmPolicyTests().matchingSnapshotWithinAgeLimit() })

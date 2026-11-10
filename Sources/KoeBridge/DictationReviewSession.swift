@@ -21,12 +21,14 @@ import KoeBridgeCore
     private let vocabulary: [String]
     private let style: TranscriptionStyle
     private let japaneseHint: Bool
+    private let context: CapturedContext?
     private var audio: Data
     private var ended = false
 
     init(originalText: String, engine: RecognitionMode?, options: TranscriptionOptions,
          stoppedAt: Date?, audio: Data, vocabulary: [String], style: TranscriptionStyle,
-         japaneseHint: Bool) {
+         japaneseHint: Bool, context: CapturedContext? = nil) {
+        self.context = context
         self.originalText = originalText
         self.engine = engine
         self.options = options
@@ -64,13 +66,16 @@ import KoeBridgeCore
                                       note: "追加チェックの時間・音声サイズ・APIキーの条件を満たさないため、元の確定文を使用しました。")
             return originalText
         }
+        if let context, context.prompt != nil {
+            DiagnosticLog.record("context injected fields=\(context.fields)")
+        }
         onAudioRecheck()
         usage.startedAt = Date()
         usage.audioBytes = audio.count
         do {
             let checked = try await GeminiAudioRechecker.recognize(
                 pcm16LE: audio, vocabulary: vocabulary, style: style,
-                japaneseHint: japaneseHint, apiKey: key, timeout: budget)
+                japaneseHint: japaneseHint, apiKey: key, timeout: budget, context: context?.prompt)
             guard !ended, !Task.isCancelled else { return originalText }
             usage.succeeded = true
             if let counters = checked.usage {

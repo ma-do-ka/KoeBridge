@@ -22,6 +22,8 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
     let shouldPaste: Bool
     let options: TranscriptionOptions
     var usedMode: String
+    var transformSelection: String?
+    var capturedContext: CapturedContext?
     var target: InsertionTarget?
     var targetCaptureReason = "not_attempted"
     var mic: MicrophoneCapture?

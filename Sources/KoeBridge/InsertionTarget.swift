@@ -165,7 +165,8 @@ import KoeBridgeCore
                                      selection: selection, textSnapshot: nil,
                                      capturedAt: ProcessInfo.processInfo.systemUptime,
                                      blockedReason: nil)
-        // Keep this local and ephemeral. It is never sent to a model or logged.
+        // Keep this ephemeral and never log it. Explicit context opt-in may
+        // project a capped excerpt for the separate audio recheck request.
         // A second bounded attempt covers an editor consuming an earlier take.
         if selectionAttribute == kAXSelectedTextRangeAttribute as String {
             for _ in 0..<2 {
@@ -199,6 +200,17 @@ import KoeBridgeCore
             diagnostics.record(.target, stage: .capture, fields)
         }
         return (target, "ok")
+    }
+
+    /// Optional context read; secure fields disclose nothing.
+    func selectedContextText() -> String? {
+        guard CFGetTypeID(focused) == AXUIElementGetTypeID() else { return nil }
+        let element = unsafeBitCast(focused, to: AXUIElement.self)
+        let role = Self.copyAX(element, name: kAXSubroleAttribute as CFString,
+                              operation: .subrole, diagnostics: nil, stage: .capture)
+        if role.status == .success, role.value as? String == "AXSecureTextField" { return nil }
+        return Self.copyAX(element, name: kAXSelectedTextAttribute as CFString,
+                           operation: .value, diagnostics: nil, stage: .capture).value as? String
     }
 
     private var selectionKind: Token {

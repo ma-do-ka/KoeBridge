@@ -10,6 +10,17 @@ import KoeBridgeCore
 
 /// Presets verified against shipped source / official shortcut documentation.
 /// Existing persisted keys (including F8/F9) are preserved by their raw values.
+enum ShortcutAction: String, CaseIterable, Identifiable {
+    case recording, transformSelection
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .recording: return "録音の開始・終了キー"
+        case .transformSelection: return "選択テキストを音声で変換"
+        }
+    }
+}
+
 enum RecordingShortcut: String, CaseIterable, Identifiable {
     case controlOptionSpace
     case controlShiftSpace
@@ -132,6 +143,7 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
 @MainActor final class KoeBridgeAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var item: NSStatusItem!
     private var shortcut: GlobalShortcut?
+    private var transformShortcutMonitor: GlobalShortcut?
     private let windows = AppWindows()
     private let controller = VoiceController.shared
     private var workspaceObservers: [NSObjectProtocol] = []
@@ -178,6 +190,17 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
         controller.onShowPermissions = { [weak self] in self?.windows.showPermissions() }
         installWindowShortcuts()
 
+        transformShortcutMonitor = GlobalShortcut(action: .transformSelection)
+        controller.onTransformShortcutChange = { [weak self] choice in
+            guard let self else { return false }
+            if let choice { return self.transformShortcutMonitor?.register(choice) ?? false }
+            self.transformShortcutMonitor = GlobalShortcut(action: .transformSelection)
+            return true
+        }
+        if let choice = controller.transformShortcut,
+           transformShortcutMonitor?.register(choice) != true {
+            controller.status = "変換ショートカットを登録できません（キーの競合を確認してください）"
+        }
         shortcut = GlobalShortcut()
         controller.onShortcutChange = { [weak self] choice in
             self?.shortcut?.register(choice) ?? false
@@ -188,6 +211,10 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
         controller.onInputConfigurationChange = { [weak self] in
             guard let self else { return }
             self.shortcut?.configureMouse()
+            if let choice = self.controller.transformShortcut,
+               self.transformShortcutMonitor?.register(choice, rearm: true) != true {
+                self.controller.status = "変換ショートカットを登録できません"
+            }
             if self.shortcut?.register(self.controller.shortcutChoice, rearm: true) != true {
                 self.controller.shortcutRegistrationFailed()
             }
@@ -360,11 +387,13 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
 /// modifiers. Re-registration is transactional: a failed new shortcut leaves
 /// the previously working one installed.
 @MainActor private final class GlobalShortcut {
+    private let action: ShortcutAction
+    nonisolated private let signature: OSType
     private var hotKeyRef: EventHotKeyRef?
     private var handlerRef: EventHandlerRef?
     private var modifierMonitor: ModifierShortcutMonitor?
     private var activeChoice: RecordingShortcut?
-    private var nextHotKeyID: UInt32 = 1
+    private static var nextHotKeyID: UInt32 = 1
     private var policy = ShortcutActivationPolicy()
     private var mouseMonitor: MouseShortcutMonitor?
     private var monitorGeneration = UUID()
@@ -386,6 +415,15 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
 
     private func route(pressed: Bool, at time: TimeInterval) {
         let action = pressed ? policy.pressed(at: time) : policy.released(at: time)
+        if self.action == .transformSelection {
+            switch action {
+            case .toggle: VoiceController.shared.transformSelection()
+            case .begin: VoiceController.shared.transformSelection()
+            case .commit: VoiceController.shared.transformInstructionEnded()
+            case nil: break
+            }
+            return
+        }
         switch action {
         case .toggle: VoiceController.shared.toggle()
         case .begin: VoiceController.shared.shortcutPressBegan()
@@ -395,7 +433,9 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
     }
     private var carbonReleaseRecovery: Task<Void, Never>?
 
-    init() {
+    init(action: ShortcutAction = .recording) {
+        self.action = action
+        self.signature = action == .recording ? OSType(0x4B4F4542) : OSType(0x4B4F4554)
         var types = [
             EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
                           eventKind: UInt32(kEventHotKeyPressed)),
@@ -413,6 +453,7 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
             guard status == noErr else { return noErr }
             let isPress = GetEventKind(event) == UInt32(kEventHotKeyPressed)
             let monitor = Unmanaged<GlobalShortcut>.fromOpaque(raw).takeUnretainedValue()
+            guard pressedID.signature == monitor.signature else { return OSStatus(eventNotHandledErr) }
             let keyID = pressedID.id
             DispatchQueue.main.async { [weak monitor] in
                 monitor?.handleCarbonEvent(id: keyID, pressed: isPress)
@@ -477,6 +518,8 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
     }
 
     func register(_ choice: RecordingShortcut, rearm: Bool = false) -> Bool {
+        if action == .transformSelection && choice == VoiceController.shared.shortcutChoice { return false }
+        if action == .recording && choice == VoiceController.shared.transformShortcut { return false }
         if activeChoice == choice && !rearm { return true }
         policy.reset()
         policy.mode = VoiceController.shared.shortcutActivationMode
@@ -515,8 +558,8 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
             carbonGate.activate(nil)
             activeChoice = nil
         }
-        let id = EventHotKeyID(signature: OSType(0x4B4F4542), id: nextHotKeyID)
-        nextHotKeyID &+= 1
+        let id = EventHotKeyID(signature: signature, id: Self.nextHotKeyID)
+        Self.nextHotKeyID &+= 1
         var candidate: EventHotKeyRef?
         let status = RegisterEventHotKey(choice.keyCode, choice.modifiers, id,
                                          GetApplicationEventTarget(), 0, &candidate)
@@ -525,8 +568,8 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
             if removedForRearm {
                 // Re-registration during a manual retry can lose a race with
                 // another shortcut owner. Attempt to recover the old binding.
-                let rollback = EventHotKeyID(signature: OSType(0x4B4F4542), id: nextHotKeyID)
-                nextHotKeyID &+= 1
+                let rollback = EventHotKeyID(signature: signature, id: Self.nextHotKeyID)
+                Self.nextHotKeyID &+= 1
                 var restored: EventHotKeyRef?
                 let restoredStatus = RegisterEventHotKey(
                     choice.keyCode, choice.modifiers, rollback,

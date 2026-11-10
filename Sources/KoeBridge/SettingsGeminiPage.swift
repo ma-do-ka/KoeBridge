@@ -196,6 +196,23 @@ struct SettingsGeminiPage: View {
                 }
                 .padding(.leading, 20)
             }
+            Divider().padding(.vertical, 4)
+            Toggle("文脈を使って再チェックを補助する", isOn: $controller.recheckContextEnabled)
+                .toggleStyle(.checkbox)
+            VStack(alignment: .leading, spacing: 8) {
+                Toggle("アプリ名", isOn: $controller.contextAppEnabled)
+                Toggle("選択テキスト", isOn: $controller.contextSelectionEnabled)
+                Toggle("周辺テキスト", isOn: $controller.contextSurroundingEnabled)
+            }
+            .toggleStyle(.checkbox)
+            .disabled(!controller.recheckContextEnabled)
+            .padding(.leading, 20)
+            Text("有効にした項目だけが、再チェック時にGeminiへ送られます。録音そのものの送信先は変わりません。")
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("選択・周辺テキストは各2,000文字まで。読み取れない項目は送信しません。音声の再認識が有効な場合に使用します。")
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             Text("両方を外すと、追加の文脈チェックを行いません。Geminiで認識できた録音に適用し、Appleローカルで認識した場合は実行しません。設定の選択は保持されます。")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)

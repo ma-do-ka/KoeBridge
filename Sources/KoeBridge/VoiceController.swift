@@ -60,6 +60,50 @@ import KoeBridgeCore
     @Published var automaticPaste: Bool {
         didSet { UserDefaults.standard.set(automaticPaste, forKey: "autoPaste") }
     }
+    @Published var recheckContextEnabled = UserDefaults.standard.object(forKey: "recheckContextEnabled") as? Bool ?? false {
+        didSet { UserDefaults.standard.set(recheckContextEnabled, forKey: "recheckContextEnabled") }
+    }
+    @Published var contextAppEnabled = UserDefaults.standard.object(forKey: "contextAppEnabled") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(contextAppEnabled, forKey: "contextAppEnabled") }
+    }
+    @Published var contextSelectionEnabled = UserDefaults.standard.object(forKey: "contextSelectionEnabled") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(contextSelectionEnabled, forKey: "contextSelectionEnabled") }
+    }
+    @Published var contextSurroundingEnabled = UserDefaults.standard.object(forKey: "contextSurroundingEnabled") as? Bool ?? false {
+        didSet { UserDefaults.standard.set(contextSurroundingEnabled, forKey: "contextSurroundingEnabled") }
+    }
+    @Published private(set) var transformShortcut = RecordingShortcut(rawValue: UserDefaults.standard.string(forKey: "transformShortcut") ?? "")
+    var onTransformShortcutChange: ((RecordingShortcut?) -> Bool)?
+    func selectTransformShortcut(_ choice: RecordingShortcut?) {
+        guard onTransformShortcutChange?(choice) == true else {
+            status = "変換ショートカットを登録できません（キーの競合を確認してください）"
+            return
+        }
+        transformShortcut = choice
+        UserDefaults.standard.set(choice?.rawValue, forKey: "transformShortcut")
+    }
+
+    func transformInstructionEnded() {
+        guard active?.transformSelection != nil else { return }
+        shortcutPressEnded()
+    }
+
+    func transformSelection() {
+        if active?.transformSelection != nil { toggle(); return }
+        guard active == nil else { return }
+        let capture = InsertionTarget.capture()
+        guard let target = capture.target, target.selection != nil,
+              let selected = target.selectedContextText(), !selected.isEmpty else {
+            status = "変換するテキストを選択してください"
+            return
+        }
+        guard selected.count <= ContextTextPolicy.maximumCharacters else {
+            status = "変換する選択テキストは2,000文字以内にしてください"
+            return
+        }
+        guard KeychainStore.load() != nil else { status = AppError.noKey.localizedDescription; return }
+        beginRecording(transformTarget: target, selection: selected)
+    }
     @Published var snippets: [SnippetRule] {
         didSet {
             if let data = try? JSONEncoder().encode(snippets) {
@@ -266,7 +310,7 @@ import KoeBridgeCore
         }
     }
 
-    private func beginRecording() {
+    private func beginRecording(transformTarget: InsertionTarget? = nil, selection: String? = nil) {
         guard active == nil, phase == .idle else { return }
         guard !KoeBridgeUpdateManager.shared.blocksRecording else {
             status = "更新画面を閉じるか、更新の完了後に録音を開始してください"
@@ -286,6 +330,7 @@ import KoeBridgeCore
                                 japaneseHint: japaneseHint,
                                 vocabulary: selectedVocabulary,
                                 shouldPaste: automaticPaste, options: options)
+        take.transformSelection = selection
         guard finished.begin(take.id) else { return }
         take.inputDiagnostics = DiagnosticLog.inputTrace(takeID: take.id)
         take.inputDiagnostics?.record(.session, stage: .requested, [
@@ -315,9 +360,14 @@ import KoeBridgeCore
         usedMode = take.usedMode
         status = "マイクを準備しています…"
         let focusStartedAt = ProcessInfo.processInfo.systemUptime
-        let targetResult = InsertionTarget.capture(diagnostics: take.inputDiagnostics) // BEFORE the overlay is shown
+        let targetResult = transformTarget.map { (target: Optional($0), reason: "ok") }
+            ?? InsertionTarget.capture(diagnostics: take.inputDiagnostics) // BEFORE the overlay is shown
         take.target = targetResult.target
         take.targetCaptureReason = targetResult.reason
+        if recheckContextEnabled && selection == nil {
+            take.capturedContext = ContextCapture.capture(target: take.target, app: contextAppEnabled,
+                selection: contextSelectionEnabled, surrounding: contextSurroundingEnabled)
+        }
         take.inputDiagnostics?.record(.target, stage: .capture, [
             .element: .token(take.target != nil ? .ok : .unavailable),
             .reason: .reason(targetResult.reason),
@@ -449,8 +499,8 @@ import KoeBridgeCore
                 DiagnosticLog.recordMicrophoneEvidence("mic startup; total=\(String(format: "%.3f", t.total))s prepare=\(String(format: "%.3f", t.microphonePreparation))s engineStart=\(String(format: "%.3f", t.engineStart))s")
             }
             DiagnosticLog.record("session recording; recognizer=pending; pending=\(finished.count)")
-            status = "録音中。\(shortcutChoice.label) でもう一度押すと確定"
-            let maxSeconds = take.preferred == .gemini ? 480 : 50
+            status = "録音中。\(take.transformSelection == nil ? shortcutChoice.label : (transformShortcut?.label ?? shortcutChoice.label)) でもう一度押すと確定"
+            let maxSeconds = take.transformSelection != nil ? 30 : (take.preferred == .gemini ? 480 : 50)
             take.recordingTimeout = Task { [weak self, weak take] in
                 do { try await Task.sleep(for: .seconds(maxSeconds)) } catch { return }
                 guard let self, let take, self.active === take, self.phase == .recording else { return }
@@ -558,7 +608,7 @@ import KoeBridgeCore
         take.usedMode = actual.label
         if active === take {
             usedMode = take.usedMode
-            if phase == .recording { status = "録音中。\(shortcutChoice.label) でもう一度押すと確定" }
+            if phase == .recording { status = "録音中。\(take.transformSelection == nil ? shortcutChoice.label : (transformShortcut?.label ?? shortcutChoice.label)) でもう一度押すと確定" }
         }
         if let start = take.startedAt {
             DiagnosticLog.record("recognizer ready; mode=\(actual.rawValue); sinceMic=\(String(format: "%.3f", Date().timeIntervalSince(start)))s")
@@ -763,14 +813,15 @@ import KoeBridgeCore
             guard !result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 throw AppleLocalTranscriber.LocalError.empty(nil)
             }
-            let original = take.preferred == .gemini && take.style == .agent
+            let original = take.transformSelection == nil && take.preferred == .gemini && take.style == .agent
                 ? AgentInstructionFormatting.format(result) : result
             // Only an actually confirmed primary result can survive a review
             // timeout. Pending/interim text never takes this route.
             let review = DictationReviewSession(
                 originalText: original, engine: take.successfulEngine, options: take.options,
                 stoppedAt: take.stoppingAt, audio: take.audioBackup,
-                vocabulary: take.vocabulary, style: take.style, japaneseHint: take.japaneseHint)
+                vocabulary: take.vocabulary, style: take.style, japaneseHint: take.japaneseHint,
+                context: take.capturedContext)
             take.reviewSession = review
             let output = await review.run { [weak self, weak take] in
                 guard let self, let take, !take.finished else { return }
@@ -793,7 +844,7 @@ import KoeBridgeCore
         // Freeze the exact deliverable before both ordered completion and history.
         // Save-only, suppressed, review-held, stale and no-input takes never expand.
         var text = text
-        if !noInput, finished.pending.contains(take.id), let original = text, !original.isEmpty,
+        if take.transformSelection == nil, !noInput, finished.pending.contains(take.id), let original = text, !original.isEmpty,
            DictationDelivery.skipped(suppressed: take.automaticDeliverySuppressed,
                requiresReview: take.review?.status == .needsReview,
                acousticReviewRequired: take.acousticReviewRequired, shouldPaste: take.shouldPaste) == nil {
@@ -831,7 +882,7 @@ import KoeBridgeCore
             text: text, reason: reason, partial: partial, noInput: noInput))
         // Persist now, even if an older delivery is awaiting its receipt. An
         // app exit must not discard a completed result waiting in the sender.
-        if accepted, !noInput {
+        if accepted, !noInput, take.transformSelection == nil {
             if let text, !text.isEmpty {
                 take.historyRecordID = remember(text, isPartial: false, delivery: .pending,
                                                 engine: take.usedMode, review: take.review,
@@ -899,6 +950,10 @@ import KoeBridgeCore
             .suppressed: .flag(take.automaticDeliverySuppressed),
             .requiresReview: .flag(take.review?.status == .needsReview)
         ])
+        if take.transformSelection != nil {
+            await deliverTransform(result, take: take)
+            return
+        }
         if result.noInput {
             take.inputDiagnostics?.record(.result, stage: .result, [
                 .outcome: .token(.skipped), .reason: .reason("no_input"), .eventsPosted: .flag(false)
@@ -955,7 +1010,7 @@ import KoeBridgeCore
             // Reconcile before the next sender. Event submission alone cannot
             // authorize a new caret; an unknown receipt blocks concurrent targets.
             if let report = outcome.report {
-                for other in inFlight.values where other.id != id {
+                for other in inFlight.values where other.id != id && other.transformSelection == nil {
                     if let target = other.target {
                         other.target = report.reconciled(target, sourceTakeID: id, candidateTakeID: other.id,
                                                         diagnostics: other.inputDiagnostics)
@@ -974,6 +1029,60 @@ import KoeBridgeCore
         }
     }
 
+    private func deliverTransform(_ result: Completion, take: DictationTake) async {
+        guard !result.noInput else { return }
+        guard !take.automaticDeliverySuppressed,
+              take.review?.status != .needsReview, !take.acousticReviewRequired,
+              let instruction = result.text, !instruction.isEmpty,
+              let selected = take.transformSelection else {
+            showCompletionFeedback(.transformFailed, for: take.id)
+            if active == nil { status = result.reason ?? "変換の指示を確認できませんでした。選択範囲は変更していません。" }
+            return
+        }
+        do {
+            guard let key = KeychainStore.load() else { throw AppError.noKey }
+            if active == nil && overlayOwner == take.id {
+                overlayDismissal?.cancel()
+                overlayDismissal = nil
+                overlayFeedback = .transforming
+                status = "選択テキストを変換中…"
+            }
+            let output = try await GeminiTextTransformer.transform(selectedText: selected, instruction: instruction, apiKey: key)
+            if let usage = output.usage {
+                DiagnosticLog.record("gemini transform usage; promptTokens=\(usage.promptTokens.map(String.init) ?? "unknown") responseTokens=\(usage.responseTokens.map(String.init) ?? "unknown") totalTokens=\(usage.totalTokens)")
+            }
+            guard !take.automaticDeliverySuppressed else { return }
+            // Verify the original selection's contents too, even for AX marker editors.
+            let current = take.target?.selectedContextText()
+            let target = current.map { InsertionReceiptPolicy.sameText($0, selected) } == true ? take.target : nil
+            guard let target else {
+                let copied = TextInsertion.copy(output.text)
+                showCompletionFeedback(copied ? .transformCopied : .transformFailed, for: take.id)
+                if active == nil {
+                    status = copied ? "変換結果をクリップボードにコピーしました。入力先を確認してください。" : "変換結果をコピーできませんでした。入力先と権限を確認してください。"
+                }
+                return
+            }
+            deliveringTakeID = take.id
+            let report = await TextInsertion.deliver(output.text, to: target, diagnostics: take.inputDiagnostics) {
+                !take.automaticDeliverySuppressed
+            }
+            deliveringTakeID = nil
+            for other in inFlight.values where other.id != take.id && other.transformSelection == nil {
+                if let candidate = other.target { other.target = report.reconciled(candidate) }
+            }
+            let verified = report.outcome == .verifiedInserted
+            let copied = !verified && TextInsertion.copy(output.text)
+            showCompletionFeedback(verified ? .sent : (copied ? .transformCopied : .transformFailed), for: take.id)
+            if active == nil {
+                status = verified ? "選択テキストの変換を反映しました" : (copied ? "変換結果をクリップボードにコピーしました。入力先を確認してください。" : "変換結果をコピーできませんでした。入力先と権限を確認してください。")
+            }
+        } catch {
+            showCompletionFeedback(.transformFailed, for: take.id)
+            if active == nil { status = "選択テキストの変換に失敗しました。選択範囲は変更していません。" }
+        }
+    }
+
     /// Feedback never claims that the receiving app accepted synthetic key events.
     /// Completion from an older take cannot replace a newer recording overlay.
     private func showCompletionFeedback(_ feedback: OverlayFeedback, for id: UUID) {
@@ -982,7 +1091,13 @@ import KoeBridgeCore
         overlayFeedback = feedback
         overlayDismissal?.cancel()
         overlayDismissal = Task { [weak self] in
-            let hold: Int = feedback == .heldForReview ? 3_000 : (feedback == .noInput ? 330 : (feedback == .failed ? 1_000 : 520))
+            let hold: Int
+            switch feedback {
+            case .heldForReview, .transformCopied: hold = 3_000
+            case .noInput: hold = 330
+            case .failed, .transformFailed: hold = 1_000
+            default: hold = 520
+            }
             do { try await Task.sleep(for: .milliseconds(hold)) } catch { return }
             guard let self, self.overlayOwner == id, self.active == nil else { return }
             self.hideOverlay()
