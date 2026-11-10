@@ -44,6 +44,17 @@ struct SettingsInputControls: View {
                     Text(choice.label).tag(Optional(choice))
                 }
             }
+            Picker("直前の入力を修正", selection: Binding<RecordingShortcut?>(
+                get: { controller.fixLastShortcut },
+                set: { controller.selectFixLastShortcut($0) }
+            )) {
+                Text("未割り当て（オフ）").tag(Optional<RecordingShortcut>.none)
+                ForEach(RecordingShortcut.allCases) { choice in
+                    Text(choice.label).tag(Optional(choice))
+                }
+            }
+            Text("1回押すと直前の入力への修正指示を録音します。録音キーで確定してください。入力先や文章・カーソルが変わった場合、または10分を過ぎた場合は修正できません。")
+                .font(.caption).foregroundStyle(.secondary)
             Picker("翻訳の方向", selection: $controller.translationDirection) {
                 Text("自動判定").tag(TranslationDirection.auto)
                 Text("日本語 → 英語").tag(TranslationDirection.jaToEn)

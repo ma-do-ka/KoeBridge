@@ -11,13 +11,14 @@ import KoeBridgeCore
 /// Presets verified against shipped source / official shortcut documentation.
 /// Existing persisted keys (including F8/F9) are preserved by their raw values.
 enum ShortcutAction: String, CaseIterable, Identifiable {
-    case recording, transformSelection, translateSelection
+    case recording, transformSelection, translateSelection, fixLastInput
     var id: String { rawValue }
     var label: String {
         switch self {
         case .recording: return "録音の開始・終了キー"
         case .transformSelection: return "選択テキストを変換"
         case .translateSelection: return "選択テキストを翻訳"
+        case .fixLastInput: return "直前の入力を修正"
         }
     }
 }
@@ -146,6 +147,7 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
     private var shortcut: GlobalShortcut?
     private var transformShortcutMonitor: GlobalShortcut?
     private var translateShortcutMonitor: GlobalShortcut?
+    private var fixLastShortcutMonitor: GlobalShortcut?
     private let windows = AppWindows()
     private let controller = VoiceController.shared
     private var workspaceObservers: [NSObjectProtocol] = []
@@ -214,6 +216,17 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
            translateShortcutMonitor?.register(choice) != true {
             controller.status = "翻訳ショートカットを登録できません（キーの競合を確認してください）"
         }
+        fixLastShortcutMonitor = GlobalShortcut(action: .fixLastInput)
+        controller.onFixLastShortcutChange = { [weak self] choice in
+            guard let self else { return false }
+            if let choice { return self.fixLastShortcutMonitor?.register(choice) ?? false }
+            self.fixLastShortcutMonitor = GlobalShortcut(action: .fixLastInput)
+            return true
+        }
+        if let choice = controller.fixLastShortcut,
+           fixLastShortcutMonitor?.register(choice) != true {
+            controller.status = "修正ショートカットを登録できません（キーの競合を確認してください）"
+        }
         shortcut = GlobalShortcut()
         controller.onShortcutChange = { [weak self] choice in
             self?.shortcut?.register(choice) ?? false
@@ -224,6 +237,10 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
         controller.onInputConfigurationChange = { [weak self] in
             guard let self else { return }
             self.shortcut?.configureMouse()
+            if let choice = self.controller.fixLastShortcut,
+               self.fixLastShortcutMonitor?.register(choice, rearm: true) != true {
+                self.controller.status = "修正ショートカットを登録できません"
+            }
             if let choice = self.controller.translateShortcut,
                self.translateShortcutMonitor?.register(choice, rearm: true) != true {
                 self.controller.status = "翻訳ショートカットを登録できません"
@@ -433,12 +450,13 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
 
     private var operationPressDown = false
     private func route(pressed: Bool, at time: TimeInterval) {
-        if self.action == .translateSelection ||
+        if self.action == .fixLastInput || self.action == .translateSelection ||
             (self.action == .transformSelection && VoiceController.shared.transformMode == .preset) {
             if !pressed { operationPressDown = false; return }
             guard !operationPressDown else { return }
             operationPressDown = true
-            if self.action == .translateSelection { VoiceController.shared.translateSelection() }
+            if self.action == .fixLastInput { VoiceController.shared.fixLastInput() }
+            else if self.action == .translateSelection { VoiceController.shared.translateSelection() }
             else { VoiceController.shared.transformSelection() }
             return
         }
@@ -467,6 +485,7 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
         case .recording: self.signature = OSType(0x4B4F4542)
         case .transformSelection: self.signature = OSType(0x4B4F4554)
         case .translateSelection: self.signature = OSType(0x4B4F454C)
+        case .fixLastInput: self.signature = OSType(0x4B4F4546)
         }
         var types = [
             EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
@@ -554,7 +573,8 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
         let bindings: [(ShortcutAction, RecordingShortcut?)] = [
             (.recording, controller.shortcutChoice),
             (.transformSelection, controller.transformShortcut),
-            (.translateSelection, controller.translateShortcut)
+            (.translateSelection, controller.translateShortcut),
+            (.fixLastInput, controller.fixLastShortcut)
         ]
         guard !bindings.contains(where: { $0.0 != action && $0.1 == choice }) else { return false }
         if activeChoice == choice && !rearm { return true }
@@ -568,7 +588,7 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
         // Rebuild the monitor rather than returning true without doing anything.
         if choice.usesEventTap {
             let generation = UUID()
-            let oneShot = action == .translateSelection ||
+            let oneShot = action == .fixLastInput || action == .translateSelection ||
                 (action == .transformSelection && controller.transformMode == .preset)
             let candidate = ModifierShortcutMonitor(choice: choice, mode: oneShot ? .hold : controller.shortcutActivationMode) { [weak self] pressed, time in
                 guard let self, self.monitorGeneration == generation else { return }

@@ -90,14 +90,21 @@ public enum AgentVocabulary {
     public static func terms(
         user: [String], registeredEnabled: Bool, topicEnabled: Bool, maximum: Int = 100
     ) -> [String] {
+        terms(user: user, learned: [], registeredEnabled: registeredEnabled,
+              topicEnabled: topicEnabled, maximum: maximum)
+    }
+
+    public static func terms(
+        user: [String], learned: [String], registeredEnabled: Bool, topicEnabled: Bool, maximum: Int = 100
+    ) -> [String] {
         guard maximum > 0 else { return [] }
-        let candidates = (registeredEnabled ? user : []) + (topicEnabled ? defaults : [])
+        let candidates = (registeredEnabled ? user + learned : []) + (topicEnabled ? defaults : [])
         var seen = Set<String>()
         var accepted: [String] = []
         for candidate in candidates {
             let term = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !term.isEmpty else { continue }
-            let key = term.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
+            let key = LearnedTermPolicy.normalized(term)
             if seen.insert(key).inserted {
                 accepted.append(term)
             }

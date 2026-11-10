@@ -6,6 +6,7 @@ import KoeBridgeCore
 /// discard a pending API key. Recognition choices bind directly to the controller.
 struct SettingsGeminiPage: View {
     @ObservedObject var controller: VoiceController
+    @State private var editingLearnedTerm: LearnedTerm?
     @Binding var apiKeyDraft: String
     @Binding var apiKeyNotice: String
     let focusRequest: SettingsFocusRequest?
@@ -119,6 +120,29 @@ struct SettingsGeminiPage: View {
                         }
                         .padding(.vertical, 8)
                         Divider()
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("学習した語彙（\(controller.learnedTerms.count)語）").font(.headline)
+                            if controller.learnedTerms.isEmpty {
+                                Text("まだありません。履歴の「修正して学習」から追加できます。")
+                                    .foregroundStyle(.secondary)
+                            }
+                            ForEach(controller.learnedTerms) { entry in
+                                HStack {
+                                    VStack(alignment: .leading) {
+                                        Text(entry.term).textSelection(.enabled)
+                                        Text("← " + entry.originalFragment).font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Button("編集") { editingLearnedTerm = entry }
+                                    Button("削除", role: .destructive) { controller.learnedTerms.removeAll { $0.id == entry.id } }
+                                }
+                                Divider()
+                            }
+                            Text("学習した語彙は自分で登録した語彙の後に認識の候補へ加わります。登録した語彙を上書きしません。「登録した用語を使う」がオンのとき、開発・IT用語と合わせて最大100語を送信します。「編集」で表記を変更できます。")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 8)
+                        Divider()
                         contextCheckSettings
                     }
                     .padding(8)
@@ -137,6 +161,9 @@ struct SettingsGeminiPage: View {
             }
             .padding(18)
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .sheet(item: $editingLearnedTerm) { entry in
+            LearnedTermEditor(controller: controller, entry: entry)
         }
     }
 
@@ -237,6 +264,33 @@ struct SettingsGeminiPage: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 12)
         .id("context-check")
+    }
+}
+private struct LearnedTermEditor: View {
+    @ObservedObject var controller: VoiceController
+    @State var entry: LearnedTerm
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("学習した語彙を編集").font(.headline)
+            TextField("正しい表記：", text: $entry.term)
+            Text("← " + entry.originalFragment).textSelection(.enabled)
+            Text("正しい表記は1〜60文字。同じ表記がある場合は1件にまとめます。")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Button("キャンセル") { dismiss() }
+                Spacer()
+                Button("保存") {
+                    guard controller.learnedTerms.contains(where: { $0.id == entry.id }) else { dismiss(); return }
+                    let others = controller.learnedTerms.filter { $0.id != entry.id }
+                    controller.learnedTerms = LearnedTermPolicy.saving(entry, in: others)
+                    dismiss()
+                }
+                .disabled(LearnedTermPolicy.normalized(entry.term).isEmpty || entry.term.count > 60)
+            }
+        }
+        .textFieldStyle(.roundedBorder).padding(20).frame(width: 420)
     }
 }
 #endif
