@@ -285,3 +285,7 @@ Tests/KoeBridgeCoreTests/LearnedTermsTests.swift
 docs/learning-and-fix.md
 
 docs/progressive-preview.md
+Sources/KoeBridgeCore/VoiceCommands.swift
+Sources/KoeBridgeSelfTest/VoiceCommandTests.swift
+Tests/KoeBridgeCoreTests/VoiceCommandTests.swift
+docs/voice-commands.md
