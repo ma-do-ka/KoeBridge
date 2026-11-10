@@ -16,7 +16,8 @@ public enum GeminiPostProcessWire {
     public static func request(text: String, mode: PostProcessingMode) throws -> Data {
         try JSONSerialization.data(withJSONObject: [
             "systemInstruction": ["parts": [["text": systemInstruction(mode: mode)]]],
-            "contents": [["role": "user", "parts": [["text": text]]]]
+            "contents": [["role": "user", "parts": [["text": text]]]],
+            "generationConfig": ["temperature": 0]
         ], options: [.sortedKeys])
     }
 

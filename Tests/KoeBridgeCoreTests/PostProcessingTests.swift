@@ -21,6 +21,23 @@ struct PostProcessingTests {
         }
     }
 
+    @Test func lengthGuard() {
+        for originalCount in [0, 1, 59, 60, 61, 200] {
+            let original = String(repeating: "あ", count: originalCount)
+            let limit = max(originalCount * 3, originalCount + 120)
+            #expect(!PostProcessingPolicy.accepts(original: original, processed: ""))
+            for count in [1, limit - 1, limit] {
+                #expect(PostProcessingPolicy.accepts(original: original,
+                    processed: String(repeating: "👩🏽‍💻", count: count)))
+            }
+            #expect(!PostProcessingPolicy.accepts(original: original,
+                processed: String(repeating: "あ", count: limit + 1)))
+        }
+        let original = String(repeating: "e\u{301}", count: 61)
+        #expect(PostProcessingPolicy.accepts(original: original, processed: String(repeating: "x", count: 183)))
+        #expect(!PostProcessingPolicy.accepts(original: original, processed: String(repeating: "x", count: 184)))
+    }
+
     @Test func requestModes() throws {
         #expect(GeminiPostProcessWire.endpoint == GeminiTransformWire.endpoint)
         #expect(GeminiPostProcessWire.endpoint.contains("gemini-2.5-flash:generateContent"))
@@ -28,6 +45,8 @@ struct PostProcessingTests {
         for mode in PostProcessingMode.allCases {
             let data = try GeminiPostProcessWire.request(text: input, mode: mode)
             let root = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            let config = try #require(root["generationConfig"] as? [String: Any])
+            #expect(config["temperature"] as? Int == 0)
             let system = try #require(root["systemInstruction"] as? [String: Any])
             let systemParts = try #require(system["parts"] as? [[String: Any]])
             #expect(systemParts.first?["text"] as? String == GeminiPostProcessWire.systemInstruction(mode: mode))

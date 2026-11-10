@@ -11,6 +11,10 @@ public enum PostProcessingMode: String, CaseIterable, Sendable {
 }
 
 public enum PostProcessingPolicy {
+    public static func accepts(original: String, processed: String) -> Bool {
+        !processed.isEmpty && processed.count <= max(original.count * 3, original.count + 120)
+    }
+
     public static func shouldApply(mode: PostProcessingMode, enabled: Bool,
                                    style: TranscriptionStyle, isTransform: Bool,
                                    skipped: Bool, noInput: Bool) -> Bool {

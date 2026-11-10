@@ -92,7 +92,7 @@ struct SettingsGeminiPage: View {
                         }
                         SettingsRow("後処理モード", description: "Appleの認識結果にも適用できます。Gemini APIキーが必要です。") {
                             Picker("後処理モード", selection: $controller.postProcessMode) {
-                                ForEach(PostProcessingMode.allCases, id: \.self) { mode in
+                                ForEach(PostProcessingMode.allCases.filter { $0 != .off }, id: \.self) { mode in
                                     Text(mode.label).tag(mode)
                                 }
                             }

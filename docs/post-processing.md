@@ -17,7 +17,9 @@ captured when each take begins.
 Both Gemini and Apple final transcripts are supported, independently of recognition
 style. Agent style bypasses the stage because it already shapes output end-to-end.
 Transform takes, save-only, suppressed, review-held, stale and no-input takes bypass
-it as well. Snippets expand after post-processing so templates see final wording.
+it as well. Snippet triggers are matched after post-processing, so a trigger phrase
+rewritten by the LLM may not expand. Users who rely on triggers should keep
+post-processing off for those takes or word their triggers distinctly.
 
 A Gemini API key is required. The text-only gemini-2.5-flash generateContent call
 shares the transform endpoint and strict response parser (including newline-only

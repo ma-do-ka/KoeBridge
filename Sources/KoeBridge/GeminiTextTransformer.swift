@@ -21,17 +21,16 @@ private final class TransformSessionDelegate: NSObject, URLSessionTaskDelegate {
     static func transform(selectedText: String, instruction: String, apiKey: String,
                           timeout: TimeInterval = 30) async throws -> Result {
         try await send(body: GeminiTransformWire.request(selectedText: selectedText, instruction: instruction),
-                       apiKey: apiKey, timeout: timeout, postProcess: false)
+                       apiKey: apiKey, timeout: timeout)
     }
 
     static func postProcess(text: String, mode: PostProcessingMode, apiKey: String,
                             timeout: TimeInterval) async throws -> Result {
         try await send(body: GeminiPostProcessWire.request(text: text, mode: mode),
-                       apiKey: apiKey, timeout: timeout, postProcess: true)
+                       apiKey: apiKey, timeout: timeout)
     }
 
-    private static func send(body: Data, apiKey: String, timeout: TimeInterval,
-                             postProcess: Bool) async throws -> Result {
+    private static func send(body: Data, apiKey: String, timeout: TimeInterval) async throws -> Result {
         try Task.checkCancellation()
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = timeout
@@ -58,15 +57,7 @@ private final class TransformSessionDelegate: NSObject, URLSessionTaskDelegate {
             session.invalidateAndCancel()
         }
         try Task.checkCancellation()
-        let text: String
-        if postProcess {
-            guard let processed = try GeminiPostProcessWire.response(data) else {
-                throw GeminiRecheckWire.RecheckError.incompleteResponse
-            }
-            text = processed
-        } else {
-            text = try GeminiTransformWire.response(data)
-        }
+        let text = try GeminiTransformWire.response(data)
         let usage = String(data: data, encoding: .utf8).flatMap(GeminiWire.parseTokenUsage)
         return Result(text: text, usage: usage)
     }
