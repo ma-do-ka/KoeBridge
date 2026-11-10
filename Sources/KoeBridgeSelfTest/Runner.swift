@@ -61,6 +61,8 @@ struct KoeBridgeSelfTest {
             do { try await action() }
             catch { TestRecorder.assertion(false, file: #fileID, line: #line, message: "test threw: \(error)") }
         }
+        await run("TranslationAndPresetTests.translationDirectionAndInstructions", { TranslationAndPresetTests().translationDirectionAndInstructions() })
+        await run("TranslationAndPresetTests.presetValidationAndRoundTrip", { try TranslationAndPresetTests().presetValidationAndRoundTrip() })
         await run("ContextAndTransformTests.contextCapsPreserveStartAndUnicode", { ContextAndTransformTests().contextCapsPreserveStartAndUnicode() })
         await run("ContextAndTransformTests.recheckContextIsOptionalAdditionalPart", { try ContextAndTransformTests().recheckContextIsOptionalAdditionalPart() })
         await run("ContextAndTransformTests.transformRequestAndResponse", { try ContextAndTransformTests().transformRequestAndResponse() })

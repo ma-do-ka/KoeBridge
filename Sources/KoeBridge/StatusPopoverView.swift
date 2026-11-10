@@ -32,6 +32,10 @@ import KoeBridgeCore
                     Button("録音を破棄", action: onDiscard).font(.caption).foregroundStyle(.secondary)
                 }
             }
+            if controller.lastTextOperationOutput != nil && !controller.textOperationRunning {
+                Button("途中までの変換結果をコピー") { controller.copyTextOperationOutput() }
+                    .font(.caption)
+            }
             usageCard
             Button(action: onOpenPermissions) {
                 VStack(alignment: .leading, spacing: 5) {

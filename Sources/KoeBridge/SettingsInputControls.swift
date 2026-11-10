@@ -33,7 +33,23 @@ struct SettingsInputControls: View {
                     }
                 }
             }
-            Text("割り当てると有効になります。選択テキストと音声の指示は、変換時だけGeminiへ送信されます。録音キーと同じ開始・終了動作を使います。")
+            Text("割り当てると有効になります。選択テキストと指示は、変換時だけGeminiへ送信されます。音声モードでは録音キーと同じ開始・終了動作、プリセットでは1回押すと実行します。")
+                .font(.caption).foregroundStyle(.secondary)
+            Picker("選択テキストを翻訳", selection: Binding<RecordingShortcut?>(
+                get: { controller.translateShortcut },
+                set: { controller.selectTranslateShortcut($0) }
+            )) {
+                Text("未割り当て（オフ）").tag(Optional<RecordingShortcut>.none)
+                ForEach(RecordingShortcut.allCases) { choice in
+                    Text(choice.label).tag(Optional(choice))
+                }
+            }
+            Picker("翻訳の方向", selection: $controller.translationDirection) {
+                Text("自動判定").tag(TranslationDirection.auto)
+                Text("日本語 → 英語").tag(TranslationDirection.jaToEn)
+                Text("英語 → 日本語").tag(TranslationDirection.enToJa)
+            }
+            Text("翻訳キーは1回押すと実行します。録音はしません。自動判定では、ひらがな・カタカナ・漢字を含む選択は英語へ、それ以外は日本語へ翻訳します。選択テキストはGeminiへ送信されます。")
                 .font(.caption).foregroundStyle(.secondary)
             Picker("マウスボタン", selection: $controller.mouseTriggerButton) {
                 Text("なし").tag(MouseTriggerButton.none)

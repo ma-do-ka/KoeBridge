@@ -89,12 +89,200 @@ import KoeBridgeCore
         UserDefaults.standard.set(choice?.rawValue, forKey: "transformShortcut")
     }
 
+    @Published private(set) var translateShortcut = RecordingShortcut(rawValue: UserDefaults.standard.string(forKey: "translateShortcut") ?? "")
+    var onTranslateShortcutChange: ((RecordingShortcut?) -> Bool)?
+    func selectTranslateShortcut(_ choice: RecordingShortcut?) {
+        guard onTranslateShortcutChange?(choice) == true else {
+            status = "翻訳ショートカットを登録できません（キーの競合を確認してください）"
+            return
+        }
+        translateShortcut = choice
+        UserDefaults.standard.set(choice?.rawValue, forKey: "translateShortcut")
+    }
+    @Published var translationDirection = TranslationDirection(rawValue: UserDefaults.standard.string(forKey: "translationDirection") ?? "") ?? .auto {
+        didSet { UserDefaults.standard.set(translationDirection.rawValue, forKey: "translationDirection") }
+    }
+    @Published var transformMode = TransformMode(rawValue: UserDefaults.standard.string(forKey: "transformMode") ?? "") ?? .spoken {
+        didSet {
+            UserDefaults.standard.set(transformMode.rawValue, forKey: "transformMode")
+            onInputConfigurationChange?()
+        }
+    }
+    @Published var selectedTransformPresetID = UserDefaults.standard.string(forKey: "selectedTransformPresetID").flatMap(UUID.init(uuidString:)) {
+        didSet { UserDefaults.standard.set(selectedTransformPresetID?.uuidString, forKey: "selectedTransformPresetID") }
+    }
+    @Published var transformPresets: [TransformPreset] = UserDefaults.standard.data(forKey: "transformPresets")
+        .flatMap { try? JSONDecoder().decode([TransformPreset].self, from: $0) } ?? [] {
+        didSet {
+            if let data = try? JSONEncoder().encode(transformPresets) {
+                UserDefaults.standard.set(data, forKey: "transformPresets")
+            }
+        }
+    }
+    @Published private(set) var lastTextOperationOutput: String?
+    @Published private(set) var textOperationRunning = false
+    private var textOperationID: UUID?
+    private var textOperationTask: Task<Void, Never>?
+    private var textOperationDeadlineTask: Task<Void, Never>?
+    private var textOperationStep = 1
+
+    func copyTextOperationOutput() {
+        guard let output = lastTextOperationOutput else { return }
+        status = TextInsertion.copy(output) ? "途中までの変換結果をコピーしました" : "変換結果をコピーできませんでした"
+    }
+
+    private func cancelTextOperation() {
+        textOperationDeadlineTask?.cancel()
+        textOperationDeadlineTask = nil
+        textOperationTask?.cancel()
+        textOperationTask = nil
+        if let id = textOperationID, overlayOwner == id { hideOverlay() }
+        textOperationID = nil
+        textOperationRunning = false
+        lastTextOperationOutput = nil
+    }
+
+    func translateSelection() {
+        startSelectionOperation(translating: true)
+    }
+
+    private func startSelectionOperation(translating: Bool) {
+        cancelTextOperation()
+        guard active == nil else { return }
+        guard !KoeBridgeUpdateManager.shared.blocksRecording else {
+            status = "更新画面を閉じるか、更新の完了後に実行してください"
+            return
+        }
+        let steps: [String]
+        if !translating {
+            guard let preset = transformPresets.first(where: { $0.id == selectedTransformPresetID }), preset.isValid else {
+                status = "設定で変換プリセットを作成・選択してください（名前と各ステップの指示が必要です）"
+                return
+            }
+            steps = preset.steps
+        } else { steps = [] }
+        guard let target = InsertionTarget.capture().target, target.selection != nil,
+              let selected = target.selectedContextText(), !selected.isEmpty else {
+            status = translating ? "翻訳するテキストを選択してください" : "変換するテキストを選択してください"
+            return
+        }
+        guard selected.count <= ContextTextPolicy.maximumCharacters else {
+            status = translating ? "翻訳する選択テキストは2,000文字以内にしてください" : "変換する選択テキストは2,000文字以内にしてください"
+            return
+        }
+        guard let key = KeychainStore.load() else { status = AppError.noKey.localizedDescription; return }
+        let direction = translationDirection == .auto ? TranslationPolicy.direction(for: selected) : translationDirection
+        runTextOperation(target: target, original: selected,
+                         steps: translating ? [TranslationPolicy.instruction(for: direction)] : steps, apiKey: key)
+    }
+
+    /// No DictationTake: intermediate results remain in memory until every step succeeds.
+    private func runTextOperation(target: InsertionTarget, original: String, steps: [String], apiKey: String) {
+        let id = UUID()
+        textOperationID = id
+        textOperationRunning = true
+        textOperationStep = 1
+        textOperationDeadlineTask = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(30)) } catch { return }
+            guard let self, self.textOperationID == id else { return }
+            self.textOperationDeadlineTask = nil
+            self.textOperationTask?.cancel()
+            self.textOperationTask = nil
+            self.textOperationID = nil
+            self.textOperationRunning = false
+            self.status = "ステップ\(self.textOperationStep)で失敗しました（30秒の制限時間）。" +
+                (self.lastTextOperationOutput == nil ? "" : "途中までの結果はステータスからコピーできます。")
+            self.showCompletionFeedback(.transformFailed, for: id)
+        }
+        overlayDismissal?.cancel()
+        overlayOwner = id
+        overlayFeedback = .transforming
+        status = "変換中 1/\(steps.count)"
+        onShowPreview?()
+        textOperationTask = Task { [weak self] in
+            guard let self else { return }
+            let deadline = ProcessInfo.processInfo.systemUptime + 30
+            var working = original
+            var step = 1
+            defer {
+                if self.textOperationID == id {
+                    self.textOperationDeadlineTask?.cancel()
+                    self.textOperationDeadlineTask = nil
+                    self.textOperationID = nil
+                    self.textOperationRunning = false
+                    self.textOperationTask = nil
+                }
+            }
+            do {
+                for (index, instruction) in steps.enumerated() {
+                    step = index + 1
+                    self.textOperationStep = step
+                    guard self.textOperationID == id, !Task.isCancelled else { return }
+                    let remaining = deadline - ProcessInfo.processInfo.systemUptime
+                    guard remaining > 0, working.count <= ContextTextPolicy.maximumCharacters,
+                          TransformPreset.validStep(instruction) else { throw GeminiRecheckWire.RecheckError.invalidResponse }
+                    self.status = "変換中 \(step)/\(steps.count)"
+                    let output = try await GeminiTextTransformer.transform(selectedText: working, instruction: instruction,
+                                                                            apiKey: apiKey, timeout: remaining)
+                    if let usage = output.usage {
+                        DiagnosticLog.record("gemini transform step=\(step) usage; promptTokens=\(usage.promptTokens.map(String.init) ?? "unknown") responseTokens=\(usage.responseTokens.map(String.init) ?? "unknown") totalTokens=\(usage.totalTokens)")
+                    }
+                    guard self.textOperationID == id, !Task.isCancelled else { return }
+                    guard ProcessInfo.processInfo.systemUptime < deadline,
+                          !output.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                        throw GeminiRecheckWire.RecheckError.invalidResponse
+                    }
+                    working = output.text
+                    self.lastTextOperationOutput = working
+                }
+                guard self.textOperationID == id, !Task.isCancelled else { return }
+                guard ProcessInfo.processInfo.systemUptime < deadline else {
+                    throw GeminiRecheckWire.RecheckError.invalidResponse
+                }
+                self.textOperationDeadlineTask?.cancel()
+                self.textOperationDeadlineTask = nil
+                // Mirror Build 48's delivery tail, including content verification and receipt reconciliation.
+                let current = target.selectedContextText()
+                guard current.map({ InsertionReceiptPolicy.sameText($0, original) }) == true else {
+                    let copied = TextInsertion.copy(working)
+                    self.finishTextOperation(verified: false, copied: copied, id: id)
+                    return
+                }
+                let report = await TextInsertion.deliver(working, to: target) {
+                    self.textOperationID == id && !Task.isCancelled
+                }
+                for other in self.inFlight.values where other.transformSelection == nil {
+                    if let candidate = other.target { other.target = report.reconciled(candidate) }
+                }
+                guard self.textOperationID == id, !Task.isCancelled else { return }
+                let verified = report.outcome == .verifiedInserted
+                self.finishTextOperation(verified: verified, copied: !verified && TextInsertion.copy(working), id: id)
+            } catch {
+                guard self.textOperationID == id, !Task.isCancelled else { return }
+                self.status = "ステップ\(step)で失敗しました。選択範囲は変更していません。" +
+                    (self.lastTextOperationOutput == nil ? "" : "途中までの結果はステータスからコピーできます。")
+                self.showCompletionFeedback(.transformFailed, for: id)
+            }
+        }
+    }
+
+    private func finishTextOperation(verified: Bool, copied: Bool, id: UUID) {
+        lastTextOperationOutput = nil
+        showCompletionFeedback(verified ? .sent : (copied ? .transformCopied : .transformFailed), for: id)
+        status = verified ? "選択テキストの変換を反映しました" : (copied ? "変換結果をクリップボードにコピーしました。入力先を確認してください。" : "変換結果をコピーできませんでした。入力先と権限を確認してください。")
+    }
+
     func transformInstructionEnded() {
         guard active?.transformSelection != nil else { return }
         shortcutPressEnded()
     }
 
     func transformSelection() {
+        if active?.transformSelection == nil && transformMode == .preset {
+            startSelectionOperation(translating: false)
+            return
+        }
+        cancelTextOperation()
         if active?.transformSelection != nil { toggle(); return }
         guard active == nil else { return }
         let capture = InsertionTarget.capture()
@@ -297,7 +485,7 @@ import KoeBridgeCore
     var hasKey: Bool { KeychainStore.load() != nil }
     var busy: Bool { active != nil }
     // Updating must not terminate background recognition or pending delivery.
-    var hasPendingWork: Bool { active != nil || !inFlight.isEmpty || deliveryWorker != nil }
+    var hasPendingWork: Bool { active != nil || !inFlight.isEmpty || deliveryWorker != nil || textOperationRunning }
 
     func shortcutPressBegan() {
         if phase == .idle { beginRecording() }
@@ -326,6 +514,7 @@ import KoeBridgeCore
 
     private func beginRecording(transformTarget: InsertionTarget? = nil, selection: String? = nil) {
         guard active == nil, phase == .idle else { return }
+        cancelTextOperation()
         guard !KoeBridgeUpdateManager.shared.blocksRecording else {
             status = "更新画面を閉じるか、更新の完了後に録音を開始してください"
             return
@@ -1200,6 +1389,7 @@ import KoeBridgeCore
 
     /// Never paste delayed transcripts after sleep, user switch or shutdown.
     func interruptForSystemEvent(_ reason: String) {
+        cancelTextOperation()
         let outstanding = Array(inFlight.values)
         // Also suppress already-finalized results waiting behind an older take.
         // Mark ALL before resolving any: resolve() drains the completion queue.

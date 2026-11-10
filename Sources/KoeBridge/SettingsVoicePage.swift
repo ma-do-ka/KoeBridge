@@ -59,14 +59,7 @@ struct SettingsVoicePage: View {
                 SettingsAppProfilesPage(controller: controller)
                     .id("app-profiles")
                 SettingsSnippetsPage(controller: controller)
-                GroupBox {
-                    Text("選択テキストの音声変換: テキストを選択してショートカットを押し、変換の指示を話すと、選択範囲が書き換わります。")
-                        .font(.callout).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: .leading).padding(8)
-                } label: {
-                    Label("選択テキストの音声変換", systemImage: "text.bubble")
-                }
+                SettingsTransformPresets(controller: controller)
                 GroupBox {
                     VStack(alignment: .leading, spacing: 5) {
                         Text("クリップボードを使わず、認識した文章をキー入力として送信します。")
