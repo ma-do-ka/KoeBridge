@@ -28,6 +28,7 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
     var postProcessMode: PostProcessingMode = .tidy
     var postProcessOriginal: String?
     var postProcessTask: Task<Void, Never>?
+    var isFixLastInput = false
     var transformSelection: String?
     var capturedContext: CapturedContext?
     var target: InsertionTarget?

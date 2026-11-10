@@ -27,8 +27,8 @@ import KoeBridgeCore
     }
 
     @MainActor struct Receipt {
-        fileprivate let target: InsertionTarget
-        fileprivate let proof: InsertionReceiptPolicy.Receipt
+        let target: InsertionTarget
+        let proof: InsertionReceiptPolicy.Receipt
         fileprivate let postedAt: TimeInterval
         fileprivate let verifiedAt: TimeInterval
 

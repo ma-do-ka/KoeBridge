@@ -385,6 +385,26 @@ import KoeBridgeCore
         return updated
     }
 
+    /// Write the actual AX selection, then verify numeric range, full value,
+    /// focus identity and selected text. rebased(to:) alone never writes AX.
+    func selectDeliveredSpan(before: InsertionReceiptPolicy.Snapshot,
+                             after: InsertionReceiptPolicy.Snapshot,
+                             submitted: String) -> InsertionTarget? {
+        guard focusCheck(requireOriginalSelection: false).allowed,
+              observedSnapshot(timeout: 0.08)?.snapshot == after else { return nil }
+        let span = InsertionReceiptPolicy.Selection(location: before.selection.location, length: submitted.utf16.count)
+        let selected = InsertionReceiptPolicy.Snapshot(text: after.text, selection: span)
+        guard InsertionReceiptPolicy.isValid(selected),
+              let target = rebased(to: selected), let value = target.selection else { return nil }
+        let element = unsafeBitCast(focused, to: AXUIElement.self)
+        guard AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, value) == .success,
+              target.focusCheck().allowed,
+              target.observedSnapshot(timeout: 0.08)?.snapshot == selected,
+              let readBack = target.selectedContextText(),
+              InsertionReceiptPolicy.sameText(readBack, submitted) else { return nil }
+        return target
+    }
+
     func blockedByPriorInput() -> InsertionTarget {
         var updated = self
         updated.blockedReason = "prior_input_unverified"

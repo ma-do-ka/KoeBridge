@@ -8,6 +8,7 @@ struct HistoryView: View {
     @State private var selectedID: UUID?
     @State private var confirmDeleteAll = false
     @State private var query = ""
+    @State private var learningRecord: TranscriptRecord?
 
     private var filteredHistory: [TranscriptRecord] {
         HistorySearch.filter(controller.history, query: query)
@@ -136,6 +137,7 @@ struct HistoryView: View {
                             }
                             HStack {
                                 Spacer()
+                                Button("修正して学習") { learningRecord = selected }
                                 Button("文章をコピー") { controller.copyRecord(selected) }
                                 Button("この文章を削除", role: .destructive) {
                                     let removing = selected.id
@@ -158,12 +160,52 @@ struct HistoryView: View {
         }
         .padding(16)
         .frame(minWidth: 650, minHeight: 390)
+        .sheet(item: $learningRecord) { record in
+            HistoryLearningEditor(controller: controller, record: record)
+        }
         .alert("保存した履歴（\(controller.history.count)件）をすべて削除しますか？", isPresented: $confirmDeleteAll) {
             Button("削除", role: .destructive) { controller.clearHistory(); selectedID = nil }
             Button("キャンセル", role: .cancel) {}
         } message: {
             Text("削除した文字起こしはKoeBridgeから復元できません。")
         }
+    }
+}
+private struct HistoryLearningEditor: View {
+    @ObservedObject var controller: VoiceController
+    let record: TranscriptRecord
+    @Environment(\.dismiss) private var dismiss
+    @State private var fragment = ""
+    @State private var term = ""
+    @State private var saved = false
+
+    private var hint: String? {
+        LearnedTermPolicy.validationHint(fragment: fragment, term: term, recordText: record.text)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("修正して学習").font(.headline)
+            ScrollView { Text(record.text).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
+                .frame(maxHeight: 140)
+            Button("文章をコピー") { controller.copyRecord(record) }
+            TextField("誤り：", text: $fragment)
+            TextField("正しい表記：", text: $term)
+            if let hint { Text(hint).font(.caption).foregroundStyle(.secondary) }
+            Text("履歴の文章は変更せず、指定した表記を認識の候補として保存します。")
+                .font(.caption).foregroundStyle(.secondary)
+            if saved { Text("語彙に学習しました").foregroundStyle(.green) }
+            HStack {
+                Button("閉じる") { dismiss() }
+                Spacer()
+                Button("語彙に学習する") { saved = controller.learn(fragment: fragment, term: term, from: record) }
+                    .disabled(hint != nil)
+            }
+        }
+        .textFieldStyle(.roundedBorder)
+        .padding(20).frame(width: 480)
+        .onChange(of: fragment) { saved = false }
+        .onChange(of: term) { saved = false }
     }
 }
 #endif

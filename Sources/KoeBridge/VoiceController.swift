@@ -248,6 +248,7 @@ import KoeBridgeCore
                     self.finishTextOperation(verified: false, copied: copied, id: id)
                     return
                 }
+                self.lastDeliveryAnchor = nil
                 let report = await TextInsertion.deliver(working, to: target) {
                     self.textOperationID == id && !Task.isCancelled
                 }
@@ -305,6 +306,52 @@ import KoeBridgeCore
             }
         }
     }
+    @Published var learnedTerms: [LearnedTerm] = UserDefaults.standard.data(forKey: "learnedTerms")
+        .flatMap { try? JSONDecoder().decode([LearnedTerm].self, from: $0) } ?? [] {
+        didSet {
+            if let data = try? JSONEncoder().encode(learnedTerms) {
+                UserDefaults.standard.set(data, forKey: "learnedTerms")
+            }
+            scheduleWarmGemini()
+        }
+    }
+
+    func learn(fragment: String, term: String, from record: TranscriptRecord) -> Bool {
+        guard LearnedTermPolicy.validationHint(fragment: fragment, term: term, recordText: record.text) == nil else { return false }
+        learnedTerms = LearnedTermPolicy.saving(
+            LearnedTerm(term: term, originalFragment: fragment, sourceRecordID: record.id), in: learnedTerms)
+        return true
+    }
+
+    private(set) var lastDeliveryAnchor: LastDeliveryAnchor?
+    @Published private(set) var fixLastShortcut = RecordingShortcut(rawValue: UserDefaults.standard.string(forKey: "fixLastShortcut") ?? "")
+    var onFixLastShortcutChange: ((RecordingShortcut?) -> Bool)?
+    func selectFixLastShortcut(_ choice: RecordingShortcut?) {
+        guard onFixLastShortcutChange?(choice) == true else {
+            status = "修正ショートカットを登録できません（キーの競合を確認してください）"
+            return
+        }
+        fixLastShortcut = choice
+        UserDefaults.standard.set(choice?.rawValue, forKey: "fixLastShortcut")
+    }
+
+    func fixLastInput() {
+        guard !hasPendingWork else { return }
+        guard let anchor = lastDeliveryAnchor, Date().timeIntervalSince(anchor.deliveredAt) < 600 else {
+            lastDeliveryAnchor = nil
+            status = "修正できる直前の入力がありません"
+            return
+        }
+        guard KeychainStore.load() != nil else { status = AppError.noKey.localizedDescription; return }
+        guard let current = InsertionTarget.capture().target,
+              current.sameField(as: anchor.target), current.textSnapshot == anchor.after,
+              let target = current.selectDeliveredSpan(before: anchor.before, after: anchor.after, submitted: anchor.submittedText) else {
+            status = "入力後に変更されているため修正できません"
+            return
+        }
+        beginRecording(transformTarget: target, selection: anchor.submittedText, fixingLastInput: true)
+    }
+
     @Published var snippets: [SnippetRule] {
         didSet {
             if let data = try? JSONEncoder().encode(snippets) {
@@ -473,7 +520,7 @@ import KoeBridgeCore
             guard geminiPrewarmEnabled, requestedMode == .gemini, active == nil,
                   !inFlight.values.contains(where: { !$0.finished }),
                   let key = KeychainStore.load() else { return nil }
-            let terms = AgentVocabulary.terms(user: vocabulary.components(separatedBy: .newlines),
+            let terms = AgentVocabulary.terms(user: vocabulary.components(separatedBy: .newlines), learned: learnedTerms.map(\.term),
                                              registeredEnabled: registeredVocabularyEnabled,
                                              topicEnabled: topicVocabularyEnabled)
             return (GeminiPrewarmSnapshot(vocabulary: terms, style: transcriptionStyle,
@@ -512,7 +559,7 @@ import KoeBridgeCore
         }
     }
 
-    private func beginRecording(transformTarget: InsertionTarget? = nil, selection: String? = nil) {
+    private func beginRecording(transformTarget: InsertionTarget? = nil, selection: String? = nil, fixingLastInput: Bool = false) {
         guard active == nil, phase == .idle else { return }
         cancelTextOperation()
         guard !KoeBridgeUpdateManager.shared.blocksRecording else {
@@ -530,6 +577,9 @@ import KoeBridgeCore
         let bundleIdentifier: String? = transformTarget != nil
             ? transformTarget?.bundleIdentifier
             : (frontApp?.processIdentifier == ProcessInfo.processInfo.processIdentifier ? nil : frontApp?.bundleIdentifier)
+        if let anchor = lastDeliveryAnchor, frontApp?.processIdentifier != anchor.target.pid {
+            lastDeliveryAnchor = nil
+        }
         let profile = AppProfileResolver.match(profiles: appProfiles, bundleIdentifier: bundleIdentifier)
         let globalOptions = transcriptionOptions
         let options = TranscriptionOptions(
@@ -538,7 +588,7 @@ import KoeBridgeCore
             textContextCheckEnabled: profile?.textContextCheckEnabled ?? globalOptions.textContextCheckEnabled,
             audioRecheckEnabled: profile?.audioRecheckEnabled ?? globalOptions.audioRecheckEnabled,
             audioRecheckPolicy: profile?.audioRecheckAlways.map { $0 ? .always : .whenSuspicious } ?? globalOptions.audioRecheckPolicy)
-        let globalTerms = AgentVocabulary.terms(user: vocabulary.components(separatedBy: .newlines),
+        let globalTerms = AgentVocabulary.terms(user: vocabulary.components(separatedBy: .newlines), learned: learnedTerms.map(\.term),
                                                registeredEnabled: options.registeredVocabularyEnabled,
                                                topicEnabled: options.topicVocabularyEnabled)
         let selectedVocabulary = AppProfileResolver.mergedVocabulary(
@@ -557,6 +607,7 @@ import KoeBridgeCore
             DiagnosticLog.record("app profile applied bundle=\(profile.bundleIdentifier)")
         }
         take.transformSelection = selection
+        take.isFixLastInput = fixingLastInput
         guard finished.begin(take.id) else { return }
         take.inputDiagnostics = DiagnosticLog.inputTrace(takeID: take.id)
         take.inputDiagnostics?.record(.session, stage: .requested, [
@@ -725,7 +776,7 @@ import KoeBridgeCore
                 DiagnosticLog.recordMicrophoneEvidence("mic startup; total=\(String(format: "%.3f", t.total))s prepare=\(String(format: "%.3f", t.microphonePreparation))s engineStart=\(String(format: "%.3f", t.engineStart))s")
             }
             DiagnosticLog.record("session recording; recognizer=pending; pending=\(finished.count)")
-            status = (take.appProfileName.map { "\($0)用プロファイル適用中 — " } ?? "") + "録音中。\(take.transformSelection == nil ? shortcutChoice.label : (transformShortcut?.label ?? shortcutChoice.label)) でもう一度押すと確定"
+            status = (take.appProfileName.map { "\($0)用プロファイル適用中 — " } ?? "") + "録音中。\(take.transformSelection == nil || take.isFixLastInput ? shortcutChoice.label : (transformShortcut?.label ?? shortcutChoice.label)) でもう一度押すと確定"
             let maxSeconds = take.transformSelection != nil ? 30 : (take.preferred == .gemini ? 480 : 50)
             take.recordingTimeout = Task { [weak self, weak take] in
                 do { try await Task.sleep(for: .seconds(maxSeconds)) } catch { return }
@@ -834,7 +885,7 @@ import KoeBridgeCore
         take.usedMode = actual.label
         if active === take {
             usedMode = take.usedMode
-            if phase == .recording { status = (take.appProfileName.map { "\($0)用プロファイル適用中 — " } ?? "") + "録音中。\(take.transformSelection == nil ? shortcutChoice.label : (transformShortcut?.label ?? shortcutChoice.label)) でもう一度押すと確定" }
+            if phase == .recording { status = (take.appProfileName.map { "\($0)用プロファイル適用中 — " } ?? "") + "録音中。\(take.transformSelection == nil || take.isFixLastInput ? shortcutChoice.label : (transformShortcut?.label ?? shortcutChoice.label)) でもう一度押すと確定" }
         }
         if let start = take.startedAt {
             DiagnosticLog.record("recognizer ready; mode=\(actual.rawValue); sinceMic=\(String(format: "%.3f", Date().timeIntervalSince(start)))s")
@@ -1239,6 +1290,7 @@ import KoeBridgeCore
             if active == nil { status = result.reason ?? "文字起こしに失敗しました（履歴を確認）" }
             return
         }
+        lastDeliveryAnchor = nil // Any newer ordinary delivery invalidates the previous anchor.
         let recordID = take.historyRecordID ?? remember(text, isPartial: false, delivery: .pending,
                                                         engine: take.usedMode, review: take.review,
                                                         recordedAt: take.requestedAt)
@@ -1274,6 +1326,9 @@ import KoeBridgeCore
             // Reconcile before the next sender. Event submission alone cannot
             // authorize a new caret; an unknown receipt blocks concurrent targets.
             if let report = outcome.report {
+                if report.outcome == .verifiedInserted, let receipt = report.receipt {
+                    lastDeliveryAnchor = LastDeliveryAnchor(receipt: receipt, sourceRecordID: recordID)
+                }
                 for other in inFlight.values where other.id != id && other.transformSelection == nil {
                     if let target = other.target {
                         other.target = report.reconciled(target, sourceTakeID: id, candidateTakeID: other.id,
@@ -1311,11 +1366,20 @@ import KoeBridgeCore
                 overlayFeedback = .transforming
                 status = "選択テキストを変換中…"
             }
-            let output = try await GeminiTextTransformer.transform(selectedText: selected, instruction: instruction, apiKey: key)
+            let output = try await GeminiTextTransformer.transform(selectedText: selected, instruction: instruction, apiKey: key, preserveFullSelection: take.isFixLastInput)
             if let usage = output.usage {
                 DiagnosticLog.record("gemini transform usage; promptTokens=\(usage.promptTokens.map(String.init) ?? "unknown") responseTokens=\(usage.responseTokens.map(String.init) ?? "unknown") totalTokens=\(usage.totalTokens)")
             }
             guard !take.automaticDeliverySuppressed else { return }
+            if take.isFixLastInput {
+                guard let target = take.target, target.focusCheck().allowed,
+                      target.observedSnapshot(timeout: 0.08)?.snapshot == target.textSnapshot,
+                      let readBack = target.selectedContextText(), InsertionReceiptPolicy.sameText(readBack, selected) else {
+                    status = "入力後に変更されているため修正できません"
+                    showCompletionFeedback(.transformFailed, for: take.id)
+                    return
+                }
+            }
             // Verify the original selection's contents too, even for AX marker editors.
             let current = take.target?.selectedContextText()
             let target = current.map { InsertionReceiptPolicy.sameText($0, selected) } == true ? take.target : nil
@@ -1327,11 +1391,15 @@ import KoeBridgeCore
                 }
                 return
             }
+            lastDeliveryAnchor = nil
             deliveringTakeID = take.id
             let report = await TextInsertion.deliver(output.text, to: target, diagnostics: take.inputDiagnostics) {
                 !take.automaticDeliverySuppressed
             }
             deliveringTakeID = nil
+            if take.isFixLastInput, report.outcome == .verifiedInserted, let receipt = report.receipt {
+                lastDeliveryAnchor = LastDeliveryAnchor(receipt: receipt, sourceRecordID: nil)
+            }
             for other in inFlight.values where other.id != take.id && other.transformSelection == nil {
                 if let candidate = other.target { other.target = report.reconciled(candidate) }
             }

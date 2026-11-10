@@ -19,8 +19,8 @@ private final class TransformSessionDelegate: NSObject, URLSessionTaskDelegate {
     }
 
     static func transform(selectedText: String, instruction: String, apiKey: String,
-                          timeout: TimeInterval = 30) async throws -> Result {
-        try await send(body: GeminiTransformWire.request(selectedText: selectedText, instruction: instruction),
+                          timeout: TimeInterval = 30, preserveFullSelection: Bool = false) async throws -> Result {
+        try await send(body: GeminiTransformWire.request(selectedText: selectedText, instruction: instruction, preserveFullSelection: preserveFullSelection),
                        apiKey: apiKey, timeout: timeout)
     }
 
