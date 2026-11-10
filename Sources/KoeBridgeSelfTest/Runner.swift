@@ -306,6 +306,9 @@ struct KoeBridgeSelfTest {
         await run("PostProcessingTests.lengthGuard", { PostProcessingTests().lengthGuard() })
         await run("PostProcessingTests.requestModes", { try PostProcessingTests().requestModes() })
         await run("PostProcessingTests.responses", { try PostProcessingTests().responses() })
+        await run("AppProfileTests.matching", { AppProfileTests().matching() })
+        await run("AppProfileTests.vocabularyMerge", { AppProfileTests().vocabularyMerge() })
+        await run("AppProfileTests.persistenceRoundTrip", { try AppProfileTests().persistenceRoundTrip() })
         print("KoeBridge portable self-test: \(testCount) cases, \(TestRecorder.checked) assertions, \(TestRecorder.failures) failures")
         if TestRecorder.failures > 0 { exit(1) }
     }

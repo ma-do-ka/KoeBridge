@@ -21,6 +21,8 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
     let vocabulary: [String]
     let shouldPaste: Bool
     let options: TranscriptionOptions
+    var appBundleIdentifier: String?
+    var appProfileName: String?
     var usedMode: String
     var postProcessEnabled = false
     var postProcessMode: PostProcessingMode = .tidy

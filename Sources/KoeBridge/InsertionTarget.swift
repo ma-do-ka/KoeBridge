@@ -6,6 +6,8 @@ import KoeBridgeCore
 
 /// A conservative target snapshot. Never activate another application just to type.
 @MainActor struct InsertionTarget {
+    let bundleIdentifier: String?
+    let localizedName: String?
     let pid: pid_t
     let focused: CFTypeRef
     let window: CFTypeRef?
@@ -160,7 +162,8 @@ import KoeBridgeCore
             selectionAttribute = nil
             selection = nil
         }
-        var target = InsertionTarget(pid: app.processIdentifier, focused: focused,
+        var target = InsertionTarget(bundleIdentifier: app.bundleIdentifier, localizedName: app.localizedName,
+                                     pid: app.processIdentifier, focused: focused,
                                      window: window, selectionAttribute: selectionAttribute,
                                      selection: selection, textSnapshot: nil,
                                      capturedAt: ProcessInfo.processInfo.systemUptime,
