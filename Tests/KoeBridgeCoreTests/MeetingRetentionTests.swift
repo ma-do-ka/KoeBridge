@@ -48,8 +48,9 @@ struct MeetingRetentionTests {
         try archive.updateAudio(id: record.id, asset: nil, reason: "expired")
         #expect(archive.entries.first?.text == "original" && archive.entries.first?.retranscriptions.count == 2)
         var history = TranscriptHistoryStore(fileURL: file)
-        let meetingID = try #require(history.remember("meeting", isPartial: false,
-            delivery: .automaticPasteDisabled, engine: "Apple", kind: "meeting"))
+        let rememberedMeetingID = history.remember("meeting", isPartial: false,
+            delivery: .automaticPasteDisabled, engine: "Apple", kind: "meeting")
+        let meetingID = try #require(rememberedMeetingID)
         let meeting = try #require(RecentTranscriptArchive(fileURL: file).entries.first { $0.id == meetingID })
         #expect(meeting.kind == "meeting" && meeting.audioAsset == nil && meeting.delivery == .automaticPasteDisabled)
     }

@@ -14,8 +14,9 @@ import KoeBridgeCore
         let pcm = Data([0, 1, 2, 3]) // 48 bytes with header; capacity holds two
         var ids: [UUID] = []
         for index in 0..<3 {
-            let id = try #require(history.remember("text", isPartial: false, delivery: .automaticPasteDisabled,
-                engine: "test", recordedAt: now.addingTimeInterval(Double(index) - 3)))
+            let rememberedID = history.remember("text", isPartial: false, delivery: .automaticPasteDisabled,
+                engine: "test", recordedAt: now.addingTimeInterval(Double(index) - 3))
+            let id = try #require(rememberedID)
             ids.append(id)
             let record = try #require(history.entries.first { $0.id == id })
             store.write(pcm: pcm, record: record, history: &history)
@@ -45,7 +46,8 @@ import KoeBridgeCore
         defer { try? FileManager.default.removeItem(at: root) }
         var history = TranscriptHistoryStore(fileURL: root.appendingPathComponent("history.json"))
         let store = RetainedAudioStore(directory: root.appendingPathComponent("audio"))
-        let id = try #require(history.remember("keep text", isPartial: false, delivery: .reviewRequired, engine: "test"))
+        let rememberedID = history.remember("keep text", isPartial: false, delivery: .reviewRequired, engine: "test")
+        let id = try #require(rememberedID)
         let record = try #require(history.entries.first)
         store.write(pcm: Data(count: 14_000_002), record: record, history: &history)
         #expect(history.entries.first?.audioAsset == nil && store.fileCount == 0)
@@ -60,13 +62,15 @@ import KoeBridgeCore
         store.write(pcm: Data([1, 0]), record: record, history: &history)
         store.sweep(history: &history)
         #expect(store.fileCount == 0) // stale writer cannot leave an orphan
-        let meetingID = try #require(history.remember("meeting", isPartial: false,
-            delivery: .automaticPasteDisabled, engine: "test", kind: "meeting"))
+        let rememberedMeetingID = history.remember("meeting", isPartial: false,
+            delivery: .automaticPasteDisabled, engine: "test", kind: "meeting")
+        let meetingID = try #require(rememberedMeetingID)
         let meeting = try #require(history.entries.first { $0.id == meetingID })
         store.write(pcm: Data([1, 0]), record: meeting, history: &history)
         #expect(history.entries.first?.audioAsset == nil && store.fileCount == 0)
-        let nextID = try #require(history.remember("next", isPartial: false,
-            delivery: .automaticPasteDisabled, engine: "test"))
+        let rememberedNextID = history.remember("next", isPartial: false,
+            delivery: .automaticPasteDisabled, engine: "test")
+        let nextID = try #require(rememberedNextID)
         let next = try #require(history.entries.first { $0.id == nextID })
         store.write(pcm: Data([1, 0]), record: next, history: &history)
         history.deleteAll()
@@ -78,7 +82,8 @@ import KoeBridgeCore
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         var history = TranscriptHistoryStore(fileURL: root.appendingPathComponent("history.json"))
-        let id = try #require(history.remember("keep", isPartial: false, delivery: .reviewRequired, engine: "test"))
+        let rememberedID = history.remember("keep", isPartial: false, delivery: .reviewRequired, engine: "test")
+        let id = try #require(rememberedID)
         let record = try #require(history.entries.first)
         let blocked = root.appendingPathComponent("not-a-directory")
         try Data([0]).write(to: blocked)
