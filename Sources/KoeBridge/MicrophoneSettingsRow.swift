@@ -26,6 +26,11 @@ struct MicrophoneSettingsRow: View {
                 .disabled(controller.busy || !microphones.loaded)
                 .help("Mac全体の入力設定は変更しません。準備中・録音中は変更できません。")
             }
+            SettingsRow("Bluetoothマイクの接続を温めておく",
+                        description: "Bluetoothヘッドセットの音声経路を開いたままにし、録音開始時の接続待ちをなくします。有効な間はマイク使用中インジケーターが点灯します。待機中の音声は録音・保存・送信されません。", icon: "mic") {
+                Toggle("Bluetoothマイクの接続を温めておく", isOn: $controller.bluetoothMicWarmEnabled)
+                    .labelsHidden()
+            }
             if microphones.selectedDeviceMissing {
                 Text("選択したマイクが接続されていません。別のマイクには自動で切り替えません。")
                     .font(.caption).foregroundStyle(.orange)

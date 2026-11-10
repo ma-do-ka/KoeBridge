@@ -248,3 +248,8 @@ docs/gemini-prewarm.md
 Sources/KoeBridge/LocalTranscribing.swift
 Sources/KoeBridge/SpeechAnalyzerTranscriber.swift
 docs/local-engines.md
+Sources/KoeBridgeCore/MicWarmPolicy.swift
+Sources/KoeBridge/MicrophoneWarmKeeper.swift
+Tests/KoeBridgeCoreTests/MicWarmPolicyTests.swift
+Sources/KoeBridgeSelfTest/MicWarmPolicyTests.swift
+docs/bluetooth-mic-warm.md
