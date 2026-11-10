@@ -21,7 +21,7 @@ struct PreviewView: View {
     private var styledTranscript: Text {
         guard controller.progressivePreviewEnabled,
               controller.overlayFeedback == .recording,
-              !controller.previewText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+              !controller.previewText.allSatisfy({ $0.isWhitespace }) else {
             return Text(visibleTranscript)
         }
         // Trim and clip the combined text exactly as the single-style preview does,
@@ -30,7 +30,8 @@ struct PreviewView: View {
         let tail = controller.previewVolatileText
         let full = prefix + tail
         let leading = full.count - full.drop(while: { $0.isWhitespace }).count
-        let trimmed = full.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = String(full.drop(while: { $0.isWhitespace })
+            .reversed().drop(while: { $0.isWhitespace }).reversed())
         let skipped = leading + max(0, trimmed.count - 180)
         let visible = String(trimmed.suffix(180))
         let finalCount = min(visible.count, max(0, prefix.count - skipped))

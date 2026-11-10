@@ -1433,9 +1433,9 @@ import KoeBridgeCore
             previewText = ""
             return
         }
-        previewText = take.partialText
         previewFinalizedText = take.previewFinalizedText
         previewVolatileText = take.previewVolatileText
+        previewText = take.partialText
     }
 
     /// Feedback never claims that the receiving app accepted synthetic key events.
