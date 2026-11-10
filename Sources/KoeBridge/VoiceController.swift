@@ -110,6 +110,13 @@ import KoeBridgeCore
         guard KeychainStore.load() != nil else { status = AppError.noKey.localizedDescription; return }
         beginRecording(transformTarget: target, selection: selected)
     }
+    @Published var appProfiles: [AppProfile] {
+        didSet {
+            if let data = try? JSONEncoder().encode(appProfiles) {
+                UserDefaults.standard.set(data, forKey: "appProfiles")
+            }
+        }
+    }
     @Published var snippets: [SnippetRule] {
         didSet {
             if let data = try? JSONEncoder().encode(snippets) {
@@ -222,6 +229,7 @@ import KoeBridgeCore
     private init() {
         let d = UserDefaults.standard
         bluetoothMicWarmEnabled = d.bool(forKey: "bluetoothMicWarm")
+        appProfiles = d.data(forKey: "appProfiles").flatMap { try? JSONDecoder().decode([AppProfile].self, from: $0) } ?? []
         snippets = d.data(forKey: "snippets").flatMap { try? JSONDecoder().decode([SnippetRule].self, from: $0) } ?? []
         shortcutActivationMode = ShortcutActivationMode(rawValue: d.string(forKey: "shortcutActivationMode") ?? "") ?? .toggle
         mouseTriggerButton = MouseTriggerButton(rawValue: d.string(forKey: "mouseTriggerButton") ?? "") ?? .none
@@ -327,17 +335,38 @@ import KoeBridgeCore
             DiagnosticLog.record("shortcut capacity reached; pending=\(finished.count)")
             return
         }
-        let options = transcriptionOptions
-        let selectedVocabulary = AgentVocabulary.terms(user: vocabulary.components(separatedBy: .newlines),
-                                                       registeredEnabled: options.registeredVocabularyEnabled,
-                                                       topicEnabled: options.topicVocabularyEnabled)
-        let take = DictationTake(preferred: requestedMode,
-                                style: transcriptionStyle,
+        // Read identity without AX so save-only takes also resolve a profile.
+        // Transformations retain the identity captured with their selected text.
+        let frontApp = NSWorkspace.shared.frontmostApplication
+        let bundleIdentifier: String? = transformTarget != nil
+            ? transformTarget?.bundleIdentifier
+            : (frontApp?.processIdentifier == ProcessInfo.processInfo.processIdentifier ? nil : frontApp?.bundleIdentifier)
+        let profile = AppProfileResolver.match(profiles: appProfiles, bundleIdentifier: bundleIdentifier)
+        let globalOptions = transcriptionOptions
+        let options = TranscriptionOptions(
+            registeredVocabularyEnabled: profile?.registeredVocabularyEnabled ?? globalOptions.registeredVocabularyEnabled,
+            topicVocabularyEnabled: profile?.topicVocabularyEnabled ?? globalOptions.topicVocabularyEnabled,
+            textContextCheckEnabled: profile?.textContextCheckEnabled ?? globalOptions.textContextCheckEnabled,
+            audioRecheckEnabled: profile?.audioRecheckEnabled ?? globalOptions.audioRecheckEnabled,
+            audioRecheckPolicy: profile?.audioRecheckAlways.map { $0 ? .always : .whenSuspicious } ?? globalOptions.audioRecheckPolicy)
+        let globalTerms = AgentVocabulary.terms(user: vocabulary.components(separatedBy: .newlines),
+                                               registeredEnabled: options.registeredVocabularyEnabled,
+                                               topicEnabled: options.topicVocabularyEnabled)
+        let selectedVocabulary = AppProfileResolver.mergedVocabulary(
+            profileTerms: (profile?.additionalVocabulary ?? "").components(separatedBy: .newlines),
+            globalTerms: globalTerms)
+        let take = DictationTake(preferred: profile?.engine.flatMap(RecognitionMode.init(rawValue:)) ?? requestedMode,
+                                style: profile?.style.flatMap(TranscriptionStyle.init(rawValue:)) ?? transcriptionStyle,
                                 japaneseHint: japaneseHint,
                                 vocabulary: selectedVocabulary,
                                 shouldPaste: automaticPaste, options: options)
-        take.postProcessEnabled = postProcessEnabled
-        take.postProcessMode = postProcessMode
+        take.appBundleIdentifier = bundleIdentifier
+        take.appProfileName = profile?.displayName
+        take.postProcessEnabled = profile?.postProcessEnabled ?? postProcessEnabled
+        take.postProcessMode = profile?.postProcessMode.flatMap(PostProcessingMode.init(rawValue:)) ?? postProcessMode
+        if let profile {
+            DiagnosticLog.record("app profile applied bundle=\(profile.bundleIdentifier)")
+        }
         take.transformSelection = selection
         guard finished.begin(take.id) else { return }
         take.inputDiagnostics = DiagnosticLog.inputTrace(takeID: take.id)
@@ -366,7 +395,7 @@ import KoeBridgeCore
         previewText = ""
         lastMetrics = ""
         usedMode = take.usedMode
-        status = "マイクを準備しています…"
+        status = take.appProfileName.map { "\($0)用プロファイル適用中 — マイクを準備しています…" } ?? "マイクを準備しています…"
         let focusStartedAt = ProcessInfo.processInfo.systemUptime
         let targetResult = transformTarget.map { (target: Optional($0), reason: "ok") }
             ?? InsertionTarget.capture(diagnostics: take.inputDiagnostics) // BEFORE the overlay is shown
@@ -507,7 +536,7 @@ import KoeBridgeCore
                 DiagnosticLog.recordMicrophoneEvidence("mic startup; total=\(String(format: "%.3f", t.total))s prepare=\(String(format: "%.3f", t.microphonePreparation))s engineStart=\(String(format: "%.3f", t.engineStart))s")
             }
             DiagnosticLog.record("session recording; recognizer=pending; pending=\(finished.count)")
-            status = "録音中。\(take.transformSelection == nil ? shortcutChoice.label : (transformShortcut?.label ?? shortcutChoice.label)) でもう一度押すと確定"
+            status = (take.appProfileName.map { "\($0)用プロファイル適用中 — " } ?? "") + "録音中。\(take.transformSelection == nil ? shortcutChoice.label : (transformShortcut?.label ?? shortcutChoice.label)) でもう一度押すと確定"
             let maxSeconds = take.transformSelection != nil ? 30 : (take.preferred == .gemini ? 480 : 50)
             take.recordingTimeout = Task { [weak self, weak take] in
                 do { try await Task.sleep(for: .seconds(maxSeconds)) } catch { return }
@@ -616,7 +645,7 @@ import KoeBridgeCore
         take.usedMode = actual.label
         if active === take {
             usedMode = take.usedMode
-            if phase == .recording { status = "録音中。\(take.transformSelection == nil ? shortcutChoice.label : (transformShortcut?.label ?? shortcutChoice.label)) でもう一度押すと確定" }
+            if phase == .recording { status = (take.appProfileName.map { "\($0)用プロファイル適用中 — " } ?? "") + "録音中。\(take.transformSelection == nil ? shortcutChoice.label : (transformShortcut?.label ?? shortcutChoice.label)) でもう一度押すと確定" }
         }
         if let start = take.startedAt {
             DiagnosticLog.record("recognizer ready; mode=\(actual.rawValue); sinceMic=\(String(format: "%.3f", Date().timeIntervalSince(start)))s")

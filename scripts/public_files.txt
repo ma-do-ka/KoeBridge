@@ -265,3 +265,9 @@ Sources/KoeBridgeCore/GeminiPostProcessWire.swift
 Sources/KoeBridgeSelfTest/PostProcessingTests.swift
 Tests/KoeBridgeCoreTests/PostProcessingTests.swift
 docs/post-processing.md
+
+Sources/KoeBridgeCore/AppProfiles.swift
+Sources/KoeBridge/SettingsAppProfilesPage.swift
+Sources/KoeBridgeSelfTest/AppProfileTests.swift
+Tests/KoeBridgeCoreTests/AppProfileTests.swift
+docs/app-profiles.md

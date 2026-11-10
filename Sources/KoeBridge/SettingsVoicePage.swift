@@ -56,6 +56,8 @@ struct SettingsVoicePage: View {
                 } label: {
                     Label("認識と入力の設定", systemImage: "slider.horizontal.3")
                 }
+                SettingsAppProfilesPage(controller: controller)
+                    .id("app-profiles")
                 SettingsSnippetsPage(controller: controller)
                 GroupBox {
                     Text("選択テキストの音声変換: テキストを選択してショートカットを押し、変換の指示を話すと、選択範囲が書き換わります。")

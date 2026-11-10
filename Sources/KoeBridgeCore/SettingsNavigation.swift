@@ -57,6 +57,7 @@ public struct SettingsSearchEntry: Identifiable, Sendable {
 public enum SettingsSearchCatalog {
     public static let entries: [SettingsSearchEntry] = [
         .init(id: "general", section: .general, title: "基本設定・準備状況", keywords: "全般 エンジン 録音キー 自動入力 文字起こしスタイル API キー 許可 トラブル"),
+        .init(id: "app-profiles", section: .voice, title: "アプリ別プロファイル", keywords: "アプリ 設定 エンジン 文体 用語 後処理 bundle profile"),
         .init(id: "engine", section: .voice, title: "文字起こしの方法", keywords: "音声入力 認識エンジン Gemini Apple ローカル オンライン"),
         .init(id: "shortcut", section: .voice, title: "録音の開始・終了キー", keywords: "ホットキー ショートカット Command Fn F8"),
         .init(id: "autopaste", section: .voice, title: "認識した文章を自動入力する", keywords: "貼り付け 文字入力 クリップボード"),
