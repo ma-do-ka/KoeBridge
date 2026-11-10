@@ -1,0 +1,17 @@
+# Selection translation and preset chains (Build 51)
+
+Assign the translation key in Voice settings; it is unbound by default. Select text in another app and press once to translate without recording. The translation key ignores the recording toggle/hold/hybrid setting. It requires the same Gemini API key as spoken transformation. No selection produces a selection prompt; selections longer than 2,000 Swift Characters are rejected.
+
+Translation direction is saved as `translationDirection`: `auto` (default), `jaToEn`, or `enToJa`. Auto translates to English if any hiragana, katakana, or kanji occurs, including mixed-language selections; otherwise it translates to Japanese. The fixed instruction preserves meaning, tone and formatting and requests only the translation. Core's pure `TranslationPolicy` owns detection and instructions.
+
+The transform key supports `transformMode`: `spoken` (default) retains Build 48's recording and instruction review flow; `preset` runs the selected preset without recording. Create, rename, delete and reorder presets and their free-text steps in Voice settings. Starter buttons insert ordinary instruction text into the last edited step. `transformPresets` is JSON in UserDefaults; `selectedTransformPresetID` identifies the selection. A preset requires a nonblank name and at least one step, with no blank steps. Invalid or missing presets prompt the user to create/select one; they never start recording.
+
+Both new flows share a controller-side runner, separate from DictationTake. It snapshots the target, original selection and ordered instructions, feeds each output to the next step, displays progress in status, and logs token counts per step without logging text. EVERY input, including intermediate output before its next call, must be at most 2,000 Characters; it is never silently truncated by the runner. A final output may exceed this input limit because it is not fed into another call. The entire operation has a 30-second deadline. Starting a dictation or another operation, or a system interruption, cancels it silently.
+
+The first network, parse, empty-output, oversized-input or deadline failure stops the chain and names the failed step. No intermediate result is applied or automatically copied. The last successful step output stays only in memory and can be copied explicitly from the status popover. Starting another operation or recording clears it.
+
+Only full success attempts delivery once. The runner mirrors Build 48's delivery tail: re-read the captured target's selected text, compare with the original using InsertionReceiptPolicy.sameText, then use TextInsertion.deliver with cancellation checks. Stale selection/target or an unverified insertion copies the complete result with feedback; it never blind-types. Receipt reconciliation protects other pending dictation targets. Spoken transformation keeps its existing take-specific delivery diagnostics and suppression handling.
+
+These operations bypass recording, History, Build 49 post-processing and snippet expansion. Instructions such as formalization must be explicit steps in the chain; there is no additional automatic processing after them. The three shortcut bindings are mutually exclusive before either Carbon or modifier-event registration.
+
+Sequential spoken chaining is a future feature requiring a session UI with add-step/apply/cancel controls. Build 51 presets execute saved text instructions only.

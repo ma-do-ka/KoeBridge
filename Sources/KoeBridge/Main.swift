@@ -11,12 +11,13 @@ import KoeBridgeCore
 /// Presets verified against shipped source / official shortcut documentation.
 /// Existing persisted keys (including F8/F9) are preserved by their raw values.
 enum ShortcutAction: String, CaseIterable, Identifiable {
-    case recording, transformSelection
+    case recording, transformSelection, translateSelection
     var id: String { rawValue }
     var label: String {
         switch self {
         case .recording: return "録音の開始・終了キー"
-        case .transformSelection: return "選択テキストを音声で変換"
+        case .transformSelection: return "選択テキストを変換"
+        case .translateSelection: return "選択テキストを翻訳"
         }
     }
 }
@@ -144,6 +145,7 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
     private var item: NSStatusItem!
     private var shortcut: GlobalShortcut?
     private var transformShortcutMonitor: GlobalShortcut?
+    private var translateShortcutMonitor: GlobalShortcut?
     private let windows = AppWindows()
     private let controller = VoiceController.shared
     private var workspaceObservers: [NSObjectProtocol] = []
@@ -201,6 +203,17 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
            transformShortcutMonitor?.register(choice) != true {
             controller.status = "変換ショートカットを登録できません（キーの競合を確認してください）"
         }
+        translateShortcutMonitor = GlobalShortcut(action: .translateSelection)
+        controller.onTranslateShortcutChange = { [weak self] choice in
+            guard let self else { return false }
+            if let choice { return self.translateShortcutMonitor?.register(choice) ?? false }
+            self.translateShortcutMonitor = GlobalShortcut(action: .translateSelection)
+            return true
+        }
+        if let choice = controller.translateShortcut,
+           translateShortcutMonitor?.register(choice) != true {
+            controller.status = "翻訳ショートカットを登録できません（キーの競合を確認してください）"
+        }
         shortcut = GlobalShortcut()
         controller.onShortcutChange = { [weak self] choice in
             self?.shortcut?.register(choice) ?? false
@@ -211,6 +224,10 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
         controller.onInputConfigurationChange = { [weak self] in
             guard let self else { return }
             self.shortcut?.configureMouse()
+            if let choice = self.controller.translateShortcut,
+               self.translateShortcutMonitor?.register(choice, rearm: true) != true {
+                self.controller.status = "翻訳ショートカットを登録できません"
+            }
             if let choice = self.controller.transformShortcut,
                self.transformShortcutMonitor?.register(choice, rearm: true) != true {
                 self.controller.status = "変換ショートカットを登録できません"
@@ -400,6 +417,7 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
     private var carbonGate = HotKeyPressGate()
 
     func configureMouse() {
+        operationPressDown = false
         policy.reset()
         policy.mode = VoiceController.shared.shortcutActivationMode
         mouseMonitor?.stop()
@@ -413,7 +431,17 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
         monitor.start()
     }
 
+    private var operationPressDown = false
     private func route(pressed: Bool, at time: TimeInterval) {
+        if self.action == .translateSelection ||
+            (self.action == .transformSelection && VoiceController.shared.transformMode == .preset) {
+            if !pressed { operationPressDown = false; return }
+            guard !operationPressDown else { return }
+            operationPressDown = true
+            if self.action == .translateSelection { VoiceController.shared.translateSelection() }
+            else { VoiceController.shared.transformSelection() }
+            return
+        }
         let action = pressed ? policy.pressed(at: time) : policy.released(at: time)
         if self.action == .transformSelection {
             switch action {
@@ -435,7 +463,11 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
 
     init(action: ShortcutAction = .recording) {
         self.action = action
-        self.signature = action == .recording ? OSType(0x4B4F4542) : OSType(0x4B4F4554)
+        switch action {
+        case .recording: self.signature = OSType(0x4B4F4542)
+        case .transformSelection: self.signature = OSType(0x4B4F4554)
+        case .translateSelection: self.signature = OSType(0x4B4F454C)
+        }
         var types = [
             EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
                           eventKind: UInt32(kEventHotKeyPressed)),
@@ -518,9 +550,15 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
     }
 
     func register(_ choice: RecordingShortcut, rearm: Bool = false) -> Bool {
-        if action == .transformSelection && choice == VoiceController.shared.shortcutChoice { return false }
-        if action == .recording && choice == VoiceController.shared.transformShortcut { return false }
+        let controller = VoiceController.shared
+        let bindings: [(ShortcutAction, RecordingShortcut?)] = [
+            (.recording, controller.shortcutChoice),
+            (.transformSelection, controller.transformShortcut),
+            (.translateSelection, controller.translateShortcut)
+        ]
+        guard !bindings.contains(where: { $0.0 != action && $0.1 == choice }) else { return false }
         if activeChoice == choice && !rearm { return true }
+        operationPressDown = false
         policy.reset()
         policy.mode = VoiceController.shared.shortcutActivationMode
         carbonReleaseRecovery?.cancel()
@@ -530,7 +568,7 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
         // Rebuild the monitor rather than returning true without doing anything.
         if choice.usesEventTap {
             let generation = UUID()
-            let candidate = ModifierShortcutMonitor(choice: choice, mode: VoiceController.shared.shortcutActivationMode) { [weak self] pressed, time in
+            let candidate = ModifierShortcutMonitor(choice: choice, mode: action == .translateSelection ? .hold : VoiceController.shared.shortcutActivationMode) { [weak self] pressed, time in
                 guard let self, self.monitorGeneration == generation else { return }
                 self.route(pressed: pressed, at: time)
             }

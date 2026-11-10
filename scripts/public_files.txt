@@ -271,3 +271,9 @@ Sources/KoeBridge/SettingsAppProfilesPage.swift
 Sources/KoeBridgeSelfTest/AppProfileTests.swift
 Tests/KoeBridgeCoreTests/AppProfileTests.swift
 docs/app-profiles.md
+Sources/KoeBridgeCore/TranslationPolicy.swift
+Sources/KoeBridgeCore/TransformPresets.swift
+Sources/KoeBridge/SettingsTransformPresets.swift
+Sources/KoeBridgeSelfTest/TranslationAndPresetTests.swift
+Tests/KoeBridgeCoreTests/TranslationAndPresetTests.swift
+docs/translate-and-chains.md
