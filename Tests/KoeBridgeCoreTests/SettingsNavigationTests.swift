@@ -4,7 +4,7 @@ import Testing
 
 struct SettingsNavigationTests {
     @Test func sidebarCoversEveryPageInClearGroups() {
-        #expect(SettingsSection.allCases.map(\.title) == ["一般", "音声入力", "AI・Gemini", "ショートカット", "アプリ別", "履歴とデータ", "権限", "について"])
+        #expect(SettingsSection.allCases.map(\.title) == ["一般", "音声入力", "AI・Gemini", "ショートカット", "アプリ別", "履歴とデータ", "権限", "KoeBridgeについて"])
         #expect(SettingsSection.voice.group == "基本")
         #expect(SettingsSection.permissions.group == "データと安全")
         #expect(SettingsSection.about.group == "サポート")

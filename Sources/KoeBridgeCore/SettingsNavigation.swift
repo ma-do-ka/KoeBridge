@@ -13,7 +13,7 @@ public enum SettingsSection: String, CaseIterable, Sendable, Hashable {
         case .history: return "履歴とデータ"
         case .permissions: return "権限"
         case .profiles: return "アプリ別"
-        case .about: return "について"
+        case .about: return "KoeBridgeについて"
         }
     }
 
