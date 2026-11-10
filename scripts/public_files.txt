@@ -289,3 +289,13 @@ Sources/KoeBridgeCore/VoiceCommands.swift
 Sources/KoeBridgeSelfTest/VoiceCommandTests.swift
 Tests/KoeBridgeCoreTests/VoiceCommandTests.swift
 docs/voice-commands.md
+Sources/KoeBridge/MeetingAndRetentionSettings.swift
+Sources/KoeBridge/MeetingSession.swift
+Sources/KoeBridge/RetainedAudioStore.swift
+Sources/KoeBridge/SystemAudioCapture.swift
+Sources/KoeBridgeCore/MeetingTranscript.swift
+Sources/KoeBridgeCore/PCM16WAV.swift
+Sources/KoeBridgeSelfTest/MeetingRetentionTests.swift
+Tests/KoeBridgeCoreTests/MeetingRetentionTests.swift
+Tests/KoeBridgeTests/RetainedAudioStoreTests.swift
+docs/meeting-and-retention.md

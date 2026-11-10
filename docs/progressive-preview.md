@@ -41,3 +41,7 @@ no longer hold the original whole dictation. Such a design also needs aligned
 segment audio and review, same-take receipt chaining, uncertain-submission
 recovery, focus/edit handling, undo semantics and bounded recording lifecycle
 work. This preview does not implement any of those streaming delivery changes.
+
+Build 55 meeting mode separately rolls over bounded source chunks into History.
+It does not change ordinary dictation's whole-take admission/review or implement
+streaming document delivery; see [meeting and retention](meeting-and-retention.md).

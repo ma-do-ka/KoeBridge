@@ -36,6 +36,14 @@ import KoeBridgeCore
                 Button("途中までの変換結果をコピー") { controller.copyTextOperationOutput() }
                     .font(.caption)
             }
+            if controller.meetingModeEnabled || controller.meetingRunning {
+                Button(controller.meetingRunning ? "会議モードを停止" : "会議モードを開始") {
+                    controller.toggleMeeting()
+                }.disabled(!controller.meetingRunning && !controller.canStartMeeting)
+                if !controller.meetingStatus.isEmpty {
+                    Text(controller.meetingStatus).font(.caption).foregroundStyle(.secondary)
+                }
+            }
             usageCard
             Button(action: onOpenPermissions) {
                 VStack(alignment: .leading, spacing: 5) {

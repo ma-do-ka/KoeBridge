@@ -205,6 +205,7 @@ private struct ClipboardFeedbackBubble: View {
     static let shared = PermissionGuide()
     @Published private(set) var accessibilityGranted = false
     @Published private(set) var postEventGranted = false
+    @Published private(set) var screenRecordingGranted = false
     @Published private(set) var microphoneStatus: AVAuthorizationStatus = .notDetermined
     @Published private(set) var microphoneRequestInProgress = false
     @Published private(set) var message = ""
@@ -219,6 +220,7 @@ private struct ClipboardFeedbackBubble: View {
     func refresh() {
         accessibilityGranted = AXIsProcessTrusted()
         postEventGranted = CGPreflightPostEventAccess()
+        screenRecordingGranted = CGPreflightScreenCaptureAccess()
         microphoneStatus = AVCaptureDevice.authorizationStatus(for: .audio)
     }
 
@@ -266,6 +268,17 @@ private struct ClipboardFeedbackBubble: View {
             message = "システム設定の「\(name)」を開きました。一覧でKoeBridgeをONにしてください。"
         } else {
             message = "システム設定を開けませんでした。「プライバシーとセキュリティ」の「\(name)」でKoeBridgeをONにしてください。"
+        }
+    }
+
+    func requestScreenRecording(enabled: Bool) {
+        guard enabled else { return }
+        if !CGPreflightScreenCaptureAccess() { _ = CGRequestScreenCaptureAccess() }
+        refresh()
+        if !screenRecordingGranted {
+            let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!
+            _ = NSWorkspace.shared.open(url)
+            message = "画面収録でKoeBridgeを許可してください。変更後に再起動が必要な場合があります。"
         }
     }
 

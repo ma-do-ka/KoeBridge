@@ -11,10 +11,12 @@
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>1.1.6</string>
   <key>KoeBridgeReleaseLabel</key><string>1.1.6</string>
-  <key>CFBundleVersion</key><string>54</string>
+  <key>CFBundleVersion</key><string>55</string>
   <key>LSMinimumSystemVersion</key><string>15.0</string>
   <key>LSUIElement</key><true/>
   <key>NSMicrophoneUsageDescription</key><string>音声入力のためにマイク音声を取得します。GeminiモードではGoogle APIへ送信します。</string>
+  <key>NSScreenCaptureUsageDescription</key><string>会議モードでシステム音声を文字起こしするために画面収録の許可を使用します。画面の画像は保存しません。</string>
+  <key>NSAudioCaptureUsageDescription</key><string>会議モードを有効にした場合のみ、システム音声を取得してマイクと区別して文字起こしします。GeminiではGoogle APIへ送信します。</string>
   <key>NSSpeechRecognitionUsageDescription</key><string>ローカルモードでAppleのオンデバイス音声認識を利用します。</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>SUFeedURL</key><string>https://raw.githubusercontent.com/ma-do-ka/KoeBridge/main/docs/updates/appcast.xml</string>

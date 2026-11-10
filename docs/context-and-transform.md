@@ -33,10 +33,12 @@ The settings caption is: 「有効にした項目だけが、再チェック時�
 ## Voice transform of selected text (R-05)
 
 Assign 「選択テキストを音声で変換」 a shortcut. It uses the existing Carbon /
-modifier monitor and toggle/hold/hybrid activation policy. The two actions cannot
-share a binding. This repository previously exposed only the recording shortcut;
+modifier monitor and toggle/hold/hybrid activation policy. The recording, transform,
+translation and fix actions cannot share a binding. This repository previously
+exposed only the recording shortcut;
 Build 48 introduces ShortcutAction and reuses the same GlobalShortcut class for
-its second action rather than introducing a separate hotkey implementation.
+its second action rather than introducing a separate hotkey implementation. Builds
+51–52 extend that shared conflict checking to translation and fixing the last input.
 
 Select text in another app, activate the shortcut and speak an instruction such
 as 「要約して」 or 「英語にして」. Stop with the same shortcut behaviour as recording.

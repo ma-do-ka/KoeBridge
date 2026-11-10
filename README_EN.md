@@ -84,7 +84,7 @@ Gemini mode uploads microphone audio to the Google API and may incur usage fees.
 
 Google AI Pro membership alone does not imply free or unlimited Gemini API access; check your actual billing eligibility. KoeBridge does not set an automatic API spending limit.
 
-Transcript history retains up to ten **plaintext** entries locally; protect your Mac account and backups. Recording audio is not stored in that history file. See [cost estimates](docs/cost-estimate.md) and [security details](SECURITY.md).
+Transcript history retains up to 500 **plaintext** entries locally; protect your Mac account and backups. Audio retention is independently opt-in (default OFF), using separate WAV files for at most 7 days / 250 MB total / 14 MB PCM per record. See [meeting mode, retention and replay](docs/meeting-and-retention.md). See [cost estimates](docs/cost-estimate.md) and [security details](SECURITY.md).
 
 ## Build from source
 

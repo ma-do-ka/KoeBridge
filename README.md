@@ -107,7 +107,7 @@ Build 29の音量・変動による判定では環境音も通過できたため
 - **Geminiモード**：録音した音声をGoogle APIへ送信します。APIキーはユーザー自身が発行し、KoeBridgeの設定画面からキーチェーンに保存します。API利用料金や利用上限はGoogle側の契約によります。
 - **Appleオンデバイスモード**：対応環境ではMac内で認識します。Gemini APIキーは不要です。
 - **発話分類**：Mac内で処理し、分類のための外部API呼び出しは追加しません。停止後の復旧を含め、Gemini認識に渡した音声には通常のAPI利用料が発生し得ます。
-- **履歴**：直近10件の認識本文をMac内に**平文**で保存します。不要な履歴は削除できます。録音音声は履歴ファイルには保存しません。
+- **履歴**：直近500件の認識本文をMac内に**平文**で保存します。不要な履歴は削除できます。音声保存は初期値OFFの個別設定で、履歴JSONとは別のWAVに保存します（7日／合計250 MB／1件14 MB PCM以内）。[会議モード・音声保存と再文字起こし](docs/meeting-and-retention.md)。
 - **Google AI Proのクレジット**：加入だけでGemini APIが無料になるわけではありません。クレジット種別と請求先・API対象可否は[Googleの課金案内](https://ai.google.dev/gemini-api/docs/billing?hl=ja)と本人の請求画面で確認してください。
 
 KoeBridgeにはAPI支出の自動上限設定はありません。[料金の試算と注意点](docs/cost-estimate.md) · [SECURITY.md](SECURITY.md)

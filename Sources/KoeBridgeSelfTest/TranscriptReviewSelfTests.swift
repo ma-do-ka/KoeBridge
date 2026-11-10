@@ -18,6 +18,7 @@ struct TranscriptReviewSelfTests {
     func wavRequestAndFinalResponse() throws {
         let pcm = Data([0, 1, 255, 127])
         let wav = try GeminiRecheckWire.wav(pcm16LE: pcm)
+        try check(try PCM16WAV.extractPCM(wav) == pcm)
         check(wav.count == 48 && wav.suffix(4) == pcm)
         let request = try GeminiRecheckWire.request(pcm16LE: pcm, vocabulary: [], style: .agent, japaneseHint: true)
         let root = try require(JSONSerialization.jsonObject(with: request) as? [String: Any])
