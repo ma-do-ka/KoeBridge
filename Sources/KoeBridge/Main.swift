@@ -185,6 +185,14 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
         controller.onShortcutRearm = { [weak self] choice in
             self?.shortcut?.register(choice, rearm: true) ?? false
         }
+        controller.onInputConfigurationChange = { [weak self] in
+            guard let self else { return }
+            self.shortcut?.configureMouse()
+            if self.shortcut?.register(self.controller.shortcutChoice, rearm: true) != true {
+                self.controller.shortcutRegistrationFailed()
+            }
+        }
+        shortcut?.configureMouse()
         if shortcut?.register(controller.shortcutChoice) != true {
             controller.shortcutRegistrationFailed()
         }
@@ -357,7 +365,34 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
     private var modifierMonitor: ModifierShortcutMonitor?
     private var activeChoice: RecordingShortcut?
     private var nextHotKeyID: UInt32 = 1
+    private var policy = ShortcutActivationPolicy()
+    private var mouseMonitor: MouseShortcutMonitor?
+    private var monitorGeneration = UUID()
     private var carbonGate = HotKeyPressGate()
+
+    func configureMouse() {
+        policy.reset()
+        policy.mode = VoiceController.shared.shortcutActivationMode
+        mouseMonitor?.stop()
+        mouseMonitor = nil
+        let button = VoiceController.shared.mouseTriggerButton
+        guard button != .none else { return }
+        let monitor = MouseShortcutMonitor(button: button) { [weak self] pressed, time in
+            self?.route(pressed: pressed, at: time)
+        }
+        mouseMonitor = monitor
+        monitor.start()
+    }
+
+    private func route(pressed: Bool, at time: TimeInterval) {
+        let action = pressed ? policy.pressed(at: time) : policy.released(at: time)
+        switch action {
+        case .toggle: VoiceController.shared.toggle()
+        case .begin: VoiceController.shared.shortcutPressBegan()
+        case .commit: VoiceController.shared.shortcutPressEnded()
+        case nil: break
+        }
+    }
     private var carbonReleaseRecovery: Task<Void, Never>?
 
     init() {
@@ -403,9 +438,13 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
             carbonReleaseRecovery?.cancel()
             carbonReleaseRecovery = nil
         }
-        guard shouldToggle else { return }
-        VoiceController.shared.toggle()
-        scheduleCarbonReleaseRecovery(id: id)
+        if pressed {
+            guard shouldToggle else { return }
+            route(pressed: true, at: ProcessInfo.processInfo.systemUptime)
+            scheduleCarbonReleaseRecovery(id: id)
+        } else {
+            route(pressed: false, at: ProcessInfo.processInfo.systemUptime)
+        }
     }
 
     /// Carbon sometimes loses kEventHotKeyReleased (e.g. re-registration
@@ -427,6 +466,7 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
                     do { try await Task.sleep(for: .milliseconds(120)) } catch { return }
                     if !CGEventSource.keyState(.combinedSessionState, key: code),
                        self.carbonGate.recoverMissedRelease(id: id, physicalKeyStillDown: false) {
+                        self.route(pressed: false, at: ProcessInfo.processInfo.systemUptime)
                         DiagnosticLog.record("carbon missing key-up recovered using physical state")
                         return
                     }
@@ -438,17 +478,24 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
 
     func register(_ choice: RecordingShortcut, rearm: Bool = false) -> Bool {
         if activeChoice == choice && !rearm { return true }
+        policy.reset()
+        policy.mode = VoiceController.shared.shortcutActivationMode
         carbonReleaseRecovery?.cancel()
         carbonReleaseRecovery = nil
         // In the Settings retry path, a monitor can report as registered even
         // after macOS disabled its event tap or lost the key-release event.
         // Rebuild the monitor rather than returning true without doing anything.
         if choice.usesEventTap {
-            let candidate = ModifierShortcutMonitor(choice: choice)
+            let generation = UUID()
+            let candidate = ModifierShortcutMonitor(choice: choice, mode: VoiceController.shared.shortcutActivationMode) { [weak self] pressed, time in
+                guard let self, self.monitorGeneration == generation else { return }
+                self.route(pressed: pressed, at: time)
+            }
             guard candidate.start() else {
                 DiagnosticLog.record("modifier shortcut event tap registration failed")
                 return false
             }
+            monitorGeneration = generation
             let oldMonitor = modifierMonitor
             modifierMonitor = candidate
             oldMonitor?.stop()
@@ -518,6 +565,8 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
 /// Only Fn+Space consumes its matched Space keystrokes.
 private final class ModifierShortcutMonitor {
     private let choice: RecordingShortcut
+    private let mode: ShortcutActivationMode
+    private let onEdge: (Bool, TimeInterval) -> Void
     // Detector and fnSpaceHeld are accessed only on the event-tap thread.
     private var detector: ModifierToggleDetector?
     private var fnSpaceHeld = false
@@ -529,8 +578,11 @@ private final class ModifierShortcutMonitor {
     private var workerLoop: CFRunLoop?
     private var worker: Thread?
 
-    init(choice: RecordingShortcut) {
+    init(choice: RecordingShortcut, mode: ShortcutActivationMode,
+         onEdge: @escaping (Bool, TimeInterval) -> Void) {
         self.choice = choice
+        self.mode = mode
+        self.onEdge = onEdge
         if let code = choice.modifierKeyCode {
             detector = ModifierToggleDetector(targetKeyCode: code)
         }
@@ -641,6 +693,9 @@ private final class ModifierShortcutMonitor {
         let monitor = Unmanaged<ModifierShortcutMonitor>.fromOpaque(raw).takeUnretainedValue()
         guard monitor.isActive else { return Unmanaged.passUnretained(event) }
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            if (monitor.mode != .toggle && monitor.detector?.isHeld == true) || monitor.fnSpaceHeld {
+                monitor.requestEdge(false, at: ProcessInfo.processInfo.systemUptime)
+            }
             monitor.detector?.reset()
             monitor.fnSpaceHeld = false
             monitor.releaseUpSamples = 0
@@ -656,6 +711,7 @@ private final class ModifierShortcutMonitor {
         if choice == .fnSpace {
             if type == .keyUp && code == Int(kVK_Space) && fnSpaceHeld {
                 fnSpaceHeld = false
+                requestEdge(false, at: Double(event.timestamp) / 1_000_000_000)
                 return true
             }
             if type == .keyDown && code == Int(kVK_Space) {
@@ -664,7 +720,7 @@ private final class ModifierShortcutMonitor {
                       event.flags.intersection(others).isEmpty else { return false }
                 if !fnSpaceHeld && event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
                     fnSpaceHeld = true
-                    requestToggle()
+                    requestEdge(true, at: Double(event.timestamp) / 1_000_000_000)
                 }
                 return true
             }
@@ -687,10 +743,16 @@ private final class ModifierShortcutMonitor {
             let all: CGEventFlags = [.maskCommand, .maskAlternate, .maskControl,
                                      .maskShift, .maskSecondaryFn]
             let other = event.flags.intersection(all.subtracting(flag))
-            if detector?.flagsChanged(keyCode: code,
+            if mode == .toggle {
+                if detector?.flagsChanged(keyCode: code,
+                                         targetFlagPresent: event.flags.contains(flag),
+                                         otherModifierPresent: !other.isEmpty) == true {
+                    requestCompletedTap(at: Double(event.timestamp) / 1_000_000_000)
+                }
+            } else if let pressed = detector?.activationEdge(keyCode: code,
                                       targetFlagPresent: event.flags.contains(flag),
-                                      otherModifierPresent: !other.isEmpty) == true {
-                requestToggle()
+                                      otherModifierPresent: !other.isEmpty) {
+                requestEdge(pressed, at: Double(event.timestamp) / 1_000_000_000)
             }
         }
         return false
@@ -712,18 +774,33 @@ private final class ModifierShortcutMonitor {
         releaseUpSamples += 1
         guard releaseUpSamples >= 2 else { return }
         releaseUpSamples = 0
-        if detector?.recoverPhysicalRelease() == true {
-            requestToggle()
+        if detector?.isHeld == true {
+            let completedTap = detector?.recoverPhysicalRelease() == true
+            let time = ProcessInfo.processInfo.systemUptime
+            if mode == .toggle {
+                if completedTap { requestCompletedTap(at: time) }
+            } else {
+                requestEdge(false, at: time)
+            }
             DispatchQueue.main.async {
                 DiagnosticLog.record("modifier missing key-up recovered using physical state")
             }
         }
     }
 
-    private func requestToggle() {
+    // Deliver a toggle tap together so recovery cannot leave a policy press down.
+    private func requestCompletedTap(at time: TimeInterval) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.isActive else { return }
+            self.onEdge(true, time)
+            self.onEdge(false, time)
+        }
+    }
+
+    private func requestEdge(_ pressed: Bool, at time: TimeInterval) {
         DispatchQueue.main.async { [weak self] in
             guard self?.isActive == true else { return }
-            VoiceController.shared.toggle()
+            self?.onEdge(pressed, time)
         }
     }
 

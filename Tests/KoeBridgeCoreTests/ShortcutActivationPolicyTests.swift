@@ -1,0 +1,132 @@
+import Testing
+@testable import KoeBridgeCore
+
+struct ShortcutActivationPolicyTests {
+    @Test func togglePressRelease() {
+        var p = ShortcutActivationPolicy(mode: .toggle)
+        let first = p.pressed(at: 0)
+        let repeatPress = p.pressed(at: 0.1)
+        let release = p.released(at: 1)
+        let second = p.pressed(at: 2)
+        #expect(first == .toggle)
+        #expect(repeatPress == nil)
+        #expect(release == nil)
+        #expect(second == .toggle)
+    }
+    @Test func holdBeginCommit() {
+        var p = ShortcutActivationPolicy(mode: .hold)
+        let begin = p.pressed(at: 0)
+        let commit = p.released(at: 0.1)
+        #expect(begin == .begin)
+        #expect(commit == .commit)
+    }
+    @Test func holdIgnoresRepeatAndStrayRelease() {
+        var p = ShortcutActivationPolicy(mode: .hold)
+        let stray = p.released(at: 0)
+        let begin = p.pressed(at: 1)
+        let repeatPress = p.pressed(at: 2)
+        let commit = p.released(at: 3)
+        let extraRelease = p.released(at: 4)
+        #expect(stray == nil)
+        #expect(begin == .begin)
+        #expect(repeatPress == nil)
+        #expect(commit == .commit)
+        #expect(extraRelease == nil)
+    }
+    @Test func hybridShortTapLocks() {
+        var p = ShortcutActivationPolicy(mode: .hybrid)
+        let begin = p.pressed(at: 0)
+        let shortRelease = p.released(at: 0.399)
+        let strayRelease = p.released(at: 1)
+        let commitPress = p.pressed(at: 2)
+        #expect(begin == .begin)
+        #expect(shortRelease == nil)
+        #expect(strayRelease == nil)
+        #expect(commitPress == .commit)
+    }
+    @Test func hybridLongPressCommits() {
+        var p = ShortcutActivationPolicy(mode: .hybrid)
+        let begin = p.pressed(at: 0)
+        let commit = p.released(at: ShortcutActivationPolicy.hybridHoldThreshold)
+        let beginAgain = p.pressed(at: 1)
+        let commitAgain = p.released(at: 2)
+        #expect(begin == .begin)
+        #expect(commit == .commit)
+        #expect(beginAgain == .begin)
+        #expect(commitAgain == .commit)
+    }
+    @Test func pressWhileLockedCommitsAndUnlocks() {
+        var p = ShortcutActivationPolicy(mode: .hybrid)
+        let begin = p.pressed(at: 0)
+        let shortRelease = p.released(at: 0.1)
+        let commitPress = p.pressed(at: 1)
+        let repeatPress = p.pressed(at: 1.1)
+        let release = p.released(at: 1.2)
+        let beginAgain = p.pressed(at: 2)
+        #expect(begin == .begin)
+        #expect(shortRelease == nil)
+        #expect(commitPress == .commit)
+        #expect(repeatPress == nil)
+        #expect(release == nil)
+        #expect(beginAgain == .begin)
+    }
+    @Test func resetClearsLockAndDownState() {
+        var p = ShortcutActivationPolicy(mode: .hybrid)
+        let begin = p.pressed(at: 0)
+        let shortRelease = p.released(at: 0.1)
+        p.reset()
+        let beginAfterReset = p.pressed(at: 1)
+        p.reset()
+        let strayRelease = p.released(at: 2)
+        let beginAgain = p.pressed(at: 3)
+        #expect(begin == .begin)
+        #expect(shortRelease == nil)
+        #expect(beginAfterReset == .begin)
+        #expect(strayRelease == nil)
+        #expect(beginAgain == .begin)
+    }
+    @Test func modifierEdgesDebounceAndRecover() {
+        var d = ModifierToggleDetector(targetKeyCode: 54)
+        let press = d.activationEdge(keyCode: 54, targetFlagPresent: true, otherModifierPresent: false)
+        d.otherKeyDown()
+        let otherKeyEdge = d.activationEdge(keyCode: 55, targetFlagPresent: true, otherModifierPresent: false)
+        let release = d.activationEdge(keyCode: 54, targetFlagPresent: false, otherModifierPresent: false)
+        let repeatRelease = d.activationEdge(keyCode: 54, targetFlagPresent: false, otherModifierPresent: false)
+        let pressAgain = d.activationEdge(keyCode: 54, targetFlagPresent: true, otherModifierPresent: false)
+        #expect(press == true)
+        #expect(otherKeyEdge == nil)
+        #expect(release == false)
+        #expect(repeatRelease == nil)
+        #expect(pressAgain == true)
+        #expect(d.isHeld)
+        _ = d.recoverPhysicalRelease()
+        #expect(!d.isHeld)
+        let pressAfterRecovery = d.activationEdge(keyCode: 54, targetFlagPresent: true, otherModifierPresent: false)
+        #expect(pressAfterRecovery == true)
+    }
+    @Test func physicalReleaseClearsActivationState() {
+        var d = ModifierToggleDetector(targetKeyCode: 54)
+        let press = d.activationEdge(keyCode: 54, targetFlagPresent: true, otherModifierPresent: false)
+        let recovered = d.recoverPhysicalRelease()
+        let chordedPress = d.activationEdge(keyCode: 54, targetFlagPresent: true, otherModifierPresent: true)
+        let chordedRelease = d.activationEdge(keyCode: 54, targetFlagPresent: false, otherModifierPresent: true)
+        #expect(press == true)
+        #expect(recovered)
+        #expect(chordedPress == nil)
+        #expect(chordedRelease == nil)
+    }
+    @Test func completedTapTogglesExactlyOnce() {
+        var d = ModifierToggleDetector(targetKeyCode: 54)
+        var p = ShortcutActivationPolicy(mode: .toggle)
+        let down = d.flagsChanged(keyCode: 54, targetFlagPresent: true, otherModifierPresent: false)
+        let up = d.flagsChanged(keyCode: 54, targetFlagPresent: false, otherModifierPresent: false)
+        let action = p.pressed(at: 1)
+        let release = p.released(at: 1)
+        let repeatedUp = d.flagsChanged(keyCode: 54, targetFlagPresent: false, otherModifierPresent: false)
+        #expect(!down)
+        #expect(up)
+        #expect(action == .toggle)
+        #expect(release == nil)
+        #expect(!repeatedUp)
+    }
+}

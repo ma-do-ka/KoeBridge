@@ -22,7 +22,7 @@ struct SettingsVoicePage: View {
                         MicrophoneSettingsRow(controller: controller)
                         Divider()
                         SettingsRow("録音の開始・終了キー",
-                                    description: "選んだキーで録音を開始し、もう一度押すと終了します。ほかのアプリのキー操作と競合する場合があります。") {
+                                    description: "選んだキーと下の動作設定で録音を操作します。ほかのアプリのキー操作と競合する場合があります。") {
                             SettingsShortcutPicker("録音の開始・終了キー", selection: Binding(
                                 get: { controller.shortcutChoice },
                                 set: { controller.selectShortcut($0) }
@@ -30,6 +30,7 @@ struct SettingsVoicePage: View {
                             .frame(width: 250)
                         }
                         .id("shortcut")
+                        SettingsInputControls(controller: controller)
                         if !controller.shortcutProblem.isEmpty {
                             VStack(alignment: .leading, spacing: 8) {
                                 Text(controller.shortcutProblem)
@@ -55,6 +56,7 @@ struct SettingsVoicePage: View {
                 } label: {
                     Label("認識と入力の設定", systemImage: "slider.horizontal.3")
                 }
+                SettingsSnippetsPage(controller: controller)
                 GroupBox {
                     VStack(alignment: .leading, spacing: 5) {
                         Text("クリップボードを使わず、認識した文章をキー入力として送信します。")

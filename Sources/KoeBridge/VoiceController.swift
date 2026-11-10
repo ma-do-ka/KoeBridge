@@ -31,6 +31,26 @@ import KoeBridgeCore
     @Published var automaticPaste: Bool {
         didSet { UserDefaults.standard.set(automaticPaste, forKey: "autoPaste") }
     }
+    @Published var snippets: [SnippetRule] {
+        didSet {
+            if let data = try? JSONEncoder().encode(snippets) {
+                UserDefaults.standard.set(data, forKey: "snippets")
+            }
+        }
+    }
+    @Published var shortcutActivationMode: ShortcutActivationMode {
+        didSet {
+            UserDefaults.standard.set(shortcutActivationMode.rawValue, forKey: "shortcutActivationMode")
+            onInputConfigurationChange?()
+        }
+    }
+    @Published var mouseTriggerButton: MouseTriggerButton {
+        didSet {
+            UserDefaults.standard.set(mouseTriggerButton.rawValue, forKey: "mouseTriggerButton")
+            onInputConfigurationChange?()
+        }
+    }
+    var onInputConfigurationChange: (() -> Void)?
     @Published var vocabulary: String {
         didSet { UserDefaults.standard.set(vocabulary, forKey: "vocabulary") }
     }
@@ -104,6 +124,9 @@ import KoeBridgeCore
 
     private init() {
         let d = UserDefaults.standard
+        snippets = d.data(forKey: "snippets").flatMap { try? JSONDecoder().decode([SnippetRule].self, from: $0) } ?? []
+        shortcutActivationMode = ShortcutActivationMode(rawValue: d.string(forKey: "shortcutActivationMode") ?? "") ?? .toggle
+        mouseTriggerButton = MouseTriggerButton(rawValue: d.string(forKey: "mouseTriggerButton") ?? "") ?? .none
         requestedMode = RecognitionMode(rawValue: d.string(forKey: "engine") ?? "gemini") ?? .gemini
         transcriptionStyle = TranscriptionStyle.restoring(
             storedStyle: d.string(forKey: "transcriptionStyle"),
@@ -134,6 +157,15 @@ import KoeBridgeCore
     var busy: Bool { active != nil }
     // Updating must not terminate background recognition or pending delivery.
     var hasPendingWork: Bool { active != nil || !inFlight.isEmpty || deliveryWorker != nil }
+
+    func shortcutPressBegan() {
+        if phase == .idle { beginRecording() }
+    }
+
+    func shortcutPressEnded() {
+        if phase == .recording { stop() }
+        else if phase == .preparing { discard() }
+    }
 
     /// Recording STOP frees the shortcut synchronously. Recognition and
     /// paste continue on the take that just ended; the next F8 can start NOW.
@@ -652,6 +684,19 @@ import KoeBridgeCore
     private func resolve(_ take: DictationTake, text: String?, reason: String?,
                          noInput: Bool = false) {
         guard !take.finished else { return }
+        // Freeze the exact deliverable before both ordered completion and history.
+        // Save-only, suppressed, review-held, stale and no-input takes never expand.
+        var text = text
+        if !noInput, finished.pending.contains(take.id), let original = text, !original.isEmpty,
+           DictationDelivery.skipped(suppressed: take.automaticDeliverySuppressed,
+               requiresReview: take.review?.status == .needsReview,
+               acousticReviewRequired: take.acousticReviewRequired, shouldPaste: take.shouldPaste) == nil {
+            let date = Date()
+            let clipboard = SnippetExpander.needsClipboard(original, rules: snippets, date: date)
+                ? NSPasteboard.general.string(forType: .string) : nil
+            text = SnippetExpander.expand(original, rules: snippets,
+                context: SnippetContext(date: date, clipboardText: clipboard))
+        }
         let partial = take.recoverableText
         let actualEngine: InputDiagnosticEvent.Token = take.successfulEngine == .gemini ? .gemini
             : (take.successfulEngine == .local ? .apple : .unknown)

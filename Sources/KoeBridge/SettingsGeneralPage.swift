@@ -151,7 +151,7 @@ struct SettingsGeneralPage: View {
                 }
                 Divider()
                 SettingsRow("録音の開始・終了キー",
-                            description: "今の設定：\(controller.shortcutChoice.label)。もう一度押すと確定します。",
+                            description: "今の設定：\(controller.shortcutChoice.label)。下の動作設定で録音の操作方法を選びます。",
                             icon: "keyboard") {
                     SettingsShortcutPicker("録音キー", selection: Binding(
                         get: { controller.shortcutChoice },
@@ -159,6 +159,7 @@ struct SettingsGeneralPage: View {
                     ))
                     .frame(width: 198)
                 }
+                SettingsInputControls(controller: controller)
                 if !controller.shortcutProblem.isEmpty {
                     HStack {
                         Text(controller.shortcutProblem)

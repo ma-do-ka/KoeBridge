@@ -37,6 +37,27 @@ public struct ModifierToggleDetector {
         return shouldToggle
     }
 
+    /// Immediate edges for activation modes. Shares the physical-key debounce with
+    /// completed-tap detection. Once begun, always balance the release, even if
+    /// another key was used in the meantime.
+    public mutating func activationEdge(keyCode: Int, targetFlagPresent: Bool,
+                                        otherModifierPresent: Bool) -> Bool? {
+        let wasHeld = isHeld
+        _ = flagsChanged(keyCode: keyCode, targetFlagPresent: targetFlagPresent,
+                         otherModifierPresent: otherModifierPresent)
+        if !wasHeld && isHeld && !otherModifierPresent {
+            activationHeld = true
+            return true
+        }
+        if wasHeld && !isHeld && activationHeld {
+            activationHeld = false
+            return false
+        }
+        return nil
+    }
+
+    private var activationHeld = false
+
     public mutating func otherKeyDown() {
         if isHeld { eligible = false }
     }
@@ -44,6 +65,7 @@ public struct ModifierToggleDetector {
     /// Called when a platform-specific key-state probe confirms a release
     /// even though macOS did not deliver its flagsChanged event.
     public mutating func recoverPhysicalRelease() -> Bool {
+        activationHeld = false
         guard isHeld else { return false }
         let shouldToggle = eligible
         reset()
@@ -53,5 +75,6 @@ public struct ModifierToggleDetector {
     public mutating func reset() {
         isHeld = false
         eligible = false
+        activationHeld = false
     }
 }
