@@ -141,6 +141,21 @@ import KoeBridgeCore
     static func deliver(_ text: String, to target: InsertionTarget?,
                         diagnostics: InputDiagnosticTrace? = nil,
                         shouldContinue: @MainActor () -> Bool = { true }) async -> Report {
+        await deliverPayload(.dictation(text), to: target, diagnostics: diagnostics, shouldContinue: shouldContinue)
+    }
+
+    /// Only a fixed command ID can authorize newline controls; never accepts arbitrary text.
+    static func deliverCommandText(_ command: VoiceCommandID, to target: InsertionTarget?,
+                                   diagnostics: InputDiagnosticTrace? = nil,
+                                   shouldContinue: @MainActor () -> Bool) async -> Report {
+        await deliverPayload(.command(command), to: target, diagnostics: diagnostics, shouldContinue: shouldContinue)
+    }
+
+    private enum Payload { case dictation(String), command(VoiceCommandID) }
+
+    private static func deliverPayload(_ payload: Payload, to target: InsertionTarget?,
+                                       diagnostics: InputDiagnosticTrace?,
+                                       shouldContinue: @MainActor () -> Bool) async -> Report {
         let beganAt = ProcessInfo.processInfo.systemUptime
         var sent = 0
         var planned = 0
@@ -176,8 +191,16 @@ import KoeBridgeCore
         guard !Task.isCancelled, shouldContinue() else {
             return report(.cancelled, "delivery_cancelled_before_post")
         }
-        let safeText = UnicodeTypingPlan.safeText(text)
-        let parts = UnicodeTypingPlan.chunks(text)
+        let safeText: String
+        let parts: [String]
+        switch payload {
+        case .dictation(let text):
+            safeText = UnicodeTypingPlan.safeText(text)
+            parts = UnicodeTypingPlan.chunks(text)
+        case .command(let command):
+            safeText = command.insertionText ?? ""
+            parts = safeText.isEmpty ? [] : [safeText]
+        }
         planned = parts.count
         guard !parts.isEmpty else { return report(.eventUnavailable, "empty_typing_payload") }
         let axAllowed = isTrusted
@@ -203,6 +226,11 @@ import KoeBridgeCore
         let initialFocus = target.focusCheck(diagnostics: diagnostics, stage: .preflight)
         guard initialFocus.allowed else { return report(.focusChanged, initialFocus.reason) }
         let before = target.observedSnapshot(timeout: 0.04, diagnostics: diagnostics, stage: .preflight)?.snapshot
+        if case .command = payload {
+            guard target.textSnapshot != nil, before != nil else {
+                return report(.focusChanged, "command_baseline_unavailable")
+            }
+        }
         // The same caret does not prove that a user left the document alone.
         // When a readable baseline exists, reject other edits to its contents.
         if let captured = target.textSnapshot {

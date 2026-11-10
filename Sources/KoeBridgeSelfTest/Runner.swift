@@ -75,6 +75,8 @@ struct KoeBridgeSelfTest {
         await run("GeminiPrewarmPolicyTests.everySnapshotFieldMustMatch", { GeminiPrewarmPolicyTests().everySnapshotFieldMustMatch() })
         await run("GeminiPrewarmPolicyTests.expiredAndFutureConnectionsAreUnusable", { GeminiPrewarmPolicyTests().expiredAndFutureConnectionsAreUnusable() })
         await run("GeminiPrewarmPolicyTests.fingerprintIsStableFNV1a", { GeminiPrewarmPolicyTests().fingerprintIsStableFNV1a() })
+        await run("VoiceCommandTests.matching", { VoiceCommandTests().matching() })
+        await run("VoiceCommandTests.gates", { VoiceCommandTests().gates() })
         await run("SnippetExpanderTests.singleReplacement", { SnippetExpanderTests().singleReplacement() })
         await run("SnippetExpanderTests.allOccurrences", { SnippetExpanderTests().allOccurrences() })
         await run("SnippetExpanderTests.longestTriggerFirst", { SnippetExpanderTests().longestTriggerFirst() })

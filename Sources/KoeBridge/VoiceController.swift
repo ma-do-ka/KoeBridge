@@ -69,6 +69,19 @@ import KoeBridgeCore
     @Published var automaticPaste: Bool {
         didSet { UserDefaults.standard.set(automaticPaste, forKey: "autoPaste") }
     }
+    @Published var voiceCommandsEnabled = UserDefaults.standard.bool(forKey: "voiceCommandsEnabled") {
+        didSet { UserDefaults.standard.set(voiceCommandsEnabled, forKey: "voiceCommandsEnabled") }
+    }
+    @Published var enabledVoiceCommands: Set<VoiceCommandID> = Set(VoiceCommandID.allCases.filter {
+        UserDefaults.standard.object(forKey: "voiceCommand." + $0.rawValue) as? Bool ?? ($0 == .cancelTake)
+    }) {
+        didSet {
+            for command in VoiceCommandID.allCases {
+                UserDefaults.standard.set(enabledVoiceCommands.contains(command), forKey: "voiceCommand." + command.rawValue)
+            }
+        }
+    }
+
     @Published var postProcessEnabled = UserDefaults.standard.bool(forKey: "postProcessEnabled") {
         didSet { UserDefaults.standard.set(postProcessEnabled, forKey: "postProcessEnabled") }
     }
@@ -463,7 +476,14 @@ import KoeBridgeCore
                              audioRecheckPolicy: audioRecheckPolicy)
     }
 
+    private enum Disposition {
+        case text
+        case command(VoiceCommandID)
+        case blockedCommand(VoiceCommandID, String)
+    }
+
     private struct Completion {
+        var disposition: Disposition = .text
         let text: String?
         let reason: String?
         let partial: String
@@ -610,6 +630,8 @@ import KoeBridgeCore
                                 shouldPaste: automaticPaste, options: options)
         take.appBundleIdentifier = bundleIdentifier
         take.appProfileName = profile?.displayName
+        take.voiceCommandsEnabled = voiceCommandsEnabled
+        take.enabledVoiceCommands = enabledVoiceCommands
         take.postProcessEnabled = profile?.postProcessEnabled ?? postProcessEnabled
         take.postProcessMode = profile?.postProcessMode.flatMap(PostProcessingMode.init(rawValue:)) ?? postProcessMode
         if let profile {
@@ -1104,7 +1126,10 @@ import KoeBridgeCore
             guard !result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 throw AppleLocalTranscriber.LocalError.empty(nil)
             }
-            let original = take.transformSelection == nil && take.preferred == .gemini && take.style == .agent
+            if take.voiceCommandsEnabled, take.transformSelection == nil, !take.isFixLastInput {
+                take.commandCandidate = VoiceCommandMatcher.match(text: result, enabled: take.enabledVoiceCommands)
+            }
+            let original = take.commandCandidate == nil && take.transformSelection == nil && take.preferred == .gemini && take.style == .agent
                 ? AgentInstructionFormatting.format(result) : result
             // Only an actually confirmed primary result can survive a review
             // timeout. Pending/interim text never takes this route.
@@ -1132,11 +1157,22 @@ import KoeBridgeCore
     private func resolve(_ take: DictationTake, text: String?, reason: String?,
                          noInput: Bool = false, postProcessed: Bool = false) {
         guard !take.finished else { return }
+        var disposition: Disposition = .text
+        if let command = take.commandCandidate {
+            let same = text.flatMap { VoiceCommandMatcher.match(text: $0, enabled: take.enabledVoiceCommands) } == command
+            let blocked = VoiceCommandGate.blockedReason(acousticReviewRequired: take.acousticReviewRequired,
+                reviewStatus: take.review?.status, suppressed: take.automaticDeliverySuppressed,
+                shouldPaste: take.shouldPaste, sameCommand: same)
+            if let blocked { disposition = .blockedCommand(command, blocked) }
+            else { disposition = .command(command) }
+            DiagnosticLog.record("voice_command take=\(take.id) command=\(command.rawValue) gate=\(blocked ?? "clear") phase=classification")
+        }
+        let isCommand = take.commandCandidate != nil
         let skipped = !finished.pending.contains(take.id) || DictationDelivery.skipped(
             suppressed: take.automaticDeliverySuppressed,
             requiresReview: take.review?.status == .needsReview,
             acousticReviewRequired: take.acousticReviewRequired, shouldPaste: take.shouldPaste) != nil
-        if !postProcessed, let original = text, !original.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+        if !isCommand, !postProcessed, let original = text, !original.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
            PostProcessingPolicy.shouldApply(mode: take.postProcessMode, enabled: take.postProcessEnabled,
                style: take.style, isTransform: take.transformSelection != nil, skipped: skipped, noInput: noInput) {
             guard take.postProcessOriginal == nil else { return }
@@ -1169,7 +1205,7 @@ import KoeBridgeCore
         }
         // Freeze the exact deliverable before both ordered completion and history.
         // Save-only, suppressed, review-held, stale and no-input takes never expand.
-        var text = text
+        var text = isCommand ? nil : text
         if take.transformSelection == nil, !noInput, finished.pending.contains(take.id), let original = text, !original.isEmpty,
            DictationDelivery.skipped(suppressed: take.automaticDeliverySuppressed,
                requiresReview: take.review?.status == .needsReview,
@@ -1205,10 +1241,10 @@ import KoeBridgeCore
             previewText = ""
         }
         let accepted = finished.finish(take.id, result: Completion(
-            text: text, reason: reason, partial: partial, noInput: noInput))
+            disposition: disposition, text: text, reason: reason, partial: isCommand ? "" : partial, noInput: noInput))
         // Persist now, even if an older delivery is awaiting its receipt. An
         // app exit must not discard a completed result waiting in the sender.
-        if accepted, !noInput, take.transformSelection == nil {
+        if accepted, !isCommand, !noInput, take.transformSelection == nil {
             if let text, !text.isEmpty {
                 take.historyRecordID = remember(text, isPartial: false, delivery: .pending,
                                                 engine: take.usedMode, review: take.review,
@@ -1279,6 +1315,15 @@ import KoeBridgeCore
         if take.transformSelection != nil {
             await deliverTransform(result, take: take)
             return
+        }
+        switch result.disposition {
+        case .command(let command):
+            await deliverCommand(command, blockedReason: nil, take: take)
+            return
+        case .blockedCommand(let command, let reason):
+            await deliverCommand(command, blockedReason: reason, take: take)
+            return
+        case .text: break
         }
         if result.noInput {
             take.inputDiagnostics?.record(.result, stage: .result, [
@@ -1356,6 +1401,47 @@ import KoeBridgeCore
         showCompletionFeedback(outcome.submitted ? .sent : completionFeedback, for: id)
         if active == nil {
             status = outcome.detail + (take.review?.status == .incomplete ? " 追加チェックは未完了です。" : "")
+        }
+    }
+
+    private func deliverCommand(_ command: VoiceCommandID, blockedReason: String?, take: DictationTake) async {
+        let reason = blockedReason ?? VoiceCommandGate.blockedReason(
+            acousticReviewRequired: take.acousticReviewRequired, reviewStatus: take.review?.status,
+            suppressed: take.automaticDeliverySuppressed, shouldPaste: take.shouldPaste, sameCommand: true)
+        func feedback(_ value: OverlayFeedback, _ message: String) {
+            showCompletionFeedback(value, for: take.id)
+            if OverlayFeedback.mayUpdate(owner: overlayOwner, resolved: take.id, newRecordingActive: active != nil) {
+                status = message
+            }
+        }
+        if let reason {
+            DiagnosticLog.record("voice_command take=\(take.id) command=\(command.rawValue) gate=\(reason) phase=execution events_posted=false")
+            feedback(.commandBlocked, "コマンドとして実行できませんでした（\(reason)）")
+            return
+        }
+        if command == .cancelTake {
+            DiagnosticLog.record("voice_command take=\(take.id) command=\(command.rawValue) gate=clear outcome=cancelled events_posted=false")
+            feedback(.commandCancelled, command.completionMessage)
+            return
+        }
+        lastDeliveryAnchor = nil
+        deliveringTakeID = take.id
+        let report = await TextInsertion.deliverCommandText(command, to: take.target, diagnostics: take.inputDiagnostics) { [weak self, weak take] in
+            guard let self, let take else { return false }
+            return !take.automaticDeliverySuppressed && self.inFlight[take.id] === take
+        }
+        deliveringTakeID = nil
+        for other in inFlight.values where other.id != take.id && other.transformSelection == nil {
+            if let target = other.target {
+                other.target = report.reconciled(target, sourceTakeID: take.id, candidateTakeID: other.id,
+                                                diagnostics: other.inputDiagnostics)
+            }
+        }
+        DiagnosticLog.record("voice_command take=\(take.id) command=\(command.rawValue) gate=\(report.reason) outcome=\(report.outcome.diagnosticOutcome.rawValue) events_posted=\(report.eventsPosted)")
+        if report.outcome == .verifiedInserted {
+            feedback(command == .newline ? .commandNewline : .commandParagraph, command.completionMessage)
+        } else {
+            feedback(.commandFailed, "コマンドの入力を確認できませんでした（\(report.reason)）。入力先を確認してください。")
         }
     }
 
@@ -1450,7 +1536,7 @@ import KoeBridgeCore
             switch feedback {
             case .heldForReview, .transformCopied: hold = 3_000
             case .noInput: hold = 330
-            case .failed, .transformFailed: hold = 1_000
+            case .failed, .transformFailed, .commandBlocked, .commandFailed: hold = 1_000
             default: hold = 520
             }
             do { try await Task.sleep(for: .milliseconds(hold)) } catch { return }

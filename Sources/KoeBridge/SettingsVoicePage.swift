@@ -56,6 +56,33 @@ struct SettingsVoicePage: View {
                 } label: {
                     Label("認識と入力の設定", systemImage: "slider.horizontal.3")
                 }
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Toggle("音声コマンドを有効にする", isOn: $controller.voiceCommandsEnabled)
+                        Text(controller.voiceCommandsEnabled
+                             ? "発話全体が固定フレーズと一致した場合だけ実行します。"
+                             : "音声コマンドはオフです。有効にすると、各コマンドを個別に選べます。発話全体の一致が必要です。")
+                            .font(.caption).foregroundStyle(.secondary)
+                        ForEach(VoiceCommandID.allCases) { command in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Toggle("「\(command.phrase)」", isOn: Binding(
+                                    get: { controller.enabledVoiceCommands.contains(command) },
+                                    set: { enabled in
+                                        if enabled { controller.enabledVoiceCommands.insert(command) }
+                                        else { controller.enabledVoiceCommands.remove(command) }
+                                    }))
+                                Text(command.effect).font(.caption).foregroundStyle(.secondary)
+                                if command != .cancelTake {
+                                    Text("チャットアプリなどでは送信される場合があります")
+                                        .font(.caption).foregroundStyle(.orange)
+                                }
+                            }
+                            .disabled(!controller.voiceCommandsEnabled)
+                        }
+                    }.padding(8)
+                } label: {
+                    Label("音声コマンド", systemImage: "waveform")
+                }
                 SettingsAppProfilesPage(controller: controller)
                     .id("app-profiles")
                 SettingsSnippetsPage(controller: controller)
