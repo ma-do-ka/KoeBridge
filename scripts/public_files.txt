@@ -253,3 +253,10 @@ Sources/KoeBridge/MicrophoneWarmKeeper.swift
 Tests/KoeBridgeCoreTests/MicWarmPolicyTests.swift
 Sources/KoeBridgeSelfTest/MicWarmPolicyTests.swift
 docs/bluetooth-mic-warm.md
+Sources/KoeBridgeCore/ContextTextPolicy.swift
+Sources/KoeBridgeCore/GeminiTransformWire.swift
+Sources/KoeBridge/ContextCapture.swift
+Sources/KoeBridge/GeminiTextTransformer.swift
+Sources/KoeBridgeSelfTest/ContextAndTransformTests.swift
+Tests/KoeBridgeCoreTests/ContextAndTransformTests.swift
+docs/context-and-transform.md

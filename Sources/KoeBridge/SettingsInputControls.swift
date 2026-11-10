@@ -22,6 +22,19 @@ struct SettingsInputControls: View {
             }
             .pickerStyle(.segmented)
             Text(caption).font(.caption).foregroundStyle(.secondary)
+            ForEach(ShortcutAction.allCases.filter { $0 == .transformSelection }) { action in
+                Picker(action.label, selection: Binding<RecordingShortcut?>(
+                    get: { controller.transformShortcut },
+                    set: { controller.selectTransformShortcut($0) }
+                )) {
+                    Text("未割り当て（オフ）").tag(Optional<RecordingShortcut>.none)
+                    ForEach(RecordingShortcut.allCases) { choice in
+                        Text(choice.label).tag(Optional(choice))
+                    }
+                }
+            }
+            Text("割り当てると有効になります。選択テキストと音声の指示は、変換時だけGeminiへ送信されます。録音キーと同じ開始・終了動作を使います。")
+                .font(.caption).foregroundStyle(.secondary)
             Picker("マウスボタン", selection: $controller.mouseTriggerButton) {
                 Text("なし").tag(MouseTriggerButton.none)
                 Text("中央ボタン").tag(MouseTriggerButton.middle)

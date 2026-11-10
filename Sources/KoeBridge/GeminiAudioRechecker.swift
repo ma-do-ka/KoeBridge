@@ -19,7 +19,7 @@ private final class RecheckSessionDelegate: NSObject, URLSessionTaskDelegate {
     }
 
     static func recognize(pcm16LE: Data, vocabulary: [String], style: TranscriptionStyle,
-                          japaneseHint: Bool, apiKey: String, timeout: TimeInterval) async throws -> Result {
+                          japaneseHint: Bool, apiKey: String, timeout: TimeInterval, context: String? = nil) async throws -> Result {
         try Task.checkCancellation()
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = timeout
@@ -36,7 +36,7 @@ private final class RecheckSessionDelegate: NSObject, URLSessionTaskDelegate {
         request.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try GeminiRecheckWire.request(pcm16LE: pcm16LE, vocabulary: vocabulary,
-                                                       style: style, japaneseHint: japaneseHint)
+                                                       style: style, japaneseHint: japaneseHint, context: context)
         let (bytes, response) = try await session.bytes(for: request, delegate: delegate)
         try Task.checkCancellation()
         guard let http = response as? HTTPURLResponse else { throw GeminiRecheckWire.RecheckError.invalidResponse }

@@ -22,12 +22,12 @@ struct PreviewView: View {
         case .hidden, .preparing: return "mic"
         case .recording: return "waveform"
         case .ending: return "stop.circle"
-        case .processing, .checking: return "ellipsis"
+        case .processing, .checking, .transforming: return "ellipsis"
         case .noInput: return "mic.slash"
         case .sent: return "arrow.up.circle.fill"
         case .saved: return "clock.arrow.circlepath"
-        case .heldForReview: return "doc.on.clipboard"
-        case .failed: return "exclamationmark.triangle.fill"
+        case .heldForReview, .transformCopied: return "doc.on.clipboard"
+        case .failed, .transformFailed: return "exclamationmark.triangle.fill"
         }
     }
 
