@@ -15,6 +15,9 @@ final class MicrophoneCapture: @unchecked Sendable {
     // with its AVAudioIOUnit property listener. Keep a single stopped engine
     // alive across attempts instead of trying to guess a safe deallocation delay.
     private static let engineLifetime = MicrophoneEngineLifetime { AVAudioEngine() }
+    // Warmer operations share the capture lifecycle lane and retained owner.
+    static var warmLifecycleQueue: DispatchQueue { lifecycleQueue }
+    static var warmEngineLifetime: MicrophoneEngineLifetime<AVAudioEngine> { engineLifetime }
     private var engineLease: MicrophoneEngineLifetime<AVAudioEngine>.Lease? // lifecycleQueue only
     private var engine: AVAudioEngine? { engineLease?.resource }
     private let selectedInputUID: String

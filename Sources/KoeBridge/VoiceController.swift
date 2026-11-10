@@ -2,6 +2,7 @@
 import AppKit
 import AVFoundation
 import Speech
+import Combine
 import SwiftUI
 import KoeBridgeCore
 
@@ -23,6 +24,13 @@ import KoeBridgeCore
                 prewarmer.shutdown()
             }
             else { scheduleWarmGemini() }
+        }
+    }
+    @Published var bluetoothMicWarmEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(bluetoothMicWarmEnabled, forKey: "bluetoothMicWarm")
+            if bluetoothMicWarmEnabled { resumeMicrophoneWarm(reason: "enabled") }
+            else { microphoneWarmKeeper.suspend(reason: "disabled") }
         }
     }
     @Published var geminiPrewarmEnabled: Bool {
@@ -128,6 +136,13 @@ import KoeBridgeCore
             monitorProblem = usageStore.problem
         }
     }
+    private let microphoneWarmKeeper = MicrophoneWarmKeeper()
+    private var microphoneStoreObservation: AnyCancellable?
+    private func resumeMicrophoneWarm(reason: String = "teardown") {
+        microphoneWarmKeeper.resume(enabled: bluetoothMicWarmEnabled,
+            selectedUID: MicrophoneDeviceStore.shared.selectedUID, takeActive: busy, reason: reason)
+    }
+
     private let prewarmer = GeminiLivePrewarmer()
     private var warmScheduleTask: Task<Void, Never>?
     private var active: DictationTake?
@@ -156,6 +171,7 @@ import KoeBridgeCore
 
     private init() {
         let d = UserDefaults.standard
+        bluetoothMicWarmEnabled = d.bool(forKey: "bluetoothMicWarm")
         snippets = d.data(forKey: "snippets").flatMap { try? JSONDecoder().decode([SnippetRule].self, from: $0) } ?? []
         shortcutActivationMode = ShortcutActivationMode(rawValue: d.string(forKey: "shortcutActivationMode") ?? "") ?? .toggle
         mouseTriggerButton = MouseTriggerButton(rawValue: d.string(forKey: "mouseTriggerButton") ?? "") ?? .none
@@ -185,6 +201,16 @@ import KoeBridgeCore
         monitorTokens = usageStore.tokenEvents
         monitorProblem = usageStore.problem
         scheduleWarmGemini()
+        microphoneWarmKeeper.onConfigurationChange = { [weak self] in
+            self?.resumeMicrophoneWarm(reason: "configuration")
+        }
+        microphoneStoreObservation = MicrophoneDeviceStore.shared.objectWillChange.sink { [weak self] in
+            Task { @MainActor [weak self] in self?.resumeMicrophoneWarm(reason: "devices") }
+        }
+        Task { @MainActor [weak self] in
+            await MicrophoneDeviceStore.shared.refresh()
+            self?.resumeMicrophoneWarm(reason: "launch")
+        }
     }
 
     private func scheduleWarmGemini() {
@@ -350,6 +376,7 @@ import KoeBridgeCore
                 take.mic = candidate
                 DiagnosticLog.recordMicrophoneEvidence("mic_prepare_attempt take=\(take.id.uuidString) attempt=\(attempts)")
                 do {
+                    microphoneWarmKeeper.suspend(reason: "take")
                     try await candidate.start(timeout: timeout, onAudio: { [weak self, weak take] data in
                         let delivery = continuation.yield(data)
                         if case .dropped = delivery {
@@ -580,6 +607,7 @@ import KoeBridgeCore
         if let capture {
             capture.stop { [weak self, weak take] losses in
                 Task { @MainActor [weak self, weak take] in
+                    self?.resumeMicrophoneWarm()
                     guard let self, let take, !take.finished else { return }
                     let pcmBytes = capture.totalPCMBytes
                     let seconds = Double(pcmBytes) / 32_000
@@ -824,7 +852,13 @@ import KoeBridgeCore
         if noInput && active == nil && overlayOwner == take.id { status = "音声入力なし" }
         recordUsage(take, succeeded: text?.isEmpty == false,
                     cancelled: noInput || reason == "録音をキャンセルしました")
+        let stoppingCapture = take.mic
         take.releaseResources()
+        if let stoppingCapture {
+            stoppingCapture.stop { [weak self] _ in
+                Task { @MainActor [weak self] in self?.resumeMicrophoneWarm() }
+            }
+        } else { resumeMicrophoneWarm() }
         scheduleWarmGemini()
     }
 
