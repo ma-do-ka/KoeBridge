@@ -16,6 +16,25 @@ public enum GeminiTransformWire {
     }
 
     public static func response(_ data: Data) throws -> String {
-        try GeminiRecheckWire.response(data)
+        guard data.count <= GeminiRecheckWire.maximumResponseBytes,
+              let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              root["error"] == nil,
+              let candidates = root["candidates"] as? [[String: Any]], candidates.count == 1,
+              let candidate = candidates.first else { throw GeminiRecheckWire.RecheckError.invalidResponse }
+        guard candidate["finishReason"] as? String == "STOP" else {
+            throw GeminiRecheckWire.RecheckError.incompleteResponse
+        }
+        guard let content = candidate["content"] as? [String: Any],
+              let parts = content["parts"] as? [[String: Any]] else {
+            throw GeminiRecheckWire.RecheckError.invalidResponse
+        }
+        let text = parts.compactMap { part -> String? in
+            guard part["thought"] as? Bool != true else { return nil }
+            return part["text"] as? String
+        }.joined().trimmingCharacters(in: CharacterSet(charactersIn: "\n\r"))
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw GeminiRecheckWire.RecheckError.incompleteResponse
+        }
+        return text
     }
 }

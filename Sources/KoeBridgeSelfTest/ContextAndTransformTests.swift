@@ -10,6 +10,12 @@ struct ContextAndTransformTests {
         let emoji = String(repeating: "👩🏽‍💻", count: 2_100)
         check(ContextTextPolicy.selected(emoji).count == 2_000)
         check(ContextTextPolicy.surrounding(long, selection: nil).count == 2_000)
+        let large = "START" + String(repeating: "x", count: 199_995)
+        check(ContextTextPolicy.surrounding(large, selection: .init(location: 10, length: 0)) == "START" + String(repeating: "x", count: 1_995))
+        for cluster in ["e\u{301}", "👩🏽‍💻"] {
+            let clustered = "a" + cluster + String(repeating: "b", count: 3_000)
+            check(ContextTextPolicy.surrounding(clustered, selection: .init(location: 1_002, length: 0)) == cluster + String(repeating: "b", count: 1_999))
+        }
         let text = String(repeating: "a", count: 5_000) + "CARET" + String(repeating: "b", count: 5_000)
         let window = ContextTextPolicy.surrounding(text, selection: .init(location: 5_000, length: 0))
         check(window.count == 2_000)
@@ -51,9 +57,9 @@ struct ContextAndTransformTests {
         check(parts.count == 2)
         check((parts[0]["text"] as? String)?.hasSuffix("選択") == true)
         check((parts[1]["text"] as? String)?.hasSuffix("英語にして") == true)
-        let good = Data(#"{"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":"private thought","thought":true},{"text":" rewritten "}]}}]}"#.utf8)
+        let good = Data(#"{"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":"private thought","thought":true},{"text":"\r\n  \trewritten\t \r\n"}]}}]}"#.utf8)
         let parsed = try? GeminiTransformWire.response(good)
-        check(parsed == "rewritten")
+        check(parsed == "  \trewritten\t ")
         for invalid in [
             #"{"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":" "}]}}]}"#,
             #"{"candidates":[{"finishReason":"MAX_TOKENS","content":{"parts":[{"text":"partial"}]}}]}"#,

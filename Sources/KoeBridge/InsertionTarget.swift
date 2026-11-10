@@ -202,14 +202,13 @@ import KoeBridgeCore
         return (target, "ok")
     }
 
-    /// Optional context read; failures and secure/unknown subroles disclose nothing.
+    /// Optional context read; secure fields disclose nothing.
     func selectedContextText() -> String? {
         guard CFGetTypeID(focused) == AXUIElementGetTypeID() else { return nil }
         let element = unsafeBitCast(focused, to: AXUIElement.self)
         let role = Self.copyAX(element, name: kAXSubroleAttribute as CFString,
                               operation: .subrole, diagnostics: nil, stage: .capture)
-        guard role.status == .success, let subrole = role.value as? String,
-              subrole != "AXSecureTextField" else { return nil }
+        if role.status == .success, role.value as? String == "AXSecureTextField" { return nil }
         return Self.copyAX(element, name: kAXSelectedTextAttribute as CFString,
                            operation: .value, diagnostics: nil, stage: .capture).value as? String
     }

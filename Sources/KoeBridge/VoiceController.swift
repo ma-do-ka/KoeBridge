@@ -1041,12 +1041,28 @@ import KoeBridgeCore
         }
         do {
             guard let key = KeychainStore.load() else { throw AppError.noKey }
-            if active == nil && overlayOwner == take.id { overlayFeedback = .transforming; status = "選択テキストを変換中…" }
+            if active == nil && overlayOwner == take.id {
+                overlayDismissal?.cancel()
+                overlayDismissal = nil
+                overlayFeedback = .transforming
+                status = "選択テキストを変換中…"
+            }
             let output = try await GeminiTextTransformer.transform(selectedText: selected, instruction: instruction, apiKey: key)
+            if let usage = output.usage {
+                DiagnosticLog.record("gemini transform usage; promptTokens=\(usage.promptTokens.map(String.init) ?? "unknown") responseTokens=\(usage.responseTokens.map(String.init) ?? "unknown") totalTokens=\(usage.totalTokens)")
+            }
             guard !take.automaticDeliverySuppressed else { return }
             // Verify the original selection's contents too, even for AX marker editors.
             let current = take.target?.selectedContextText()
             let target = current.map { InsertionReceiptPolicy.sameText($0, selected) } == true ? take.target : nil
+            guard let target else {
+                let copied = TextInsertion.copy(output.text)
+                showCompletionFeedback(copied ? .transformCopied : .transformFailed, for: take.id)
+                if active == nil {
+                    status = copied ? "変換結果をクリップボードにコピーしました。入力先を確認してください。" : "変換結果をコピーできませんでした。入力先と権限を確認してください。"
+                }
+                return
+            }
             deliveringTakeID = take.id
             let report = await TextInsertion.deliver(output.text, to: target, diagnostics: take.inputDiagnostics) {
                 !take.automaticDeliverySuppressed
