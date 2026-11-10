@@ -482,7 +482,13 @@ import KoeBridgeCore
         }
         meetingStatusTask = Task { [weak self, weak session] in
             guard let self, let session else { return }
-            guard await microphoneAllowed(), meetingSession === session else { session.stop(); session.start(); return }
+            let allowed = await microphoneAllowed()
+            guard meetingSession === session else { return }
+            guard allowed else {
+                // Stop and save through the meeting's mic-failure completion without starting chunks.
+                session.microphonePermissionDenied()
+                return
+            }
             session.start()
             while meetingSession === session {
                 meetingStatus = session.liveStatus

@@ -299,3 +299,4 @@ Sources/KoeBridgeSelfTest/MeetingRetentionTests.swift
 Tests/KoeBridgeCoreTests/MeetingRetentionTests.swift
 Tests/KoeBridgeTests/RetainedAudioStoreTests.swift
 docs/meeting-and-retention.md
+Tests/KoeBridgeTests/MeetingSessionTests.swift

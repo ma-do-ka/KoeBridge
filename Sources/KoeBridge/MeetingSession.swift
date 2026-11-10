@@ -58,17 +58,29 @@ private final class MeetingAudioCount: @unchecked Sendable {
     }
 
     func start() {
-        guard tasks.isEmpty else { return }
+        guard tasks.isEmpty, !completed else { return }
+        if stopping { finishMeeting(); return }
         tasks = [Task { await self.run(.microphone) }, Task { await self.run(.system) }]
         Task { [self] in
             for task in tasks { await task.value }
-            var text = transcript.text
-            if systemFailed { text += (text.isEmpty ? "" : "\n\n") + "システム音声は途中で停止しました" }
-            if micFailed { text += (text.isEmpty ? "" : "\n\n") + "マイクが停止したため会議モードを終了しました" }
-            if !recognitionProblems.isEmpty { text += "\n\n" + recognitionProblems.joined(separator: "\n") }
-            finish(text, partial: micFailed || systemFailed || !recognitionProblems.isEmpty)
+            finishMeeting()
             tasks = []
         }
+    }
+
+    /// Permission denial happens before start, so complete without launching chunks.
+    func microphonePermissionDenied() {
+        micFailed = true
+        stop()
+        finishMeeting()
+    }
+
+    private func finishMeeting() {
+        var text = transcript.text
+        if systemFailed { text += (text.isEmpty ? "" : "\n\n") + "システム音声は途中で停止しました" }
+        if micFailed { text += (text.isEmpty ? "" : "\n\n") + "マイクが停止したため会議モードを終了しました" }
+        if !recognitionProblems.isEmpty { text += "\n\n" + recognitionProblems.joined(separator: "\n") }
+        finish(text, partial: micFailed || systemFailed || !recognitionProblems.isEmpty)
     }
 
     func stop() {

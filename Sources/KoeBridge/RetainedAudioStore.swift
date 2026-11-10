@@ -71,9 +71,13 @@ import KoeBridgeCore
             } else { live.append((record, size!)) }
         }
         var total = live.reduce(0) { $0 + $1.1 }
-        for (record, size) in live.sorted(by: { $0.0.recordedAt < $1.0.recordedAt }) where total > capacity {
+        let oldestFirst = live.sorted(by: { $0.0.recordedAt < $1.0.recordedAt })
+        var index = 0
+        while total > capacity && index < oldestFirst.count {
+            let (record, size) = oldestFirst[index]
             remove(url(for: record)); total -= size
             history.updateAudio(record.id, asset: nil, reason: "保存容量（250 MB）の上限により音声を削除しました")
+            index += 1
         }
         // Count actual files, including any deletion failure, rather than claiming space was freed.
         let files = (try? manager.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.fileSizeKey])) ?? []
@@ -109,6 +113,9 @@ import KoeBridgeCore
 
     private func remove(_ url: URL) {
         do { try FileManager.default.removeItem(at: url) }
+        catch let error as NSError where error.domain == NSCocoaErrorDomain && error.code == NSFileNoSuchFileError {
+            // An already-missing file needs no deletion diagnostic.
+        }
         catch { DiagnosticLog.record("retained audio deletion failed") }
     }
     enum ReplayError: Error, LocalizedError {
