@@ -302,6 +302,10 @@ struct KoeBridgeSelfTest {
         await run("UsageSummaryTests.excludesAudioRechecks", { UsageSummaryTests().excludesAudioRechecks() })
         await run("UsageSummaryTests.splitsEnginesAndCountsEveryOutcome", { UsageSummaryTests().splitsEnginesAndCountsEveryOutcome() })
         await run("UsageSummaryTests.estimatesBlendedCost", { UsageSummaryTests().estimatesBlendedCost() })
+        await run("PostProcessingTests.policyMatrix", { PostProcessingTests().policyMatrix() })
+        await run("PostProcessingTests.lengthGuard", { PostProcessingTests().lengthGuard() })
+        await run("PostProcessingTests.requestModes", { try PostProcessingTests().requestModes() })
+        await run("PostProcessingTests.responses", { try PostProcessingTests().responses() })
         print("KoeBridge portable self-test: \(testCount) cases, \(TestRecorder.checked) assertions, \(TestRecorder.failures) failures")
         if TestRecorder.failures > 0 { exit(1) }
     }

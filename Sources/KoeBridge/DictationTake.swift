@@ -22,6 +22,10 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
     let shouldPaste: Bool
     let options: TranscriptionOptions
     var usedMode: String
+    var postProcessEnabled = false
+    var postProcessMode: PostProcessingMode = .tidy
+    var postProcessOriginal: String?
+    var postProcessTask: Task<Void, Never>?
     var transformSelection: String?
     var capturedContext: CapturedContext?
     var target: InsertionTarget?
@@ -112,6 +116,7 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
     }
 
     func releaseResources() {
+        postProcessTask?.cancel()
         permissionTask?.cancel()
         recordingTimeout?.cancel()
         finalizationTimeout?.cancel()

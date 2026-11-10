@@ -16,6 +16,13 @@ public enum GeminiTransformWire {
     }
 
     public static func response(_ data: Data) throws -> String {
+        guard let text = try parsedResponse(data) else {
+            throw GeminiRecheckWire.RecheckError.incompleteResponse
+        }
+        return text
+    }
+
+    static func parsedResponse(_ data: Data) throws -> String? {
         guard data.count <= GeminiRecheckWire.maximumResponseBytes,
               let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               root["error"] == nil,
@@ -33,7 +40,7 @@ public enum GeminiTransformWire {
             return part["text"] as? String
         }.joined().trimmingCharacters(in: CharacterSet(charactersIn: "\n\r"))
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw GeminiRecheckWire.RecheckError.incompleteResponse
+            return nil
         }
         return text
     }

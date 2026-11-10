@@ -60,6 +60,12 @@ import KoeBridgeCore
     @Published var automaticPaste: Bool {
         didSet { UserDefaults.standard.set(automaticPaste, forKey: "autoPaste") }
     }
+    @Published var postProcessEnabled = UserDefaults.standard.bool(forKey: "postProcessEnabled") {
+        didSet { UserDefaults.standard.set(postProcessEnabled, forKey: "postProcessEnabled") }
+    }
+    @Published var postProcessMode = PostProcessingMode(rawValue: UserDefaults.standard.string(forKey: "postProcessMode") ?? "") ?? .tidy {
+        didSet { UserDefaults.standard.set(postProcessMode.rawValue, forKey: "postProcessMode") }
+    }
     @Published var recheckContextEnabled = UserDefaults.standard.object(forKey: "recheckContextEnabled") as? Bool ?? false {
         didSet { UserDefaults.standard.set(recheckContextEnabled, forKey: "recheckContextEnabled") }
     }
@@ -330,6 +336,8 @@ import KoeBridgeCore
                                 japaneseHint: japaneseHint,
                                 vocabulary: selectedVocabulary,
                                 shouldPaste: automaticPaste, options: options)
+        take.postProcessEnabled = postProcessEnabled
+        take.postProcessMode = postProcessMode
         take.transformSelection = selection
         guard finished.begin(take.id) else { return }
         take.inputDiagnostics = DiagnosticLog.inputTrace(takeID: take.id)
@@ -646,7 +654,10 @@ import KoeBridgeCore
             do { try await Task.sleep(for: .seconds(TranscriptReviewDeadline.totalSeconds)) } catch { return }
             guard let self, let take, !take.finished else { return }
             DiagnosticLog.record("background finalization watchdog; id=\(take.id.uuidString.prefix(8))")
-            if let review = take.reviewSession {
+            if let original = take.postProcessOriginal {
+                DiagnosticLog.record("postprocess failed; delivering original")
+                self.resolve(take, text: original, reason: nil, postProcessed: true)
+            } else if let review = take.reviewSession {
                 self.resolve(take, text: review.expire(), reason: nil)
             } else {
                 self.resolve(take, text: nil, reason: "認識処理が15秒以内に完了しませんでした")
@@ -839,8 +850,43 @@ import KoeBridgeCore
 
     /// Finish only this take. This MUST NOT reset a newer active recording.
     private func resolve(_ take: DictationTake, text: String?, reason: String?,
-                         noInput: Bool = false) {
+                         noInput: Bool = false, postProcessed: Bool = false) {
         guard !take.finished else { return }
+        let skipped = !finished.pending.contains(take.id) || DictationDelivery.skipped(
+            suppressed: take.automaticDeliverySuppressed,
+            requiresReview: take.review?.status == .needsReview,
+            acousticReviewRequired: take.acousticReviewRequired, shouldPaste: take.shouldPaste) != nil
+        if !postProcessed, let original = text, !original.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           PostProcessingPolicy.shouldApply(mode: take.postProcessMode, enabled: take.postProcessEnabled,
+               style: take.style, isTransform: take.transformSelection != nil, skipped: skipped, noInput: noInput) {
+            guard take.postProcessOriginal == nil else { return }
+            take.postProcessOriginal = original
+            take.postProcessTask = Task { [weak self, weak take] in
+                guard let self, let take, !take.finished else { return }
+                var output = original
+                do {
+                    let budget = TranscriptReviewDeadline.available(stoppedAt: take.stoppingAt, now: Date())
+                    guard budget > 0, let key = KeychainStore.load() else { throw AppError.noKey }
+                    let result = try await GeminiTextTransformer.postProcess(
+                        text: original, mode: take.postProcessMode, apiKey: key, timeout: budget)
+                    guard !take.finished, !Task.isCancelled else { return }
+                    if PostProcessingPolicy.accepts(original: original, processed: result.text) {
+                        output = result.text
+                        DiagnosticLog.record("postprocess applied mode=\(take.postProcessMode.rawValue)")
+                    } else {
+                        DiagnosticLog.record("postprocess rejected length")
+                    }
+                    if let usage = result.usage {
+                        DiagnosticLog.record("gemini postprocess usage; promptTokens=\(usage.promptTokens.map(String.init) ?? "unknown") responseTokens=\(usage.responseTokens.map(String.init) ?? "unknown") totalTokens=\(usage.totalTokens)")
+                    }
+                } catch {
+                    guard !take.finished, !Task.isCancelled else { return }
+                    DiagnosticLog.record("postprocess failed; delivering original")
+                }
+                self.resolve(take, text: output, reason: reason, noInput: noInput, postProcessed: true)
+            }
+            return
+        }
         // Freeze the exact deliverable before both ordered completion and history.
         // Save-only, suppressed, review-held, stale and no-input takes never expand.
         var text = text
