@@ -64,6 +64,9 @@ import KoeBridgeCore
             do {
                 let node = engine.inputNode
                 try MicrophoneDevices.bind(selected, to: node)
+                observer = NotificationCenter.default.addObserver(
+                    forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil
+                ) { _ in changed() }
                 let hardware = node.inputFormat(forBus: 0)
                 guard let plan = MicrophoneTapFormatPlan(hardwareSampleRate: hardware.sampleRate,
                                                         hardwareChannels: hardware.channelCount),
@@ -77,9 +80,6 @@ import KoeBridgeCore
                     stop(reason: "format")
                     return
                 }
-                observer = NotificationCenter.default.addObserver(
-                    forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil
-                ) { _ in changed() }
                 // Deliberately no buffer access, conversion, storage or analysis.
                 node.installTap(onBus: 0, bufferSize: 1024, format: input) { _, _ in }
                 tapInstalled = true
