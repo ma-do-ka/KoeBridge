@@ -35,6 +35,8 @@ public final class MicrophonePreparationDiagnostics: @unchecked Sendable {
         public let matched: Bool?
         public let inputBuffers: Int
         public let convertedBuffers: Int
+        public let discardedStartupMS: Int
+        public let zeroStartupBuffers: Int
         public let inputRate: Int
         public let inputChannels: Int
         public let firstBufferMS: Int?
@@ -43,6 +45,7 @@ public final class MicrophonePreparationDiagnostics: @unchecked Sendable {
             var fields = ["seq=\(sequence)", "t_ms=\(elapsedMS)", "stage=\(stage.rawValue)",
                           "event=\(kind.rawValue)", "pending=\(pending ? 1 : 0)", "stage_ms=\(stageMS)",
                           "input_buffers=\(inputBuffers)", "converted_buffers=\(convertedBuffers)",
+                          "discarded_startup_ms=\(discardedStartupMS)", "zero_startup_buffers=\(zeroStartupBuffers)",
                           "input_rate=\(inputRate)", "input_channels=\(inputChannels)"]
             if let code { fields.append("code=\(code)") }
             if let matched { fields.append("matches=\(matched ? 1 : 0)") }
@@ -61,6 +64,8 @@ public final class MicrophonePreparationDiagnostics: @unchecked Sendable {
     private var sequence = 0
     private var inputBuffers = 0
     private var convertedBuffers = 0
+    private var discardedStartupMS = 0
+    private var zeroStartupBuffers = 0
     private var inputRate = 0
     private var inputChannels = 0
     private var firstAt: TimeInterval?
@@ -98,6 +103,16 @@ public final class MicrophonePreparationDiagnostics: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         if !closed, convertedBuffers < Int.max { convertedBuffers += 1 }
     }
+    /// Conversion-queue measurements only; neither method inspects PCM or emits events.
+    public func observeStartupBuffer(isExactlyZero: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        if !closed, isExactlyZero, zeroStartupBuffers < Int.max { zeroStartupBuffers += 1 }
+    }
+    public func discardStartup(duration: TimeInterval) {
+        lock.lock(); defer { lock.unlock() }
+        guard !closed else { return }
+        discardedStartupMS = Self.milliseconds(duration)
+    }
     public func format(sampleRate: Double, channels: UInt32) {
         lock.lock(); defer { lock.unlock() }
         guard !closed else { return }
@@ -125,6 +140,7 @@ public final class MicrophonePreparationDiagnostics: @unchecked Sendable {
                           stage: eventStage, kind: kind, pending: pending,
                           stageMS: Self.milliseconds(now - stageAt), code: code, matched: matched,
                           inputBuffers: inputBuffers, convertedBuffers: convertedBuffers,
+                          discardedStartupMS: discardedStartupMS, zeroStartupBuffers: zeroStartupBuffers,
                           inputRate: inputRate, inputChannels: inputChannels,
                           firstBufferMS: firstAt.map { Self.milliseconds($0 - beganAt) },
                           lastBufferAgeMS: lastAt.map { Self.milliseconds(now - $0) })

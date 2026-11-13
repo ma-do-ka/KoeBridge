@@ -26,6 +26,7 @@ final class MicrophoneCapture: @unchecked Sendable {
     private let startupGate = MicrophoneStartupGate()
     private let stopLatch = MicrophoneStopLatch()
     private var tapInstalled = false // lifecycleQueue only
+    private var tapPlan: MicrophoneTapFormatPlan? // lifecycleQueue only
     private var teardownStarted = false // lifecycleQueue only
     private var startupBuffers: [AVAudioPCMBuffer] = [] // processingQueue only
     private var startupFrames = 0 // processingQueue only; capped at four seconds
@@ -196,6 +197,13 @@ final class MicrophoneCapture: @unchecked Sendable {
                     startupDiagnostics?.note(.inputRouteChanged)
                     startupGate.invalidate(.inputRouteChanged)
                 }
+                if let engine, let tapPlan {
+                    do { try verifyTapFormat(engine.inputNode, plan: tapPlan) }
+                    catch {
+                        startupDiagnostics?.note(.formatChanged)
+                        startupGate.invalidate(.formatChanged)
+                    }
+                }
                 var decision = startupGate.decision(
                     at: ProcessInfo.processInfo.systemUptime, deadline: deadline, engineRunning: running)
                 if decision == .ready {
@@ -347,6 +355,7 @@ final class MicrophoneCapture: @unchecked Sendable {
             }
         }
         tapInstalled = true
+        tapPlan = plan
         startupDiagnostics?.end(.tapInstall)
         do {
             try verifyTapFormat(node, plan: plan)
@@ -441,6 +450,15 @@ final class MicrophoneCapture: @unchecked Sendable {
         if startupGate.didCommit {
             consume(target)
         } else {
+            // Diagnostics only, on the conversion lane; exact digital zero is
+            // measured without changing readiness or speech admission.
+            if let startupDiagnostics, let samples = target.floatChannelData?.pointee {
+                var isZero = true
+                for i in 0..<Int(target.frameLength) {
+                    if samples[i] != 0 { isZero = false; break }
+                }
+                startupDiagnostics.observeStartupBuffer(isExactlyZero: isZero)
+            }
             // Four seconds of 16 kHz mono Float32, at most 256 KB per attempt.
             // The ordinary attempt deadline is 2.5 s, so this is a safety cap.
             guard startupFrames + Int(target.frameLength) <= 64_000 else {
@@ -545,11 +563,15 @@ final class MicrophoneCapture: @unchecked Sendable {
             }
         }
         tapInstalled = false
+        tapPlan = nil
         // Do not drop the process-wide engine owner here. Removing our
         // NotificationCenter observer does not drain AVFAudio's private queue.
         startupDiagnostics?.begin(.processingDrain)
         processingQueue.sync { [self] in
             alive = false
+            if !startupGate.didCommit {
+                startupDiagnostics?.discardStartup(duration: Double(startupFrames) / output.sampleRate)
+            }
             startupBuffers.removeAll(keepingCapacity: false)
             startupFrames = 0
             if flushPendingAudio && !carry.isEmpty { admit(carry) }
