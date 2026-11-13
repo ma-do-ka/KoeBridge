@@ -24,10 +24,33 @@ public struct MicrophoneStartupRetryPolicy: Sendable {
     /// `completedAttempts` includes the attempt that just failed.
     public func retryDelay(after completedAttempts: Int,
                            elapsed: TimeInterval) -> TimeInterval? {
+        retryDelay(after: completedAttempts, elapsed: elapsed, failure: nil)
+    }
+
+    /// Route-churn failures often reflect an unchanged format and settle quickly;
+    /// driver or buffer failures keep the legacy backoff.
+    public func retryDelay(after completedAttempts: Int,
+                           elapsed: TimeInterval,
+                           failure: MicrophoneStartupGate.Failure?) -> TimeInterval? {
         guard completedAttempts > 0, completedAttempts < maximumAttempts else { return nil }
-        let delay = min(0.8, 0.2 * Double(completedAttempts))
+        let delay: TimeInterval
+        if let failure, Self.isRouteChurn(failure) {
+            delay = 0.05
+        } else {
+            delay = min(0.8, 0.2 * Double(completedAttempts))
+        }
         guard remaining(at: elapsed) > delay else { return nil }
         return delay
+    }
+
+    private static func isRouteChurn(_ failure: MicrophoneStartupGate.Failure) -> Bool {
+        switch failure {
+        case .configurationChanged, .formatChanged, .inputRouteChanged:
+            return true
+        case .conversionFailed, .bufferDropped, .startupBufferOverflow,
+             .engineStopped, .noBuffers, .buffersInterrupted, .unstableBuffers:
+            return false
+        }
     }
 
     public func timeoutForNextAttempt(elapsed: TimeInterval) -> TimeInterval {

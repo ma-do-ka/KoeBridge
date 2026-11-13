@@ -930,7 +930,14 @@ import KoeBridgeCore
                         DiagnosticLog.recordMicrophoneEvidence("mic_prepare_format take=\(take.id.uuidString) attempt=\(attempts) \(format.diagnosticFields)")
                     }
                     DiagnosticLog.recordMicrophoneEvidence("mic_prepare_failed take=\(take.id.uuidString) attempt=\(attempts) category=\(category) code=\((error as NSError).code) elapsed_ms=\(Int(elapsed * 1_000))")
-                    guard let delay = retryPolicy.retryDelay(after: attempts, elapsed: elapsed) else { throw error }
+                    let failure: MicrophoneStartupGate.Failure?
+                    if let captureError = error as? MicrophoneCapture.CaptureError,
+                       case .notReady(let reason) = captureError {
+                        failure = reason
+                    } else {
+                        failure = nil
+                    }
+                    guard let delay = retryPolicy.retryDelay(after: attempts, elapsed: elapsed, failure: failure) else { throw error }
                     status = "マイクの接続準備を待っています…（\(attempts + 1)/\(retryPolicy.maximumAttempts)）"
                     try await Task.sleep(for: .seconds(delay))
                 }

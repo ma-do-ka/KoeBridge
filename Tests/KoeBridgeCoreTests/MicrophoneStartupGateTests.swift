@@ -197,6 +197,52 @@ final class MicrophoneStartupGateTests: XCTestCase {
         }
         XCTAssertEqual(successes, 1)
     }
+    private let routeChurnFailures: [MicrophoneStartupGate.Failure] = [
+        .configurationChanged, .formatChanged, .inputRouteChanged
+    ]
+    private func assertLegacyDelays(for failure: MicrophoneStartupGate.Failure?,
+                                    file: StaticString = #filePath,
+                                    line: UInt = #line) throws {
+        let policy = MicrophoneStartupRetryPolicy()
+        for (attempt, expected) in [(1, 0.2), (2, 0.4), (3, 0.6)] {
+            let delay = try XCTUnwrap(policy.retryDelay(after: attempt, elapsed: 1, failure: failure),
+                                      file: file, line: line)
+            XCTAssertEqual(delay, expected, accuracy: 0.0001, file: file, line: line)
+        }
+    }
+    func testRouteChurnCategoriesRetryWithFlatShortDelay() throws {
+        let policy = MicrophoneStartupRetryPolicy()
+        for failure in routeChurnFailures {
+            for attempt in 1...3 {
+                let delay = try XCTUnwrap(policy.retryDelay(after: attempt, elapsed: 1, failure: failure))
+                XCTAssertEqual(delay, 0.05, accuracy: 0.0001)
+            }
+        }
+    }
+    func testNonChurnCategoriesKeepLegacyBackoff() throws {
+        let nonChurnFailures: [MicrophoneStartupGate.Failure] = [
+            .noBuffers, .unstableBuffers, .engineStopped, .bufferDropped,
+            .conversionFailed, .startupBufferOverflow, .buffersInterrupted
+        ]
+        for failure in nonChurnFailures {
+            try assertLegacyDelays(for: failure)
+        }
+    }
+    func testNilFailureKeepsLegacyBackoff() throws {
+        try assertLegacyDelays(for: nil)
+    }
+    func testRouteChurnStillRespectsAttemptLimitAndBudget() throws {
+        let policy = MicrophoneStartupRetryPolicy()
+        for failure in routeChurnFailures {
+            XCTAssertNil(policy.retryDelay(after: 0, elapsed: 1, failure: failure))
+            XCTAssertNil(policy.retryDelay(after: 4, elapsed: 1, failure: failure))
+            XCTAssertNil(policy.retryDelay(after: 1, elapsed: 9.99, failure: failure))
+            XCTAssertNil(policy.retryDelay(after: 1, elapsed: 10, failure: failure))
+            XCTAssertNil(policy.retryDelay(after: 1, elapsed: .nan, failure: failure))
+            let nearBudgetDelay = try XCTUnwrap(policy.retryDelay(after: 1, elapsed: 9.9, failure: failure))
+            XCTAssertEqual(nearBudgetDelay, 0.05, accuracy: 0.0001)
+        }
+    }
     func testConcurrentStopAndCallbacksCannotResurrectPreparation() {
         let gate = MicrophoneStartupGate()
         DispatchQueue.concurrentPerform(iterations: 1_000) { i in
