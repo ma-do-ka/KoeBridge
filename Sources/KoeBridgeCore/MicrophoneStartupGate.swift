@@ -166,7 +166,9 @@ public final class MicrophoneStartupGate: @unchecked Sendable {
         guard committed, !stopped, failure == nil else { return nil }
         guard engineRunning else { return .engineStopped }
         guard now.isFinite, maximumGap.isFinite, maximumGap > 0,
-              let lastBufferAt, now >= lastBufferAt else { return .unstableBuffers }
+              let lastBufferAt else { return .unstableBuffers }
+        // The caller can sample now before a newer buffer acquires this lock.
+        guard now >= lastBufferAt else { return nil }
         return now - lastBufferAt >= maximumGap ? .buffersInterrupted : nil
     }
 

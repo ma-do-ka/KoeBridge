@@ -275,6 +275,28 @@ final class MicrophoneStartupGateTests: XCTestCase {
     func testRecordingWatchdogInvalidClockFailsClosed() {
         XCTAssertEqual(committedGate().recordingFailure(at: .nan, engineRunning: true), .unstableBuffers)
     }
+    func testRecordingWatchdogAcceptsBufferNewerThanSampledClock() {
+        let gate = committedGate()
+        gate.observeConvertedBuffer(frames: 800, at: 10.0)
+        XCTAssertNil(gate.recordingFailure(at: 9.9, engineRunning: true))
+        XCTAssertEqual(gate.recordingFailure(at: 9.9, engineRunning: false), .engineStopped)
+    }
+    func testRecordingWatchdogGapBoundaryStillFailsClosed() {
+        let gate = committedGate()
+        gate.observeConvertedBuffer(frames: 800, at: 10.0)
+        XCTAssertEqual(gate.recordingFailure(at: 11.0, engineRunning: true), .buffersInterrupted)
+    }
+    func testRecordingWatchdogInvalidInputsFailClosedEvenWithNewerBuffer() {
+        let gate = committedGate()
+        gate.observeConvertedBuffer(frames: 800, at: 10.0)
+        for time in [Double.nan, Double.infinity, -Double.infinity] {
+            XCTAssertEqual(gate.recordingFailure(at: time, engineRunning: true), .unstableBuffers)
+        }
+        for gap in [Double.nan, Double.infinity, -Double.infinity, 0, -1] {
+            XCTAssertEqual(gate.recordingFailure(at: 9.9, engineRunning: true, maximumGap: gap),
+                           .unstableBuffers)
+        }
+    }
     func testRecordingWatchdogCannotResurrectStoppedSession() {
         let gate = committedGate(); gate.stop()
         gate.observeConvertedBuffer(frames: 800, at: 20)

@@ -33,6 +33,7 @@ import KoeBridgeCore
         private var lease: MicrophoneEngineLifetime<AVAudioEngine>.Lease?
         private var target: MicrophoneSelectionTarget?
         private var tapInstalled = false
+        private var tapPlan: MicrophoneTapFormatPlan?
         private var observer: NSObjectProtocol?
 
         func resume(enabled: Bool, uid: String, takeActive: Bool, reason: String,
@@ -48,7 +49,11 @@ import KoeBridgeCore
                 selectedDeviceIsBluetooth: MicrophoneDevices.isBluetooth(deviceID: selected.deviceID),
                 takeActive: takeActive) else { stop(reason: "policy"); return }
             if let lease, target == selected, lease.resource.isRunning,
-               MicrophoneDevices.isStillSelected(selected, node: lease.resource.inputNode) { return }
+               MicrophoneDevices.isStillSelected(selected, node: lease.resource.inputNode),
+               let tapPlan {
+                let hardware = lease.resource.inputNode.inputFormat(forBus: 0)
+                if tapPlan.matches(sampleRate: hardware.sampleRate, channels: hardware.channelCount) { return }
+            }
             stop(reason: "route")
             guard let acquired = MicrophoneCapture.warmEngineLifetime.acquire() else {
                 log("mic warm stop reason=leased")
@@ -60,19 +65,28 @@ import KoeBridgeCore
                 let node = engine.inputNode
                 try MicrophoneDevices.bind(selected, to: node)
                 let hardware = node.inputFormat(forBus: 0)
+                guard let plan = MicrophoneTapFormatPlan(hardwareSampleRate: hardware.sampleRate,
+                                                        hardwareChannels: hardware.channelCount),
+                      let input = AVAudioFormat(commonFormat: .pcmFormatFloat32,
+                                                sampleRate: plan.sampleRate, channels: plan.channelCount,
+                                                interleaved: false) else {
+                    stop(reason: "format-invalid")
+                    return
+                }
                 guard engine.outputConnectionPoints(for: node, outputBus: 0).isEmpty else {
                     stop(reason: "format")
                     return
                 }
-                // Deliberately no buffer access, conversion, storage or analysis.
-                node.installTap(onBus: 0, bufferSize: 1024, format: hardware) { _, _ in }
-                tapInstalled = true
-                engine.prepare()
-                if !engine.isRunning { try engine.start() }
-                target = selected
                 observer = NotificationCenter.default.addObserver(
                     forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil
                 ) { _ in changed() }
+                // Deliberately no buffer access, conversion, storage or analysis.
+                node.installTap(onBus: 0, bufferSize: 1024, format: input) { _, _ in }
+                tapInstalled = true
+                tapPlan = plan
+                engine.prepare()
+                if !engine.isRunning { try engine.start() }
+                target = selected
                 log("mic warm start reason=\(reason)")
             } catch {
                 stop(reason: "failed")
@@ -87,6 +101,7 @@ import KoeBridgeCore
             engine.stop()
             if tapInstalled { engine.inputNode.removeTap(onBus: 0) }
             tapInstalled = false
+            tapPlan = nil
             target = nil
             self.lease = nil
             MicrophoneCapture.warmEngineLifetime.release(token: lease.token)

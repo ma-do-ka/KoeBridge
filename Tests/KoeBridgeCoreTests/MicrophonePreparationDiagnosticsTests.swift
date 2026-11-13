@@ -90,6 +90,37 @@ final class MicrophonePreparationDiagnosticsTests: XCTestCase {
         XCTAssertEqual(entry.firstBufferMS, 250)
         XCTAssertEqual(entry.lastBufferAgeMS, 500)
     }
+    func testStartupMeasurementsAreCountersUntilNextEvent() {
+        let (trace, records, _) = make()
+        trace.observeStartupBuffer(isExactlyZero: true)
+        trace.observeStartupBuffer(isExactlyZero: false)
+        trace.observeStartupBuffer(isExactlyZero: true)
+        trace.discardStartup(duration: 0.25)
+        XCTAssertTrue(records.values.isEmpty)
+        trace.end(.processingDrain)
+        let entry = records.values.last!
+        XCTAssertEqual(entry.zeroStartupBuffers, 2)
+        XCTAssertEqual(entry.discardedStartupMS, 250)
+        XCTAssertTrue(entry.rendered.contains("zero_startup_buffers=2"))
+        XCTAssertTrue(entry.rendered.contains("discarded_startup_ms=250"))
+    }
+    func testSuccessfulStartupReportsNoDiscardedAudio() {
+        let (trace, records, _) = make()
+        trace.observeStartupBuffer(isExactlyZero: true)
+        trace.note(.ready)
+        XCTAssertEqual(records.values.last?.discardedStartupMS, 0)
+        XCTAssertEqual(records.values.last?.zeroStartupBuffers, 1)
+    }
+    func testFinishedTraceRejectsLateStartupMeasurements() {
+        let (trace, records, _) = make()
+        trace.finish()
+        trace.observeStartupBuffer(isExactlyZero: true)
+        trace.discardStartup(duration: 1)
+        trace.poll()
+        XCTAssertEqual(records.values.count, 1)
+        XCTAssertEqual(records.values.last?.zeroStartupBuffers, 0)
+        XCTAssertEqual(records.values.last?.discardedStartupMS, 0)
+    }
     func testOldBufferDoesNotRefreshFreshness() {
         let (trace, records, clock) = make()
         trace.observeInput(frames: 1, at: 100.5)
