@@ -11,9 +11,15 @@ import KoeBridgeCore
     static let shared = KoeBridgeInAppUpdater()
     @Published private(set) var blocksRecording = false
     @Published private(set) var message = ""
+    @Published private(set) var canCancelUpdate = false
+    @Published private(set) var canRetryTermination = false
     private var installationCommitted = false
     private var noUpdateFound = false
-    private var controller: SPUStandardUpdaterController?
+    private var updater: SPUUpdater?
+    private lazy var userDriver = KoeBridgeUpdateUserDriver(
+        setStatus: { [weak self] in self?.message = $0 },
+        setCanCancel: { [weak self] in self?.canCancelUpdate = $0 },
+        setCanRetryTermination: { [weak self] in self?.canRetryTermination = $0 })
     private var resumeInstallation: Task<Void, Never>?
 
     var configured: Bool {
@@ -37,22 +43,31 @@ import KoeBridgeCore
         }
         guard configured else { message = explanation; return }
         do {
-            if controller == nil {
-                let candidate = SPUStandardUpdaterController(startingUpdater: false,
-                    updaterDelegate: self, userDriverDelegate: nil)
-                try candidate.updater.start()
-                controller = candidate
+            if updater == nil {
+                let candidate = SPUUpdater(hostBundle: .main, applicationBundle: .main,
+                    userDriver: userDriver, delegate: self)
+                try candidate.start()
+                updater = candidate
             }
-            guard let controller, controller.updater.canCheckForUpdates else { return }
+            guard let updater, updater.canCheckForUpdates else { return }
             noUpdateFound = false
             blocksRecording = true
             message = "署名付きの更新情報を確認しています…"
-            controller.checkForUpdates(nil)
+            updater.checkForUpdates()
         } catch {
-            controller = nil
+            updater = nil
             blocksRecording = false
-            message = "更新を開始できませんでした：\(error.localizedDescription)"
+            userDriver.showStartError(error)
         }
+    }
+
+    func cancelUpdate() { userDriver.cancelUpdate() }
+    func retryTermination() {
+        guard !VoiceController.shared.hasPendingWork else {
+            message = "録音・文字起こし・入力が完了してから更新してください"
+            return
+        }
+        userDriver.retryTermination()
     }
 
     func updater(_ updater: SPUUpdater, mayPerform updateCheck: SPUUpdateCheck) throws {
@@ -97,14 +112,23 @@ import KoeBridgeCore
         return true
     }
     func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
+        DiagnosticLog.record("updater aborted: \(error.localizedDescription)")
         resumeInstallation?.cancel(); resumeInstallation = nil
         installationCommitted = false
         blocksRecording = false
-        if !noUpdateFound { message = "更新を完了できませんでした：\(error.localizedDescription)" }
+        if !noUpdateFound { message = Self.errorMessage(for: error) }
     }
     func updater(_ updater: SPUUpdater, didFinishUpdateCycleFor updateCheck: SPUUpdateCheck, error: Error?) {
         if resumeInstallation == nil && !installationCommitted { blocksRecording = false }
-        if let error, !noUpdateFound { message = "更新処理が終了しました：\(error.localizedDescription)" }
+        if let error, !noUpdateFound {
+            DiagnosticLog.record("updater cycle finished with error: \(error.localizedDescription)")
+            message = Self.errorMessage(for: error)
+        }
+    }
+
+    // Shared by delegate status and driver alerts; no framework error prose reaches UI.
+    static func errorMessage(for error: Error) -> String {
+        UserFacingErrorMessage.message(for: error, operation: "更新")
     }
 }
 
