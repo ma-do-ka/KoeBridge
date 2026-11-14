@@ -63,6 +63,11 @@ import KoeBridgeCore
         }
     }
 
+    func presentInformationalAlert(title: String, body: String, primaryButton: String,
+                                   secondaryButton: String?) -> NSApplication.ModalResponse? {
+        alert(title, body: body, buttons: [primaryButton] + (secondaryButton.map { [$0] } ?? []))
+    }
+
     private func clearActions() {
         cancellation = nil
         retryTerminatingApplication = nil

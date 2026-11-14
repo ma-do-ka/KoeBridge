@@ -36,7 +36,55 @@ import KoeBridgeCore
             : "アプリ内インストールの署名設定が未登録です。現在はリリースページから手動更新してください。"
     }
 
+    func checkForUpdatesFromMenu() {
+        Self.checkForUpdatesFromMenu(
+            isUpdateCycleActive: updater?.canCheckForUpdates == false,
+            hasPendingWork: VoiceController.shared.hasPendingWork,
+            configured: configured, explanation: explanation,
+            setStatus: { message = $0 },
+            presentInformationalAlert: userDriver.presentInformationalAlert,
+            showUpdateInFocus: { userDriver.showUpdateInFocus() },
+            showUpdatePage: { (NSApp.delegate as? KoeBridgeAppDelegate)?.showUpdateProgress() },
+            check: { checkForUpdates() })
+    }
+
+    // Keep menu refusals visible without opening Settings. The presenter and
+    // action seams let tests exercise these decisions without starting Sparkle.
+    static func checkForUpdatesFromMenu(
+        isUpdateCycleActive: Bool, hasPendingWork: Bool, configured: Bool, explanation: String,
+        setStatus: (String) -> Void,
+        presentInformationalAlert: (String, String, String, String?) -> NSApplication.ModalResponse?,
+        showUpdateInFocus: () -> Void,
+        showUpdatePage: () -> Void, check: () -> Void
+    ) {
+        if isUpdateCycleActive {
+            showUpdateInFocus()
+            return
+        }
+        let body: String
+        let offersSettings: Bool
+        if hasPendingWork {
+            body = "録音・文字起こし・入力が完了してから更新してください"
+            offersSettings = false
+        } else if !configured {
+            body = explanation
+            offersSettings = true
+        } else {
+            check()
+            return
+        }
+        setStatus(body)
+        let response = presentInformationalAlert("更新の確認", body,
+            offersSettings ? "設定のアップデート画面を開く" : "閉じる",
+            offersSettings ? "閉じる" : nil)
+        if offersSettings && response == .alertFirstButtonReturn { showUpdatePage() }
+    }
+
     func checkForUpdates() {
+        if updater?.canCheckForUpdates == false {
+            userDriver.showUpdateInFocus()
+            return
+        }
         guard !VoiceController.shared.hasPendingWork else {
             message = "録音・文字起こし・入力が完了してから更新してください"
             return
@@ -49,7 +97,11 @@ import KoeBridgeCore
                 try candidate.start()
                 updater = candidate
             }
-            guard let updater, updater.canCheckForUpdates else { return }
+            guard let updater else { return }
+            guard updater.canCheckForUpdates else {
+                userDriver.showUpdateInFocus()
+                return
+            }
             noUpdateFound = false
             blocksRecording = true
             message = "署名付きの更新情報を確認しています…"

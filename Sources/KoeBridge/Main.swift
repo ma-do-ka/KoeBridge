@@ -463,13 +463,14 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
         windows.showSettings()
     }
     @objc private func checkForUpdates() {
-        showUpdateProgress()
-        Task { await KoeBridgeUpdateManager.shared.checkNow() }
+        statusPopover.performClose(nil)
+        KoeBridgeInAppUpdater.shared.checkForUpdatesFromMenu()
     }
     func showUpdateProgress() {
         statusPopover.performClose(nil)
         windows.showSettings()
         KoeBridgeUpdateManager.shared.requestUpdatePage()
+        Task { await KoeBridgeUpdateManager.shared.checkNow() }
     }
     @objc private func showPermissions() {
         statusPopover.performClose(nil)
