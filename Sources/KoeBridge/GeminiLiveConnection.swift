@@ -83,7 +83,11 @@ private final class GeminiPingCompletion: @unchecked Sendable {
                     let frame = try Self.decode(try await ws.receive())
                     captureUsage(frame.tokenUsage)
                     for event in frame.events {
-                        if case .error(let reason) = event { throw ConnectionError.setup(reason) }
+                        if case .error(let reason) = event {
+                            DiagnosticLog.record("gemini setup API error: \(reason)")
+                            throw ConnectionError.setup(UserFacingErrorMessage.message(
+                                for: ConnectionError.setup(reason), operation: "Geminiへの接続"))
+                        }
                         if case .setupComplete = event { setupComplete = true }
                     }
                 }
@@ -95,7 +99,9 @@ private final class GeminiPingCompletion: @unchecked Sendable {
                 ready = true
             } onCancel: { ws.cancel(with: .goingAway, reason: nil) }
         } catch {
-            let reason = failure ?? error.localizedDescription
+            DiagnosticLog.record("gemini connection failed: \(error.localizedDescription)")
+            let reason = failure ?? (error as? ConnectionError)?.errorDescription
+                ?? UserFacingErrorMessage.message(for: error, operation: "Geminiへの接続")
             cancel()
             if Task.isCancelled || error is CancellationError { throw CancellationError() }
             throw ConnectionError.setup(reason)
@@ -119,10 +125,20 @@ private final class GeminiPingCompletion: @unchecked Sendable {
                         DiagnosticLog.record("gemini frame without transcription event; shape=\(frame.diagnosticKind)")
                     }
                 }
-                for event in frame.events { handle(event, segmentIdentity: frame.finalSegmentIdentity) }
+                for event in frame.events {
+                    if case .error(let reason) = event {
+                        DiagnosticLog.record("gemini API error: \(reason)")
+                        handle(.error(UserFacingErrorMessage.message(
+                            for: ConnectionError.setup(reason), operation: "音声認識")),
+                            segmentIdentity: frame.finalSegmentIdentity)
+                    } else {
+                        handle(event, segmentIdentity: frame.finalSegmentIdentity)
+                    }
+                }
             } catch {
                 if !closedByClient && !Task.isCancelled {
-                    handle(.error("Gemini受信が終了しました: \(error.localizedDescription)"))
+                    DiagnosticLog.record("gemini receive failed: \(error.localizedDescription)")
+                    handle(.error(UserFacingErrorMessage.message(for: error, operation: "Geminiの受信")))
                 }
                 return
             }

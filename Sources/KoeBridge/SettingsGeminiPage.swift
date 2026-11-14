@@ -38,7 +38,12 @@ struct SettingsGeminiPage: View {
                                     apiKeyDraft = ""
                                     apiKeyNotice = "APIキーを保存しました"
                                 } catch {
-                                    apiKeyNotice = "保存に失敗しました：\(error.localizedDescription)"
+                                    DiagnosticLog.record("API key save failed: \(error.localizedDescription)")
+                                    let mappedError: Error
+                                    if let keyError = error as? KeychainStore.KeyError, case .security(let status) = keyError {
+                                        mappedError = NSError(domain: NSOSStatusErrorDomain, code: Int(status))
+                                    } else { mappedError = error }
+                                    apiKeyNotice = UserFacingErrorMessage.message(for: mappedError, operation: "APIキーの保存")
                                 }
                             }
                             .disabled(apiKeyDraft.isEmpty)

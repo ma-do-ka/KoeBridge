@@ -93,7 +93,8 @@ import KoeBridgeCore
                 statusMessage = "公開済み正式版は\(release.tag)です。現在の\(installedLabel)はそれより新しいソース版です"
             }
         } catch {
-            statusMessage = "正式リリースの確認に失敗しました：\(error.localizedDescription)"
+            DiagnosticLog.record("release check failed: \(error.localizedDescription)")
+            statusMessage = UserFacingErrorMessage.message(for: error, operation: "正式リリースの確認")
         }
         do {
             let head = try SourceUpdateTarget.decodeHead(await readOfficial(
@@ -108,7 +109,8 @@ import KoeBridgeCore
             sourceStatusMessage = "公式ソース：\(candidate.label) / Build \(candidate.build)。手動コマンドで\(action)（配布アプリとは別）"
         } catch {
             sourceTarget = nil
-            sourceStatusMessage = "ソース更新は利用できません：\(error.localizedDescription)"
+            DiagnosticLog.record("source update check failed: \(error.localizedDescription)")
+            sourceStatusMessage = UserFacingErrorMessage.message(for: error, operation: "ソース更新の確認")
         }
         if hasNewStableRelease || sourceTarget?.isNewer(than: installedLabel, build: installedBuild) == true {
             state = .available

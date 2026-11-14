@@ -42,7 +42,8 @@ import KoeBridgeCore
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
-                throw LocalError.recognitionFailure(error.localizedDescription)
+                DiagnosticLog.record("speechAnalyzer failed: \(error.localizedDescription)")
+                throw LocalError.recognitionFailure(UserFacingErrorMessage.message(for: error, operation: "ローカル音声認識"))
             }
             try checkStartupCancellation()
             guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]),
@@ -70,7 +71,8 @@ import KoeBridgeCore
                         self.state.receiveFailure(LocalError.endedBeforeAudio.localizedDescription)
                     }
                 } catch {
-                    self?.state.receiveFailure(error.localizedDescription)
+                    DiagnosticLog.record("speechAnalyzer results failed: \(error.localizedDescription)")
+                    self?.state.receiveFailure(UserFacingErrorMessage.message(for: error, operation: "ローカル音声認識"))
                 }
             }
             try await analyzer.start(inputSequence: stream)
@@ -138,7 +140,10 @@ import KoeBridgeCore
                 inputStatus.pointee = input == nil ? .endOfStream : .noDataNow
                 return nil
             }
-            if let error { throw LocalError.recognitionFailure(error.localizedDescription) }
+            if let error {
+                DiagnosticLog.record("speechAnalyzer audio conversion failed: \(error.localizedDescription)")
+                throw LocalError.recognitionFailure(UserFacingErrorMessage.message(for: error, operation: "音声データの変換"))
+            }
             if status == .error { throw LocalError.recognitionFailure("音声データを変換できませんでした") }
             if output.frameLength > 0 {
                 if case .terminated = continuation.yield(AnalyzerInput(buffer: output)) {
@@ -156,7 +161,9 @@ import KoeBridgeCore
             do {
                 try convertAndYield(nil, converter: converter, continuation: continuation)
             } catch {
-                state.receiveFailure(error.localizedDescription)
+                DiagnosticLog.record("speechAnalyzer audio drain failed: \(error.localizedDescription)")
+                state.receiveFailure((error as? LocalError)?.errorDescription
+                    ?? UserFacingErrorMessage.message(for: error, operation: "音声データの変換"))
                 continuation.finish()
                 throw error
             }
@@ -165,7 +172,10 @@ import KoeBridgeCore
             // the results stream. A hung finalize must never return a partial.
             finalizationTask = Task { [weak self] in
                 do { try await analyzer.finalizeAndFinishThroughEndOfInput() }
-                catch { self?.state.receiveFailure(error.localizedDescription) }
+                catch {
+                    DiagnosticLog.record("speechAnalyzer finalization failed: \(error.localizedDescription)")
+                    self?.state.receiveFailure(UserFacingErrorMessage.message(for: error, operation: "ローカル音声認識の確定"))
+                }
             }
         }
         let deadline = ContinuousClock.now.advanced(by: .seconds(5))

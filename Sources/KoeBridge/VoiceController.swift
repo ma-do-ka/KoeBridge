@@ -570,7 +570,10 @@ import KoeBridgeCore
                 historyStore.appendRetranscription(record.id, result: .init(engine: engine.label, text: text))
                 replayStatus = "再文字起こし結果を履歴に追加しました"
             } catch {
-                if replayJob == job, !Task.isCancelled { replayStatus = error.localizedDescription }
+                DiagnosticLog.record("audio replay recognition failed: \(error.localizedDescription)")
+                if replayJob == job, !Task.isCancelled {
+                    replayStatus = Self.userFacingFailure(error, operation: "再文字起こし")
+                }
             }
         }
     }
@@ -983,7 +986,8 @@ import KoeBridgeCore
             }
         } catch {
             if active === take, !take.finished {
-                resolve(take, text: nil, reason: "マイク開始失敗: \(error.localizedDescription)")
+                DiagnosticLog.record("microphone start failed: \(error.localizedDescription)")
+                resolve(take, text: nil, reason: Self.userFacingFailure(error, operation: "マイクの開始"))
             }
         }
     }
@@ -1320,7 +1324,8 @@ import KoeBridgeCore
         } catch {
             guard !take.finished, !Task.isCancelled else { return }
             DiagnosticLog.record("recognition failure; category=\(Self.failureCategory(error))")
-            resolve(take, text: nil, reason: "認識失敗: \(error.localizedDescription)")
+            DiagnosticLog.record("recognition failure detail: \(error.localizedDescription)")
+            resolve(take, text: nil, reason: Self.userFacingFailure(error, operation: "音声認識"))
         }
     }
 
@@ -1882,6 +1887,21 @@ import KoeBridgeCore
         objectWillChange.send()
     }
     func copyLastText() { TextInsertion.copy(history.first?.text ?? previewText) }
+
+    /// Only app-owned error types with Japanese descriptions may supply UI detail.
+    /// Framework and transport errors always pass through the domain/code mapper.
+    private static func userFacingFailure(_ error: Error, operation: String) -> String {
+        let description: String?
+        switch error {
+        case let error as AppError: description = error.errorDescription
+        case let error as AppleLocalTranscriber.LocalError: description = error.errorDescription
+        case let error as GeminiLiveConnection.ConnectionError: description = error.errorDescription
+        case let error as MicrophoneCapture.CaptureError: description = error.errorDescription
+        case let error as RetainedAudioStore.ReplayError: description = error.errorDescription
+        default: description = nil
+        }
+        return description ?? UserFacingErrorMessage.message(for: error, operation: operation)
+    }
 
     enum AppError: Error, LocalizedError {
         case noKey, connectionLost, audioDropped, localRecoveryBusy, localRecoveryTooLong
