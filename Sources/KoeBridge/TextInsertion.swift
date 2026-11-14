@@ -136,6 +136,22 @@ import KoeBridgeCore
         return AXIsProcessTrustedWithOptions(options)
     }
 
+    // Small macOS test seam: construct exactly the events used by the posting loop.
+    static func makePostingSource() -> CGEventSource? {
+        CGEventSource(stateID: .privateState)
+    }
+
+    static func makeUnicodeEvents(_ text: String, source: CGEventSource) -> (CGEvent, CGEvent)? {
+        guard let down = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(0), keyDown: true),
+              let up = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(0), keyDown: false) else { return nil }
+        Array(text.utf16).withUnsafeBufferPointer { buffer in
+            down.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: buffer.baseAddress)
+        }
+        down.flags = []
+        up.flags = []
+        return (down, up)
+    }
+
     /// Clipboard-free, serial delivery. Read-back is bounded and runs while a
     /// following recording may continue. No outcome ever resubmits posted keys.
     static func deliver(_ text: String, to target: InsertionTarget?,
@@ -245,7 +261,7 @@ import KoeBridgeCore
             ])
             guard captured == before else { return report(.focusChanged, "field_value_or_selection_changed") }
         }
-        guard let source = CGEventSource(stateID: .combinedSessionState) else {
+        guard let source = makePostingSource() else {
             return report(.eventUnavailable, "event_source_unavailable")
         }
         let modifierMask: CGEventFlags = [.maskAlphaShift, .maskShift, .maskControl,
@@ -260,6 +276,8 @@ import KoeBridgeCore
             // A long synchronous loop starves MainActor stop/cancel actions.
             // Yield between small batches, then revalidate before posting any
             // more keys. The serial sender still owns this entire delivery.
+            let delay = DeliveryPacingPolicy.delayNanoseconds(beforeChunk: index)
+            if delay > 0 { try? await Task.sleep(nanoseconds: delay) }
             if index > 0 && index % 4 == 0 { await Task.yield() }
             guard !Task.isCancelled, shouldContinue() else {
                 return report(sent == 0 ? .cancelled : .partiallySubmitted,
@@ -277,17 +295,9 @@ import KoeBridgeCore
                     return report(sent == 0 ? .focusChanged : .partiallySubmitted, check.reason)
                 }
             }
-            let units = Array(part.utf16)
-            guard let down = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(0), keyDown: true),
-                  let up = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(0), keyDown: false) else {
+            guard let (down, up) = makeUnicodeEvents(part, source: source) else {
                 return report(sent == 0 ? .eventUnavailable : .partiallySubmitted, "keyboard_event_unavailable")
             }
-            units.withUnsafeBufferPointer { buffer in
-                down.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: buffer.baseAddress)
-                up.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: buffer.baseAddress)
-            }
-            down.flags = []
-            up.flags = []
             down.post(tap: .cgAnnotatedSessionEventTap)
             up.post(tap: .cgAnnotatedSessionEventTap)
             sent += 1

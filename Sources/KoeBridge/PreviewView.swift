@@ -50,6 +50,7 @@ struct PreviewView: View {
         case .commandCancelled: return "xmark.circle"
         case .commandNewline, .commandParagraph: return "return"
         case .commandBlocked, .commandFailed: return "exclamationmark.triangle.fill"
+        case .sentUnconfirmed: return "questionmark.circle"
         case .sent: return "arrow.up.circle.fill"
         case .saved: return "clock.arrow.circlepath"
         case .heldForReview, .transformCopied: return "doc.on.clipboard"

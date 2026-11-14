@@ -11,6 +11,14 @@ import KoeBridgeCore
         let report: TextInsertion.Report?
 
         var submitted: Bool { delivery == .verifiedInserted || delivery == .attemptedUnconfirmed }
+
+        var submissionFeedback: OverlayFeedback? {
+            switch delivery {
+            case .verifiedInserted: return .sent
+            case .attemptedUnconfirmed: return .sentUnconfirmed
+            default: return nil
+            }
+        }
     }
 
     static func skipped(suppressed: Bool, requiresReview: Bool,

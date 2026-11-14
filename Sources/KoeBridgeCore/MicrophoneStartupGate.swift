@@ -81,7 +81,51 @@ public final class MicrophoneStartupGate: @unchecked Sendable {
         case failed(Failure)
     }
 
+    public enum Phase: Equatable, Sendable {
+        case configuring(epoch: UInt64, churnPending: Bool)
+        case stabilising(epoch: UInt64)
+        case revalidating(epoch: UInt64, pendingSince: TimeInterval, lastChurnAt: TimeInterval)
+        case committed, failed(Failure), stopped
+    }
+    public enum ConfigurationChangeOutcome: Equatable, Sendable {
+        case ignored, committedInterrupted
+        case revalidate(epoch: UInt64, firstInBurst: Bool)
+        case budgetExhausted(Failure)
+    }
+    public enum RevalidationReadiness: Equatable, Sendable {
+        case notRevalidating
+        case debouncePending(remaining: TimeInterval)
+        case readyToRevalidate(epoch: UInt64)
+        case budgetExhausted(Failure)
+    }
+    public enum ObserveResult: Equatable, Sendable { case buffered, committed, dropped }
+    public struct TapCaptureToken: Equatable, Sendable {
+        public let stabilityEpoch: UInt64
+        public let tapGeneration: UInt64
+    }
+    public struct SettlingSnapshot: Equatable, Sendable {
+        public let epoch: UInt64
+        public let churnCount: Int
+        public let revalidations: Int
+        public let duration: TimeInterval
+        public let readyViaSettling: Bool
+    }
+
     private let lock = NSLock()
+    private let settlingPolicy: MicrophoneSettlingPolicy
+    private var configuring: Bool
+    private var stabilityEpoch: UInt64 = 1
+    // Phase 1 retains the installed tap. Kept separate from the stability epoch.
+    private let tapGeneration: UInt64 = 1
+    private var pendingSince: TimeInterval?
+    private var lastChurnAt: TimeInterval?
+    private var settlingDeadline: TimeInterval?
+    private var cumulativeSettlingDuration: TimeInterval = 0
+    private var settlingEndedAt: TimeInterval?
+    private var revalidationEpoch: UInt64?
+    private var churnCount = 0
+    private var revalidations = 0
+    private var everReceivedBuffer = false
     private let stableDuration: TimeInterval
     private let maximumGap: TimeInterval
     private var firstBufferAt: TimeInterval?
@@ -92,10 +136,16 @@ public final class MicrophoneStartupGate: @unchecked Sendable {
     private var committed = false
     private var stopped = false
 
+    /// Capture starts with `configuring: true`; legacy stream-only callers may
+    /// start directly in stabilising without an engine-setup phase.
     public init(stableDuration: TimeInterval = 0.15,
-                maximumGap: TimeInterval = 0.35) {
+                maximumGap: TimeInterval = 0.35,
+                settlingPolicy: MicrophoneSettlingPolicy = .init(),
+                configuring: Bool = false) {
         precondition(stableDuration.isFinite && stableDuration >= 0)
         precondition(maximumGap.isFinite && maximumGap > stableDuration)
+        self.settlingPolicy = settlingPolicy
+        self.configuring = configuring
         self.stableDuration = stableDuration
         self.maximumGap = maximumGap
     }
@@ -123,7 +173,7 @@ public final class MicrophoneStartupGate: @unchecked Sendable {
     /// gates all work after the tap has been removed.
     public var acceptsBuffers: Bool {
         lock.lock(); defer { lock.unlock() }
-        return failure == nil && (committed || !stopped)
+        return acceptsBuffersLocked
     }
 
     public var firstBufferTime: TimeInterval? {
@@ -131,10 +181,51 @@ public final class MicrophoneStartupGate: @unchecked Sendable {
         return firstBufferAt
     }
 
+    public var currentPhase: Phase {
+        lock.lock(); defer { lock.unlock() }
+        return phaseLocked
+    }
+    public var currentTapGeneration: UInt64 { tapGeneration }
+    public var currentEpoch: UInt64 {
+        lock.lock(); defer { lock.unlock() }
+        return stabilityEpoch
+    }
+    private var phaseLocked: Phase {
+        if stopped { return .stopped }
+        if let failure { return .failed(failure) }
+        if committed { return .committed }
+        if configuring { return .configuring(epoch: stabilityEpoch, churnPending: pendingSince != nil) }
+        if let pendingSince, let lastChurnAt {
+            return .revalidating(epoch: stabilityEpoch, pendingSince: pendingSince, lastChurnAt: lastChurnAt)
+        }
+        return .stabilising(epoch: stabilityEpoch)
+    }
+    private var acceptsBuffersLocked: Bool {
+        failure == nil && (committed || (!stopped && pendingSince == nil))
+    }
+    public func captureTokenForTap(tapGeneration: UInt64) -> TapCaptureToken? {
+        lock.lock(); defer { lock.unlock() }
+        guard !stopped, acceptsBuffersLocked, tapGeneration == self.tapGeneration else { return nil }
+        return TapCaptureToken(stabilityEpoch: stabilityEpoch, tapGeneration: tapGeneration)
+    }
+    /// Queued recording buffers still drain after a normal stop; new tap work cannot enter.
+    public func accepts(_ token: TapCaptureToken) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return acceptsBuffersLocked && token.stabilityEpoch == stabilityEpoch && token.tapGeneration == tapGeneration
+    }
     public func observeConvertedBuffer(frames: Int, at now: TimeInterval) {
         lock.lock(); defer { lock.unlock() }
-        guard frames > 0, now.isFinite, failure == nil, !stopped else { return }
-        if let last = lastBufferAt, now < last { return }
+        _ = observeLocked(frames: frames, at: now, epoch: stabilityEpoch)
+    }
+    public func observeConvertedBuffer(frames: Int, at now: TimeInterval, epoch: UInt64) -> ObserveResult {
+        lock.lock(); defer { lock.unlock() }
+        return observeLocked(frames: frames, at: now, epoch: epoch)
+    }
+    private func observeLocked(frames: Int, at now: TimeInterval, epoch: UInt64) -> ObserveResult {
+        guard frames > 0, now.isFinite, acceptsBuffersLocked, epoch == stabilityEpoch else { return .dropped }
+        if stopped { return committed ? .committed : .dropped }
+        if let last = lastBufferAt, now < last { return .dropped }
+        everReceivedBuffer = true
         if firstBufferAt == nil { firstBufferAt = now }
         if let last = lastBufferAt, now - last <= maximumGap {
             consecutiveBuffers += 1
@@ -143,21 +234,107 @@ public final class MicrophoneStartupGate: @unchecked Sendable {
             stableSince = now
         }
         lastBufferAt = now
+        return committed ? .committed : .buffered
+    }
+    private func resetStabilityLocked() {
+        firstBufferAt = nil; lastBufferAt = nil; stableSince = nil; consecutiveBuffers = 0
+    }
+    @discardableResult public func finishConfiguring(at now: TimeInterval) -> Phase {
+        lock.lock(); defer { lock.unlock() }
+        guard !stopped, failure == nil, !committed else { return phaseLocked }
+        configuring = false
+        return phaseLocked
+    }
+    /// Notification entry point: no HAL calls, queue hops, or check-then-commit gap.
+    public func handleConfigurationChange(at now: TimeInterval, deadline: TimeInterval,
+                                          reason: Failure = .configurationChanged) -> ConfigurationChangeOutcome {
+        lock.lock(); defer { lock.unlock() }
+        guard !stopped, failure == nil else { return .ignored }
+        if committed { failure = reason; return .committedInterrupted }
+        let first = pendingSince == nil
+        stabilityEpoch += 1
+        churnCount += 1
+        resetStabilityLocked()
+        if first { pendingSince = now }
+        lastChurnAt = now
+        settlingDeadline = min(settlingDeadline ?? deadline, deadline)
+        if !settlingBudgetAllowsLocked(at: now, deadline: deadline) {
+            failure = .configurationChanged
+            settlingEndedAt = now
+            return .budgetExhausted(.configurationChanged)
+        }
+        return .revalidate(epoch: stabilityEpoch, firstInBurst: first)
+    }
+    public func revalidationReadiness(at now: TimeInterval, deadline: TimeInterval) -> RevalidationReadiness {
+        lock.lock(); defer { lock.unlock() }
+        guard !stopped, failure == nil, !committed, !configuring,
+              let pendingSince, let lastChurnAt else { return .notRevalidating }
+        let target = min(lastChurnAt + settlingPolicy.debounceDuration,
+                         pendingSince + settlingPolicy.maxCoalesceDuration)
+        guard settlingBudgetAllowsLocked(at: now, deadline: deadline),
+              deadline - max(now, target) >= settlingPolicy.minimumCommitRunway else {
+            failure = .configurationChanged
+            settlingEndedAt = now
+            return .budgetExhausted(.configurationChanged)
+        }
+        if now < target { return .debouncePending(remaining: target - now) }
+        // A checklist may be probed more than once but only consumes one slot per epoch.
+        if revalidationEpoch != stabilityEpoch {
+            guard revalidations < settlingPolicy.maxRevalidations else {
+                failure = .configurationChanged
+                settlingEndedAt = now
+                return .budgetExhausted(.configurationChanged)
+            }
+            revalidations += 1
+            revalidationEpoch = stabilityEpoch
+        }
+        return .readyToRevalidate(epoch: stabilityEpoch)
+    }
+    public func resumeStabilising(expectedEpoch: UInt64, at now: TimeInterval) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard !stopped, failure == nil, !committed, !configuring,
+              expectedEpoch == stabilityEpoch, revalidationEpoch == expectedEpoch,
+              let pendingSince, let deadline = settlingDeadline else { return false }
+        // Re-check after potentially slow native calls, without extending the attempt.
+        guard settlingBudgetAllowsLocked(at: now, deadline: deadline) else {
+            failure = .configurationChanged
+            settlingEndedAt = now
+            return false
+        }
+        cumulativeSettlingDuration += max(0, now - pendingSince)
+        self.pendingSince = nil; lastChurnAt = nil
+        resetStabilityLocked()
+        return true
+    }
+    private func settlingBudgetAllowsLocked(at now: TimeInterval, deadline: TimeInterval) -> Bool {
+        guard now.isFinite, deadline.isFinite, let pendingSince, pendingSince.isFinite,
+              now >= pendingSince else { return false }
+        return churnCount <= settlingPolicy.maxChurnNotifications
+            && cumulativeSettlingDuration + now - pendingSince < settlingPolicy.maxSettlingDuration
+            && deadline - now >= settlingPolicy.minimumCommitRunway
+    }
+    public func settlingSnapshot(at now: TimeInterval) -> SettlingSnapshot {
+        lock.lock(); defer { lock.unlock() }
+        return SettlingSnapshot(epoch: stabilityEpoch, churnCount: churnCount, revalidations: revalidations,
+            duration: cumulativeSettlingDuration + (pendingSince.map { max(0, (settlingEndedAt ?? now) - $0) } ?? 0),
+            readyViaSettling: committed && churnCount > 0)
     }
 
     /// Return true exactly once when an already committed recording fails.
     /// During preparation the caller retries instead of surfacing an error.
     @discardableResult
-    public func invalidate(_ reason: Failure) -> Bool {
+    public func invalidate(_ reason: Failure, expectedEpoch: UInt64? = nil, at now: TimeInterval? = nil) -> Bool {
         lock.lock(); defer { lock.unlock() }
-        guard failure == nil, !stopped else { return false }
+        guard failure == nil, !stopped, expectedEpoch == nil || expectedEpoch == stabilityEpoch else { return false }
         failure = reason
+        if let now, now.isFinite, settlingEndedAt == nil { settlingEndedAt = now }
         return committed
     }
 
-    public func stop() {
+    public func stop(at now: TimeInterval? = nil) {
         lock.lock(); defer { lock.unlock() }
         stopped = true
+        if let now, now.isFinite, settlingEndedAt == nil { settlingEndedAt = now }
     }
 
     public func decision(at now: TimeInterval, deadline: TimeInterval,
@@ -169,9 +346,10 @@ public final class MicrophoneStartupGate: @unchecked Sendable {
     /// Called on the serialized processing queue immediately before releasing
     /// pre-roll. A racing route change or cancellation wins over readiness.
     public func commit(at now: TimeInterval, deadline: TimeInterval,
-                       engineRunning: Bool) -> Bool {
+                       engineRunning: Bool, expectedEpoch: UInt64? = nil) -> Bool {
         lock.lock(); defer { lock.unlock() }
-        guard !committed,
+        guard !committed, !configuring, pendingSince == nil,
+              expectedEpoch == nil || expectedEpoch == stabilityEpoch,
               decisionLocked(at: now, deadline: deadline, engineRunning: engineRunning) == .ready else {
             return false
         }
@@ -200,12 +378,20 @@ public final class MicrophoneStartupGate: @unchecked Sendable {
         if stopped { return .stopped }
         if let failure { return .failed(failure) }
         guard now.isFinite, deadline.isFinite else { return .failed(.unstableBuffers) }
+        if !committed, pendingSince != nil {
+            guard settlingBudgetAllowsLocked(at: now, deadline: deadline) else {
+                failure = .configurationChanged
+                settlingEndedAt = now
+                return .failed(.configurationChanged)
+            }
+            return .waiting
+        }
         if !engineRunning { return .failed(.engineStopped) }
         if committed { return .ready }
         if now >= deadline {
-            return .failed(firstBufferAt == nil ? .noBuffers : .unstableBuffers)
+            return .failed(everReceivedBuffer ? .unstableBuffers : .noBuffers)
         }
-        guard let stableSince, let lastBufferAt,
+        guard !configuring, let stableSince, let lastBufferAt,
               consecutiveBuffers >= 2, now >= lastBufferAt,
               lastBufferAt - stableSince >= stableDuration,
               now - lastBufferAt <= maximumGap else { return .waiting }

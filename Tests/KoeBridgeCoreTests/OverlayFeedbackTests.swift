@@ -3,6 +3,12 @@ import Testing
 @testable import KoeBridgeCore
 
 struct OverlayFeedbackTests {
+    @Test func unconfirmedSubmissionHasDistinctVisibleFeedback() {
+        #expect(OverlayFeedback.sentUnconfirmed != .sent)
+        #expect(OverlayFeedback.sentUnconfirmed.message != OverlayFeedback.sent.message)
+        #expect(OverlayFeedback.sentUnconfirmed.message.contains("未確認"))
+    }
+
     @Test func feedbackDoesNotClaimDestinationAcceptedText() {
         #expect(OverlayFeedback.processing.message.contains("確定"))
         #expect(OverlayFeedback.sent.message.contains("送信"))

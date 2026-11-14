@@ -56,6 +56,8 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
     var successfulEngine: RecognitionMode?
     var partialText = ""
     // Display state only; delivery and review continue to use whole-take results.
+    var startupPreview = StartupPreviewPolicy()
+    var previewPublicationTask: Task<Void, Never>?
     var previewFinalizedText = ""
     var previewVolatileText = ""
     var startedAt: Date?
@@ -125,7 +127,14 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
         return (rows, (cloud?.tokenSamples ?? []) + (reviewSession?.usage.tokens ?? []))
     }
 
+    func resetPreviewPublication() {
+        previewPublicationTask?.cancel()
+        previewPublicationTask = nil
+        startupPreview.reset()
+    }
+
     func releaseResources() {
+        resetPreviewPublication()
         postProcessTask?.cancel()
         permissionTask?.cancel()
         recordingTimeout?.cancel()

@@ -24,6 +24,42 @@ final class MicrophonePreparationDiagnosticsTests: XCTestCase {
         let trace = MicrophonePreparationDiagnostics(clock: { clock.read() }, sink: { records.append($0) })
         return (trace, records, clock)
     }
+    func testChurnCountsPerStageWithEightEventCapAndSettlingFields() {
+        let (trace, records, _) = make()
+        trace.begin(.engineStart)
+        for i in 2...21 { trace.noteChurn(epoch: UInt64(i)) }
+        trace.begin(.awaitPCM)
+        for i in 22...41 { trace.noteChurn(epoch: UInt64(i)) }
+        trace.discardStartup(duration: 0.25)
+        trace.discardStartup(duration: 0.5)
+        trace.discardStartup(duration: 0)
+        let gate = MicrophoneStartupGate()
+        _ = gate.handleConfigurationChange(at: 0, deadline: 2.5)
+        _ = gate.revalidationReadiness(at: 0.07, deadline: 2.5)
+        _ = gate.resumeStabilising(expectedEpoch: 2, at: 0.125)
+        gate.observeConvertedBuffer(frames: 800, at: 0.2)
+        gate.observeConvertedBuffer(frames: 800, at: 0.4)
+        _ = gate.commit(at: 0.41, deadline: 2.5, engineRunning: true)
+        trace.settling(gate.settlingSnapshot(at: 0.42))
+        trace.revalidation(.fail(.engineStopped, component: .engine), engineRunning: false)
+        trace.poll()
+        let entry = records.values.last!
+        XCTAssertTrue(records.values.filter { $0.stage == .configurationChanged }.count == 8)
+        XCTAssertTrue(entry.churnCount == 40)
+        XCTAssertTrue(entry.churnCounts[.engineStart] == 20)
+        XCTAssertTrue(entry.churnCounts[.awaitPCM] == 20)
+        XCTAssertTrue(entry.epoch == 41)
+        XCTAssertTrue(entry.discardedEpochs == 2)
+        XCTAssertTrue(entry.discardedStartupMS == 750)
+        XCTAssertTrue(entry.revalidations == 1)
+        XCTAssertTrue(entry.settlingMS == 125)
+        XCTAssertTrue(entry.readyViaSettling)
+        XCTAssertTrue(entry.rendered.contains("revalidation_outcome=fail"))
+        XCTAssertTrue(entry.rendered.contains("failing_component=engine"))
+        XCTAssertTrue(entry.rendered.contains("engine_running=0"))
+        for _ in 0..<500 { trace.poll() }
+        XCTAssertTrue(records.values.count == MicrophonePreparationDiagnostics.maximumEvents)
+    }
     func testBlockedNativeCallRemainsVisibleToIndependentPoll() {
         let (trace, records, clock) = make()
         trace.begin(.enginePrepare)
