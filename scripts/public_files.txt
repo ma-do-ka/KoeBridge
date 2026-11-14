@@ -306,3 +306,19 @@ docs/ui-rebuild-score.md
 Sources/KoeBridge/SettingsShortcutsPage.swift
 
 Tests/KoeBridgeCoreTests/SettingsPersistenceTests.swift
+
+Sources/KoeBridgeCore/DeliveryPacingPolicy.swift
+Sources/KoeBridgeCore/MicrophoneRevalidationPolicy.swift
+Sources/KoeBridgeCore/MicrophoneSettlingPolicy.swift
+Sources/KoeBridgeCore/StartupPreviewPolicy.swift
+Sources/KoeBridgeSelfTest/DeliveryPacingPolicyTests.swift
+Sources/KoeBridgeSelfTest/MicrophonePreparationDiagnosticsTests.swift
+Sources/KoeBridgeSelfTest/MicrophoneRevalidationPolicyTests.swift
+Sources/KoeBridgeSelfTest/MicrophoneStartupGateSettlingTests.swift
+Sources/KoeBridgeSelfTest/OverlayFeedbackTests.swift
+Sources/KoeBridgeSelfTest/StartupPreviewPolicyTests.swift
+Tests/KoeBridgeCoreTests/DeliveryPacingPolicyTests.swift
+Tests/KoeBridgeCoreTests/MicrophoneRevalidationPolicyTests.swift
+Tests/KoeBridgeCoreTests/MicrophoneStartupGateSettlingTests.swift
+Tests/KoeBridgeCoreTests/StartupPreviewPolicyTests.swift
+Tests/KoeBridgeTests/TextInsertionTransportTests.swift
