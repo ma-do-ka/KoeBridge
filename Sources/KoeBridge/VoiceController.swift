@@ -1014,19 +1014,22 @@ import KoeBridgeCore
                     }
                     take.cloud = candidate
                     candidate.onEvent = { [weak self, weak take, weak candidate] event in
-                        guard let self, let take, !take.finished else { return }
+                        guard let self, let take, let candidate, take.cloud === candidate, !take.finished else { return }
                         switch event {
                         case .interim, .final:
-                            take.partialText = candidate?.assembler.displayText ?? ""
-                            take.previewFinalizedText = candidate?.assembler.preview.finalizedPrefix ?? ""
-                            take.previewVolatileText = candidate?.assembler.preview.volatileTail ?? ""
+                            take.partialText = candidate.assembler.displayText
+                            take.previewFinalizedText = candidate.assembler.preview.finalizedPrefix
+                            take.previewVolatileText = candidate.assembler.preview.volatileTail
                             if take.firstPreviewAt == nil, !take.partialText.isEmpty {
                                 take.firstPreviewAt = Date()
                             }
                             if self.active === take {
-                                self.updatePreview(for: take)
+                                let isFinal: Bool
+                                if case .final = event { isFinal = true } else { isFinal = false }
+                                self.updatePreview(for: take, isFinal: isFinal)
                             }
                         case .error:
+                            take.resetPreviewPublication()
                             DiagnosticLog.record("gemini receiver failure during take")
                         default: break
                         }
@@ -1070,14 +1073,14 @@ import KoeBridgeCore
                 throw CancellationError()
             }
             take.local = recognizer
-            recognizer.onUpdate = { [weak self, weak take] update in
-                guard let self, let take, !take.finished else { return }
+            recognizer.onUpdate = { [weak self, weak take, weak recognizer] update in
+                guard let self, let take, let recognizer, take.local === recognizer, !take.finished else { return }
                 take.partialText = update.text
                 take.previewFinalizedText = update.finalizedPrefix
                 take.previewVolatileText = update.volatileTail
                 if take.firstPreviewAt == nil, !update.text.isEmpty { take.firstPreviewAt = Date() }
                 if self.active === take {
-                    self.updatePreview(for: take)
+                    self.updatePreview(for: take, isFinal: !update.finalizedPrefix.isEmpty)
                 }
             }
         }
@@ -1099,6 +1102,7 @@ import KoeBridgeCore
     /// microphone teardown. Each recording's worker owns its own ASR state.
     func stop() {
         guard phase == .recording, let take = active else { return }
+        take.resetPreviewPublication()
         active = nil
         phase = .idle
         isRecording = false
@@ -1685,12 +1689,38 @@ import KoeBridgeCore
         }
     }
 
-    /// Both display styles share the existing acoustic preview gate.
-    private func updatePreview(for take: DictationTake) {
+    /// Both preview styles publish the same policy-approved snapshot. Raw take
+    /// and assembler state remain available to finalization and recovery throughout.
+    private func updatePreview(for take: DictationTake, isFinal: Bool) {
+        guard active === take, phase == .recording, !take.finished, take.stoppingAt == nil else { return }
         guard AudioActivityPolicy.mayShowInterim(take.mic?.activityEvidence ?? take.acousticEvidence) else {
+            take.resetPreviewPublication()
             previewText = ""
             return
         }
+        take.previewPublicationTask?.cancel()
+        take.previewPublicationTask = nil
+        let now = ProcessInfo.processInfo.systemUptime
+        let decision = isFinal ? take.startupPreview.final(take.partialText)
+            : take.startupPreview.interim(take.partialText, at: now)
+        if case .publish = decision {
+            publishPreview(for: take)
+        } else if let deadline = take.startupPreview.nextPublicationAt {
+            let generation = take.startupPreview.generation
+            take.previewPublicationTask = Task { @MainActor [weak self, weak take] in
+                do { try await Task.sleep(for: .seconds(max(0, deadline - ProcessInfo.processInfo.systemUptime))) }
+                catch { return }
+                guard let self, let take, !Task.isCancelled, self.active === take,
+                      self.phase == .recording, !take.finished, take.stoppingAt == nil,
+                      AudioActivityPolicy.mayShowInterim(take.mic?.activityEvidence ?? take.acousticEvidence) else { return }
+                if case .publish = take.startupPreview.tick(at: ProcessInfo.processInfo.systemUptime, generation: generation) {
+                    self.publishPreview(for: take)
+                }
+            }
+        }
+    }
+
+    private func publishPreview(for take: DictationTake) {
         previewFinalizedText = take.previewFinalizedText
         previewVolatileText = take.previewVolatileText
         previewText = take.partialText

@@ -61,6 +61,13 @@ struct KoeBridgeSelfTest {
             do { try await action() }
             catch { TestRecorder.assertion(false, file: #fileID, line: #line, message: "test threw: \(error)") }
         }
+        await run("StartupPreviewPolicyTests.replacedGitHubNeverPublishes", { StartupPreviewPolicyTests().replacedGitHubNeverPublishes() })
+        await run("StartupPreviewPolicyTests.stableFirstHypothesisPublishesAfterDwell", { StartupPreviewPolicyTests().stableFirstHypothesisPublishesAfterDwell() })
+        await run("StartupPreviewPolicyTests.revisionsCannotSuppressBeyondOneSecond", { StartupPreviewPolicyTests().revisionsCannotSuppressBeyondOneSecond() })
+        await run("StartupPreviewPolicyTests.spokenGitHubPublishesByDwellOrCorroboration", { StartupPreviewPolicyTests().spokenGitHubPublishesByDwellOrCorroboration() })
+        await run("StartupPreviewPolicyTests.finalBypassesDwellAndRawAssemblerIsUntouched", { StartupPreviewPolicyTests().finalBypassesDwellAndRawAssemblerIsUntouched() })
+        await run("StartupPreviewPolicyTests.resetAndStaleGenerationsCannotPublish", { StartupPreviewPolicyTests().resetAndStaleGenerationsCannotPublish() })
+        await run("StartupPreviewPolicyTests.emptyRevisionCancelsPendingWithoutResettingCap", { StartupPreviewPolicyTests().emptyRevisionCancelsPendingWithoutResettingCap() })
         await run("MicrophoneStartupGateTests.testSameFormatChurnRequiresRevalidationAndFreshStability", { MicrophoneStartupGateTests().testSameFormatChurnRequiresRevalidationAndFreshStability() })
         await run("MicrophoneStartupGateTests.testConfiguringChurnAndCancellationCannotResurrect", { MicrophoneStartupGateTests().testConfiguringChurnAndCancellationCannotResurrect() })
         await run("MicrophoneStartupGateTests.testBurstCoalescingAndChecklistRace", { MicrophoneStartupGateTests().testBurstCoalescingAndChecklistRace() })
