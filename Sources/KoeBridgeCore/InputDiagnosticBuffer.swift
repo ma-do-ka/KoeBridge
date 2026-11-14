@@ -3,7 +3,7 @@ import Foundation
 /// A short in-memory trace for one recording. The original capture and the
 /// most recent failure evidence survive a long stream of repeated AX failures.
 /// Milestones protect the actual send plan and read-back expectation from being
-/// evicted by repetitive successful AX calls. No new AX reads or text are collected.
+/// evicted by repetitive successful AX calls. No text is retained.
 public struct InputDiagnosticBuffer: Sendable {
     public static let maximumEvents = 128
     public static let preservedInitialEvents = 32
@@ -25,6 +25,7 @@ public struct InputDiagnosticBuffer: Sendable {
         case requested, target, captured, recognition, preflight, focus
         case before, payload, posted, expected, firstObserved = "first_observed"
         case observed, counts, result, firstReconcile = "first_reconcile", reconcile
+        case capability, eligibility, progress, observation, firstCheckpoint = "first_checkpoint", checkpoint
     }
     private var milestones: [Milestone: Entry] = [:]
 
@@ -32,6 +33,15 @@ public struct InputDiagnosticBuffer: Sendable {
         let event = entry.event
         let fields = event.fields
         switch (event.kind, event.stage) {
+        case (.eligibility, _): milestones[.eligibility] = entry
+        case (.progress, _): milestones[.progress] = entry
+        case (.observation, _): milestones[.observation] = entry
+        case (.snapshot, .preflight) where fields[.receiptSkippedReason] != nil:
+            milestones[.capability] = entry
+            if fields[.selectionStart] != nil { milestones[.before] = entry }
+        case (.focus, .posting) where fields[.chunkOrdinal] != nil:
+            if milestones[.firstCheckpoint] == nil { milestones[.firstCheckpoint] = entry }
+            milestones[.checkpoint] = entry
         case (.session, .requested) where fields[.build] != nil:
             milestones[.requested] = entry
         case (.target, .capture) where fields[.app] != nil:

@@ -167,3 +167,106 @@ struct InputDiagnosticTests {
         check(buffer.retainedCount == 0)
     }
 }
+
+extension InputDiagnosticTests {
+    func numericCapabilityKeepsTheExistingBaselineMilestone() {
+        var buffer = InputDiagnosticBuffer(takeID: takeID)
+        for index in 0..<40 {
+            buffer.append(.init(kind: .ax, stage: .capture, fields: [:]), elapsedMS: index)
+        }
+        buffer.append(.init(kind: .snapshot, stage: .preflight, fields: [
+            .selectionKind: .token(.numericRange), .selectionStart: .integer(12), .selectionLength: .integer(0),
+            .selectionRead: .token(.ok), .valueReadAttempted: .flag(true), .valueReadResult: .token(.ok),
+            .exactBaselineAvailable: .flag(true), .receiptSkippedReason: .token(.snapshotAvailable)
+        ]), elapsedMS: 41)
+        for index in 0..<1_000 {
+            buffer.append(.init(kind: .ax, stage: .receipt, fields: [:]), elapsedMS: 50 + index)
+        }
+        let summaries = buffer.renderedLines().filter { $0.hasPrefix("input_summary") }
+        for section in ["before", "capability"] {
+            check(summaries.contains { $0.contains("section=\(section) ") && $0.contains("selection_start=12") })
+        }
+        check(summaries.joined().contains("receipt_skipped_reason=snapshot_available"))
+        check(buffer.retainedCount == 128 && buffer.droppedCount == buffer.totalCount - 128)
+    }
+
+    func deliveryDiagnosticsSurviveNoiseWithinTheExistingBudget() {
+        var buffer = InputDiagnosticBuffer(takeID: takeID)
+        for index in 0..<40 {
+            buffer.append(.init(kind: .ax, stage: .capture, fields: [.error: .integer(0)]), elapsedMS: index)
+        }
+        let events: [InputDiagnosticEvent] = [
+            .init(kind: .snapshot, stage: .preflight, fields: [
+                .selectionKind: .token(.textMarker), .selectionRead: .token(.notAttempted),
+                .valueReadAttempted: .flag(false), .valueReadResult: .token(.notAttempted),
+                .exactBaselineAvailable: .flag(false), .receiptSkippedReason: .token(.markerNotNumeric)
+            ]),
+            .init(kind: .focus, stage: .posting, fields: [
+                .requireOriginalSelection: .flag(false), .selectionComparison: .token(.skipped),
+                .chunkOrdinal: .integer(101), .outcome: .token(.ok)
+            ]),
+            .init(kind: .eligibility, stage: .result, fields: [
+                .receiptSkippedReason: .token(.markerNotNumeric), .exactBaselineAvailable: .flag(false)
+            ]),
+            .init(kind: .progress, stage: .posting, fields: [
+                .plannedChunks: .integer(102), .sentChunks: .integer(102), .lastPostedOrdinal: .integer(102),
+                .gapCount: .integer(101), .actualGapLastUS: .integer(20_310),
+                .pacingProfile: .token(.unobservableSelectionV1), .pacingVersion: .integer(1),
+                .pacingGapMS: .integer(20), .pacingBudgetMS: .integer(2_000), .pacingBudgetExceeded: .flag(true),
+                .abortPhase: .token(.none), .abortReason: .token(.none)
+            ]),
+            .init(kind: .observation, stage: .receipt, fields: [
+                .outcome: .token(.same), .receiverObservation: .token(.valueOnly),
+                .valueReadAttempted: .flag(true), .valueReadResult: .token(.ok),
+                .exactBaselineAvailable: .flag(false)
+            ]),
+            .init(kind: .result, stage: .result, fields: [.outcome: .token(.unconfirmed)])
+        ]
+        for (index, event) in events.enumerated() { buffer.append(event, elapsedMS: 50 + index) }
+        for index in 0..<3_000 {
+            buffer.append(.init(kind: .ax, stage: .receipt, fields: [.error: .integer(0)]), elapsedMS: 100 + index)
+            check(buffer.retainedCount <= 128)
+        }
+        check(buffer.retainedCount == 128)
+        check(buffer.droppedCount == buffer.totalCount - 128)
+        for event in events { check(buffer.entries.contains { $0.event == event }) }
+        let summaries = buffer.renderedLines().filter { $0.hasPrefix("input_summary") }.joined(separator: "\n")
+        for section in ["capability", "checkpoint", "eligibility", "progress", "observation", "result"] {
+            check(summaries.contains("section=\(section) "))
+        }
+        for field in ["require_original_selection=0", "selection_comparison=skipped", "chunk_ordinal=101",
+                      "receipt_skipped_reason=marker_not_numeric", "value_read_result=not_attempted",
+                      "exact_baseline_available=0", "receiver_observation=value_only",
+                      "pacing_profile=unobservable_selection_v1", "pacing_budget_exceeded=1",
+                      "last_posted_ordinal=102", "gap_count=101"] {
+            check(summaries.contains(field))
+        }
+        check(!summaries.contains("outcome=verified"))
+        check(buffer.renderedLines().allSatisfy { $0.utf8.count <= 320 && DiagnosticLogPolicy.sanitizedEvent($0) == $0 })
+    }
+
+    func abortEvidenceAndUnavailableObserverAreProtected() {
+        var buffer = InputDiagnosticBuffer(takeID: takeID)
+        for index in 0..<40 {
+            buffer.append(.init(kind: .ax, stage: .capture, fields: [:]), elapsedMS: index)
+        }
+        buffer.append(.init(kind: .progress, stage: .posting, fields: [
+            .lastPostedOrdinal: .integer(6), .abortPhase: .token(.posting),
+            .abortReason: .token(.activeAppChanged)
+        ]), elapsedMS: 41)
+        buffer.append(.init(kind: .observation, stage: .receipt, fields: [
+            .outcome: .token(.unknown), .receiverObservation: .token(.unavailable),
+            .valueReadAttempted: .flag(false), .valueReadResult: .token(.notAttempted)
+        ]), elapsedMS: 42)
+        for index in 0..<500 {
+            buffer.append(.init(kind: .ax, stage: .receipt, fields: [:]), elapsedMS: 50 + index)
+        }
+        let lines = buffer.renderedLines().joined()
+        check(lines.contains("abort_reason=active_app_changed"))
+        check(lines.contains("abort_phase=posting"))
+        check(lines.contains("last_posted_ordinal=6"))
+        check(lines.contains("receiver_observation=unavailable"))
+        check(lines.contains("value_read_result=not_attempted"))
+    }
+
+}
