@@ -42,6 +42,12 @@ Sparkleの標準UIが取得・検証・置換・再起動を担当する。GitHu
 
 `bash scripts/prepare_signed_updates.sh package` は公開鍵一致、公開ファイル監査、Pythonテスト、Swift全テスト、自己テスト、Universalパッケージとアーカイブ検証を実行する。生成フィードの版数・URL・サイズ・署名形式を確認し、表示名を1.1.4bへ整えてから最後にフィードへ署名する。署名の真正性をPythonで検証したと主張するものではない。
 
+**更新フィードへ公開するパッケージは、通常のローカルビルドと同じ安定したApple Development署名を使う。** macOSの権限（TCC）はコードの識別情報に結び付いている。2026-11-14のBuild 62→63のアプリ内更新では、ad-hoc署名のパッケージへ置き換えたため、システム設定でONのままでもアクセシビリティとイベント送信の権限を失った（マイク権限は残った）。安定した証明書の署名を維持して、更新時の権限継続を守る。
+
+配布準備コマンドは `KOEBRIDGE_PACKAGE_SIGNING=stable` を指定する。このモードでは `build_app.sh` の既存の署名選択・固定をそのまま使い、Universal構成を維持する。署名の厳密検証に加え、`codesign` の表示にad-hoc署名がなく、有効なTeamIdentifierがあることを確認できなければ、ZIPを作らず停止する。
+
+単独の `KOEBRIDGE_PACKAGE_DEVELOPMENT=1 bash scripts/package_development_build.sh` は従来どおり `adhoc` が既定で、`KOEBRIDGE_PACKAGE_SIGNING=adhoc` でも明示できる。ad-hocパッケージは使い捨ての開発アーカイブ専用であり、更新フィードへは絶対に公開しない。開発用ZIPを安定した署名で作る場合は `KOEBRIDGE_PACKAGE_DEVELOPMENT=1 KOEBRIDGE_PACKAGE_SIGNING=stable bash scripts/package_development_build.sh` を使う。どちらもAppleによる公証済み配布物ではない。
+
 このコマンドは公開しない。公開前にMacで旧版→新版の更新・キャンセル・失敗時保全を試験し、対応するZIPをGitHub Releasesへアップロード・再取得照合してから、`dist/signed-update/appcast.xml` の署名済みバイトを `docs/updates/appcast.xml` に公開する。現在の空フィードを実在しないZIPへ向けてはいけない。署名後のXML整形も禁止。最初のSparkle対応版は手動インストールが必要。
 
 ## 実施した検証 / 未実施
