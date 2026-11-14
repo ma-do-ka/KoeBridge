@@ -1574,7 +1574,7 @@ import KoeBridgeCore
         if outcome.submitted, let stoppedAt = take.stoppingAt {
             lastStopToInputSeconds = Date().timeIntervalSince(stoppedAt)
         }
-        showCompletionFeedback(outcome.submitted ? .sent : completionFeedback, for: id)
+        showCompletionFeedback(outcome.submissionFeedback ?? completionFeedback, for: id)
         if active == nil {
             status = outcome.detail + (take.review?.status == .incomplete ? " 追加チェックは未完了です。" : "")
         }
@@ -1736,7 +1736,7 @@ import KoeBridgeCore
         overlayDismissal = Task { [weak self] in
             let hold: Int
             switch feedback {
-            case .heldForReview, .transformCopied: hold = 3_000
+            case .heldForReview, .transformCopied, .sentUnconfirmed: hold = 3_000
             case .noInput: hold = 330
             case .failed, .transformFailed, .commandBlocked, .commandFailed: hold = 1_000
             default: hold = 520

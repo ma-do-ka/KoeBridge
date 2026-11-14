@@ -61,6 +61,12 @@ struct KoeBridgeSelfTest {
             do { try await action() }
             catch { TestRecorder.assertion(false, file: #fileID, line: #line, message: "test threw: \(error)") }
         }
+        await run("DeliveryPacingPolicyTests.firstChunkIsImmediateAndFollowingChunksArePaced", { DeliveryPacingPolicyTests().firstChunkIsImmediateAndFollowingChunksArePaced() })
+        await run("DeliveryPacingPolicyTests.cumulativePacingNeverExceedsThreeHundredMilliseconds", { DeliveryPacingPolicyTests().cumulativePacingNeverExceedsThreeHundredMilliseconds() })
+        await run("OverlayFeedbackTests.unconfirmedSubmissionHasDistinctVisibleFeedback", { OverlayFeedbackTests().unconfirmedSubmissionHasDistinctVisibleFeedback() })
+        await run("OverlayFeedbackTests.feedbackDoesNotClaimDestinationAcceptedText", { OverlayFeedbackTests().feedbackDoesNotClaimDestinationAcceptedText() })
+        await run("OverlayFeedbackTests.accidentalTapIsNeutralAndNotAnError", { OverlayFeedbackTests().accidentalTapIsNeutralAndNotAnError() })
+        await run("OverlayFeedbackTests.olderFinalizationCannotOverwriteNewRecording", { OverlayFeedbackTests().olderFinalizationCannotOverwriteNewRecording() })
         await run("StartupPreviewPolicyTests.replacedGitHubNeverPublishes", { StartupPreviewPolicyTests().replacedGitHubNeverPublishes() })
         await run("StartupPreviewPolicyTests.stableFirstHypothesisPublishesAfterDwell", { StartupPreviewPolicyTests().stableFirstHypothesisPublishesAfterDwell() })
         await run("StartupPreviewPolicyTests.revisionsCannotSuppressBeyondOneSecond", { StartupPreviewPolicyTests().revisionsCannotSuppressBeyondOneSecond() })
