@@ -61,6 +61,14 @@ struct KoeBridgeSelfTest {
             do { try await action() }
             catch { TestRecorder.assertion(false, file: #fileID, line: #line, message: "test threw: \(error)") }
         }
+        await run("MicrophoneStartupGateTests.testSameFormatChurnRequiresRevalidationAndFreshStability", { MicrophoneStartupGateTests().testSameFormatChurnRequiresRevalidationAndFreshStability() })
+        await run("MicrophoneStartupGateTests.testConfiguringChurnAndCancellationCannotResurrect", { MicrophoneStartupGateTests().testConfiguringChurnAndCancellationCannotResurrect() })
+        await run("MicrophoneStartupGateTests.testBurstCoalescingAndChecklistRace", { MicrophoneStartupGateTests().testBurstCoalescingAndChecklistRace() })
+        await run("MicrophoneStartupGateTests.testEverySettlingBudgetTerminatesInsideAttempt", { MicrophoneStartupGateTests().testEverySettlingBudgetTerminatesInsideAttempt() })
+        await run("MicrophoneStartupGateTests.testNotificationCommitRaceNeverReleasesInvalidEpoch", { MicrophoneStartupGateTests().testNotificationCommitRaceNeverReleasesInvalidEpoch() })
+        await run("MicrophoneStartupGateTests.testPostCommitNotificationInterruptsOnceAndStaysSticky", { MicrophoneStartupGateTests().testPostCommitNotificationInterruptsOnceAndStaysSticky() })
+        await run("MicrophoneRevalidationPolicyTests.testFullChecklistMatrixAndFailurePrecedence", { MicrophoneRevalidationPolicyTests().testFullChecklistMatrixAndFailurePrecedence() })
+        await run("MicrophonePreparationDiagnosticsTests.testChurnCountsPerStageWithEightEventCapAndSettlingFields", { MicrophonePreparationDiagnosticsTests().testChurnCountsPerStageWithEightEventCapAndSettlingFields() })
         await run("MeetingRetentionTests.canonicalWAVRoundTripAndMalformedHeaders", { try MeetingRetentionTests().canonicalWAVRoundTripAndMalformedHeaders() })
         await run("MeetingRetentionTests.backwardCompatibilityAndAppendOnlyResults", { try MeetingRetentionTests().backwardCompatibilityAndAppendOnlyResults() })
         await run("MeetingRetentionTests.independentSourceTimelineSortsByCaptureRatherThanCompletion", { MeetingRetentionTests().independentSourceTimelineSortsByCaptureRatherThanCompletion() })

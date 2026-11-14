@@ -23,7 +23,12 @@ final class MicrophoneCapture: @unchecked Sendable {
     private let selectedInputUID: String
     private var selectedTarget: MicrophoneSelectionTarget? // lifecycleQueue only
     init(selectedInputUID: String = "") { self.selectedInputUID = selectedInputUID }
-    private let startupGate = MicrophoneStartupGate()
+    private let startupGate = MicrophoneStartupGate(configuring: true)
+    private let settlingPolicy = MicrophoneSettlingPolicy()
+    private var revalidationWorkItem: DispatchWorkItem? // lifecycleQueue only
+    // Assigned before the observer is installed; immutable for the attempt.
+    private var attemptDeadline: TimeInterval = 0
+    private var startupBufferEpoch: UInt64 = 1 // processingQueue only
     private let stopLatch = MicrophoneStopLatch()
     private var tapInstalled = false // lifecycleQueue only
     private var tapPlan: MicrophoneTapFormatPlan? // lifecycleQueue only
@@ -116,6 +121,7 @@ final class MicrophoneCapture: @unchecked Sendable {
         startRequested = true
         let beganAt = ProcessInfo.processInfo.systemUptime
         let deadline = beganAt + max(0, timeout)
+        attemptDeadline = deadline
         startupDiagnostics = DiagnosticLog.microphoneTrace(captureID: diagnosticID,
                                                            explicitSelection: !selectedInputUID.isEmpty)
         startupDiagnostics?.begin(.lifecycle)
@@ -154,6 +160,7 @@ final class MicrophoneCapture: @unchecked Sendable {
                     try Task.checkCancellation()
                     switch await checkReadiness(deadline: deadline) {
                     case .ready:
+                        updateSettlingDiagnostics()
                         startupDiagnostics?.end(.awaitPCM)
                         startupDiagnostics?.note(.ready)
                         if let t = startTimings {
@@ -191,12 +198,39 @@ final class MicrophoneCapture: @unchecked Sendable {
         await withCheckedContinuation { continuation in
             Self.lifecycleQueue.async { [self] in
                 let running = engine?.isRunning == true
-                if lostBufferCount > 0 { startupGate.invalidate(.bufferDropped) }
+                // Settling is notification-driven only. Polls neither probe the HAL
+                // during debounce nor turn a poll-detected failure into revalidation.
+                switch startupGate.currentPhase {
+                case .failed, .stopped, .revalidating, .configuring:
+                    continuation.resume(returning: startupGate.decision(
+                        at: ProcessInfo.processInfo.systemUptime, deadline: deadline, engineRunning: running))
+                    return
+                default: break
+                }
+                healthLock.lock()
+                let losses = droppedBuffers, errors = conversionErrors
+                healthLock.unlock()
+                if errors > 0 { startupGate.invalidate(.conversionFailed) }
+                else if losses > 0 { startupGate.invalidate(.bufferDropped) }
+                if case .failed = startupGate.currentPhase {
+                    continuation.resume(returning: startupGate.decision(
+                        at: ProcessInfo.processInfo.systemUptime, deadline: deadline, engineRunning: running))
+                    return
+                }
                 if let engine, let selectedTarget,
                    !MicrophoneDevices.isStillSelected(selectedTarget, node: engine.inputNode) {
                     startupDiagnostics?.note(.inputRouteChanged)
                     startupGate.invalidate(.inputRouteChanged)
                 }
+                // A notification may also have blocked commit while selection was read.
+                switch startupGate.currentPhase {
+                case .failed, .stopped, .revalidating, .configuring:
+                    continuation.resume(returning: startupGate.decision(
+                        at: ProcessInfo.processInfo.systemUptime, deadline: deadline, engineRunning: running))
+                    return
+                default: break
+                }
+                let inspectedEpoch = startupGate.currentEpoch
                 if let engine, let tapPlan {
                     do { try verifyTapFormat(engine.inputNode, plan: tapPlan) }
                     catch {
@@ -208,8 +242,9 @@ final class MicrophoneCapture: @unchecked Sendable {
                     at: ProcessInfo.processInfo.systemUptime, deadline: deadline, engineRunning: running)
                 if decision == .ready {
                     let committed = processingQueue.sync { [self] in
-                        guard startupGate.commit(at: ProcessInfo.processInfo.systemUptime,
-                                                 deadline: deadline, engineRunning: running) else { return false }
+                        guard startupBufferEpoch == inspectedEpoch, startupGate.commit(at: ProcessInfo.processInfo.systemUptime,
+                                                 deadline: deadline, engineRunning: running,
+                                                 expectedEpoch: inspectedEpoch) else { return false }
                         let pending = startupBuffers
                         startupBuffers.removeAll(keepingCapacity: false)
                         startupFrames = 0
@@ -243,16 +278,137 @@ final class MicrophoneCapture: @unchecked Sendable {
 
     private func invalidateStartup(_ reason: MicrophoneStartupGate.Failure,
                                    onDeviceChanged: @escaping () -> Void) {
+        if reason == .configurationChanged || reason == .inputRouteChanged {
+            handleConfigurationChange(reason: reason, onDeviceChanged: onDeviceChanged)
+            return
+        }
         if let stage = MicrophonePreparationDiagnostics.Stage(rawValue: reason.rawValue) {
             startupDiagnostics?.note(stage)
         }
         guard startupGate.invalidate(reason) else { return }
+        notifyInterruption(reason, onDeviceChanged: onDeviceChanged)
+    }
+
+    private func notifyInterruption(_ reason: MicrophoneStartupGate.Failure,
+                                    onDeviceChanged: @escaping () -> Void) {
         // Never stop/deallocate an engine in its notification callback.
         DispatchQueue.main.async { [weak self] in
             guard let self, !self.startupGate.isStopped else { return }
             DiagnosticLog.recordMicrophoneEvidence("mic_interrupted capture=\(self.diagnosticID.uuidString) category=\(reason.rawValue)")
             onDeviceChanged()
         }
+    }
+
+    private func updateSettlingDiagnostics() {
+        startupDiagnostics?.settling(startupGate.settlingSnapshot(at: ProcessInfo.processInfo.systemUptime))
+    }
+
+    private func handleConfigurationChange(reason: MicrophoneStartupGate.Failure,
+                                           onDeviceChanged: @escaping () -> Void) {
+        let outcome = startupGate.handleConfigurationChange(
+            at: ProcessInfo.processInfo.systemUptime, deadline: attemptDeadline, reason: reason)
+        switch outcome {
+        case .ignored: return
+        case .committedInterrupted:
+            if let stage = MicrophonePreparationDiagnostics.Stage(rawValue: reason.rawValue) {
+                startupDiagnostics?.note(stage)
+            }
+            notifyInterruption(reason, onDeviceChanged: onDeviceChanged)
+        case .budgetExhausted:
+            startupDiagnostics?.noteChurn(epoch: startupGate.currentEpoch)
+            updateSettlingDiagnostics()
+            startupDiagnostics?.note(.settlingBudget)
+        case .revalidate(let epoch, _):
+            startupDiagnostics?.noteChurn(epoch: epoch)
+            Self.lifecycleQueue.async { [weak self] in
+                self?.scheduleRevalidation(after: self?.settlingPolicy.debounceDuration ?? 0)
+            }
+        }
+    }
+
+    private func scheduleRevalidation(after delay: TimeInterval) {
+        guard !teardownStarted, revalidationWorkItem == nil,
+              case .revalidating = startupGate.currentPhase else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.revalidationWorkItem = nil
+            self.runRevalidationIfReady()
+        }
+        revalidationWorkItem = work
+        Self.lifecycleQueue.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    private func runRevalidationIfReady() {
+        guard !teardownStarted else { return }
+        let epoch: UInt64
+        switch startupGate.revalidationReadiness(at: ProcessInfo.processInfo.systemUptime, deadline: attemptDeadline) {
+        case .notRevalidating: return
+        case .budgetExhausted:
+            updateSettlingDiagnostics()
+            startupDiagnostics?.note(.settlingBudget)
+            return
+        case .debouncePending(let remaining):
+            scheduleRevalidation(after: remaining)
+            return
+        case .readyToRevalidate(let readyEpoch): epoch = readyEpoch
+        }
+        startupDiagnostics?.begin(.revalidating)
+        let engine = self.engine
+        let node = engine?.inputNode
+        let selected = selectedTarget.map { target in
+            node.map { MicrophoneDevices.isStillSelected(target, node: $0) } ?? false
+        } ?? false
+        let hardware = node?.inputFormat(forBus: 0)
+        let applied = node?.outputFormat(forBus: 0)
+        healthLock.lock()
+        let losses = droppedBuffers, errors = conversionErrors
+        healthLock.unlock()
+        let running = engine?.isRunning == true
+        let input = MicrophoneRevalidationInput(
+            hasEngineAndTarget: engineLease != nil && selectedTarget != nil,
+            deviceStillSelected: selected, engineRunning: running, tapInstalled: tapInstalled,
+            outputConnectionsEmpty: node.map { engine?.outputConnectionPoints(for: $0, outputBus: 0).isEmpty == true } ?? false,
+            hardwareFormatValid: hardware.map { MicrophoneTapFormatPlan(hardwareSampleRate: $0.sampleRate, hardwareChannels: $0.channelCount) != nil } ?? false,
+            hardwareMatchesPlan: hardware.map { tapPlan?.matches(sampleRate: $0.sampleRate, channels: $0.channelCount) == true } ?? false,
+            appliedMatchesPlan: applied.map { tapPlan?.matches(sampleRate: $0.sampleRate, channels: $0.channelCount) == true } ?? false,
+            droppedBuffers: losses, conversionErrors: errors)
+        let verdict = MicrophoneRevalidationPolicy.evaluate(input)
+        // Native reads can race a newer notification or cancellation. Never apply
+        // an old checklist (including its failure) to a different epoch.
+        guard case .revalidating(let current, _, _) = startupGate.currentPhase, current == epoch else {
+            startupDiagnostics?.end(.revalidating)
+            scheduleRevalidation(after: settlingPolicy.debounceDuration)
+            return
+        }
+        switch verdict {
+        case .fail(let reason, _):
+            startupGate.invalidate(reason, expectedEpoch: epoch)
+        case .resume:
+            let resumed = processingQueue.sync { [self] in
+                discardStartupBuffers()
+                // Retain the converter but discard any internally buffered old PCM.
+                converter?.reset()
+                startupBufferEpoch = epoch
+                return startupGate.resumeStabilising(expectedEpoch: epoch, at: ProcessInfo.processInfo.systemUptime)
+            }
+            if !resumed {
+                startupDiagnostics?.end(.revalidating)
+                updateSettlingDiagnostics()
+                if case .failed = startupGate.currentPhase { startupDiagnostics?.note(.settlingBudget) }
+                scheduleRevalidation(after: settlingPolicy.debounceDuration)
+                return
+            }
+        }
+        updateSettlingDiagnostics()
+        startupDiagnostics?.revalidation(verdict, engineRunning: running)
+        if case .resume = verdict { startupDiagnostics?.begin(.awaitPCM) }
+    }
+
+    /// Processing lane only; all epochs and failed attempts discard their PCM.
+    private func discardStartupBuffers() {
+        startupDiagnostics?.discardStartup(duration: Double(startupFrames) / output.sampleRate)
+        startupBuffers.removeAll(keepingCapacity: false)
+        startupFrames = 0
     }
 
     private func startBlocking(onAudio: @escaping (Data) -> Void,
@@ -331,8 +487,10 @@ final class MicrophoneCapture: @unchecked Sendable {
         // Explicitly reconfigure the input node output to CURRENT hardware.
         // The tap and AVAudioConverter must use this SAME format.
         startupDiagnostics?.begin(.tapInstall)
+        let tapGeneration = startupGate.currentTapGeneration
         node.installTap(onBus: 0, bufferSize: 1024, format: input) { [weak self] buffer, _ in
-            guard let self, buffer.frameLength > 0, self.startupGate.acceptsBuffers else { return }
+            guard let self, buffer.frameLength > 0,
+                  let token = self.startupGate.captureTokenForTap(tapGeneration: tapGeneration) else { return }
             // Timestamp arrival, not eventual conversion. Queued old buffers
             // must not make a stalled microphone appear live/ready.
             let arrivedAt = ProcessInfo.processInfo.systemUptime
@@ -351,7 +509,7 @@ final class MicrophoneCapture: @unchecked Sendable {
             }
             self.processingQueue.async { [weak self, slots = self.workSlots] in
                 defer { slots.signal() }
-                self?.convert(copy, arrivedAt: arrivedAt, onDeviceChanged: onDeviceChanged)
+                self?.convert(copy, arrivedAt: arrivedAt, token: token, onDeviceChanged: onDeviceChanged)
             }
         }
         tapInstalled = true
@@ -368,7 +526,9 @@ final class MicrophoneCapture: @unchecked Sendable {
             startupDiagnostics?.begin(.engineStart)
             try engine.start()
             startupDiagnostics?.end(.engineStart)
-            startupDiagnostics?.begin(.awaitPCM)
+            let phase = startupGate.finishConfiguring(at: ProcessInfo.processInfo.systemUptime)
+            if case .revalidating = phase { scheduleRevalidation(after: settlingPolicy.debounceDuration) }
+            else { startupDiagnostics?.begin(.awaitPCM) }
             let timer = DispatchSource.makeTimerSource(queue: Self.lifecycleQueue)
             timer.schedule(deadline: .now() + 0.25, repeating: 0.25, leeway: .milliseconds(30))
             timer.setEventHandler { [weak self] in
@@ -412,8 +572,9 @@ final class MicrophoneCapture: @unchecked Sendable {
     }
 
     private func convert(_ incoming: AVAudioPCMBuffer, arrivedAt: TimeInterval,
+                         token: MicrophoneStartupGate.TapCaptureToken,
                          onDeviceChanged: @escaping () -> Void) {
-        guard alive, startupGate.acceptsBuffers, let converter else { return }
+        guard alive, startupGate.accepts(token), let converter else { return }
         guard incoming.frameLength > 0 else { return }
         guard incoming.format.sampleRate.isFinite, incoming.format.sampleRate > 0,
               incoming.format.channelCount > 0, incoming.format.isEqual(converter.inputFormat) else {
@@ -445,11 +606,11 @@ final class MicrophoneCapture: @unchecked Sendable {
             invalidateStartup(.conversionFailed, onDeviceChanged: onDeviceChanged)
             return
         }
-        startupGate.observeConvertedBuffer(frames: Int(target.frameLength),
-                                           at: arrivedAt)
-        if startupGate.didCommit {
-            consume(target)
-        } else {
+        switch startupGate.observeConvertedBuffer(frames: Int(target.frameLength),
+                                                  at: arrivedAt, epoch: token.stabilityEpoch) {
+        case .dropped: return
+        case .committed: consume(target)
+        case .buffered:
             // Diagnostics only, on the conversion lane; exact digital zero is
             // measured without changing readiness or speech admission.
             if let startupDiagnostics, let samples = target.floatChannelData?.pointee {
@@ -543,7 +704,10 @@ final class MicrophoneCapture: @unchecked Sendable {
         guard stopLatch.begin(completion: completion) else { return }
         startupDiagnostics?.begin(.stopGate)
         teardownStarted = true
+        updateSettlingDiagnostics()
         startupGate.stop()
+        revalidationWorkItem?.cancel()
+        revalidationWorkItem = nil
         healthTimer?.setEventHandler(handler: nil)
         healthTimer?.cancel()
         healthTimer = nil
@@ -570,7 +734,7 @@ final class MicrophoneCapture: @unchecked Sendable {
         processingQueue.sync { [self] in
             alive = false
             if !startupGate.didCommit {
-                startupDiagnostics?.discardStartup(duration: Double(startupFrames) / output.sampleRate)
+                discardStartupBuffers()
             }
             startupBuffers.removeAll(keepingCapacity: false)
             startupFrames = 0
