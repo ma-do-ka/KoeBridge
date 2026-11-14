@@ -44,7 +44,7 @@ final class MicrophonePreparationDiagnosticsTests: XCTestCase {
         trace.revalidation(.fail(.engineStopped, component: .engine), engineRunning: false)
         trace.poll()
         let entry = records.values.last!
-        XCTAssertTrue(records.values.filter { $0.stage == .configurationChanged }.count == 16)
+        XCTAssertTrue(records.values.filter { $0.stage == .configurationChanged }.count == 8)
         XCTAssertTrue(entry.churnCount == 40)
         XCTAssertTrue(entry.churnCounts[.engineStart] == 20)
         XCTAssertTrue(entry.churnCounts[.awaitPCM] == 20)

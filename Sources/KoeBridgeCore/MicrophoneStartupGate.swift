@@ -121,6 +121,7 @@ public final class MicrophoneStartupGate: @unchecked Sendable {
     private var lastChurnAt: TimeInterval?
     private var settlingDeadline: TimeInterval?
     private var cumulativeSettlingDuration: TimeInterval = 0
+    private var settlingEndedAt: TimeInterval?
     private var revalidationEpoch: UInt64?
     private var churnCount = 0
     private var revalidations = 0
@@ -135,6 +136,8 @@ public final class MicrophoneStartupGate: @unchecked Sendable {
     private var committed = false
     private var stopped = false
 
+    /// Capture starts with `configuring: true`; legacy stream-only callers may
+    /// start directly in stabilising without an engine-setup phase.
     public init(stableDuration: TimeInterval = 0.15,
                 maximumGap: TimeInterval = 0.35,
                 settlingPolicy: MicrophoneSettlingPolicy = .init(),
@@ -257,6 +260,7 @@ public final class MicrophoneStartupGate: @unchecked Sendable {
         settlingDeadline = min(settlingDeadline ?? deadline, deadline)
         if !settlingBudgetAllowsLocked(at: now, deadline: deadline) {
             failure = .configurationChanged
+            settlingEndedAt = now
             return .budgetExhausted(.configurationChanged)
         }
         return .revalidate(epoch: stabilityEpoch, firstInBurst: first)
@@ -270,6 +274,7 @@ public final class MicrophoneStartupGate: @unchecked Sendable {
         guard settlingBudgetAllowsLocked(at: now, deadline: deadline),
               deadline - max(now, target) >= settlingPolicy.minimumCommitRunway else {
             failure = .configurationChanged
+            settlingEndedAt = now
             return .budgetExhausted(.configurationChanged)
         }
         if now < target { return .debouncePending(remaining: target - now) }
@@ -277,6 +282,7 @@ public final class MicrophoneStartupGate: @unchecked Sendable {
         if revalidationEpoch != stabilityEpoch {
             guard revalidations < settlingPolicy.maxRevalidations else {
                 failure = .configurationChanged
+                settlingEndedAt = now
                 return .budgetExhausted(.configurationChanged)
             }
             revalidations += 1
@@ -292,6 +298,7 @@ public final class MicrophoneStartupGate: @unchecked Sendable {
         // Re-check after potentially slow native calls, without extending the attempt.
         guard settlingBudgetAllowsLocked(at: now, deadline: deadline) else {
             failure = .configurationChanged
+            settlingEndedAt = now
             return false
         }
         cumulativeSettlingDuration += max(0, now - pendingSince)
@@ -309,23 +316,25 @@ public final class MicrophoneStartupGate: @unchecked Sendable {
     public func settlingSnapshot(at now: TimeInterval) -> SettlingSnapshot {
         lock.lock(); defer { lock.unlock() }
         return SettlingSnapshot(epoch: stabilityEpoch, churnCount: churnCount, revalidations: revalidations,
-            duration: cumulativeSettlingDuration + (pendingSince.map { max(0, now - $0) } ?? 0),
+            duration: cumulativeSettlingDuration + (pendingSince.map { max(0, (settlingEndedAt ?? now) - $0) } ?? 0),
             readyViaSettling: committed && churnCount > 0)
     }
 
     /// Return true exactly once when an already committed recording fails.
     /// During preparation the caller retries instead of surfacing an error.
     @discardableResult
-    public func invalidate(_ reason: Failure, expectedEpoch: UInt64? = nil) -> Bool {
+    public func invalidate(_ reason: Failure, expectedEpoch: UInt64? = nil, at now: TimeInterval? = nil) -> Bool {
         lock.lock(); defer { lock.unlock() }
         guard failure == nil, !stopped, expectedEpoch == nil || expectedEpoch == stabilityEpoch else { return false }
         failure = reason
+        if let now, now.isFinite, settlingEndedAt == nil { settlingEndedAt = now }
         return committed
     }
 
-    public func stop() {
+    public func stop(at now: TimeInterval? = nil) {
         lock.lock(); defer { lock.unlock() }
         stopped = true
+        if let now, now.isFinite, settlingEndedAt == nil { settlingEndedAt = now }
     }
 
     public func decision(at now: TimeInterval, deadline: TimeInterval,
@@ -372,6 +381,7 @@ public final class MicrophoneStartupGate: @unchecked Sendable {
         if !committed, pendingSince != nil {
             guard settlingBudgetAllowsLocked(at: now, deadline: deadline) else {
                 failure = .configurationChanged
+                settlingEndedAt = now
                 return .failed(.configurationChanged)
             }
             return .waiting

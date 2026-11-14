@@ -45,6 +45,8 @@ public final class MicrophonePreparationDiagnostics: @unchecked Sendable {
         public let settlingMS: Int
         public let discardedEpochs: Int
         public let readyViaSettling: Bool
+        public let resumedRevalidations: Int
+        public let failedRevalidations: Int
         public let revalidationOutcome: String?
         public let failingComponent: MicrophoneRevalidationPolicy.Component?
         public let engineRunning: Bool?
@@ -61,7 +63,8 @@ public final class MicrophonePreparationDiagnostics: @unchecked Sendable {
             if epoch > 1 || churnCount > 0 {
                 fields += ["epoch=\(epoch)", "final_epoch=\(epoch)", "churn_count=\(churnCount)",
                            "revalidations=\(revalidations)", "settling_ms=\(settlingMS)",
-                           "discarded_epochs=\(discardedEpochs)", "ready_via_settling=\(readyViaSettling ? 1 : 0)"]
+                           "discarded_epochs=\(discardedEpochs)", "ready_via_settling=\(readyViaSettling ? 1 : 0)",
+                           "revalidation_outcomes=resume:\(resumedRevalidations),fail:\(failedRevalidations)"]
                 for stage in churnCounts.keys.sorted(by: { $0.rawValue < $1.rawValue }) {
                     fields.append("churn_\(stage.rawValue)=\(churnCounts[stage]!)")
                 }
@@ -87,6 +90,7 @@ public final class MicrophonePreparationDiagnostics: @unchecked Sendable {
     private var inputBuffers = 0
     private var convertedBuffers = 0
     private var discardedStartupMS = 0
+    private var discardedStartupDuration: TimeInterval = 0
     private var zeroStartupBuffers = 0
     private var inputRate = 0
     private var inputChannels = 0
@@ -95,6 +99,9 @@ public final class MicrophonePreparationDiagnostics: @unchecked Sendable {
     private var closed = false
     private var noted = Set<Stage>()
     private var churnCounts: [Stage: Int] = [:]
+    private var emittedChurn = 0
+    private var resumedRevalidations = 0
+    private var failedRevalidations = 0
     private var epoch: UInt64 = 1
     private var revalidations = 0
     private var settlingMS = 0
@@ -117,7 +124,7 @@ public final class MicrophonePreparationDiagnostics: @unchecked Sendable {
     public func note(_ stage: Stage, code: Int? = nil) {
         emit(stage, kind: .note, code: code, once: true)
     }
-    /// Count every notification by the stage it interrupted; emit at most eight per stage.
+    /// Count every notification by the stage it interrupted; emit at most eight per attempt.
     public func noteChurn(epoch: UInt64) {
         emit(.configurationChanged, kind: .note, churnEpoch: epoch)
     }
@@ -134,8 +141,8 @@ public final class MicrophonePreparationDiagnostics: @unchecked Sendable {
         guard !closed else { lock.unlock(); return }
         self.engineRunning = engineRunning
         switch verdict {
-        case .resume: revalidationOutcome = "resume"; failingComponent = nil
-        case .fail(_, let component): revalidationOutcome = "fail"; failingComponent = component
+        case .resume: resumedRevalidations += 1; revalidationOutcome = "resume"; failingComponent = nil
+        case .fail(_, let component): failedRevalidations += 1; revalidationOutcome = "fail"; failingComponent = component
         }
         lock.unlock()
         end(.revalidating)
@@ -165,9 +172,9 @@ public final class MicrophonePreparationDiagnostics: @unchecked Sendable {
     public func discardStartup(duration: TimeInterval) {
         lock.lock(); defer { lock.unlock() }
         guard !closed else { return }
-        let added = Self.milliseconds(duration)
-        if added > 0 {
-            discardedStartupMS = min(86_400_000, discardedStartupMS + added)
+        if duration.isFinite, duration > 0 {
+            discardedStartupDuration = min(86_400, discardedStartupDuration + duration)
+            discardedStartupMS = Self.milliseconds(discardedStartupDuration)
             discardedEpochs += 1
         }
     }
@@ -190,7 +197,8 @@ public final class MicrophonePreparationDiagnostics: @unchecked Sendable {
             epoch = max(epoch, churnEpoch)
             let count = churnCounts[stage, default: 0]
             churnCounts[stage] = count < Int.max ? count + 1 : count
-            if count >= 8 { lock.unlock(); return }
+            if emittedChurn >= 8 { lock.unlock(); return }
+            emittedChurn += 1
         }
         if finish { closed = true }
         guard sequence < Self.maximumEvents else { lock.unlock(); return }
@@ -207,7 +215,9 @@ public final class MicrophonePreparationDiagnostics: @unchecked Sendable {
                           discardedStartupMS: discardedStartupMS, zeroStartupBuffers: zeroStartupBuffers,
                           epoch: epoch, churnCount: churnCounts.values.reduce(0, +), churnCounts: churnCounts,
                           revalidations: revalidations, settlingMS: settlingMS, discardedEpochs: discardedEpochs,
-                          readyViaSettling: readyViaSettling, revalidationOutcome: revalidationOutcome,
+                          readyViaSettling: readyViaSettling,
+                          resumedRevalidations: resumedRevalidations, failedRevalidations: failedRevalidations,
+                          revalidationOutcome: revalidationOutcome,
                           failingComponent: failingComponent, engineRunning: engineRunning,
                           inputRate: inputRate, inputChannels: inputChannels,
                           firstBufferMS: firstAt.map { Self.milliseconds($0 - beganAt) },

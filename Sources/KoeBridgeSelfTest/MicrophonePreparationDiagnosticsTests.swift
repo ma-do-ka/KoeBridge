@@ -43,7 +43,7 @@ struct MicrophonePreparationDiagnosticsTests {
         trace.revalidation(.fail(.engineStopped, component: .engine), engineRunning: false)
         trace.poll()
         let entry = records.values.last!
-        check(records.values.filter { $0.stage == .configurationChanged }.count == 16)
+        check(records.values.filter { $0.stage == .configurationChanged }.count == 8)
         check(entry.churnCount == 40)
         check(entry.churnCounts[.engineStart] == 20)
         check(entry.churnCounts[.awaitPCM] == 20)

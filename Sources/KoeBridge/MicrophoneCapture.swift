@@ -24,7 +24,6 @@ final class MicrophoneCapture: @unchecked Sendable {
     private var selectedTarget: MicrophoneSelectionTarget? // lifecycleQueue only
     init(selectedInputUID: String = "") { self.selectedInputUID = selectedInputUID }
     private let startupGate = MicrophoneStartupGate(configuring: true)
-    private let settlingPolicy = MicrophoneSettlingPolicy()
     private var revalidationWorkItem: DispatchWorkItem? // lifecycleQueue only
     // Assigned before the observer is installed; immutable for the attempt.
     private var attemptDeadline: TimeInterval = 0
@@ -266,7 +265,7 @@ final class MicrophoneCapture: @unchecked Sendable {
     /// Wait for failed-attempt teardown before creating another engine.
     func cancelAndWait() async {
         startupDiagnostics?.note(.stopRequested)
-        startupGate.stop()
+        startupGate.stop(at: ProcessInfo.processInfo.systemUptime)
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             Self.lifecycleQueue.async { [self] in
                 stopBlocking(flushPendingAudio: false) { _ in
@@ -321,11 +320,14 @@ final class MicrophoneCapture: @unchecked Sendable {
         case .revalidate(let epoch, _):
             startupDiagnostics?.noteChurn(epoch: epoch)
             Self.lifecycleQueue.async { [weak self] in
-                self?.scheduleRevalidation(after: self?.settlingPolicy.debounceDuration ?? 0)
+                guard let self else { return }
+                self.scheduleRevalidation(after: 0)
             }
         }
     }
 
+    /// First wake is immediate; the gate computes the remaining debounce from
+    /// notification time, so a slow setup/HAL call cannot restart the coalesce window.
     private func scheduleRevalidation(after delay: TimeInterval) {
         guard !teardownStarted, revalidationWorkItem == nil,
               case .revalidating = startupGate.currentPhase else { return }
@@ -377,12 +379,12 @@ final class MicrophoneCapture: @unchecked Sendable {
         // an old checklist (including its failure) to a different epoch.
         guard case .revalidating(let current, _, _) = startupGate.currentPhase, current == epoch else {
             startupDiagnostics?.end(.revalidating)
-            scheduleRevalidation(after: settlingPolicy.debounceDuration)
+            scheduleRevalidation(after: 0)
             return
         }
         switch verdict {
         case .fail(let reason, _):
-            startupGate.invalidate(reason, expectedEpoch: epoch)
+            startupGate.invalidate(reason, expectedEpoch: epoch, at: ProcessInfo.processInfo.systemUptime)
         case .resume:
             let resumed = processingQueue.sync { [self] in
                 discardStartupBuffers()
@@ -395,7 +397,7 @@ final class MicrophoneCapture: @unchecked Sendable {
                 startupDiagnostics?.end(.revalidating)
                 updateSettlingDiagnostics()
                 if case .failed = startupGate.currentPhase { startupDiagnostics?.note(.settlingBudget) }
-                scheduleRevalidation(after: settlingPolicy.debounceDuration)
+                scheduleRevalidation(after: 0)
                 return
             }
         }
@@ -527,7 +529,7 @@ final class MicrophoneCapture: @unchecked Sendable {
             try engine.start()
             startupDiagnostics?.end(.engineStart)
             let phase = startupGate.finishConfiguring(at: ProcessInfo.processInfo.systemUptime)
-            if case .revalidating = phase { scheduleRevalidation(after: settlingPolicy.debounceDuration) }
+            if case .revalidating = phase { scheduleRevalidation(after: 0) }
             else { startupDiagnostics?.begin(.awaitPCM) }
             let timer = DispatchSource.makeTimerSource(queue: Self.lifecycleQueue)
             timer.schedule(deadline: .now() + 0.25, repeating: 0.25, leeway: .milliseconds(30))
@@ -695,7 +697,7 @@ final class MicrophoneCapture: @unchecked Sendable {
 
     func stop(completion: @escaping (Int) -> Void) {
         startupDiagnostics?.note(.stopRequested)
-        startupGate.stop()
+        startupGate.stop(at: ProcessInfo.processInfo.systemUptime)
         Self.lifecycleQueue.async { [self] in
             stopBlocking(flushPendingAudio: startupGate.didCommit, completion: completion)
         }
@@ -705,7 +707,7 @@ final class MicrophoneCapture: @unchecked Sendable {
         startupDiagnostics?.begin(.stopGate)
         teardownStarted = true
         updateSettlingDiagnostics()
-        startupGate.stop()
+        startupGate.stop(at: ProcessInfo.processInfo.systemUptime)
         revalidationWorkItem?.cancel()
         revalidationWorkItem = nil
         healthTimer?.setEventHandler(handler: nil)

@@ -108,6 +108,38 @@ extension MicrophoneStartupGateTests {
         }
     }
 
+    func testRevalidationCancellationRaceAndStoppedTiming() {
+        for _ in 0..<100 {
+            let gate = MicrophoneStartupGate()
+            _ = gate.handleConfigurationChange(at: 0, deadline: 2.5)
+            _ = gate.revalidationReadiness(at: 0.07, deadline: 2.5)
+            DispatchQueue.concurrentPerform(iterations: 2) { i in
+                if i == 0 { _ = gate.resumeStabilising(expectedEpoch: 2, at: 0.08) }
+                else { gate.stop(at: 0.08) }
+            }
+            XCTAssertTrue(gate.currentPhase == .stopped)
+            XCTAssertTrue(gate.captureTokenForTap(tapGeneration: 1) == nil)
+            XCTAssertTrue(gate.observeConvertedBuffer(frames: 800, at: 0.1, epoch: 2) == .dropped)
+            XCTAssertTrue(!gate.commit(at: 0.3, deadline: 2.5, engineRunning: true))
+            XCTAssertTrue(abs(gate.settlingSnapshot(at: 10).duration - 0.08) < 0.0001)
+        }
+    }
+
+    func testOldEpochCannotRefreshReadyStreamAndTapGenerationMustMatch() {
+        let gate = MicrophoneStartupGate()
+        XCTAssertTrue(gate.captureTokenForTap(tapGeneration: 0) == nil)
+        _ = gate.handleConfigurationChange(at: 0, deadline: 2.5)
+        _ = gate.revalidationReadiness(at: 0.07, deadline: 2.5)
+        _ = gate.revalidationReadiness(at: 0.071, deadline: 2.5)
+        XCTAssertTrue(gate.settlingSnapshot(at: 0.072).revalidations == 1)
+        _ = gate.resumeStabilising(expectedEpoch: 2, at: 0.08)
+        _ = gate.observeConvertedBuffer(frames: 800, at: 0.1, epoch: 2)
+        _ = gate.observeConvertedBuffer(frames: 800, at: 0.3, epoch: 2)
+        XCTAssertTrue(gate.decision(at: 0.31, deadline: 2.5, engineRunning: true) == .ready)
+        XCTAssertTrue(gate.observeConvertedBuffer(frames: 800, at: 0.7, epoch: 1) == .dropped)
+        XCTAssertTrue(gate.decision(at: 0.71, deadline: 2.5, engineRunning: true) == .waiting)
+    }
+
     func testPostCommitNotificationInterruptsOnceAndStaysSticky() {
         let gate = MicrophoneStartupGate()
         gate.observeConvertedBuffer(frames: 800, at: 0)

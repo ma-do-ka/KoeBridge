@@ -61,6 +61,8 @@ struct KoeBridgeSelfTest {
             do { try await action() }
             catch { TestRecorder.assertion(false, file: #fileID, line: #line, message: "test threw: \(error)") }
         }
+        await run("MicrophoneStartupGateTests.testRevalidationCancellationRaceAndStoppedTiming", { MicrophoneStartupGateTests().testRevalidationCancellationRaceAndStoppedTiming() })
+        await run("MicrophoneStartupGateTests.testOldEpochCannotRefreshReadyStreamAndTapGenerationMustMatch", { MicrophoneStartupGateTests().testOldEpochCannotRefreshReadyStreamAndTapGenerationMustMatch() })
         await run("DeliveryPacingPolicyTests.firstChunkIsImmediateAndFollowingChunksArePaced", { DeliveryPacingPolicyTests().firstChunkIsImmediateAndFollowingChunksArePaced() })
         await run("DeliveryPacingPolicyTests.cumulativePacingNeverExceedsThreeHundredMilliseconds", { DeliveryPacingPolicyTests().cumulativePacingNeverExceedsThreeHundredMilliseconds() })
         await run("OverlayFeedbackTests.unconfirmedSubmissionHasDistinctVisibleFeedback", { OverlayFeedbackTests().unconfirmedSubmissionHasDistinctVisibleFeedback() })
