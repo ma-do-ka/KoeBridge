@@ -80,7 +80,8 @@ struct SettingsView: View {
                     try DiagnosticLog.deleteExistingFiles()
                     logNotice = "動作記録を削除しました"
                 } catch {
-                    logNotice = "動作記録を削除できません：\(error.localizedDescription)"
+                    DiagnosticLog.record("diagnostic log deletion failed: \(error.localizedDescription)")
+                    logNotice = UserFacingErrorMessage.message(for: error, operation: "動作記録の削除")
                 }
             }
             Button("キャンセル", role: .cancel) {}
@@ -94,7 +95,12 @@ struct SettingsView: View {
                     apiKeyDraft = ""
                     apiKeyNotice = "APIキーを削除しました"
                 } catch {
-                    apiKeyNotice = "APIキーを削除できません：\(error.localizedDescription)"
+                    DiagnosticLog.record("API key deletion failed: \(error.localizedDescription)")
+                    let mappedError: Error
+                    if let keyError = error as? KeychainStore.KeyError, case .security(let status) = keyError {
+                        mappedError = NSError(domain: NSOSStatusErrorDomain, code: Int(status))
+                    } else { mappedError = error }
+                    apiKeyNotice = UserFacingErrorMessage.message(for: mappedError, operation: "APIキーの削除")
                 }
             }
             Button("キャンセル", role: .cancel) {}

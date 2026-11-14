@@ -142,6 +142,12 @@ struct SettingsAboutPage: View {
                                     .fixedSize(horizontal: false, vertical: true)
                             }
                             Spacer(minLength: 8)
+                            if nativeUpdater.canCancelUpdate {
+                                Button("更新をキャンセル") { nativeUpdater.cancelUpdate() }
+                            }
+                            if nativeUpdater.canRetryTermination {
+                                Button("終了して更新を再試行") { nativeUpdater.retryTermination() }
+                            }
                             if updater.state == .checking {
                                 ProgressView()
                                     .controlSize(.small)

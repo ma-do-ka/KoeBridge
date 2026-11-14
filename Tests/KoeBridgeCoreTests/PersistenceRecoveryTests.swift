@@ -29,7 +29,7 @@ struct PersistenceRecoveryTests {
 
         store.append(engineEvents: [engines[0]], tokenEvents: [tokens[0]], now: now)
         store.append(engineEvents: [engines[1]], tokenEvents: [tokens[1]], now: now)
-        #expect(!store.problem.isEmpty)
+        #expect(store.problem == "利用統計を保存できません。元のファイルは保持しています：利用状況に失敗しました。時間をおいてもう一度お試しください。")
         #expect(store.engineEvents == Array(engines.prefix(2)))
         #expect(store.tokenEvents == Array(tokens.prefix(2)))
 
@@ -79,7 +79,7 @@ struct PersistenceRecoveryTests {
         let before = engine(at: now.addingTimeInterval(-1))
         store.append(engineEvents: [before], tokenEvents: [], now: now)
         store.deleteAll()
-        #expect(!store.problem.isEmpty)
+        #expect(store.problem == "利用統計を削除できません：利用状況に失敗しました。時間をおいてもう一度お試しください。")
         #expect(store.engineEvents == [before])
 
         try FileManager.default.removeItem(at: blockedParent)
@@ -96,7 +96,7 @@ struct PersistenceRecoveryTests {
         let damaged = Data("unreadable old usage".utf8)
         try damaged.write(to: url)
         var store = UsageMonitorStore(fileURL: url)
-        #expect(!store.problem.isEmpty)
+        #expect(store.problem == "利用統計を読み込めません。元のデータは保持しています：利用状況に失敗しました。時間をおいてもう一度お試しください。")
         let now = Date()
         let valid = engine(at: now)
         let stale = engine(at: now.addingTimeInterval(-31 * 86_400))
@@ -107,6 +107,10 @@ struct PersistenceRecoveryTests {
         #expect(!store.problem.isEmpty)
         #expect(store.engineEvents == [valid])
         #expect(try Data(contentsOf: url) == damaged)
+
+        try Data(repeating: 0, count: UsageMonitorArchive.maximumFileBytes + 1).write(to: url)
+        let oversized = UsageMonitorStore(fileURL: url)
+        #expect(oversized.problem.contains(UsageMonitorArchive.ArchiveError.tooLarge.errorDescription!))
     }
 
     @Test func pendingHistoryFromPreviousLaunchIsMarkedInterrupted() throws {
@@ -140,7 +144,7 @@ struct PersistenceRecoveryTests {
         let firstID = try #require(rememberedID)
         store.updateDelivery(firstID, to: .verifiedInserted, detail: "入力を確認")
         store.updateDelivery(UUID(), to: .blockedFocus)
-        #expect(!store.problem.isEmpty)
+        #expect(store.problem == "履歴の状態更新に失敗しました：履歴に失敗しました。時間をおいてもう一度お試しください。")
         #expect(store.entries.first?.text == "失われてはいけない文")
         #expect(store.entries.first?.delivery == .verifiedInserted)
 
@@ -168,7 +172,7 @@ struct PersistenceRecoveryTests {
             store.remember("文章\(index)", isPartial: true, delivery: .recognitionInterrupted,
                            engine: "Apple", recordedAt: now.addingTimeInterval(Double(index - total)))
         }
-        #expect(!store.problem.isEmpty)
+        #expect(store.problem == "履歴を読み込めません（元のファイルは保持しています）：履歴に失敗しました。時間をおいてもう一度お試しください。")
         #expect(store.entries.count == RecentTranscriptArchive.maximumRecords)
         #expect(store.entries.first?.text == "文章\(RecentTranscriptArchive.maximumRecords + 1)")
         #expect(store.entries.last?.text == "文章2")
@@ -180,5 +184,9 @@ struct PersistenceRecoveryTests {
         store.deleteAll()
         #expect(store.entries.isEmpty)
         #expect(try Data(contentsOf: url) == damaged)
+
+        try Data(repeating: 0, count: RecentTranscriptArchive.maximumFileBytes + 1).write(to: url)
+        let oversized = TranscriptHistoryStore(fileURL: url)
+        #expect(oversized.problem.contains(RecentTranscriptArchive.ArchiveError.tooLarge.errorDescription!))
     }
 }

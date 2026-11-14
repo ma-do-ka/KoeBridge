@@ -48,7 +48,10 @@ import KoeBridgeCore
                         updated = self.state.receive(result.bestTranscription.formattedString,
                                                      isFinal: result.isFinal)
                     }
-                    if let error { self.state.receiveFailure(error.localizedDescription) }
+                    if let error {
+                        DiagnosticLog.record("apple recognition failed: \(error.localizedDescription)")
+                        self.state.receiveFailure(UserFacingErrorMessage.message(for: error, operation: "ローカル音声認識"))
+                    }
                     if updated { self.onUpdate?(self.state.preview) }
                 }
             }

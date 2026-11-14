@@ -70,7 +70,8 @@ import KoeBridgeCore
             do {
                 try SMAppService.mainApp.register()
             } catch {
-                registrationError = error.localizedDescription
+                DiagnosticLog.record("login item registration failed: \(error.localizedDescription)")
+                registrationError = UserFacingErrorMessage.message(for: error, operation: "自動起動の登録")
             }
             refresh()
             if status == .enabled {
@@ -91,7 +92,8 @@ import KoeBridgeCore
                 try SMAppService.mainApp.unregister()
             } catch {
                 // Read back first; a concurrent OS-side removal is harmless.
-                let detail = error.localizedDescription
+                DiagnosticLog.record("login item unregistration failed: \(error.localizedDescription)")
+                let detail = UserFacingErrorMessage.message(for: error, operation: "自動起動の登録解除")
                 refresh()
                 if status != .notRegistered {
                     message = "登録解除を確認できませんでした：\(detail)"

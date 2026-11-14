@@ -16,7 +16,7 @@ public struct TranscriptHistoryStore {
                                detail: "前回の入力処理が完了する前に終了しました。再送の前に入力先を確認してください。")
             }
         } catch {
-            problem = "履歴を読み込めません（元のファイルは保持しています）：\(error.localizedDescription)"
+            problem = "履歴を読み込めません（元のファイルは保持しています）：\(Self.errorMessage(for: error))"
         }
     }
 
@@ -87,6 +87,11 @@ public struct TranscriptHistoryStore {
         changeArchive(failure: "履歴の全削除に失敗しました") { try $0.deleteAll() }
     }
 
+    private static func errorMessage(for error: Error) -> String {
+        (error as? RecentTranscriptArchive.ArchiveError)?.errorDescription
+            ?? UserFacingErrorMessage.message(for: error, operation: "履歴")
+    }
+
     private mutating func changeArchive(
         failure: String, _ operation: (inout RecentTranscriptArchive) throws -> Void
     ) {
@@ -95,7 +100,7 @@ public struct TranscriptHistoryStore {
             try operation(&store)
             problem = ""
         } catch {
-            problem = "\(failure)：\(error.localizedDescription)"
+            problem = "\(failure)：\(Self.errorMessage(for: error))"
         }
         // Inserts and delivery outcomes survive failed writes in the archive's
         // working copy. A later successful write persists those same records.
