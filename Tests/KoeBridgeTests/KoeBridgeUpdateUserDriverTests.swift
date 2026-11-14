@@ -21,16 +21,22 @@ import KoeBridgeCore
             var openedSettings = 0
             var checks = 0
             let expected = "録音・文字起こし・入力が完了してから更新してください"
-            KoeBridgeInAppUpdater.checkForUpdatesFromMenu(
-                hasPendingWork: true, configured: configured, explanation: "署名設定の説明",
-                setStatus: { status = $0 }, presentAlert: { alert in
+            let driver = KoeBridgeUpdateUserDriver(setStatus: { status = $0 },
+                setCanCancel: { _ in }, setCanRetryTermination: { _ in }, presentAlert: { alert in
                     alerts += 1
                     #expect(status == expected)
                     #expect(alert.messageText == "更新の確認")
                     #expect(alert.informativeText == expected)
                     #expect(alert.buttons.map(\.title) == ["閉じる"])
+                    #expect(alert.alertStyle == .informational)
                     return .alertFirstButtonReturn
-                }, showUpdatePage: { openedSettings += 1 }, check: { checks += 1 })
+                })
+            KoeBridgeInAppUpdater.checkForUpdatesFromMenu(
+                isUpdateCycleActive: false, hasPendingWork: true,
+                configured: configured, explanation: "署名設定の説明",
+                setStatus: { status = $0 }, presentInformationalAlert: driver.presentInformationalAlert,
+                showUpdateInFocus: { Issue.record("No update cycle is active") },
+                showUpdatePage: { openedSettings += 1 }, check: { checks += 1 })
             #expect(status == expected)
             #expect(alerts == 1)
             #expect(openedSettings == 0)
@@ -45,9 +51,8 @@ import KoeBridgeCore
         var openedSettings = 0
         var checks = 0
         let explanation = "アプリ内インストールの署名設定が未登録です。現在はリリースページから手動更新してください。"
-        KoeBridgeInAppUpdater.checkForUpdatesFromMenu(
-            hasPendingWork: false, configured: false, explanation: explanation,
-            setStatus: { status = $0 }, presentAlert: { alert in
+        let driver = KoeBridgeUpdateUserDriver(setStatus: { status = $0 },
+            setCanCancel: { _ in }, setCanRetryTermination: { _ in }, presentAlert: { alert in
                 alerts += 1
                 #expect(status == explanation)
                 #expect(alert.messageText == "更新の確認")
@@ -55,7 +60,12 @@ import KoeBridgeCore
                 #expect(alert.buttons.map(\.title) == ["設定のアップデート画面を開く", "閉じる"])
                 #expect(alert.buttons[1].keyEquivalent == "\u{1b}")
                 return .alertFirstButtonReturn
-            }, showUpdatePage: { openedSettings += 1 }, check: { checks += 1 })
+            })
+        KoeBridgeInAppUpdater.checkForUpdatesFromMenu(
+            isUpdateCycleActive: false, hasPendingWork: false, configured: false, explanation: explanation,
+            setStatus: { status = $0 }, presentInformationalAlert: driver.presentInformationalAlert,
+            showUpdateInFocus: { Issue.record("No update cycle is active") },
+            showUpdatePage: { openedSettings += 1 }, check: { checks += 1 })
         #expect(status == explanation)
         #expect(alerts == 1)
         #expect(openedSettings == 1)
@@ -64,12 +74,20 @@ import KoeBridgeCore
 
     @Test func menuCheckCanDismissUnconfiguredUpdatesWithoutOpeningSettings() {
         _ = NSApplication.shared
+        var alerts = 0
         var openedSettings = 0
         var checks = 0
+        let driver = KoeBridgeUpdateUserDriver(setStatus: { _ in },
+            setCanCancel: { _ in }, setCanRetryTermination: { _ in }, presentAlert: { _ in
+                alerts += 1
+                return .alertSecondButtonReturn
+            })
         KoeBridgeInAppUpdater.checkForUpdatesFromMenu(
-            hasPendingWork: false, configured: false, explanation: "署名設定の説明",
-            setStatus: { _ in }, presentAlert: { _ in .alertSecondButtonReturn },
+            isUpdateCycleActive: false, hasPendingWork: false, configured: false, explanation: "署名設定の説明",
+            setStatus: { _ in }, presentInformationalAlert: driver.presentInformationalAlert,
+            showUpdateInFocus: { Issue.record("No update cycle is active") },
             showUpdatePage: { openedSettings += 1 }, check: { checks += 1 })
+        #expect(alerts == 1)
         #expect(openedSettings == 0)
         #expect(checks == 0)
     }
@@ -80,16 +98,143 @@ import KoeBridgeCore
         var alerts = 0
         var openedSettings = 0
         var checks = 0
-        KoeBridgeInAppUpdater.checkForUpdatesFromMenu(
-            hasPendingWork: false, configured: true, explanation: "署名設定の説明",
-            setStatus: { statuses.append($0) }, presentAlert: { _ in
+        let driver = KoeBridgeUpdateUserDriver(setStatus: { statuses.append($0) },
+            setCanCancel: { _ in }, setCanRetryTermination: { _ in }, presentAlert: { _ in
                 alerts += 1
                 return .alertFirstButtonReturn
-            }, showUpdatePage: { openedSettings += 1 }, check: { checks += 1 })
+            })
+        KoeBridgeInAppUpdater.checkForUpdatesFromMenu(
+            isUpdateCycleActive: false, hasPendingWork: false, configured: true, explanation: "署名設定の説明",
+            setStatus: { statuses.append($0) }, presentInformationalAlert: driver.presentInformationalAlert,
+            showUpdateInFocus: { Issue.record("No update cycle is active") },
+            showUpdatePage: { openedSettings += 1 }, check: { checks += 1 })
         #expect(statuses.isEmpty)
         #expect(alerts == 0)
         #expect(openedSettings == 0)
         #expect(checks == 1)
+    }
+
+    @Test func menuCheckFocusesActiveCycleBeforePendingWorkOrConfigurationAndPreservesStatus() {
+        _ = NSApplication.shared
+        for hasPendingWork in [false, true] {
+            for configured in [false, true] {
+                var status = "更新をダウンロードしています… 25％"
+                var focuses = 0
+                KoeBridgeInAppUpdater.checkForUpdatesFromMenu(
+                    isUpdateCycleActive: true, hasPendingWork: hasPendingWork,
+                    configured: configured, explanation: "署名設定の説明",
+                    setStatus: { status = $0 }, presentInformationalAlert: { _, _, _, _ in
+                        Issue.record("An active cycle must not present a menu refusal")
+                        return .alertFirstButtonReturn
+                    }, showUpdateInFocus: { focuses += 1 },
+                    showUpdatePage: { Issue.record("Focus belongs to the driver") },
+                    check: { Issue.record("An active cycle must not start another check") })
+                #expect(focuses == 1)
+                #expect(status == "更新をダウンロードしています… 25％")
+            }
+        }
+    }
+
+    @Test func menuInformationalAlertReplacesInstallDecisionInTheSharedDriver() {
+        _ = NSApplication.shared
+        var driver: KoeBridgeUpdateUserDriver!
+        var status = ""
+        var alerts: [String] = []
+        var replies = 0
+        var openedSettings = 0
+        driver = KoeBridgeUpdateUserDriver(setStatus: { status = $0 },
+            setCanCancel: { _ in }, setCanRetryTermination: { _ in }, presentAlert: { alert in
+                alerts.append(alert.messageText)
+                if alert.messageText == "インストールして再起動しますか？" {
+                    // Make the old window visible so replacing the shared slot
+                    // must order it out before presenting the menu alert.
+                    alert.window.orderFront(nil)
+                    KoeBridgeInAppUpdater.checkForUpdatesFromMenu(
+                        isUpdateCycleActive: false, hasPendingWork: false,
+                        configured: false, explanation: "署名設定の説明",
+                        setStatus: { status = $0 },
+                        presentInformationalAlert: { title, body, primary, secondary in
+                            driver.presentInformationalAlert(title: title, body: body,
+                                primaryButton: primary, secondaryButton: secondary)
+                        }, showUpdateInFocus: {},
+                        showUpdatePage: { openedSettings += 1 }, check: {})
+                    #expect(!alert.window.isVisible)
+                }
+                return .alertFirstButtonReturn
+            })
+        driver.showReady(toInstallAndRelaunch: { _ in replies += 1 })
+        #expect(alerts == ["インストールして再起動しますか？", "更新の確認"])
+        #expect(openedSettings == 1)
+        #expect(replies == 0)
+        #expect(status == "署名設定の説明")
+    }
+
+    @Test func activeMenuCheckFocusesTheDriversSharedAlertWithoutChangingStatus() {
+        _ = NSApplication.shared
+        var driver: KoeBridgeUpdateUserDriver!
+        var status = ""
+        var alerts = 0
+        driver = KoeBridgeUpdateUserDriver(setStatus: { status = $0 },
+            setCanCancel: { _ in }, setCanRetryTermination: { _ in }, presentAlert: { alert in
+                alerts += 1
+                alert.window.orderOut(nil)
+                KoeBridgeInAppUpdater.checkForUpdatesFromMenu(
+                    isUpdateCycleActive: true, hasPendingWork: true,
+                    configured: false, explanation: "署名設定の説明",
+                    setStatus: { status = $0 }, presentInformationalAlert: driver.presentInformationalAlert,
+                    showUpdateInFocus: { driver.showUpdateInFocus() },
+                    showUpdatePage: { Issue.record("The active alert should receive focus") },
+                    check: { Issue.record("An active cycle must not start another check") })
+                #expect(alert.window.isVisible)
+                #expect(status == "署名設定の説明")
+                alert.window.orderOut(nil)
+                return .alertSecondButtonReturn
+            })
+        KoeBridgeInAppUpdater.checkForUpdatesFromMenu(
+            isUpdateCycleActive: false, hasPendingWork: false,
+            configured: false, explanation: "署名設定の説明",
+            setStatus: { status = $0 }, presentInformationalAlert: driver.presentInformationalAlert,
+            showUpdateInFocus: {}, showUpdatePage: { Issue.record("The menu alert was dismissed") }, check: {})
+        #expect(alerts == 1)
+        #expect(status == "署名設定の説明")
+    }
+
+    @Test func replacedOrDismissedMenuAlertCannotOpenSettingsWithAStaleResponse() {
+        _ = NSApplication.shared
+        for replaceWithError in [false, true] {
+            var driver: KoeBridgeUpdateUserDriver!
+            var status = ""
+            var alerts: [String] = []
+            var openedSettings = 0
+            var acknowledgements = 0
+            var menuAlert: NSAlert?
+            driver = KoeBridgeUpdateUserDriver(setStatus: { status = $0 },
+                setCanCancel: { _ in }, setCanRetryTermination: { _ in }, presentAlert: { alert in
+                    alerts.append(alert.messageText)
+                    if alert.messageText == "更新の確認" {
+                        menuAlert = alert
+                        alert.window.orderFront(nil)
+                        if replaceWithError {
+                            driver.showUpdaterError(rawError()) { acknowledgements += 1 }
+                        } else {
+                            driver.dismissUpdateInstallation()
+                        }
+                        #expect(!alert.window.isVisible)
+                    } else {
+                        #expect(menuAlert?.window.isVisible == false)
+                    }
+                    return .alertFirstButtonReturn
+                })
+            KoeBridgeInAppUpdater.checkForUpdatesFromMenu(
+                isUpdateCycleActive: false, hasPendingWork: false,
+                configured: false, explanation: "署名設定の説明",
+                setStatus: { status = $0 }, presentInformationalAlert: driver.presentInformationalAlert,
+                showUpdateInFocus: {}, showUpdatePage: { openedSettings += 1 }, check: {})
+            #expect(openedSettings == 0)
+            #expect(acknowledgements == (replaceWithError ? 1 : 0))
+            #expect(alerts == (replaceWithError ? ["更新の確認", "更新を完了できませんでした"] : ["更新の確認"]))
+            #expect(status == (replaceWithError ? KoeBridgeInAppUpdater.errorMessage(for: rawError()) : "署名設定の説明"))
+        }
     }
 
     @Test func startupAndUpdaterErrorsShareMappedDelegateStatusAndAcknowledgeOnce() {

@@ -470,6 +470,7 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
         statusPopover.performClose(nil)
         windows.showSettings()
         KoeBridgeUpdateManager.shared.requestUpdatePage()
+        Task { await KoeBridgeUpdateManager.shared.checkNow() }
     }
     @objc private func showPermissions() {
         statusPopover.performClose(nil)
