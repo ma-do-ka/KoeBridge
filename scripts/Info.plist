@@ -1,34 +1,62 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>CFBundleDevelopmentRegion</key><string>ja</string>
-  <key>CFBundleExecutable</key><string>KoeBridge</string>
-  <key>CFBundleIdentifier</key><string>dev.koebridge.app</string>
-  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
-  <key>CFBundleName</key><string>KoeBridge</string>
-  <key>CFBundleDisplayName</key><string>KoeBridge 音声入力</string>
-  <key>CFBundleIconFile</key><string>KoeBridge_AppIcon.icns</string>
-  <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>1.1.7</string>
-  <key>KoeBridgeReleaseLabel</key><string>1.1.7</string>
-  <key>CFBundleVersion</key><string>62</string>
-  <key>LSMinimumSystemVersion</key><string>15.0</string>
-  <key>LSUIElement</key><true/>
-  <key>NSMicrophoneUsageDescription</key><string>音声入力のためにマイク音声を取得します。GeminiモードではGoogle APIへ送信します。</string>
-  <key>NSScreenCaptureUsageDescription</key><string>会議モードでシステム音声を文字起こしするために画面収録の許可を使用します。画面の画像は保存しません。</string>
-  <key>NSAudioCaptureUsageDescription</key><string>会議モードを有効にした場合のみ、システム音声を取得してマイクと区別して文字起こしします。GeminiではGoogle APIへ送信します。</string>
-  <key>NSSpeechRecognitionUsageDescription</key><string>ローカルモードでAppleのオンデバイス音声認識を利用します。</string>
-  <key>NSHighResolutionCapable</key><true/>
-  <key>SUFeedURL</key><string>https://raw.githubusercontent.com/ma-do-ka/KoeBridge/main/docs/updates/appcast.xml</string>
-  <!-- Publisher bootstraps this PUBLIC key with prepare_signed_updates.sh configure.
-       Never insert or commit a private key. Empty means refuse in-app installation. -->
-  <key>SUPublicEDKey</key><string></string>
-  <key>SUEnableAutomaticChecks</key><false/>
-  <key>SUAutomaticallyUpdate</key><false/>
-  <key>SUAllowsAutomaticUpdates</key><false/>
-  <key>SUEnableSystemProfiling</key><false/>
-  <key>SUShowReleaseNotes</key><false/>
-  <key>SUVerifyUpdateBeforeExtraction</key><true/>
-  <key>SURequireSignedFeed</key><true/>
-  <key>SUSignedFeedFailureExpirationInterval</key><integer>0</integer>
-</dict></plist>
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>ja</string>
+	<key>CFBundleDisplayName</key>
+	<string>KoeBridge 音声入力</string>
+	<key>CFBundleExecutable</key>
+	<string>KoeBridge</string>
+	<key>CFBundleIconFile</key>
+	<string>KoeBridge_AppIcon.icns</string>
+	<key>CFBundleIdentifier</key>
+	<string>dev.koebridge.app</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>KoeBridge</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.1.7</string>
+	<key>CFBundleVersion</key>
+	<string>62</string>
+	<key>KoeBridgeReleaseLabel</key>
+	<string>1.1.7</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>15.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>会議モードを有効にした場合のみ、システム音声を取得してマイクと区別して文字起こしします。GeminiではGoogle APIへ送信します。</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>音声入力のためにマイク音声を取得します。GeminiモードではGoogle APIへ送信します。</string>
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>会議モードでシステム音声を文字起こしするために画面収録の許可を使用します。画面の画像は保存しません。</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>ローカルモードでAppleのオンデバイス音声認識を利用します。</string>
+	<key>SUAllowsAutomaticUpdates</key>
+	<false/>
+	<key>SUAutomaticallyUpdate</key>
+	<false/>
+	<key>SUEnableAutomaticChecks</key>
+	<false/>
+	<key>SUEnableSystemProfiling</key>
+	<false/>
+	<key>SUFeedURL</key>
+	<string>https://raw.githubusercontent.com/ma-do-ka/KoeBridge/main/docs/updates/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>fw3z/IgzMto6ps+i/0i3kC+/5/Fxwhw5c9119WheKFA=</string>
+	<key>SURequireSignedFeed</key>
+	<true/>
+	<key>SUShowReleaseNotes</key>
+	<false/>
+	<key>SUSignedFeedFailureExpirationInterval</key>
+	<integer>0</integer>
+	<key>SUVerifyUpdateBeforeExtraction</key>
+	<true/>
+</dict>
+</plist>
