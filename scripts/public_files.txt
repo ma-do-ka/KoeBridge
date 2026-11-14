@@ -96,7 +96,9 @@ Tests/KoeBridgeCoreTests/SessionTransitionsTests.swift
 Tests/KoeBridgeCoreTests/StressTests.swift
 Tests/KoeBridgeCoreTests/TranscriptionStyleTests.swift
 Tests/KoeBridgeCoreTests/UserFacingErrorMessageTests.swift
+Tests/KoeBridgeTests/GeminiLiveConnectionTests.swift
 Tests/KoeBridgeTests/KoeBridgeUpdateUserDriverTests.swift
+Tests/KoeBridgeTests/VoiceCommandPresentationTests.swift
 V100_RELEASE_NOTES.md
 scripts/Info.plist
 scripts/audit_public_release.py

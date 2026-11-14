@@ -85,8 +85,7 @@ private final class GeminiPingCompletion: @unchecked Sendable {
                     for event in frame.events {
                         if case .error(let reason) = event {
                             DiagnosticLog.record("gemini setup API error: \(reason)")
-                            throw ConnectionError.setup(UserFacingErrorMessage.message(
-                                for: ConnectionError.setup(reason), operation: "Geminiへの接続"))
+                            throw ConnectionError.setup(reason)
                         }
                         if case .setupComplete = event { setupComplete = true }
                     }
@@ -100,14 +99,24 @@ private final class GeminiPingCompletion: @unchecked Sendable {
             } onCancel: { ws.cancel(with: .goingAway, reason: nil) }
         } catch {
             DiagnosticLog.record("gemini connection failed: \(error.localizedDescription)")
-            let reason = failure ?? (error as? ConnectionError)?.errorDescription
-                ?? UserFacingErrorMessage.message(for: error, operation: "Geminiへの接続")
+            let reason = failure ?? Self.connectionFailureReason(for: error)
             cancel()
             if Task.isCancelled || error is CancellationError { throw CancellationError() }
             throw ConnectionError.setup(reason)
         }
         heartbeat = Task { [weak self] in await self?.heartbeatLoop() }
         DiagnosticLog.record("gemini connected; speechStartDeferred=true setupSeconds=\(String(format: "%.3f", Date().timeIntervalSince(connectionBeganAt)))")
+    }
+
+    /// Raw setup replies are mapped once, before the catch adds the API prefix.
+    static func connectionFailureReason(for error: Error) -> String {
+        if let connectionError = error as? ConnectionError {
+            if case .setup = connectionError {
+                return UserFacingErrorMessage.message(for: error, operation: "Geminiへの接続")
+            }
+            if let description = connectionError.errorDescription { return description }
+        }
+        return UserFacingErrorMessage.message(for: error, operation: "Geminiへの接続")
     }
 
     private func receiveLoop() async {

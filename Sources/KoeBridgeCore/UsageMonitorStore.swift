@@ -17,7 +17,7 @@ public struct UsageMonitorStore {
             engineEvents = stored.engineEvents
             tokenEvents = stored.tokenEvents
         } catch {
-            problem = "利用統計を読み込めません。元のデータは保持しています：\(error.localizedDescription)"
+            problem = "利用統計を読み込めません。元のデータは保持しています：\(Self.errorMessage(for: error))"
         }
     }
 
@@ -45,7 +45,7 @@ public struct UsageMonitorStore {
             unsavedTokens = []
             problem = ""
         } catch {
-            problem = "利用統計を保存できません。元のファイルは保持しています：\(error.localizedDescription)"
+            problem = "利用統計を保存できません。元のファイルは保持しています：\(Self.errorMessage(for: error))"
             self.engineEvents = Self.retained(store.engineEvents + unsavedEngines, at: { $0.at },
                                              maximum: UsageMonitorArchive.maximumEngineEvents, now: now)
             self.tokenEvents = Self.retained(store.tokenEvents + unsavedTokens, at: { $0.at },
@@ -67,8 +67,13 @@ public struct UsageMonitorStore {
             unsavedTokens = []
             problem = ""
         } catch {
-            problem = "利用統計を削除できません：\(error.localizedDescription)"
+            problem = "利用統計を削除できません：\(Self.errorMessage(for: error))"
         }
+    }
+
+    private static func errorMessage(for error: Error) -> String {
+        (error as? UsageMonitorArchive.ArchiveError)?.errorDescription
+            ?? UserFacingErrorMessage.message(for: error, operation: "利用状況")
     }
 
     private static func retained<T>(_ samples: [T], at: (T) -> Date,

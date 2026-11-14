@@ -1597,7 +1597,7 @@ import KoeBridgeCore
         }
         if let reason {
             DiagnosticLog.record("voice_command take=\(take.id) command=\(command.rawValue) gate=\(reason) phase=execution events_posted=false")
-            feedback(.commandBlocked, "コマンドとして実行できませんでした（\(reason)）")
+            feedback(.commandBlocked, "コマンドとして実行できませんでした" + Self.commandReasonSuffix(reason))
             return
         }
         if command == .cancelTake {
@@ -1622,8 +1622,60 @@ import KoeBridgeCore
         if report.outcome == .verifiedInserted {
             feedback(command == .newline ? .commandNewline : .commandParagraph, command.completionMessage)
         } else {
-            feedback(.commandFailed, "コマンドの入力を確認できませんでした（\(report.reason)）。入力先を確認してください。")
+            feedback(.commandFailed, "コマンドの入力を確認できませんでした" + Self.commandReasonSuffix(report.reason)
+                     + "。入力先を確認してください。")
         }
+    }
+
+    /// Diagnostic tokens are translated only when presenting command feedback.
+    /// Unknown reasons leave the message useful without exposing internal text.
+    static func commandReasonSuffix(_ token: String) -> String {
+        let reason: String
+        switch token {
+        case "suppressed": reason = "自動入力を停止しました"
+        case "acoustic_review_required": reason = "音声の確認が必要です"
+        case "review_required": reason = "認識結果の確認が必要です"
+        case "review_incomplete": reason = "認識結果の確認が完了していません"
+        case "review_command_mismatch": reason = "確認後のコマンドが一致しません"
+        case "automatic_input_disabled": reason = "自動入力が無効です"
+        case "delivery_cancelled_before_post": reason = "入力前に取り消しました"
+        case "delivery_cancelled_after_partial_post": reason = "一部の入力後に取り消しました"
+        case "delivery_cancelled_after_post": reason = "入力後の確認を取り消しました"
+        case "accessibility_not_granted": reason = "アクセシビリティの許可がありません"
+        case "post_event_permission_missing": reason = "キー入力の許可がありません"
+        case "empty_typing_payload": reason = "入力する内容がありません"
+        case "target_not_captured": reason = "入力先を取得できませんでした"
+        case "command_baseline_unavailable", "field_value_unavailable_on_recheck":
+            reason = "入力先の内容を確認できませんでした"
+        case "field_value_or_selection_changed": reason = "入力先の内容または選択範囲が変わりました"
+        case "event_source_unavailable", "keyboard_event_unavailable":
+            reason = "キー入力を準備できませんでした"
+        case "posted_without_observable_edit", "posted_receipt_timeout":
+            reason = "送信した入力を確認できませんでした"
+        case "active_app_changed", "posted_then_active_app_changed":
+            reason = "入力先のアプリが変わりました"
+        case "focused_field_changed", "posted_then_focused_field_changed":
+            reason = "入力欄が変わりました"
+        case "focused_window_changed", "posted_then_focused_window_changed":
+            reason = "入力先のウインドウが変わりました"
+        case "caret_or_selection_changed", "posted_then_caret_or_selection_changed":
+            reason = "カーソル位置または選択範囲が変わりました"
+        case "prior_input_unverified", "posted_then_prior_input_unverified":
+            reason = "直前の入力を確認できませんでした"
+        case "frontmost_application_unavailable", "posted_then_frontmost_application_unavailable",
+             "focused_element_unavailable_on_recheck", "posted_then_focused_element_unavailable_on_recheck",
+             "focused_window_invalid_on_recheck", "posted_then_focused_window_invalid_on_recheck",
+             "focused_window_unavailable_on_recheck", "posted_then_focused_window_unavailable_on_recheck",
+             "focused_element_owner_changed", "posted_then_focused_element_owner_changed",
+             "focused_element_owner_unavailable", "posted_then_focused_element_owner_unavailable",
+             "captured_selection_invalid", "posted_then_captured_selection_invalid",
+             "selection_value_invalid_on_recheck", "posted_then_selection_value_invalid_on_recheck",
+             "selection_unavailable_on_recheck", "posted_then_selection_unavailable_on_recheck",
+             "focus_verification_failed", "posted_then_focus_verification_failed":
+            reason = "入力先の状態を確認できませんでした"
+        default: return ""
+        }
+        return "（\(reason)）"
     }
 
     private func deliverTransform(_ result: Completion, take: DictationTake) async {

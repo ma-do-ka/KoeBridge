@@ -94,7 +94,8 @@ import KoeBridgeCore
             }
         } catch {
             DiagnosticLog.record("release check failed: \(error.localizedDescription)")
-            statusMessage = UserFacingErrorMessage.message(for: error, operation: "正式リリースの確認")
+            statusMessage = (error as? UpdateCheckError)?.errorDescription
+                ?? UserFacingErrorMessage.message(for: error, operation: "正式リリースの確認")
         }
         do {
             let head = try SourceUpdateTarget.decodeHead(await readOfficial(
@@ -110,7 +111,8 @@ import KoeBridgeCore
         } catch {
             sourceTarget = nil
             DiagnosticLog.record("source update check failed: \(error.localizedDescription)")
-            sourceStatusMessage = UserFacingErrorMessage.message(for: error, operation: "ソース更新の確認")
+            sourceStatusMessage = (error as? UpdateCheckError)?.errorDescription
+                ?? UserFacingErrorMessage.message(for: error, operation: "ソース更新の確認")
         }
         if hasNewStableRelease || sourceTarget?.isNewer(than: installedLabel, build: installedBuild) == true {
             state = .available
