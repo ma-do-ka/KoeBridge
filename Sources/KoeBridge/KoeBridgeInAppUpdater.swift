@@ -36,6 +36,50 @@ import KoeBridgeCore
             : "アプリ内インストールの署名設定が未登録です。現在はリリースページから手動更新してください。"
     }
 
+    func checkForUpdatesFromMenu() {
+        Self.checkForUpdatesFromMenu(
+            hasPendingWork: VoiceController.shared.hasPendingWork,
+            configured: configured, explanation: explanation,
+            setStatus: { message = $0 },
+            showUpdatePage: { (NSApp.delegate as? KoeBridgeAppDelegate)?.showUpdateProgress() },
+            check: { checkForUpdates() })
+    }
+
+    // Keep menu refusals visible without opening Settings. The presenter and
+    // action seams let tests exercise these decisions without starting Sparkle.
+    static func checkForUpdatesFromMenu(
+        hasPendingWork: Bool, configured: Bool, explanation: String,
+        setStatus: (String) -> Void,
+        presentAlert: (NSAlert) -> NSApplication.ModalResponse = {
+            NSApp.activate(ignoringOtherApps: true)
+            return $0.runModal()
+        },
+        showUpdatePage: () -> Void, check: () -> Void
+    ) {
+        let body: String
+        let offersSettings: Bool
+        if hasPendingWork {
+            body = "録音・文字起こし・入力が完了してから更新してください"
+            offersSettings = false
+        } else if !configured {
+            body = explanation
+            offersSettings = true
+        } else {
+            check()
+            return
+        }
+        setStatus(body)
+        let alert = NSAlert()
+        alert.messageText = "更新の確認"
+        alert.informativeText = body
+        alert.alertStyle = .informational
+        if offersSettings { alert.addButton(withTitle: "設定のアップデート画面を開く") }
+        alert.addButton(withTitle: "閉じる")
+        if offersSettings { alert.buttons[1].keyEquivalent = "\u{1b}" }
+        let response = presentAlert(alert)
+        if offersSettings && response == .alertFirstButtonReturn { showUpdatePage() }
+    }
+
     func checkForUpdates() {
         guard !VoiceController.shared.hasPendingWork else {
             message = "録音・文字起こし・入力が完了してから更新してください"

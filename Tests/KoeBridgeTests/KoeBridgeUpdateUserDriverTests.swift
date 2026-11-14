@@ -13,6 +13,85 @@ import KoeBridgeCore
         ])
     }
 
+    @Test func menuCheckRefusesPendingWorkBeforeCheckingConfiguration() {
+        _ = NSApplication.shared
+        for configured in [false, true] {
+            var status = ""
+            var alerts = 0
+            var openedSettings = 0
+            var checks = 0
+            let expected = "録音・文字起こし・入力が完了してから更新してください"
+            KoeBridgeInAppUpdater.checkForUpdatesFromMenu(
+                hasPendingWork: true, configured: configured, explanation: "署名設定の説明",
+                setStatus: { status = $0 }, presentAlert: { alert in
+                    alerts += 1
+                    #expect(status == expected)
+                    #expect(alert.messageText == "更新の確認")
+                    #expect(alert.informativeText == expected)
+                    #expect(alert.buttons.map(\.title) == ["閉じる"])
+                    return .alertFirstButtonReturn
+                }, showUpdatePage: { openedSettings += 1 }, check: { checks += 1 })
+            #expect(status == expected)
+            #expect(alerts == 1)
+            #expect(openedSettings == 0)
+            #expect(checks == 0)
+        }
+    }
+
+    @Test func menuCheckOffersSettingsWhenSignedUpdatesAreUnconfigured() {
+        _ = NSApplication.shared
+        var status = ""
+        var alerts = 0
+        var openedSettings = 0
+        var checks = 0
+        let explanation = "アプリ内インストールの署名設定が未登録です。現在はリリースページから手動更新してください。"
+        KoeBridgeInAppUpdater.checkForUpdatesFromMenu(
+            hasPendingWork: false, configured: false, explanation: explanation,
+            setStatus: { status = $0 }, presentAlert: { alert in
+                alerts += 1
+                #expect(status == explanation)
+                #expect(alert.messageText == "更新の確認")
+                #expect(alert.informativeText == explanation)
+                #expect(alert.buttons.map(\.title) == ["設定のアップデート画面を開く", "閉じる"])
+                #expect(alert.buttons[1].keyEquivalent == "\u{1b}")
+                return .alertFirstButtonReturn
+            }, showUpdatePage: { openedSettings += 1 }, check: { checks += 1 })
+        #expect(status == explanation)
+        #expect(alerts == 1)
+        #expect(openedSettings == 1)
+        #expect(checks == 0)
+    }
+
+    @Test func menuCheckCanDismissUnconfiguredUpdatesWithoutOpeningSettings() {
+        _ = NSApplication.shared
+        var openedSettings = 0
+        var checks = 0
+        KoeBridgeInAppUpdater.checkForUpdatesFromMenu(
+            hasPendingWork: false, configured: false, explanation: "署名設定の説明",
+            setStatus: { _ in }, presentAlert: { _ in .alertSecondButtonReturn },
+            showUpdatePage: { openedSettings += 1 }, check: { checks += 1 })
+        #expect(openedSettings == 0)
+        #expect(checks == 0)
+    }
+
+    @Test func menuCheckPassesThroughWhenReadyWithoutShowingSettingsOrAnEarlyAlert() {
+        _ = NSApplication.shared
+        var statuses: [String] = []
+        var alerts = 0
+        var openedSettings = 0
+        var checks = 0
+        KoeBridgeInAppUpdater.checkForUpdatesFromMenu(
+            hasPendingWork: false, configured: true, explanation: "署名設定の説明",
+            setStatus: { statuses.append($0) }, presentAlert: { _ in
+                alerts += 1
+                return .alertFirstButtonReturn
+            }, showUpdatePage: { openedSettings += 1 }, check: { checks += 1 })
+        #expect(statuses.isEmpty)
+        #expect(alerts == 0)
+        #expect(openedSettings == 0)
+        #expect(checks == 1)
+    }
+
     @Test func startupAndUpdaterErrorsShareMappedDelegateStatusAndAcknowledgeOnce() {
         _ = NSApplication.shared
         var status = ""
