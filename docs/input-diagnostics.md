@@ -80,7 +80,35 @@ trace の文字列は固定コードと検証済みのアプリ bundle ID に限
 
 1 録音につき最大 128 イベントで、先頭 32 件に加え、上記sectionに対応する重要イベントと最近の情報を優先保持します。繰り返しのAX応答などは途中で省略されることがあります。各行のイベント部分は、先頭の ISO 時刻と改行を除いて 320 bytes 以下に分割します。要約も含めて主ログは各 256 KiB、3 世代まで（マイク専用の長期保持ミラーは各 256 KiB、8 世代まで）のため、古い trace はローテーションで消えます。
 
-入力診断の収集中はファイル I/O を行わず、入力と後続録音の照合が終わってから batch 保存します。要約のために追加のAX問い合わせや本文収集は行いません。既存のマイク・認識処理などの短い動作記録は従来の同期保存を継続します。
+入力診断の収集中はファイル I/O を行わず、入力と後続録音の照合が終わってから batch 保存します。Build 65 の追加観測は下記の送信後チェックに限定し、本文は記録しません。既存のマイク・認識処理などの短い動作記録は従来の同期保存を継続します。
+
+## Build 65（v1.1.10）の観測と送信間隔
+
+`section=capability` は送信前の選択位置読取・本文読取の状態、`section=eligibility` はその配送の受理確認可否です。`receipt_skipped_reason` のコードは次の集合に限定します。
+
+| コード | 意味 |
+| --- | --- |
+| `marker_not_numeric` | 不透明な marker 選択で、数値位置付き snapshot を作れない |
+| `selection_missing` | 取得時に選択位置がなかった |
+| `selection_unavailable` | 数値選択の再読取が失敗・欠落・不正だった |
+| `value_unavailable` | 選択位置は読めたが本文を利用できなかった |
+| `snapshot_invalid` | 本文と選択位置を安定した有効な snapshot にできない、または期待する編集を構成できない |
+| `no_observable_delta` | 期待する編集後の本文が編集前と同一 |
+| `snapshot_available` | 正確な編集前 snapshot が利用可能。受理成功を意味しない |
+| `not_attempted` | その段階の観測に進まなかった |
+| `unknown` | 既知の分類を決める情報がない |
+
+`selection_read` と `value_read_result` は `not_attempted` と失敗を区別します。`value_read_attempted` は AXValue 呼び出し自体の有無です。secure 判定で除外した場合は `value_read_attempted=0 value_read_result=secure`、追加観測で secure 除外を確定できない場合は `unknown` です。サイズ上限は既存どおり 200,000 UTF-16 units です。`exact_baseline_available` は正確な数値位置と本文の組を取得できたかを表します。
+
+数値選択には `numeric_selection_v1`（version 1、gap 3 ms、累積 300 ms、100 gap 後は 0 ms）、marker / 選択なしには `unobservable_selection_v1`（version 1、gap 20 ms、予算 2,000 ms）を使います。最初の chunk は即時です。後者は予算超過でも 20 ms を維持し、`pacing_budget_exceeded=1` を記録します。途中停止も後半の間隔圧縮も行いません。取消・入力先チェックは各 chunk の前に従来どおり実行します。
+
+`section=progress` に予定数・送信数、`last_posted_ordinal`、gap 数、要求 gap と実測 gap の最小・最大・最終値（`*_us`、マイクロ秒）、`posting_stall_total_us`、停止した段階・理由（`abort_phase` / `abort_reason`）を集約します。実測 gap は前の keyUp の post 呼び出しが戻ってから次の keyDown の post 呼び出し開始までです。stall 合計は post 呼び出し時間と、要求 sleep を超えた gap 時間の和で、AX・スケジューラ・イベント構築などを含みます。相手アプリ内部の処理時間ではありません。投稿中に chunk ごとのファイル保存は行いません。
+
+各 full checkpoint の `require_original_selection` は照合の要求、`selection_comparison` は `same` / `different` / `unknown` / `skipped` の観測です。`chunk_ordinal` は直前に検査する chunk の 1 始まり番号、preflight は 0、送信後は最後に送信した番号です。`section=first_checkpoint` / `checkpoint` に最初と最後の投稿前チェックを優先保持します。
+
+受理確認できない経路で全 chunk を送った後、記録が有効な場合だけ、1 回の入力先 identity チェックと本文だけの独立観測を行います。各 AX 読取の要求 timeout は 10 ms、secure でないことを確認でき、入力先が一致する場合だけ本文を読みます。`section=observation` の `outcome` は入力先の `same` / `different` / `unknown`、`receiver_observation` は `value_only` / `unavailable` です。本文観測は数値位置付きの受理確認ではなく、Report・次の入力の許可には使いません。marker / 選択なしの受理不明表示は従来どおりです。
+
+これらの section も 128 イベントの同じ予算内で優先保持し、`dropped` は省略数を引き続き記録します。sender の計測だけで相手側の完全受理・部分受理・後からの巻戻りを証明することはできません。
 
 ## 調査で残る限界
 

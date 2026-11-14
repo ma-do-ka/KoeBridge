@@ -9,6 +9,7 @@ public struct InputDiagnosticEvent: Equatable, Sendable {
 
     public enum Kind: String, CaseIterable, Sendable {
         case session, target, ax, focus, snapshot, payload, receipt, reconcile, result
+        case eligibility, progress, observation
     }
 
     public enum Field: String, CaseIterable, Hashable, Sendable {
@@ -31,6 +32,31 @@ public struct InputDiagnosticEvent: Equatable, Sendable {
         case expectedStart = "expected_start"
         case expectedLength = "expected_length"
         case originalSelection = "original_selection"
+        case requireOriginalSelection = "require_original_selection"
+        case selectionComparison = "selection_comparison"
+        case chunkOrdinal = "chunk_ordinal"
+        case selectionRead = "selection_read"
+        case valueReadAttempted = "value_read_attempted"
+        case valueReadResult = "value_read_result"
+        case exactBaselineAvailable = "exact_baseline_available"
+        case receiptSkippedReason = "receipt_skipped_reason"
+        case receiverObservation = "receiver_observation"
+        case pacingProfile = "pacing_profile"
+        case pacingVersion = "pacing_version"
+        case pacingGapMS = "pacing_gap_ms"
+        case pacingBudgetMS = "pacing_budget_ms"
+        case pacingBudgetExceeded = "pacing_budget_exceeded"
+        case lastPostedOrdinal = "last_posted_ordinal"
+        case gapCount = "gap_count"
+        case requestedGapMinUS = "requested_gap_min_us"
+        case requestedGapMaxUS = "requested_gap_max_us"
+        case requestedGapLastUS = "requested_gap_last_us"
+        case actualGapMinUS = "actual_gap_min_us"
+        case actualGapMaxUS = "actual_gap_max_us"
+        case actualGapLastUS = "actual_gap_last_us"
+        case postingStallTotalUS = "posting_stall_total_us"
+        case abortPhase = "abort_phase"
+        case abortReason = "abort_reason"
         case axTrusted = "ax_trusted"
         case postAllowed = "post_allowed"
         case plannedChunks = "planned_chunks"
@@ -91,6 +117,17 @@ public struct InputDiagnosticEvent: Equatable, Sendable {
         case gemini, apple, agent, verbatim, readable
         case nearSilence = "near_silence"
         case uncertain, activity
+        case preflight, posting, receipt
+        case numericSelectionV1 = "numeric_selection_v1"
+        case unobservableSelectionV1 = "unobservable_selection_v1"
+        case valueOnly = "value_only"
+        case markerNotNumeric = "marker_not_numeric"
+        case selectionMissing = "selection_missing"
+        case selectionUnavailable = "selection_unavailable"
+        case valueUnavailable = "value_unavailable"
+        case snapshotInvalid = "snapshot_invalid"
+        case noObservableDelta = "no_observable_delta"
+        case snapshotAvailable = "snapshot_available"
 
         // Current capture, preflight, transport and receipt reasons. Unknown
         // future strings deliberately become `unknown` until reviewed here.

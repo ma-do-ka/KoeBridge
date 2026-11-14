@@ -29,8 +29,7 @@ import KoeBridgeCore
         let status: AXError
     }
 
-    /// Observe the calls already needed for insertion. No attribute values,
-    /// object descriptions, or extra diagnostic AX reads are collected.
+    /// Record content-free status and duration for bounded AX reads.
     private static func copyAX(_ element: AXUIElement, name: CFString,
                                operation: Token, scope: Token = .focusedElement,
                                timeout: Float = 0.08, configureTimeout: Bool = true,
@@ -216,7 +215,7 @@ import KoeBridgeCore
                            operation: .value, diagnostics: nil, stage: .capture).value as? String
     }
 
-    private var selectionKind: Token {
+    var selectionKind: InputDiagnosticEvent.Token {
         guard let selectionAttribute else { return .none }
         if selectionAttribute == (kAXSelectedTextRangeAttribute as String) { return .numericRange }
         if selectionAttribute == "AXSelectedTextMarkerRange" { return .textMarker }
@@ -226,13 +225,21 @@ import KoeBridgeCore
     /// Many browser editors do not expose AXValue. Unknown contents never
     /// authorize a caret rebase, and secure field contents are not collected.
     func observedValue(timeout: Float = 0.04, diagnostics: InputDiagnosticTrace? = nil,
-                       stage: InputDiagnosticEvent.Stage = .preflight) -> String? {
+                       stage: InputDiagnosticEvent.Stage = .preflight,
+                       requireKnownNonsecure: Bool = false,
+                       observation: ((Bool, InputDiagnosticEvent.Token) -> Void)? = nil) -> String? {
         let diagnostics = diagnostics?.isCollecting == true ? diagnostics : nil
         var evidence: [Field: Value]? = diagnostics.map { _ in [.operation: .token(.value)] }
         var outcome: Token = .unavailable
+        var attempted = false
+        let began = diagnostics.map { _ in ProcessInfo.processInfo.systemUptime }
         defer {
+            observation?(attempted, outcome)
             if let diagnostics, var fields = evidence {
                 fields[.outcome] = .token(outcome)
+                fields[.valueReadAttempted] = .flag(attempted)
+                fields[.valueReadResult] = .token(outcome)
+                fields[.elapsedMS] = .integer(began.map { Self.elapsedMilliseconds(since: $0) } ?? 0)
                 diagnostics.record(.snapshot, stage: stage, fields)
             }
         }
@@ -253,7 +260,14 @@ import KoeBridgeCore
         evidence?[.subrole] = .token(subrole.status != .success ? .unavailable
                                      : subrole.value == nil ? .missing
                                      : subrole.value is String ? .ok : .invalidType)
+        // Extra diagnostic-only probes fail closed if secure-field exclusion
+        // cannot be established. Existing receipt reads retain their policy.
+        if requireKnownNonsecure && (subrole.status != .success || !(subrole.value is String)) {
+            outcome = .unknown
+            return nil
+        }
         // The existing value read shares the timeout installed for subrole.
+        attempted = true
         let value = Self.copyAX(element, name: kAXValueAttribute as CFString,
                                 operation: .value, timeout: timeout, configureTimeout: false,
                                 diagnostics: diagnostics, stage: stage)
@@ -279,16 +293,28 @@ import KoeBridgeCore
     /// combine a previous caret with a later partial value. Opaque marker
     /// ranges cannot be turned into numeric offsets by guessing.
     func observedSnapshot(timeout: Float, diagnostics: InputDiagnosticTrace? = nil,
-                          stage: InputDiagnosticEvent.Stage = .preflight)
+                          stage: InputDiagnosticEvent.Stage = .preflight,
+                          eligibility: ((ReceiptEligibilityReason) -> Void)? = nil)
         -> (snapshot: InsertionReceiptPolicy.Snapshot, selection: CFTypeRef)? {
         let diagnostics = diagnostics?.isCollecting == true ? diagnostics : nil
         var evidence: [Field: Value]? = diagnostics.map { _ in [
             .operation: .token(.selectedRange), .selectionKind: .token(selectionKind)
         ] }
         var outcome: Token = .unavailable
+        var selectionRead: Token = .notAttempted
+        var valueRead: Token = .notAttempted
+        var valueAttempted = false
         defer {
+            let reason = ReceiptEligibilityReason.classify(selectionKind: selectionKind,
+                selectionRead: selectionRead, valueRead: valueRead, snapshotAvailable: outcome == .ok)
+            eligibility?(reason)
             if let diagnostics, var fields = evidence {
                 fields[.outcome] = .token(outcome)
+                fields[.selectionRead] = .token(selectionRead)
+                fields[.valueReadAttempted] = .flag(valueAttempted)
+                fields[.valueReadResult] = .token(valueRead)
+                fields[.exactBaselineAvailable] = .flag(outcome == .ok)
+                fields[.receiptSkippedReason] = .reason(reason.rawValue)
                 diagnostics.record(.snapshot, stage: stage, fields)
             }
         }
@@ -296,23 +322,30 @@ import KoeBridgeCore
         guard CFGetTypeID(focused) == AXUIElementGetTypeID() else {
             evidence?[.element] = .token(.invalidType)
             outcome = .invalidType
+            selectionRead = .invalidType
             return nil
         }
         let element = unsafeBitCast(focused, to: AXUIElement.self)
         let firstRead = Self.copyAX(element, name: kAXSelectedTextRangeAttribute as CFString,
                                     operation: .selectedRange, timeout: timeout,
                                     diagnostics: diagnostics, stage: stage)
+        selectionRead = firstRead.status != .success ? .unavailable : firstRead.value == nil ? .missing : .ok
         guard let first = firstRead.value else {
             evidence?[.selection] = .token(firstRead.status == .success ? .missing : .unavailable)
             return nil
         }
-        guard let text = observedValue(timeout: timeout, diagnostics: diagnostics, stage: stage) else {
+        guard let text = observedValue(timeout: timeout, diagnostics: diagnostics, stage: stage,
+                                      observation: { attempted, result in
+                                          valueAttempted = attempted
+                                          valueRead = result
+                                      }) else {
             evidence?[.text] = .token(.unavailable)
             return nil
         }
         let lastRead = Self.copyAX(element, name: kAXSelectedTextRangeAttribute as CFString,
                                    operation: .selectedRange, timeout: timeout,
                                    diagnostics: diagnostics, stage: stage)
+        selectionRead = lastRead.status != .success ? .unavailable : lastRead.value == nil ? .missing : .ok
         guard let last = lastRead.value else {
             evidence?[.selection] = .token(lastRead.status == .success ? .missing : .unavailable)
             return nil
@@ -322,11 +355,13 @@ import KoeBridgeCore
         guard let initialRange = firstRange.range else {
             evidence?[.selection] = .token(firstRange.outcome)
             outcome = firstRange.outcome
+            selectionRead = firstRange.outcome
             return nil
         }
         guard let range = lastRange.range else {
             evidence?[.selection] = .token(lastRange.outcome)
             outcome = lastRange.outcome
+            selectionRead = lastRange.outcome
             return nil
         }
         evidence?[.expectedStart] = .integer(initialRange.location)
@@ -413,11 +448,14 @@ import KoeBridgeCore
 
     func focusCheck(requireOriginalSelection: Bool = true, timeout: Float = 0.08,
                     diagnostics: InputDiagnosticTrace? = nil,
-                    stage: InputDiagnosticEvent.Stage = .preflight) -> (allowed: Bool, reason: String) {
+                    stage: InputDiagnosticEvent.Stage = .preflight,
+                    chunkOrdinal: Int = 0) -> (allowed: Bool, reason: String) {
         let diagnostics = diagnostics?.isCollecting == true ? diagnostics : nil
         let began = diagnostics.map { _ in ProcessInfo.processInfo.systemUptime }
         var evidence: [Field: Value]? = diagnostics.map { _ in [
             .pid: .integer(Int(pid)), .originalSelection: .flag(requireOriginalSelection),
+            .requireOriginalSelection: .flag(requireOriginalSelection),
+            .chunkOrdinal: .integer(chunkOrdinal),
             .selectionKind: .token(selectionKind),
             .selection: .token(requireOriginalSelection ? .unknown : .skipped),
             .captureAgeMS: .integer(Self.elapsedMilliseconds(since: capturedAt))
@@ -426,6 +464,12 @@ import KoeBridgeCore
             if let diagnostics, var fields = evidence {
                 fields[.reason] = .reason(reason)
                 fields[.outcome] = .token(allowed ? .ok : .blocked)
+                // Failed/missing reads are unknown comparisons, never drift.
+                switch fields[.selection] {
+                case .token(.same)?: fields[.selectionComparison] = .token(.same)
+                case .token(.different)?: fields[.selectionComparison] = .token(.different)
+                default: fields[.selectionComparison] = .token(requireOriginalSelection ? .unknown : .skipped)
+                }
                 fields[.elapsedMS] = .integer(began.map { Self.elapsedMilliseconds(since: $0) } ?? 0)
                 diagnostics.record(.focus, stage: stage, fields)
             }

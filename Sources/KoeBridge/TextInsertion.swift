@@ -2,6 +2,7 @@
 import AppKit
 import ApplicationServices
 import CoreGraphics
+import Dispatch
 import KoeBridgeCore
 
 @MainActor enum TextInsertion {
@@ -183,7 +184,34 @@ import KoeBridgeCore
         var receiptStartedAt: TimeInterval?
         var deadlineExceeded = false
         var budgetInsufficient = false
+        var receiptEligibility: ReceiptEligibilityReason = .notAttempted
+        var exactBaselineAvailable = false
+        var progress = DeliveryChunkProgress()
+        var pacingBudgetExceeded = false
+        var phase: InputDiagnosticEvent.Token = .preflight
+        let pacingProfile = target.map { DeliveryPacingPolicy.profile(selectionKind: $0.selectionKind) }
         func report(_ outcome: Result, _ reason: String, receipt: Receipt? = nil) -> Report {
+            diagnostics?.record(.eligibility, stage: .result, [
+                .selectionKind: .token(target?.selectionKind ?? .unknown),
+                .receiptSkippedReason: .reason(receiptEligibility.rawValue),
+                .exactBaselineAvailable: .flag(exactBaselineAvailable), .polls: .integer(polls)
+            ])
+            if diagnostics?.isCollecting == true {
+                var fields = progress.fields
+                fields[.plannedChunks] = .integer(planned)
+                fields[.sentChunks] = .integer(sent)
+                fields[.pacingBudgetExceeded] = .flag(pacingBudgetExceeded)
+                let completed = reason == "posted_without_observable_edit" || reason == "verified_value_and_selection"
+                fields[.abortPhase] = .token(completed ? .none : phase)
+                fields[.abortReason] = completed ? .token(.none) : .reason(reason)
+                if let pacingProfile {
+                    fields[.pacingProfile] = .token(pacingProfile.name)
+                    fields[.pacingVersion] = .integer(pacingProfile.version)
+                    fields[.pacingGapMS] = .integer(Int(pacingProfile.gapNanoseconds / 1_000_000))
+                    fields[.pacingBudgetMS] = .integer(Int(pacingProfile.budgetNanoseconds / 1_000_000))
+                }
+                diagnostics?.record(.progress, stage: .posting, fields)
+            }
             if let receiptStartedAt {
                 diagnostics?.record(.receipt, stage: .receipt, [
                     .polls: .integer(polls), .unchanged: .integer(unchanged),
@@ -241,7 +269,9 @@ import KoeBridgeCore
         guard let target else { return report(.focusChanged, "target_not_captured") }
         let initialFocus = target.focusCheck(diagnostics: diagnostics, stage: .preflight)
         guard initialFocus.allowed else { return report(.focusChanged, initialFocus.reason) }
-        let before = target.observedSnapshot(timeout: 0.04, diagnostics: diagnostics, stage: .preflight)?.snapshot
+        let before = target.observedSnapshot(timeout: 0.04, diagnostics: diagnostics, stage: .preflight,
+                                             eligibility: { receiptEligibility = $0 })?.snapshot
+        exactBaselineAvailable = before != nil
         if case .command = payload {
             guard target.textSnapshot != nil, before != nil else {
                 return report(.focusChanged, "command_baseline_unavailable")
@@ -272,11 +302,16 @@ import KoeBridgeCore
             .hardwareModifiers: .integer(Int(CGEventSource.flagsState(.hidSystemState).intersection(modifierMask).rawValue))
         ])
         let postedAt = ProcessInfo.processInfo.systemUptime
+        phase = .posting
+        let appliedProfile = DeliveryPacingPolicy.profile(selectionKind: target.selectionKind)
+        let collectTiming = diagnostics?.isCollecting == true
         for (index, part) in parts.enumerated() {
             // A long synchronous loop starves MainActor stop/cancel actions.
             // Yield between small batches, then revalidate before posting any
             // more keys. The serial sender still owns this entire delivery.
-            let delay = DeliveryPacingPolicy.delayNanoseconds(beforeChunk: index)
+            let delay = DeliveryPacingPolicy.delayNanoseconds(beforeChunk: index, profile: appliedProfile)
+            pacingBudgetExceeded = pacingBudgetExceeded
+                || DeliveryPacingPolicy.budgetExceeded(beforeChunk: index, profile: appliedProfile)
             if delay > 0 { try? await Task.sleep(nanoseconds: delay) }
             if index > 0 && index % 4 == 0 { await Task.yield() }
             guard !Task.isCancelled, shouldContinue() else {
@@ -290,7 +325,7 @@ import KoeBridgeCore
             // throughout, and the original caret check until the first post.
             if index % 4 == 0 {
                 let check = target.focusCheck(requireOriginalSelection: index == 0,
-                                              diagnostics: diagnostics, stage: .posting)
+                                              diagnostics: diagnostics, stage: .posting, chunkOrdinal: index + 1)
                 if !check.allowed {
                     return report(sent == 0 ? .focusChanged : .partiallySubmitted, check.reason)
                 }
@@ -298,16 +333,49 @@ import KoeBridgeCore
             guard let (down, up) = makeUnicodeEvents(part, source: source) else {
                 return report(sent == 0 ? .eventUnavailable : .partiallySubmitted, "keyboard_event_unavailable")
             }
+            let postBegan = collectTiming ? DispatchTime.now().uptimeNanoseconds : 0
             down.post(tap: .cgAnnotatedSessionEventTap)
             up.post(tap: .cgAnnotatedSessionEventTap)
+            let postEnded = collectTiming ? DispatchTime.now().uptimeNanoseconds : 0
             sent += 1
+            if collectTiming {
+                progress.posted(ordinal: sent, requestedGapNanoseconds: delay,
+                                beganNanoseconds: postBegan, endedNanoseconds: postEnded)
+            }
         }
         diagnostics?.record(.payload, stage: .posting, [
             .sentChunks: .integer(sent), .eventsPosted: .flag(sent > 0), .outcome: .token(.unconfirmed)
         ])
-        guard let before,
-              let expected = InsertionReceiptPolicy.expectedAfter(before: before, inserted: safeText),
-              !InsertionReceiptPolicy.sameText(before.text, expected.text) else {
+        let expected = before.flatMap { InsertionReceiptPolicy.expectedAfter(before: $0, inserted: safeText) }
+        let textChanged: Bool
+        if let before, let expected { textChanged = !InsertionReceiptPolicy.sameText(before.text, expected.text) }
+        else { textChanged = false }
+        receiptEligibility = receiptEligibility.afterPosting(expectedEditAvailable: expected != nil, textChanged: textChanged)
+        guard let before, let expected, textChanged else {
+            if diagnostics?.isCollecting == true {
+                // Classification only: one bounded identity check and an
+                // independent value-only probe. Neither can create a receipt.
+                let observationBegan = ProcessInfo.processInfo.systemUptime
+                let focus = target.focusCheck(requireOriginalSelection: false, timeout: 0.01,
+                                              diagnostics: diagnostics, stage: .receipt, chunkOrdinal: sent)
+                var attempted = false
+                var valueResult: InputDiagnosticEvent.Token = .notAttempted
+                var valueAvailable = false
+                if focus.allowed {
+                    valueAvailable = target.observedValue(timeout: 0.01, diagnostics: diagnostics, stage: .receipt,
+                        requireKnownNonsecure: true, observation: { attempted = $0; valueResult = $1 }) != nil
+                }
+                let identityChanged = ["active_app_changed", "focused_field_changed", "focused_window_changed",
+                                       "focused_element_owner_changed"].contains(focus.reason)
+                diagnostics?.record(.observation, stage: .receipt, [
+                    .outcome: .token(focus.allowed ? .same : identityChanged ? .different : .unknown),
+                    .reason: .reason(focus.reason), .chunkOrdinal: .integer(sent),
+                    .receiverObservation: .token(valueAvailable ? .valueOnly : .unavailable),
+                    .valueReadAttempted: .flag(attempted), .valueReadResult: .token(valueResult),
+                    .exactBaselineAvailable: .flag(exactBaselineAvailable),
+                    .elapsedMS: .integer(InputDiagnosticTrace.milliseconds(since: observationBegan))
+                ])
+            }
             return report(.inserted, "posted_without_observable_edit")
         }
 
@@ -315,6 +383,7 @@ import KoeBridgeCore
         // AX timeouts also shrink with the remaining budget. Do not skip this
         // because the next recording is active: that is the key overlap case.
         let receiptBeganAt = ProcessInfo.processInfo.systemUptime
+        phase = .receipt
         receiptStartedAt = receiptBeganAt
         let deadline = receiptBeganAt + 0.6
         diagnostics?.record(.receipt, stage: .receipt, [
@@ -344,7 +413,7 @@ import KoeBridgeCore
             polls += 1
             let timeout = Float(min(0.035, remaining / 12))
             let focus = target.focusCheck(requireOriginalSelection: false, timeout: timeout,
-                                          diagnostics: diagnostics, stage: .receipt)
+                                          diagnostics: diagnostics, stage: .receipt, chunkOrdinal: sent)
             guard focus.allowed else { return report(.inserted, "posted_then_" + focus.reason) }
             let observed = target.observedSnapshot(timeout: timeout, diagnostics: diagnostics, stage: .receipt)?.snapshot
             // Diagnostic classification never grants input/rebase permission.
@@ -366,7 +435,7 @@ import KoeBridgeCore
             // Focus may move while AX is answering. Recheck before accepting
             // the receipt, without imposing the already-replaced old caret.
             let finalFocus = target.focusCheck(requireOriginalSelection: false, timeout: timeout,
-                                               diagnostics: diagnostics, stage: .receipt)
+                                               diagnostics: diagnostics, stage: .receipt, chunkOrdinal: sent)
             guard finalFocus.allowed else { return report(.inserted, "posted_then_" + finalFocus.reason) }
             guard !Task.isCancelled, shouldContinue() else {
                 return report(.inserted, "delivery_cancelled_after_post")
