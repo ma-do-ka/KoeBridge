@@ -153,6 +153,7 @@ Tests/KoeBridgeCoreTests/TranscriptReviewTests.swift
 Tests/KoeBridgeCoreTests/TranscriptionOptionsTests.swift
 docs/releases/v1.1.0.md
 scripts/package_development_build.sh
+scripts/test_package_development_build.py
 .github/workflows/release-v1.1.1.yml
 Sources/KoeBridge/DictationDelivery.swift
 Sources/KoeBridge/DictationReviewSession.swift

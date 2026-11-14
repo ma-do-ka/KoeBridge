@@ -47,7 +47,7 @@ python3 scripts/audit_public_release.py
 python3 -m unittest discover -s scripts -p 'test_*.py' -v
 swift test
 swift run -c release KoeBridgeSelfTest
-KOEBRIDGE_PACKAGE_DEVELOPMENT=1 bash scripts/package_development_build.sh
+KOEBRIDGE_PACKAGE_DEVELOPMENT=1 KOEBRIDGE_PACKAGE_SIGNING=stable bash scripts/package_development_build.sh
 bash scripts/verify_development_archive.sh
 LABEL="$(/usr/libexec/PlistBuddy -c 'Print :KoeBridgeReleaseLabel' "$PLIST")"
 BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PLIST")"
