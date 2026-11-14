@@ -61,6 +61,13 @@ struct KoeBridgeSelfTest {
             do { try await action() }
             catch { TestRecorder.assertion(false, file: #fileID, line: #line, message: "test threw: \(error)") }
         }
+        await run("UserFacingErrorMessageTests.allSparkleCodesHaveJapaneseMessages", { UserFacingErrorMessageTests().allSparkleCodesHaveJapaneseMessages() })
+        await run("UserFacingErrorMessageTests.networkCodesHaveJapaneseMessages", { UserFacingErrorMessageTests().networkCodesHaveJapaneseMessages() })
+        await run("UserFacingErrorMessageTests.keychainCodesHaveJapaneseMessages", { UserFacingErrorMessageTests().keychainCodesHaveJapaneseMessages() })
+        await run("UserFacingErrorMessageTests.cancellationIsQuietAndDoesNotUseOperationFailure", { UserFacingErrorMessageTests().cancellationIsQuietAndDoesNotUseOperationFailure() })
+        await run("UserFacingErrorMessageTests.genericFallbackUsesOnlyTheSuppliedOperation", { UserFacingErrorMessageTests().genericFallbackUsesOnlyTheSuppliedOperation() })
+        await run("UserFacingErrorMessageTests.unknownSparkleAndExplicitSparkleFlagUseUpdateFallback", { UserFacingErrorMessageTests().unknownSparkleAndExplicitSparkleFlagUseUpdateFallback() })
+        await run("UserFacingErrorMessageTests.descriptionsAndUnderlyingErrorsNeverReachTheInterface", { UserFacingErrorMessageTests().descriptionsAndUnderlyingErrorsNeverReachTheInterface() })
         await run("MicrophoneStartupGateTests.testRevalidationCancellationRaceAndStoppedTiming", { MicrophoneStartupGateTests().testRevalidationCancellationRaceAndStoppedTiming() })
         await run("MicrophoneStartupGateTests.testOldEpochCannotRefreshReadyStreamAndTapGenerationMustMatch", { MicrophoneStartupGateTests().testOldEpochCannotRefreshReadyStreamAndTapGenerationMustMatch() })
         await run("DeliveryPacingPolicyTests.firstChunkIsImmediateAndFollowingChunksArePaced", { DeliveryPacingPolicyTests().firstChunkIsImmediateAndFollowingChunksArePaced() })

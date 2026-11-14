@@ -20,6 +20,7 @@ Sources/KoeBridge/PreviewView.swift
 Sources/KoeBridge/GeminiLiveConnection.swift
 Sources/KoeBridge/KeychainStore.swift
 Sources/KoeBridge/KoeBridgeUpdateManager.swift
+Sources/KoeBridge/KoeBridgeUpdateUserDriver.swift
 Sources/KoeBridge/LoginItemManager.swift
 Sources/KoeBridge/Main.swift
 Sources/KoeBridge/MicrophoneCapture.swift
@@ -47,6 +48,7 @@ Sources/KoeBridgeCore/SessionTransitions.swift
 Sources/KoeBridgeCore/TranscriptAssembler.swift
 Sources/KoeBridgeCore/TranscriptionStyle.swift
 Sources/KoeBridgeCore/UnicodeTypingPlan.swift
+Sources/KoeBridgeCore/UserFacingErrorMessage.swift
 Sources/KoeBridgePOSIX/FileLock.c
 Sources/KoeBridgePOSIX/include/KoeBridgePOSIX.h
 Sources/KoeBridgeSelfTest/AudioDurationTests.swift
@@ -71,6 +73,7 @@ Sources/KoeBridgeSelfTest/Runner.swift
 Sources/KoeBridgeSelfTest/SessionTransitionsTests.swift
 Sources/KoeBridgeSelfTest/StressTests.swift
 Sources/KoeBridgeSelfTest/TranscriptionStyleSelfTests.swift
+Sources/KoeBridgeSelfTest/UserFacingErrorMessageTests.swift
 TEST_REPORT.md
 Tests/KoeBridgeCoreTests/AudioDurationTests.swift
 Tests/KoeBridgeCoreTests/DiagnosticLogPolicyTests.swift
@@ -92,6 +95,8 @@ Tests/KoeBridgeCoreTests/ResilienceTests.swift
 Tests/KoeBridgeCoreTests/SessionTransitionsTests.swift
 Tests/KoeBridgeCoreTests/StressTests.swift
 Tests/KoeBridgeCoreTests/TranscriptionStyleTests.swift
+Tests/KoeBridgeCoreTests/UserFacingErrorMessageTests.swift
+Tests/KoeBridgeTests/KoeBridgeUpdateUserDriverTests.swift
 V100_RELEASE_NOTES.md
 scripts/Info.plist
 scripts/audit_public_release.py
