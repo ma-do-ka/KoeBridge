@@ -152,24 +152,6 @@ import KoeBridgeCore
         let owner = Self.owner(of: element, diagnostics: diagnostics, stage: stage)
         guard owner.status == .success else { return failure("focus_owner_unavailable") }
         guard owner.pid == app.processIdentifier else { return failure("focus_owner_mismatch") }
-        if requireTextInput {
-            let role = copyAX(element, name: kAXRoleAttribute as CFString, operation: .role,
-                              diagnostics: diagnostics, stage: stage).value as? String
-            let subroleRead = copyAX(element, name: kAXSubroleAttribute as CFString, operation: .subrole,
-                                     diagnostics: diagnostics, stage: stage)
-            let subrole = subroleRead.value as? String
-            // Unsupported/no-value is a legitimate nonsecure-role editor.
-            // A timed-out/failed or mistyped read cannot establish exclusion.
-            let subroleReadable = secureExclusionReadable(subroleRead.value, status: subroleRead.status)
-            // Custom web editors may expose a nonstandard role but explicitly
-            // advertise editability. Never use selection alone as permission.
-            let editable = copyAX(element, name: "AXEditable" as CFString, operation: .editable,
-                                  diagnostics: diagnostics, stage: stage).value as? Bool ?? false
-            if let reason = DeliveryTargetPolicy.blockedReason(role: role, subrole: subrole, editable: editable,
-                                                               subroleReadable: subroleReadable) {
-                return failure(reason)
-            }
-        }
         let window = copyAX(appAX, name: kAXFocusedWindowAttribute as CFString,
                             operation: .focusedWindow, scope: .application,
                             diagnostics: diagnostics, stage: stage).value
@@ -186,6 +168,25 @@ import KoeBridgeCore
         } else {
             selectionAttribute = nil
             selection = nil
+        }
+        if requireTextInput {
+            let role = copyAX(element, name: kAXRoleAttribute as CFString, operation: .role,
+                              diagnostics: diagnostics, stage: stage).value as? String
+            let subroleRead = copyAX(element, name: kAXSubroleAttribute as CFString, operation: .subrole,
+                                     diagnostics: diagnostics, stage: stage)
+            let subrole = subroleRead.value as? String
+            // Unsupported/no-value is a legitimate nonsecure-role editor.
+            // A timed-out/failed or mistyped read cannot establish exclusion.
+            let subroleReadable = secureExclusionReadable(subroleRead.value, status: subroleRead.status)
+            // A text selection on the focused element may be the only WebView
+            // editor signal. Reuse the capture reads; no text evidence stays blocked.
+            let editable = copyAX(element, name: "AXEditable" as CFString, operation: .editable,
+                                  diagnostics: diagnostics, stage: stage).value as? Bool ?? false
+            if let reason = DeliveryTargetPolicy.blockedReason(role: role, subrole: subrole, editable: editable,
+                                                               hasTextSelection: selection != nil,
+                                                               subroleReadable: subroleReadable) {
+                return failure(reason)
+            }
         }
         var target = InsertionTarget(bundleIdentifier: app.bundleIdentifier, localizedName: app.localizedName,
                                      pid: app.processIdentifier, focused: focused,

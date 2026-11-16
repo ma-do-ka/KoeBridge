@@ -12,17 +12,18 @@ public enum InsertionFocusPolicy {
     }
 }
 
-/// Positive input evidence is required at delivery; selection alone can also
-/// belong to a read-only document. AX text roles support editors whose value
-/// or selection cannot be observed, including marker-based browser editors.
+/// Positive text evidence on the focused element is required at delivery.
+/// WebView editors may expose only a numeric or marker-based text selection,
+/// without a text role or AXEditable. Elements with no text evidence stay blocked.
 public enum DeliveryTargetPolicy {
     public static func blockedReason(role: String?, subrole: String?, editable: Bool,
+                                     hasTextSelection: Bool,
                                      subroleReadable: Bool = true) -> String? {
         if role == "AXSecureTextField" || subrole == "AXSecureTextField" {
             return "secure_text_field"
         }
         guard subroleReadable, let role else { return "target_unavailable_at_delivery" }
-        guard ["AXTextField", "AXTextArea", "AXComboBox"].contains(role) || editable else {
+        guard ["AXTextField", "AXTextArea", "AXComboBox"].contains(role) || editable || hasTextSelection else {
             return "current_target_not_text_input"
         }
         return nil
