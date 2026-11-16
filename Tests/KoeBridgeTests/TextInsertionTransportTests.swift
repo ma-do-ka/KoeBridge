@@ -113,26 +113,57 @@ import KoeBridgeCore
 
     @Test func unavailableAndInvalidCurrentTargetsBlockBothTransportEntrypointsAndHistoryOutcome() async {
         let start = target()
-        for reason in ["focused_text_element_unavailable", "accessibility_not_granted",
+        for reason in ["focused_text_element_unavailable", "koebridge_window_is_frontmost",
                        "secure_text_field", "current_target_not_text_input"] {
-            let expected = ["secure_text_field", "current_target_not_text_input"].contains(reason)
+            let expected = ["secure_text_field", "current_target_not_text_input", "koebridge_window_is_frontmost"].contains(reason)
                 ? reason : "target_unavailable_at_delivery"
             var captures = 0
             let capture: TextInsertion.TargetCapture = { _ in captures += 1; return (nil, reason) }
             let ordinary = await TextInsertion.deliver("認識結果", to: start, capture: capture)
             let command = await TextInsertion.deliverCommandText(.newline, to: start, capture: capture) { true }
-            let history = await DictationDelivery.send("認識結果", to: start, captureReason: "ok", capture: capture) { true }
+            let history = await DictationDelivery.send("認識結果", to: start, capture: capture) { true }
             #expect(captures == 3)
             for report in [ordinary, command] {
                 #expect(report.outcome == .focusChanged && report.reason == expected)
                 #expect(!report.eventsPosted && report.receipt == nil)
             }
             #expect(history.delivery == .blockedFocus && !history.submitted)
-            #expect(history.detail.contains("現在") && history.detail.contains("履歴"))
+            #expect(history.detail.contains(reason == "koebridge_window_is_frontmost" ? "設定画面" : "現在")
+                && history.detail.contains("履歴"))
         }
-        let nilStart = await DictationDelivery.send("結果", to: nil, captureReason: "caret_or_selection_changed",
+        let nilStart = await DictationDelivery.send("結果", to: nil,
             capture: { _ in (nil, "focused_text_element_unavailable") }) { true }
         #expect(nilStart.detail.contains("現在の入力欄") && !nilStart.detail.contains("カーソル"))
+    }
+
+    @Test func accessibilityCaptureFailurePreservesPermissionOutcomeAndHistoryMessage() async throws {
+        let starts: [InsertionTarget?] = [target(), nil]
+        for start in starts {
+            var captures = 0
+            let capture: TextInsertion.TargetCapture = { _ in
+                captures += 1
+                return (nil, "accessibility_not_granted")
+            }
+            let prepared = TextInsertion.prepareTarget(takeStart: start, capture: capture)
+            #expect(prepared.target == nil && prepared.reason == "accessibility_not_granted")
+            let ordinary = await TextInsertion.deliver("認識結果", to: start, capture: capture)
+            let command = await TextInsertion.deliverCommandText(.newline, to: start, capture: capture) { true }
+            let history = await DictationDelivery.send("認識結果", to: start, capture: capture) { true }
+            let historyReport = try #require(history.report)
+            #expect(captures == 4)
+            for report in [ordinary, command, historyReport] {
+                #expect(report.outcome == .notPermitted && report.reason == "accessibility_not_granted")
+                #expect(!report.eventsPosted && report.receipt == nil && report.unverifiedTarget == nil)
+                #expect(report.target == nil)
+            }
+            #expect(history.delivery == .missingPermission && !history.submitted)
+            #expect(history.submissionFeedback == nil)
+            #expect(history.detail == "アクセシビリティの許可が必要です。認識結果は履歴に保存しました。")
+        }
+        #expect(DictationDelivery.description(.missingPermission, reason: "post_event_permission_missing")
+            == "入力に必要な権限がありません。認識結果は履歴に保存しました。")
+        #expect(DictationDelivery.description(.verifiedInserted, reason: "accessibility_not_granted")
+            == "入力先への反映を確認しました。履歴に保存済みです。")
     }
 
     @Test func receiptsAndPredecessorsUseFreshIdentityWithoutPinningPendingTakeCaret() throws {

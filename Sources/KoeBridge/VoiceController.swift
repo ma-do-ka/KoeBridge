@@ -1552,7 +1552,6 @@ import KoeBridgeCore
         } else {
             deliveringTakeID = id
             outcome = await DictationDelivery.send(text, to: take.target,
-                                                  captureReason: take.targetCaptureReason,
                                                   diagnostics: take.inputDiagnostics,
                                                   unverifiedPredecessors: take.unverifiedInputTargets) { [weak self, weak take] in
                 guard let self, let take else { return false }

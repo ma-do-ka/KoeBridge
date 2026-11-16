@@ -39,7 +39,7 @@ import KoeBridgeCore
         return nil
     }
 
-    static func send(_ text: String, to target: InsertionTarget?, captureReason: String,
+    static func send(_ text: String, to target: InsertionTarget?,
                      diagnostics: InputDiagnosticTrace? = nil,
                      unverifiedPredecessors: [InsertionTarget] = [],
                      capture: TextInsertion.TargetCapture = { InsertionTarget.capture(diagnostics: $0, stage: .preflight,
@@ -66,7 +66,8 @@ import KoeBridgeCore
         switch delivery {
         case .verifiedInserted: return "入力先への反映を確認しました。履歴に保存済みです。"
         case .attemptedUnconfirmed: return "入力イベントを送信しました（受理は未確認）。再送の前に入力先を確認してください。"
-        case .missingPermission: return "入力に必要な権限がありません。認識結果は履歴に保存しました。"
+        case .missingPermission where reason != "accessibility_not_granted":
+            return "入力に必要な権限がありません。認識結果は履歴に保存しました。"
         case .partiallyDirect: return "入力が途中で中断しました。履歴を使う前に、入力先に入った範囲を確認してください。"
         case .insertionUnavailable: return "入力イベントを送信できませんでした。認識結果は履歴に保存しました。"
         default: break

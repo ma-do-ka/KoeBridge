@@ -186,7 +186,8 @@ import KoeBridgeCore
             .targetRecapture: .token(classification), .reason: .reason(current.reason)
         ])
         guard let fresh = current.target else {
-            let specific = ["secure_text_field", "current_target_not_text_input", "koebridge_window_is_frontmost"]
+            let specific = ["secure_text_field", "current_target_not_text_input", "koebridge_window_is_frontmost",
+                            "accessibility_not_granted"]
             return (nil, specific.contains(current.reason) ? current.reason : "target_unavailable_at_delivery")
         }
         guard takeStart?.isBlocked != true,
@@ -294,7 +295,10 @@ import KoeBridgeCore
                                        diagnostics: diagnostics, capture: capture)
         target = recaptured.target
         pacingProfile = target.map { DeliveryPacingPolicy.profile(selectionKind: $0.selectionKind) }
-        guard recaptured.reason == "ok" else { return report(.focusChanged, recaptured.reason) }
+        guard recaptured.reason == "ok" else {
+            return report(recaptured.reason == "accessibility_not_granted" ? .notPermitted : .focusChanged,
+                          recaptured.reason)
+        }
         let safeText: String
         let parts: [String]
         switch payload {
