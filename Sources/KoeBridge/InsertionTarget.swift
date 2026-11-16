@@ -178,12 +178,7 @@ import KoeBridgeCore
             // Unsupported/no-value is a legitimate nonsecure-role editor.
             // A timed-out/failed or mistyped read cannot establish exclusion.
             let subroleReadable = secureExclusionReadable(subroleRead.value, status: subroleRead.status)
-            // A text selection on the focused element may be the only WebView
-            // editor signal. Reuse the capture reads; no text evidence stays blocked.
-            let editable = copyAX(element, name: "AXEditable" as CFString, operation: .editable,
-                                  diagnostics: diagnostics, stage: stage).value as? Bool ?? false
-            if let reason = DeliveryTargetPolicy.blockedReason(role: role, subrole: subrole, editable: editable,
-                                                               hasTextSelection: selection != nil,
+            if let reason = DeliveryTargetPolicy.blockedReason(role: role, subrole: subrole,
                                                                subroleReadable: subroleReadable) {
                 return failure(reason)
             }
