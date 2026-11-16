@@ -50,8 +50,14 @@ import KoeBridgeCore
                         selectionAttribute: String? = kAXSelectedTextRangeAttribute as String) -> InsertionTarget {
         var range = CFRange(location: caret, length: 0)
         let numeric = selectionAttribute == kAXSelectedTextRangeAttribute as String
-        let selection: CFTypeRef? = selectionAttribute == nil ? nil
-            : numeric ? AXValueCreate(.cfRange, &range) : "opaque-marker" as CFString
+        let selection: CFTypeRef?
+        if selectionAttribute == nil {
+            selection = nil
+        } else if numeric {
+            selection = AXValueCreate(.cfRange, &range)
+        } else {
+            selection = "opaque-marker" as CFString
+        }
         return InsertionTarget(bundleIdentifier: "com.example.Editor", localizedName: "Editor", pid: pid,
             focused: element ?? AXUIElementCreateApplication(pid), window: nil,
             selectionAttribute: selectionAttribute, selection: selection,
