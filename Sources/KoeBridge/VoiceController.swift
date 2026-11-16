@@ -147,6 +147,7 @@ import KoeBridgeCore
     private var textOperationTask: Task<Void, Never>?
     private var textOperationDeadlineTask: Task<Void, Never>?
     private var textOperationStep = 1
+    private var textOperationUnverifiedTargets: [InsertionTarget] = []
 
     func copyTextOperationOutput() {
         guard let output = lastTextOperationOutput else { return }
@@ -161,6 +162,7 @@ import KoeBridgeCore
         if let id = textOperationID, overlayOwner == id { hideOverlay() }
         textOperationID = nil
         textOperationRunning = false
+        textOperationUnverifiedTargets.removeAll()
         lastTextOperationOutput = nil
     }
 
@@ -203,6 +205,7 @@ import KoeBridgeCore
         let id = UUID()
         textOperationID = id
         textOperationRunning = true
+        textOperationUnverifiedTargets.removeAll()
         textOperationStep = 1
         textOperationDeadlineTask = Task { [weak self] in
             do { try await Task.sleep(for: .seconds(30)) } catch { return }
@@ -263,20 +266,15 @@ import KoeBridgeCore
                 }
                 self.textOperationDeadlineTask?.cancel()
                 self.textOperationDeadlineTask = nil
-                // Mirror Build 48's delivery tail, including content verification and receipt reconciliation.
-                let current = target.selectedContextText()
-                guard current.map({ InsertionReceiptPolicy.sameText($0, original) }) == true else {
-                    let copied = TextInsertion.copy(working)
-                    self.finishTextOperation(verified: false, copied: copied, id: id)
-                    return
-                }
+                // The selected source is fixed; the destination is the current
+                // caret/selection when the completed transform is delivered.
                 self.lastDeliveryAnchor = nil
-                let report = await TextInsertion.deliver(working, to: target) {
+                let report = await TextInsertion.deliver(working, to: target,
+                    unverifiedPredecessors: self.textOperationUnverifiedTargets) {
                     self.textOperationID == id && !Task.isCancelled
                 }
-                for other in self.inFlight.values where other.transformSelection == nil {
-                    if let candidate = other.target { other.target = report.reconciled(candidate) }
-                }
+                self.reconcileDelivery(report)
+                self.saveBlockedTransform(working, report: report)
                 guard self.textOperationID == id, !Task.isCancelled else { return }
                 let verified = report.outcome == .verifiedInserted
                 self.finishTextOperation(verified: verified, copied: !verified && TextInsertion.copy(working), id: id)
@@ -1555,7 +1553,8 @@ import KoeBridgeCore
             deliveringTakeID = id
             outcome = await DictationDelivery.send(text, to: take.target,
                                                   captureReason: take.targetCaptureReason,
-                                                  diagnostics: take.inputDiagnostics) { [weak self, weak take] in
+                                                  diagnostics: take.inputDiagnostics,
+                                                  unverifiedPredecessors: take.unverifiedInputTargets) { [weak self, weak take] in
                 guard let self, let take else { return false }
                 return !take.automaticDeliverySuppressed && self.inFlight[take.id] === take
             }
@@ -1566,12 +1565,7 @@ import KoeBridgeCore
                 if report.outcome == .verifiedInserted, let receipt = report.receipt {
                     lastDeliveryAnchor = LastDeliveryAnchor(receipt: receipt, sourceRecordID: recordID)
                 }
-                for other in inFlight.values where other.id != id && other.transformSelection == nil {
-                    if let target = other.target {
-                        other.target = report.reconciled(target, sourceTakeID: id, candidateTakeID: other.id,
-                                                        diagnostics: other.inputDiagnostics)
-                    }
-                }
+                reconcileDelivery(report, sourceTakeID: id)
                 DiagnosticLog.record("delivery resolved; id=\(id.uuidString.prefix(8)); outcome=\(outcome.delivery.rawValue); reason=\(report.reason)")
             }
         }
@@ -1583,6 +1577,29 @@ import KoeBridgeCore
         if active == nil {
             status = outcome.detail + (take.review?.status == .incomplete ? " 追加チェックは未完了です。" : "")
         }
+    }
+
+    /// Reconcile against the target actually used by this delivery. Also keep
+    /// unverified identities for pending takes with a different/nil start target:
+    /// their own current-target capture must not bypass a predecessor's latch.
+    private func reconcileDelivery(_ report: TextInsertion.Report, sourceTakeID: UUID? = nil) {
+        if textOperationRunning, let target = report.unverifiedTarget {
+            textOperationUnverifiedTargets.append(target)
+        }
+        for other in inFlight.values where other.id != sourceTakeID {
+            if let target = report.unverifiedTarget { other.unverifiedInputTargets.append(target) }
+            if other.transformSelection == nil, let target = other.target {
+                other.target = report.reconciled(target, sourceTakeID: sourceTakeID, candidateTakeID: other.id,
+                                                diagnostics: other.inputDiagnostics, recaptureBeforeDelivery: true)
+            }
+        }
+    }
+
+    private func saveBlockedTransform(_ text: String, report: TextInsertion.Report) {
+        guard report.outcome == .focusChanged, !report.eventsPosted,
+              let recordID = remember(text, isPartial: false, delivery: .blockedFocus) else { return }
+        updateRemembered(recordID, delivery: .blockedFocus,
+                         detail: DictationDelivery.description(.blockedFocus, reason: report.reason))
     }
 
     private func deliverCommand(_ command: VoiceCommandID, blockedReason: String?, take: DictationTake) async {
@@ -1607,17 +1624,13 @@ import KoeBridgeCore
         }
         lastDeliveryAnchor = nil
         deliveringTakeID = take.id
-        let report = await TextInsertion.deliverCommandText(command, to: take.target, diagnostics: take.inputDiagnostics) { [weak self, weak take] in
+        let report = await TextInsertion.deliverCommandText(command, to: take.target, diagnostics: take.inputDiagnostics,
+                                                            unverifiedPredecessors: take.unverifiedInputTargets) { [weak self, weak take] in
             guard let self, let take else { return false }
             return !take.automaticDeliverySuppressed && self.inFlight[take.id] === take
         }
         deliveringTakeID = nil
-        for other in inFlight.values where other.id != take.id && other.transformSelection == nil {
-            if let target = other.target {
-                other.target = report.reconciled(target, sourceTakeID: take.id, candidateTakeID: other.id,
-                                                diagnostics: other.inputDiagnostics)
-            }
-        }
+        reconcileDelivery(report, sourceTakeID: take.id)
         DiagnosticLog.record("voice_command take=\(take.id) command=\(command.rawValue) gate=\(report.reason) outcome=\(report.outcome.diagnosticOutcome.rawValue) events_posted=\(report.eventsPosted)")
         if report.outcome == .verifiedInserted {
             feedback(command == .newline ? .commandNewline : .commandParagraph, command.completionMessage)
@@ -1644,7 +1657,9 @@ import KoeBridgeCore
         case "accessibility_not_granted": reason = "アクセシビリティの許可がありません"
         case "post_event_permission_missing": reason = "キー入力の許可がありません"
         case "empty_typing_payload": reason = "入力する内容がありません"
-        case "target_not_captured": reason = "入力先を取得できませんでした"
+        case "target_not_captured", "target_unavailable_at_delivery": reason = "現在の入力先を取得できませんでした"
+        case "secure_text_field": reason = "現在の入力先がパスワード欄です"
+        case "current_target_not_text_input": reason = "現在の入力先がテキスト入力欄ではありません"
         case "command_baseline_unavailable", "field_value_unavailable_on_recheck":
             reason = "入力先の内容を確認できませんでした"
         case "field_value_or_selection_changed": reason = "入力先の内容または選択範囲が変わりました"
@@ -1701,39 +1716,22 @@ import KoeBridgeCore
                 DiagnosticLog.record("gemini transform usage; promptTokens=\(usage.promptTokens.map(String.init) ?? "unknown") responseTokens=\(usage.responseTokens.map(String.init) ?? "unknown") totalTokens=\(usage.totalTokens)")
             }
             guard !take.automaticDeliverySuppressed else { return }
-            if take.isFixLastInput {
-                guard let target = take.target, target.focusCheck().allowed,
-                      target.observedSnapshot(timeout: 0.08)?.snapshot == target.textSnapshot,
-                      let readBack = target.selectedContextText(), InsertionReceiptPolicy.sameText(readBack, selected) else {
-                    status = "入力後に変更されているため修正できません"
-                    showCompletionFeedback(.transformFailed, for: take.id)
-                    return
-                }
-            }
-            // Verify the original selection's contents too, even for AX marker editors.
-            let current = take.target?.selectedContextText()
-            let target = current.map { InsertionReceiptPolicy.sameText($0, selected) } == true ? take.target : nil
-            guard let target else {
-                let copied = TextInsertion.copy(output.text)
-                showCompletionFeedback(copied ? .transformCopied : .transformFailed, for: take.id)
-                if active == nil {
-                    status = copied ? "変換結果をクリップボードにコピーしました。入力先を確認してください。" : "変換結果をコピーできませんでした。入力先と権限を確認してください。"
-                }
-                return
-            }
+            // The source selection stays fixed for recognition/transformation.
+            // Delivery follows the current target, including fix-last-input;
+            // its initial anchor eligibility was checked before recording.
             let sourceRecordID = lastDeliveryAnchor?.sourceRecordID
             lastDeliveryAnchor = nil
             deliveringTakeID = take.id
-            let report = await TextInsertion.deliver(output.text, to: target, diagnostics: take.inputDiagnostics) {
+            let report = await TextInsertion.deliver(output.text, to: take.target, diagnostics: take.inputDiagnostics,
+                                                     unverifiedPredecessors: take.unverifiedInputTargets) {
                 !take.automaticDeliverySuppressed
             }
             deliveringTakeID = nil
             if take.isFixLastInput, report.outcome == .verifiedInserted, let receipt = report.receipt {
                 lastDeliveryAnchor = LastDeliveryAnchor(receipt: receipt, sourceRecordID: sourceRecordID)
             }
-            for other in inFlight.values where other.id != take.id && other.transformSelection == nil {
-                if let candidate = other.target { other.target = report.reconciled(candidate) }
-            }
+            reconcileDelivery(report, sourceTakeID: take.id)
+            saveBlockedTransform(output.text, report: report)
             let verified = report.outcome == .verifiedInserted
             let copied = !verified && TextInsertion.copy(output.text)
             showCompletionFeedback(verified ? .sent : (copied ? .transformCopied : .transformFailed), for: take.id)

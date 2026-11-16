@@ -17,7 +17,7 @@
 | 観測 | 主な理由・項目 | 判断できる範囲 |
 | --- | --- | --- |
 | 取得失敗 | `*_unavailable*`、`kind=ax` の `error` | macOS の問い合わせが失敗した / 必要な値がなかった。カーソルが動いた証拠ではない |
-| 実際の不一致 | `focused_field_changed`、`focused_window_changed`、`caret_or_selection_changed` | 取得した入力先・選択位置が録音開始時と一致しなかった |
+| 実際の不一致 | `focused_field_changed`、`focused_window_changed`、`caret_or_selection_changed` | 取得した入力先・選択位置が送信開始時の再取得と一致しなかった（Build 66以降） |
 | 値が不正 | `*_invalid*`、`invalid_type`、`invalid_range` | 型または数値範囲が不正で照合できなかった |
 | 送信前に停止 | `events_posted=0`、`stage=result` | キー入力を送信していない。権限、入力先、取消などの reason を追う |
 | 一部だけ送信 | `outcome=partial`、予定数と送信数 | 途中で停止。全部を貼り直すと重複する可能性がある |
@@ -109,6 +109,12 @@ trace の文字列は固定コードと検証済みのアプリ bundle ID に限
 受理確認できない経路で全 chunk を送った後、記録が有効な場合だけ、1 回の入力先 identity チェックと本文だけの独立観測を行います。各 AX 読取の要求 timeout は 10 ms、secure でないことを確認でき、入力先が一致する場合だけ本文を読みます。`section=observation` の `outcome` は入力先の `same` / `different` / `unknown`、`receiver_observation` は `value_only` / `unavailable` です。本文観測は数値位置付きの受理確認ではなく、Report・次の入力の許可には使いません。marker / 選択なしの受理不明表示は従来どおりです。
 
 これらの section も 128 イベントの同じ予算内で優先保持し、`dropped` は省略数を引き続き記録します。sender の計測だけで相手側の完全受理・部分受理・後からの巻戻りを証明することはできません。
+
+## Build 66（v1.1.11）の現在位置への入力
+
+通常音声入力・改行コマンド・選択テキストの変換は、配送開始時に現在の入力欄と選択位置を再取得します。録音中のカーソル移動、Enterによる改行、本文の編集、別の有効な入力欄やアプリへの移動は、それ自体では配送を止めません。録音開始時の取得は表示・セッション診断用に残ります。ベースライン、Build 65の送信間隔、受理確認と後続入力の照合は再取得した対象を使います。送信開始後はこの対象に固定し、移動先を追いかけません。システム中断と先行入力の受理未確認による停止は継続します。
+
+`section=recapture` の `target_recapture` は `same_element` / `different_element` / `different_app` / `unavailable` のいずれかです。同じ欄でのカーソル移動・本文編集は `same_element` です。開始時に対象がなく、配送時に取得できた場合は `different_element` になります。パスワード欄・テキスト入力欄でない対象も `unavailable` に分類し、`secure_text_field` / `current_target_not_text_input` で理由を区別します。取得や安全確認に失敗した場合は `target_unavailable_at_delivery` で入力を止め、認識結果を履歴に保存します。本文や欄名は追加記録しません。
 
 ## 調査で残る限界
 

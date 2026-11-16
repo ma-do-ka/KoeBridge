@@ -15,7 +15,7 @@ import KoeBridgeCore
     private(set) var selection: CFTypeRef?
     private(set) var textSnapshot: InsertionReceiptPolicy.Snapshot?
     private(set) var capturedAt: TimeInterval
-    private var blockedReason: String?
+    private(set) var blockedReason: String?
 
     var isBlocked: Bool { blockedReason != nil }
 
@@ -112,24 +112,32 @@ import KoeBridgeCore
         return nil
     }
 
+    /// Distinguish a legitimate absent subrole from a failed or mistyped read.
+    static func secureExclusionReadable(_ value: CFTypeRef?, status: AXError) -> Bool {
+        status == .attributeUnsupported || status == .noValue
+            || (status == .success && (value == nil || value is String))
+    }
+
     /// AX grants belong to the actual running process, including its signature.
-    static func capture(diagnostics: InputDiagnosticTrace? = nil) -> (target: InsertionTarget?, reason: String) {
+    static func capture(diagnostics: InputDiagnosticTrace? = nil,
+                        stage: InputDiagnosticEvent.Stage = .capture, requireTextInput: Bool = false)
+        -> (target: InsertionTarget?, reason: String) {
         let diagnostics = diagnostics?.isCollecting == true ? diagnostics : nil
         let began = diagnostics.map { _ in ProcessInfo.processInfo.systemUptime }
         func failure(_ reason: String) -> (target: InsertionTarget?, reason: String) {
-            diagnostics?.record(.target, stage: .capture, [
+            diagnostics?.record(.target, stage: stage, [
                 .reason: .reason(reason), .outcome: .token(.blocked),
                 .elapsedMS: .integer(began.map { Self.elapsedMilliseconds(since: $0) } ?? 0)
             ])
             return (nil, reason)
         }
         let trusted = AXIsProcessTrusted()
-        diagnostics?.record(.target, stage: .capture, [.axTrusted: .flag(trusted)])
+        diagnostics?.record(.target, stage: stage, [.axTrusted: .flag(trusted)])
         guard trusted else { return failure("accessibility_not_granted") }
         guard let app = NSWorkspace.shared.frontmostApplication else {
             return failure("no_frontmost_application")
         }
-        diagnostics?.record(.target, stage: .capture, [
+        diagnostics?.record(.target, stage: stage, [
             .pid: .integer(Int(app.processIdentifier)),
             .app: app.bundleIdentifier.map { .application($0) } ?? .token(.unavailable)
         ])
@@ -137,24 +145,42 @@ import KoeBridgeCore
             return failure("koebridge_window_is_frontmost")
         }
         let appAX = AXUIElementCreateApplication(app.processIdentifier)
-        guard let focused = focusedElement(for: app.processIdentifier, diagnostics: diagnostics, stage: .capture) else {
+        guard let focused = focusedElement(for: app.processIdentifier, diagnostics: diagnostics, stage: stage) else {
             return failure("focused_text_element_unavailable")
         }
         let element = unsafeBitCast(focused, to: AXUIElement.self)
-        let owner = Self.owner(of: element, diagnostics: diagnostics, stage: .capture)
+        let owner = Self.owner(of: element, diagnostics: diagnostics, stage: stage)
         guard owner.status == .success else { return failure("focus_owner_unavailable") }
         guard owner.pid == app.processIdentifier else { return failure("focus_owner_mismatch") }
+        if requireTextInput {
+            let role = copyAX(element, name: kAXRoleAttribute as CFString, operation: .role,
+                              diagnostics: diagnostics, stage: stage).value as? String
+            let subroleRead = copyAX(element, name: kAXSubroleAttribute as CFString, operation: .subrole,
+                                     diagnostics: diagnostics, stage: stage)
+            let subrole = subroleRead.value as? String
+            // Unsupported/no-value is a legitimate nonsecure-role editor.
+            // A timed-out/failed or mistyped read cannot establish exclusion.
+            let subroleReadable = secureExclusionReadable(subroleRead.value, status: subroleRead.status)
+            // Custom web editors may expose a nonstandard role but explicitly
+            // advertise editability. Never use selection alone as permission.
+            let editable = copyAX(element, name: "AXEditable" as CFString, operation: .editable,
+                                  diagnostics: diagnostics, stage: stage).value as? Bool ?? false
+            if let reason = DeliveryTargetPolicy.blockedReason(role: role, subrole: subrole, editable: editable,
+                                                               subroleReadable: subroleReadable) {
+                return failure(reason)
+            }
+        }
         let window = copyAX(appAX, name: kAXFocusedWindowAttribute as CFString,
                             operation: .focusedWindow, scope: .application,
-                            diagnostics: diagnostics, stage: .capture).value
+                            diagnostics: diagnostics, stage: stage).value
         let selectionAttribute: String?
         let selection: CFTypeRef?
         if let range = copyAX(element, name: kAXSelectedTextRangeAttribute as CFString,
-                              operation: .selectedRange, diagnostics: diagnostics, stage: .capture).value {
+                              operation: .selectedRange, diagnostics: diagnostics, stage: stage).value {
             selectionAttribute = kAXSelectedTextRangeAttribute as String
             selection = range
         } else if let marker = copyAX(element, name: "AXSelectedTextMarkerRange" as CFString,
-                                     operation: .selectedMarker, diagnostics: diagnostics, stage: .capture).value {
+                                     operation: .selectedMarker, diagnostics: diagnostics, stage: stage).value {
             selectionAttribute = "AXSelectedTextMarkerRange"
             selection = marker
         } else {
@@ -172,7 +198,7 @@ import KoeBridgeCore
         // A second bounded attempt covers an editor consuming an earlier take.
         if selectionAttribute == kAXSelectedTextRangeAttribute as String {
             for _ in 0..<2 {
-                if let observed = target.observedSnapshot(timeout: 0.04, diagnostics: diagnostics, stage: .capture) {
+                if let observed = target.observedSnapshot(timeout: 0.04, diagnostics: diagnostics, stage: stage) {
                     target.textSnapshot = observed.snapshot
                     target.selection = observed.selection
                     break
@@ -199,7 +225,7 @@ import KoeBridgeCore
                     fields[.selectionLength] = .integer(range.length)
                 }
             }
-            diagnostics.record(.target, stage: .capture, fields)
+            diagnostics.record(.target, stage: stage, fields)
         }
         return (target, "ok")
     }

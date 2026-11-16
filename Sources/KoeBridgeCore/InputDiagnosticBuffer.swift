@@ -22,7 +22,7 @@ public struct InputDiagnosticBuffer: Sendable {
     /// Finite slots bound both retention and the human-readable summary. A slot
     /// points to a real event; it never invents a successful operation.
     private enum Milestone: String, CaseIterable, Sendable {
-        case requested, target, captured, recognition, preflight, focus
+        case requested, target, captured, recognition, preflight, focus, recapture
         case before, payload, posted, expected, firstObserved = "first_observed"
         case observed, counts, result, firstReconcile = "first_reconcile", reconcile
         case capability, eligibility, progress, observation, firstCheckpoint = "first_checkpoint", checkpoint
@@ -33,6 +33,8 @@ public struct InputDiagnosticBuffer: Sendable {
         let event = entry.event
         let fields = event.fields
         switch (event.kind, event.stage) {
+        case (.target, .preflight) where fields[.targetRecapture] != nil:
+            milestones[.recapture] = entry
         case (.eligibility, _): milestones[.eligibility] = entry
         case (.progress, _): milestones[.progress] = entry
         case (.observation, _): milestones[.observation] = entry

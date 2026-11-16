@@ -25,6 +25,7 @@ public struct InputDiagnosticEvent: Equatable, Sendable {
         case frontPID = "front_pid"
         case app, role, subrole
         case selectionKind = "selection_kind"
+        case targetRecapture = "target_recapture"
         case window, element, owner, selection, text
         case valueUTF16 = "value_utf16"
         case selectionStart = "selection_start"
@@ -100,6 +101,9 @@ public struct InputDiagnosticEvent: Equatable, Sendable {
     /// never interpolate a platform error description or an AX attribute value.
     public enum Token: String, CaseIterable, Sendable {
         case ok, same, different, unavailable, missing
+        case sameElement = "same_element"
+        case differentElement = "different_element"
+        case differentApp = "different_app"
         case invalidType = "invalid_type"
         case secure
         case tooLarge = "too_large"
@@ -112,7 +116,7 @@ public struct InputDiagnosticEvent: Equatable, Sendable {
         case focusedWindow = "focused_window"
         case selectedRange = "selected_range"
         case selectedMarker = "selected_marker"
-        case subrole, value, owner, rebased, blocked, unchanged
+        case role, editable, subrole, value, owner, rebased, blocked, unchanged
         case verified, unconfirmed, partial, cancelled, skipped
         case gemini, apple, agent, verbatim, readable
         case nearSilence = "near_silence"
@@ -148,6 +152,9 @@ public struct InputDiagnosticEvent: Equatable, Sendable {
         case emptyTypingPayload = "empty_typing_payload"
         case postEventPermissionMissing = "post_event_permission_missing"
         case targetNotCaptured = "target_not_captured"
+        case targetUnavailableAtDelivery = "target_unavailable_at_delivery"
+        case secureTextField = "secure_text_field"
+        case currentTargetNotTextInput = "current_target_not_text_input"
         case fieldValueUnavailableOnRecheck = "field_value_unavailable_on_recheck"
         case fieldValueOrSelectionChanged = "field_value_or_selection_changed"
         case eventSourceUnavailable = "event_source_unavailable"
@@ -184,6 +191,7 @@ public struct InputDiagnosticEvent: Equatable, Sendable {
         case candidateEditUnmatched = "candidate_edit_unmatched"
         case rebaseFailed = "rebase_failed"
         case verifiedPriorInput = "verified_prior_input"
+        case verifiedPriorInputRecapturePending = "verified_prior_input_recapture_pending"
         case focusOwnerUnavailable = "focus_owner_unavailable"
         case frontmostApplicationUnavailable = "frontmost_application_unavailable"
         case focusedElementUnavailableOnRecheck = "focused_element_unavailable_on_recheck"
