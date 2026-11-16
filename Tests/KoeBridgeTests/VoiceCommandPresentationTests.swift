@@ -17,7 +17,8 @@ import Testing
     @Test func commandDeliveryReasonsUseJapaneseDetail() {
         for token in ["delivery_cancelled_before_post", "delivery_cancelled_after_partial_post",
                       "delivery_cancelled_after_post", "accessibility_not_granted", "post_event_permission_missing",
-                      "empty_typing_payload", "target_not_captured", "command_baseline_unavailable",
+                      "empty_typing_payload", "target_not_captured", "target_unavailable_at_delivery",
+                      "secure_text_field", "current_target_not_text_input", "command_baseline_unavailable",
                       "field_value_unavailable_on_recheck", "field_value_or_selection_changed",
                       "event_source_unavailable", "keyboard_event_unavailable", "posted_without_observable_edit",
                       "posted_receipt_timeout", "active_app_changed", "focused_field_changed", "focused_window_changed",

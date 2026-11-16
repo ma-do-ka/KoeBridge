@@ -270,3 +270,30 @@ extension InputDiagnosticTests {
     }
 
 }
+
+extension InputDiagnosticTests {
+    func recaptureClassificationSurvivesAXNoiseWithoutFieldContent() {
+        let classifications: [InputDiagnosticEvent.Token] = [.sameElement, .differentElement, .differentApp, .unavailable]
+        check(Set(classifications.map(\.rawValue)) == Set(["same_element", "different_element", "different_app", "unavailable"]))
+        for classification in classifications {
+            var buffer = InputDiagnosticBuffer(takeID: takeID)
+            for index in 0..<100 {
+                buffer.append(.init(kind: .ax, stage: .capture, fields: [:]), elapsedMS: index)
+            }
+            buffer.append(.init(kind: .target, stage: .preflight, fields: [
+                .targetRecapture: .token(classification), .reason: .reason("target_unavailable_at_delivery")
+            ]), elapsedMS: 101)
+            for index in 0..<1_000 {
+                buffer.append(.init(kind: .ax, stage: .receipt, fields: [:]), elapsedMS: 102 + index)
+            }
+            let lines = buffer.renderedLines()
+            check(buffer.retainedCount == 128)
+            check(lines.contains { $0.contains("section=recapture ") && $0.contains("target_recapture=" + classification.rawValue) })
+            check(lines.allSatisfy { $0.utf8.count <= 320 && DiagnosticLogPolicy.sanitizedEvent($0) == $0 })
+        }
+        for reason in ["target_unavailable_at_delivery", "secure_text_field", "current_target_not_text_input"] {
+            check(InputDiagnosticEvent.Value.reason(reason) != .token(.unknown))
+        }
+        check(InputDiagnosticEvent.Value.reason("PRIVATE_FIELD_CONTENT") == .token(.unknown))
+    }
+}
