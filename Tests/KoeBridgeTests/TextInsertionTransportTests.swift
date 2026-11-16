@@ -49,12 +49,82 @@ import KoeBridgeCore
                         text: String = "ab", caret: Int = 1,
                         selectionAttribute: String? = kAXSelectedTextRangeAttribute as String) -> InsertionTarget {
         var range = CFRange(location: caret, length: 0)
-        let selection = AXValueCreate(.cfRange, &range)
+        let numeric = selectionAttribute == kAXSelectedTextRangeAttribute as String
+        let selection: CFTypeRef? = selectionAttribute == nil ? nil
+            : numeric ? AXValueCreate(.cfRange, &range) : "opaque-marker" as CFString
         return InsertionTarget(bundleIdentifier: "com.example.Editor", localizedName: "Editor", pid: pid,
             focused: element ?? AXUIElementCreateApplication(pid), window: nil,
             selectionAttribute: selectionAttribute, selection: selection,
-            textSnapshot: .init(text: text, selection: .init(location: caret, length: 0)),
+            textSnapshot: numeric ? .init(text: text, selection: .init(location: caret, length: 0)) : nil,
             capturedAt: 1, blockedReason: nil)
+    }
+
+    @Test func deliveryAcceptsEditorsWithNoNumericOrMarkerSelection() throws {
+        let attributes: [String?] = [nil, kAXSelectedTextRangeAttribute as String, "AXSelectedTextMarkerRange"]
+        for selectionAttribute in attributes {
+            let current = target(selectionAttribute: selectionAttribute)
+            // ecf0cc05 and the Build 66/67 editor shapes share the same gate:
+            // neither AXEditable nor a selection is needed to accept them.
+            for role in ["AXGroup", "AXWebArea", "AXTextField", "AXTextArea", "AXComboBox", "AXCustomEditor"] {
+                let prepared = TextInsertion.prepareTarget(takeStart: current, capture: { _ in
+                    if let reason = DeliveryTargetPolicy.blockedReason(role: role, subrole: nil) {
+                        return (nil, reason)
+                    }
+                    return (current, "ok")
+                })
+                #expect(prepared.reason == "ok")
+                let fresh = try #require(prepared.target)
+                #expect(fresh.sameElement(as: current))
+                let expectedKind: InputDiagnosticEvent.Token = selectionAttribute == nil ? .none
+                    : selectionAttribute == kAXSelectedTextRangeAttribute as String ? .numericRange : .textMarker
+                #expect(fresh.selectionKind == expectedKind)
+                if expectedKind == .numericRange {
+                    #expect(fresh.selection != nil && fresh.textSnapshot != nil)
+                    #expect(DeliveryPacingPolicy.profile(selectionKind: fresh.selectionKind) == .numericSelection)
+                } else {
+                    #expect(fresh.textSnapshot == nil)
+                    #expect((fresh.selection == nil) == (expectedKind == .none))
+                    let profile = DeliveryPacingPolicy.profile(selectionKind: fresh.selectionKind)
+                    #expect(profile == .unobservableSelection && profile.gapNanoseconds == 20_000_000)
+                    var eligibility: ReceiptEligibilityReason?
+                    #expect(fresh.observedSnapshot(timeout: 0.04, eligibility: { eligibility = $0 }) == nil)
+                    #expect(eligibility == (expectedKind == .none ? .selectionMissing : .markerNotNumeric))
+                }
+            }
+        }
+    }
+
+    @Test func deliveryBlocksControlsSecureAndUnavailableTargetsRegardlessOfSelection() {
+        let attributes: [String?] = [nil, kAXSelectedTextRangeAttribute as String, "AXSelectedTextMarkerRange"]
+        var cases: [(String?, String?, Bool, String)] = [
+            ("AXSecureTextField", nil, true, "secure_text_field"),
+            ("AXSecureTextField", nil, false, "secure_text_field"),
+            ("AXTextField", "AXSecureTextField", true, "secure_text_field"),
+            (nil, "AXSecureTextField", false, "secure_text_field"),
+            ("AXButton", "AXSecureTextField", false, "secure_text_field"),
+            (nil, nil, true, "target_unavailable_at_delivery"),
+            ("AXGroup", nil, false, "target_unavailable_at_delivery"),
+            ("AXButton", nil, false, "target_unavailable_at_delivery")
+        ]
+        for role in ["AXButton", "AXCheckBox", "AXRadioButton", "AXPopUpButton",
+                     "AXMenuButton", "AXMenuItem", "AXMenuBarItem", "AXLink",
+                     "AXSlider", "AXIncrementor", "AXStepper", "AXSwitch",
+                     "AXStaticText", "AXImage", "AXDisclosureTriangle"] {
+            cases.append((role, nil, true, "current_target_not_text_input"))
+        }
+        for selectionAttribute in attributes {
+            let current = target(selectionAttribute: selectionAttribute)
+            for (role, subrole, readable, expected) in cases {
+                let prepared = TextInsertion.prepareTarget(takeStart: current, capture: { _ in
+                    if let reason = DeliveryTargetPolicy.blockedReason(role: role, subrole: subrole,
+                                                                       subroleReadable: readable) {
+                        return (nil, reason)
+                    }
+                    return (current, "ok")
+                })
+                #expect(prepared.target == nil && prepared.reason == expected)
+            }
+        }
     }
 
     @Test func currentCaretAndNewlineEditsReplaceTakeStartBaseline() throws {
@@ -203,8 +273,7 @@ import KoeBridgeCore
             #expect(InsertionTarget.secureExclusionReadable(nil, status: status))
         }
         #expect(InsertionTarget.secureExclusionReadable("AXSearchField" as CFString, status: .success))
-        #expect(DeliveryTargetPolicy.blockedReason(role: "AXTextField", subrole: "AXSecureTextField", editable: true,
-                                                  hasTextSelection: true) == "secure_text_field")
+        #expect(DeliveryTargetPolicy.blockedReason(role: "AXTextField", subrole: "AXSecureTextField") == "secure_text_field")
     }
 
     @Test func cancellationBeforeDeliveryDoesNotCaptureOrPost() async {
