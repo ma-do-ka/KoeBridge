@@ -30,8 +30,8 @@ import KoeBridgeCore
     @MainActor struct Receipt {
         let target: InsertionTarget
         let proof: InsertionReceiptPolicy.Receipt
-        fileprivate let postedAt: TimeInterval
-        fileprivate let verifiedAt: TimeInterval
+        let postedAt: TimeInterval
+        let verifiedAt: TimeInterval
 
         func rebased(_ candidate: InsertionTarget) -> InsertionTarget? {
             guard !candidate.isBlocked else { return nil }
@@ -50,14 +50,21 @@ import KoeBridgeCore
         let reason: String
         let receipt: Receipt?
         let eventsPosted: Bool
-        fileprivate let target: InsertionTarget?
-        fileprivate let diagnostics: InputDiagnosticTrace?
+        let target: InsertionTarget?
+        let diagnostics: InputDiagnosticTrace?
+
+        /// Preserve the actual delivery target even when a pending take was
+        /// captured in another field (or had no take-start target at all).
+        var unverifiedTarget: InsertionTarget? {
+            eventsPosted && receipt == nil ? target : nil
+        }
 
         /// Run for every still-live take before advancing the serial sender.
         /// A successful event post by itself must never unlock the next take.
         func reconciled(_ candidate: InsertionTarget, sourceTakeID: UUID? = nil,
                         candidateTakeID: UUID? = nil,
-                        diagnostics nextDiagnostics: InputDiagnosticTrace? = nil) -> InsertionTarget {
+                        diagnostics nextDiagnostics: InputDiagnosticTrace? = nil,
+                        recaptureBeforeDelivery: Bool = false) -> InsertionTarget {
             func record(_ outcome: InputDiagnosticEvent.Token, _ why: String) {
                 func fields(related: UUID?) -> [InputDiagnosticEvent.Field: InputDiagnosticEvent.Value] {
                     let window: InputDiagnosticEvent.Token
@@ -111,6 +118,14 @@ import KoeBridgeCore
                 record(.blocked, "rebase_failed")
                 return candidate.blockedByPriorInput()
             case .blocked:
+                // A verified predecessor is settled. A pending take may have
+                // moved its caret or edited text since capture; its fresh
+                // delivery baseline supersedes that old snapshot. Existing
+                // blocked latches and unverified predecessors remain blocked.
+                if recaptureBeforeDelivery, receipt != nil {
+                    record(.unchanged, "verified_prior_input_recapture_pending")
+                    return candidate
+                }
                 let why: String
                 if !candidate.sameField(as: target) { why = "ambiguous_target" }
                 else if receipt == nil { why = "prior_receipt_unavailable" }
@@ -153,25 +168,65 @@ import KoeBridgeCore
         return (down, up)
     }
 
+    typealias TargetCapture = @MainActor (InputDiagnosticTrace?) -> (target: InsertionTarget?, reason: String)
+
+    /// Capture exactly once at the shared boundary for dictation, commands and
+    /// transforms. Take-start contents/caret are only diagnostic context here.
+    /// Pending unverified input remains a latch; recapture cannot unlock it.
+    static func prepareTarget(takeStart: InsertionTarget?, unverifiedPredecessors: [InsertionTarget] = [],
+                              diagnostics: InputDiagnosticTrace? = nil,
+                              capture: TargetCapture = { InsertionTarget.capture(diagnostics: $0, stage: .preflight,
+                                                                                requireTextInput: true) })
+        -> (target: InsertionTarget?, reason: String) {
+        let current = capture(diagnostics)
+        let classification = DeliveryTargetPolicy.recapture(currentAvailable: current.target != nil,
+            sameApp: takeStart.map { $0.pid == current.target?.pid } ?? true,
+            sameElement: takeStart.flatMap { start in current.target.map { start.sameElement(as: $0) } } ?? false)
+        diagnostics?.record(.target, stage: .preflight, [
+            .targetRecapture: .token(classification), .reason: .reason(current.reason)
+        ])
+        guard let fresh = current.target else {
+            let specific = ["secure_text_field", "current_target_not_text_input", "koebridge_window_is_frontmost",
+                            "accessibility_not_granted"]
+            return (nil, specific.contains(current.reason) ? current.reason : "target_unavailable_at_delivery")
+        }
+        guard takeStart?.isBlocked != true,
+              !unverifiedPredecessors.contains(where: { fresh.sameElement(as: $0) }) else {
+            return (fresh, "prior_input_unverified")
+        }
+        return (fresh, "ok")
+    }
+
     /// Clipboard-free, serial delivery. Read-back is bounded and runs while a
     /// following recording may continue. No outcome ever resubmits posted keys.
-    static func deliver(_ text: String, to target: InsertionTarget?,
+    static func deliver(_ text: String, to takeStart: InsertionTarget?,
                         diagnostics: InputDiagnosticTrace? = nil,
+                        unverifiedPredecessors: [InsertionTarget] = [],
+                        capture: TargetCapture = { InsertionTarget.capture(diagnostics: $0, stage: .preflight,
+                                                                          requireTextInput: true) },
                         shouldContinue: @MainActor () -> Bool = { true }) async -> Report {
-        await deliverPayload(.dictation(text), to: target, diagnostics: diagnostics, shouldContinue: shouldContinue)
+        await deliverPayload(.dictation(text), takeStart: takeStart, diagnostics: diagnostics,
+                             unverifiedPredecessors: unverifiedPredecessors, capture: capture,
+                             shouldContinue: shouldContinue)
     }
 
     /// Only a fixed command ID can authorize newline controls; never accepts arbitrary text.
-    static func deliverCommandText(_ command: VoiceCommandID, to target: InsertionTarget?,
+    static func deliverCommandText(_ command: VoiceCommandID, to takeStart: InsertionTarget?,
                                    diagnostics: InputDiagnosticTrace? = nil,
+                                   unverifiedPredecessors: [InsertionTarget] = [],
+                                   capture: TargetCapture = { InsertionTarget.capture(diagnostics: $0, stage: .preflight,
+                                                                                     requireTextInput: true) },
                                    shouldContinue: @MainActor () -> Bool) async -> Report {
-        await deliverPayload(.command(command), to: target, diagnostics: diagnostics, shouldContinue: shouldContinue)
+        await deliverPayload(.command(command), takeStart: takeStart, diagnostics: diagnostics,
+                             unverifiedPredecessors: unverifiedPredecessors, capture: capture,
+                             shouldContinue: shouldContinue)
     }
 
     private enum Payload { case dictation(String), command(VoiceCommandID) }
 
-    private static func deliverPayload(_ payload: Payload, to target: InsertionTarget?,
+    private static func deliverPayload(_ payload: Payload, takeStart: InsertionTarget?,
                                        diagnostics: InputDiagnosticTrace?,
+                                       unverifiedPredecessors: [InsertionTarget], capture: TargetCapture,
                                        shouldContinue: @MainActor () -> Bool) async -> Report {
         let beganAt = ProcessInfo.processInfo.systemUptime
         var sent = 0
@@ -189,7 +244,8 @@ import KoeBridgeCore
         var progress = DeliveryChunkProgress()
         var pacingBudgetExceeded = false
         var phase: InputDiagnosticEvent.Token = .preflight
-        let pacingProfile = target.map { DeliveryPacingPolicy.profile(selectionKind: $0.selectionKind) }
+        var target: InsertionTarget?
+        var pacingProfile: DeliveryPacingPolicy.Profile?
         func report(_ outcome: Result, _ reason: String, receipt: Receipt? = nil) -> Report {
             diagnostics?.record(.eligibility, stage: .result, [
                 .selectionKind: .token(target?.selectionKind ?? .unknown),
@@ -235,6 +291,14 @@ import KoeBridgeCore
         guard !Task.isCancelled, shouldContinue() else {
             return report(.cancelled, "delivery_cancelled_before_post")
         }
+        let recaptured = prepareTarget(takeStart: takeStart, unverifiedPredecessors: unverifiedPredecessors,
+                                       diagnostics: diagnostics, capture: capture)
+        target = recaptured.target
+        pacingProfile = target.map { DeliveryPacingPolicy.profile(selectionKind: $0.selectionKind) }
+        guard recaptured.reason == "ok" else {
+            return report(recaptured.reason == "accessibility_not_granted" ? .notPermitted : .focusChanged,
+                          recaptured.reason)
+        }
         let safeText: String
         let parts: [String]
         switch payload {
@@ -277,8 +341,8 @@ import KoeBridgeCore
                 return report(.focusChanged, "command_baseline_unavailable")
             }
         }
-        // The same caret does not prove that a user left the document alone.
-        // When a readable baseline exists, reject other edits to its contents.
+        // This comparison anchors the new delivery capture, never the take-start
+        // snapshot. Edits made while recording are already part of this baseline.
         if let captured = target.textSnapshot {
             guard let before else { return report(.focusChanged, "field_value_unavailable_on_recheck") }
             diagnostics?.record(.snapshot, stage: .preflight, [

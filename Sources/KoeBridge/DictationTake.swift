@@ -35,6 +35,9 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
     var transformSelection: String?
     var capturedContext: CapturedContext?
     var target: InsertionTarget?
+    // Only reports received while this take is pending participate. A newly
+    // started take does not inherit an earlier take's unconfirmed submission.
+    var unverifiedInputTargets: [InsertionTarget] = []
     var targetCaptureReason = "not_attempted"
     var mic: MicrophoneCapture?
     var continuation: AsyncStream<Data>.Continuation?

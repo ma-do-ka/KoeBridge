@@ -39,13 +39,14 @@ import KoeBridgeCore
         return nil
     }
 
-    static func send(_ text: String, to target: InsertionTarget?, captureReason: String,
+    static func send(_ text: String, to target: InsertionTarget?,
                      diagnostics: InputDiagnosticTrace? = nil,
+                     unverifiedPredecessors: [InsertionTarget] = [],
+                     capture: TextInsertion.TargetCapture = { InsertionTarget.capture(diagnostics: $0, stage: .preflight,
+                                                                                     requireTextInput: true) },
                      shouldContinue: @MainActor () -> Bool) async -> Outcome {
-        if target == nil {
-            diagnostics?.record(.target, stage: .preflight, [.reason: .reason(captureReason)])
-        }
         let report = await TextInsertion.deliver(text, to: target, diagnostics: diagnostics,
+                                                 unverifiedPredecessors: unverifiedPredecessors, capture: capture,
                                                  shouldContinue: shouldContinue)
         let delivery: TranscriptRecord.Delivery
         switch report.outcome {
@@ -57,25 +58,29 @@ import KoeBridgeCore
         case .eventUnavailable: delivery = .insertionUnavailable
         }
         return Outcome(delivery: delivery,
-                       detail: description(delivery, reason: target == nil ? captureReason : report.reason),
+                       detail: description(delivery, reason: report.reason),
                        report: report)
     }
 
-    private static func description(_ delivery: TranscriptRecord.Delivery, reason: String) -> String {
+    static func description(_ delivery: TranscriptRecord.Delivery, reason: String) -> String {
         switch delivery {
         case .verifiedInserted: return "入力先への反映を確認しました。履歴に保存済みです。"
         case .attemptedUnconfirmed: return "入力イベントを送信しました（受理は未確認）。再送の前に入力先を確認してください。"
-        case .missingPermission: return "入力に必要な権限がありません。認識結果は履歴に保存しました。"
+        case .missingPermission where reason != "accessibility_not_granted":
+            return "入力に必要な権限がありません。認識結果は履歴に保存しました。"
         case .partiallyDirect: return "入力が途中で中断しました。履歴を使う前に、入力先に入った範囲を確認してください。"
         case .insertionUnavailable: return "入力イベントを送信できませんでした。認識結果は履歴に保存しました。"
         default: break
         }
         switch reason {
-        case "caret_or_selection_changed": return "カーソルまたは選択範囲が変わったため、入力せず履歴に保存しました。"
+        case "caret_or_selection_changed": return "入力準備中にカーソルまたは選択範囲が変わったため、入力せず履歴に保存しました。"
+        case "target_unavailable_at_delivery": return "現在の入力欄を取得できないため、入力せず履歴に保存しました。"
+        case "secure_text_field": return "現在の入力先がパスワード欄のため、入力せず履歴に保存しました。"
+        case "current_target_not_text_input": return "現在の入力先がテキスト入力欄ではないため、入力せず履歴に保存しました。"
         case "prior_input_unverified": return "前の文章の反映を確認できないため、続く文章を履歴に保存しました。"
         case "koebridge_window_is_frontmost": return "設定画面を閉じて入力欄を選んでください。認識結果は履歴に保存しました。"
         case "active_app_changed", "focused_field_changed", "focused_window_changed":
-            return "録音開始時と入力先が変わったため、入力せず履歴に保存しました。"
+            return "入力準備中に入力先が変わったため、入力せず履歴に保存しました。"
         case "accessibility_not_granted": return "アクセシビリティの許可が必要です。認識結果は履歴に保存しました。"
         default: return "入力先の安全確認を完了できなかったため、履歴に保存しました。"
         }

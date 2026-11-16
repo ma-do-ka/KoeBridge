@@ -7,7 +7,8 @@ struct InsertionSafetyTests {
                                                sameElement: nil, selectionMatches: nil))
     }
 
-    @Test func movingTheCaretInTheSameEditorBlocksPasteWhenObservable() {
+    // This gate compares against the fresh delivery capture, not take start.
+    @Test func caretDriftAfterDeliveryCaptureBlocksPostingWhenObservable() {
         #expect(!InsertionFocusPolicy.mayPaste(sameProcess: true, sameWindow: true,
                                                sameElement: true, selectionMatches: false))
     }
@@ -28,7 +29,7 @@ struct InsertionSafetyTests {
                                                sameElementOwner: false))
     }
 
-    @Test func anotherWindowOrAppMustBlockPaste() {
+    @Test func windowOrAppDriftAfterDeliveryCaptureMustBlockPosting() {
         for sameProcess in [false, true] {
             for sameWindow in [false, true] {
                 if sameProcess && sameWindow { continue }
@@ -36,5 +37,34 @@ struct InsertionSafetyTests {
                                                        sameElement: true, selectionMatches: true))
             }
         }
+    }
+}
+
+extension InsertionSafetyTests {
+    @Test func currentTextInputValidationExcludesSecureAndNonInputTargets() {
+        for role in ["AXTextField", "AXTextArea", "AXComboBox"] {
+            #expect(DeliveryTargetPolicy.blockedReason(role: role, subrole: nil, editable: false) == nil)
+            #expect(DeliveryTargetPolicy.blockedReason(role: role, subrole: "AXSecureTextField", editable: true) == "secure_text_field")
+        }
+        #expect(DeliveryTargetPolicy.blockedReason(role: "AXSecureTextField", subrole: nil, editable: true) == "secure_text_field")
+        #expect(DeliveryTargetPolicy.blockedReason(role: "AXGroup", subrole: nil, editable: true) == nil)
+        // Failed/invalid subrole reads cannot be treated as a known missing
+        // subrole; ordinary unsupported/no-value reads remain usable above.
+        #expect(DeliveryTargetPolicy.blockedReason(role: "AXTextField", subrole: nil, editable: true,
+                                                  subroleReadable: false) == "target_unavailable_at_delivery")
+        #expect(DeliveryTargetPolicy.blockedReason(role: "AXGroup", subrole: nil, editable: true,
+                                                  subroleReadable: false) == "target_unavailable_at_delivery")
+        for role in ["AXButton", "AXStaticText", "AXWebArea", "AXGroup"] {
+            #expect(DeliveryTargetPolicy.blockedReason(role: role, subrole: nil, editable: false) == "current_target_not_text_input")
+        }
+        #expect(DeliveryTargetPolicy.blockedReason(role: nil, subrole: nil, editable: true) == "target_unavailable_at_delivery")
+    }
+
+    @Test func recaptureClassifiesOnlyCurrentIdentityWithoutCaretOrContent() {
+        #expect(DeliveryTargetPolicy.recapture(currentAvailable: false, sameApp: false, sameElement: false) == .unavailable)
+        #expect(DeliveryTargetPolicy.recapture(currentAvailable: true, sameApp: true, sameElement: true) == .sameElement)
+        #expect(DeliveryTargetPolicy.recapture(currentAvailable: true, sameApp: true, sameElement: false) == .differentElement)
+        #expect(DeliveryTargetPolicy.recapture(currentAvailable: true, sameApp: false, sameElement: true) == .differentApp)
+        #expect(DeliveryTargetPolicy.recapture(currentAvailable: true, sameApp: false, sameElement: false) == .differentApp)
     }
 }
