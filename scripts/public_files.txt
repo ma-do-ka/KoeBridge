@@ -15,6 +15,7 @@ SECURITY.md
 Sources/KoeBridge/AppleLocalTranscriber.swift
 Sources/KoeBridge/Diagnostics.swift
 Sources/KoeBridge/DictationTake.swift
+Sources/KoeBridge/HistoryHoverPanel.swift
 Sources/KoeBridge/HistoryView.swift
 Sources/KoeBridge/PreviewView.swift
 Sources/KoeBridge/GeminiLiveConnection.swift
@@ -97,6 +98,7 @@ Tests/KoeBridgeCoreTests/StressTests.swift
 Tests/KoeBridgeCoreTests/TranscriptionStyleTests.swift
 Tests/KoeBridgeCoreTests/UserFacingErrorMessageTests.swift
 Tests/KoeBridgeTests/GeminiLiveConnectionTests.swift
+Tests/KoeBridgeTests/HistoryHoverPanelTests.swift
 Tests/KoeBridgeTests/KoeBridgeUpdateUserDriverTests.swift
 Tests/KoeBridgeTests/VoiceCommandPresentationTests.swift
 V100_RELEASE_NOTES.md

@@ -154,6 +154,7 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
     private var windowKeyMonitor: Any?
     private var updateCheckTimer: Timer?
     private let statusPopover = NSPopover()
+    private let historyHoverPanel = HistoryHoverPanelController()
     private var recordingObservation: AnyCancellable?
     private var popoverMonitors: [Any] = []
     private var popoverActivationObserver: NSObjectProtocol?
@@ -167,7 +168,9 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
             button.action = #selector(statusItemClicked(_:))
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
-        statusPopover.behavior = .transient
+        // Our outside-click / Esc / activation monitors own dismissal, including
+        // the hover child panel. Native transient tracking can close on its buttons.
+        statusPopover.behavior = .applicationDefined
         statusPopover.delegate = self
         statusPopover.animates = true
         let content = StatusPopoverView(
@@ -182,6 +185,14 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
             onToggleMeeting: { [weak self] in self?.afterClosingPopover { $0.controller.toggleMeeting() } },
             onDiscard: { [weak self] in self?.afterClosingPopover { $0.controller.discard() } },
             onCopyRecord: { [weak self] record in self?.copyRecentHistory(record) },
+            onHoverRecord: { [weak self] record, rect, window in
+                guard let self, self.statusPopover.isShown else { return }
+                self.historyHoverPanel.show(record, anchor: rect, parent: window,
+                    onInsert: { [weak self] in self?.insertRecentHistory(record) },
+                    onCopy: { [weak self] in self?.copyRecentHistory(record) })
+            },
+            onLeaveRecord: { [weak self] id in self?.historyHoverPanel.leave(id) },
+            onHideHistoryPreview: { [weak self] in self?.historyHoverPanel.hide() },
             onContentSizeChange: { [weak self] size in
                 guard let self, self.statusPopover.isShown else { return }
                 // Keep intrinsic expansion (recent history / status) when using
@@ -364,7 +375,7 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
         } else if statusPopover.isShown {
             statusPopover.performClose(nil)
         } else {
-            // A transient popover closes on the button's mouseDown, before this
+            // The outside-click monitor closes on the button's mouseDown, before this
             // mouseUp action runs; without this guard, the click that closed it
             // would immediately reopen it instead of toggling it shut.
             if let closedAt = lastPopoverClosedAt, Date().timeIntervalSince(closedAt) < 0.2 { return }
@@ -408,7 +419,8 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
     private func closePopoverIfOutside() {
         guard statusPopover.isShown,
               let window = statusPopover.contentViewController?.view.window else { return }
-        if !window.frame.contains(NSEvent.mouseLocation) { statusPopover.performClose(nil) }
+        if !window.frame.contains(NSEvent.mouseLocation),
+           !historyHoverPanel.contains(NSEvent.mouseLocation) { statusPopover.performClose(nil) }
     }
 
     private func stopPopoverMonitors() {
@@ -427,7 +439,12 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
         NotificationCenter.default.post(name: .settingsDestinationRequested, object: id)
     }
 
+    func popoverWillClose(_ notification: Notification) {
+        historyHoverPanel.hide()
+    }
+
     func popoverDidClose(_ notification: Notification) {
+        historyHoverPanel.hide()
         stopPopoverMonitors()
         lastPopoverClosedAt = Date()
     }
@@ -439,6 +456,19 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
             try? await Task.sleep(for: .milliseconds(100))
             guard let self else { return }
             action(self)
+        }
+    }
+
+    private func insertRecentHistory(_ record: TranscriptRecord) {
+        // Capture the original editor while the non-activating UI is still shown.
+        let target = InsertionTarget.capture().target
+        afterClosingPopover { delegate in
+            guard let current = delegate.controller.history.first(where: { $0.id == record.id }),
+                  !delegate.controller.hasPendingWork else { return }
+            Task { @MainActor in
+                _ = await DictationDelivery.send(current.text, to: target,
+                    shouldContinue: { !delegate.controller.hasPendingWork })
+            }
         }
     }
 
