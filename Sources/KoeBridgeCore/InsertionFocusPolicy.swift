@@ -12,16 +12,18 @@ public enum InsertionFocusPolicy {
     }
 }
 
-/// Mirror take-start capture's acceptance standard for the focused element,
-/// with secure fields and known non-text controls excluded at delivery.
-/// Selection and AXEditable evidence are not required for an editor to work.
+/// Secure/unavailable targets fail closed. Live selection or AXEditable evidence
+/// takes priority over role names; without evidence, known controls are excluded.
+/// Other focused editors need not expose selection or AXEditable.
 public enum DeliveryTargetPolicy {
-    public static func blockedReason(role: String?, subrole: String?,
+    public static func blockedReason(role: String?, subrole: String?, editable: Bool,
+                                     hasTextSelection: Bool,
                                      subroleReadable: Bool = true) -> String? {
         if role == "AXSecureTextField" || subrole == "AXSecureTextField" {
             return "secure_text_field"
         }
         guard subroleReadable, let role else { return "target_unavailable_at_delivery" }
+        if hasTextSelection || editable { return nil }
         if ["AXButton", "AXCheckBox", "AXRadioButton", "AXPopUpButton", "AXMenuButton",
             "AXMenuItem", "AXMenuBarItem", "AXLink", "AXSlider", "AXIncrementor",
             "AXStepper", "AXSwitch", "AXStaticText", "AXImage", "AXDisclosureTriangle"].contains(role) {
