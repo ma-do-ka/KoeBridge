@@ -12,18 +12,19 @@ public enum InsertionFocusPolicy {
     }
 }
 
-/// Positive text evidence on the focused element is required at delivery.
-/// WebView editors may expose only a numeric or marker-based text selection,
-/// without a text role or AXEditable. Elements with no text evidence stay blocked.
+/// Mirror take-start capture's acceptance standard for the focused element,
+/// with secure fields and known non-text controls excluded at delivery.
+/// Selection and AXEditable evidence are not required for an editor to work.
 public enum DeliveryTargetPolicy {
-    public static func blockedReason(role: String?, subrole: String?, editable: Bool,
-                                     hasTextSelection: Bool,
+    public static func blockedReason(role: String?, subrole: String?,
                                      subroleReadable: Bool = true) -> String? {
         if role == "AXSecureTextField" || subrole == "AXSecureTextField" {
             return "secure_text_field"
         }
         guard subroleReadable, let role else { return "target_unavailable_at_delivery" }
-        guard ["AXTextField", "AXTextArea", "AXComboBox"].contains(role) || editable || hasTextSelection else {
+        if ["AXButton", "AXCheckBox", "AXRadioButton", "AXPopUpButton", "AXMenuButton",
+            "AXMenuItem", "AXMenuBarItem", "AXLink", "AXSlider", "AXIncrementor",
+            "AXStepper", "AXSwitch", "AXStaticText", "AXImage", "AXDisclosureTriangle"].contains(role) {
             return "current_target_not_text_input"
         }
         return nil
