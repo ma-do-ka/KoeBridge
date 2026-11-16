@@ -251,6 +251,8 @@ struct KoeBridgeSelfTest {
         await run("InsertionSafetyTests.neverPasteToWindowOnlyTarget(true)", { InsertionSafetyTests().neverPasteToWindowOnlyTarget(true) })
         await run("InsertionSafetyTests.caretDriftAfterDeliveryCaptureBlocksPostingWhenObservable", { InsertionSafetyTests().caretDriftAfterDeliveryCaptureBlocksPostingWhenObservable() })
         await run("InsertionSafetyTests.currentTextInputValidationExcludesSecureAndNonInputTargets", { InsertionSafetyTests().currentTextInputValidationExcludesSecureAndNonInputTargets() })
+        await run("InsertionSafetyTests.markerSelectionAcceptsNonTextRolesWithoutEditable", { InsertionSafetyTests().markerSelectionAcceptsNonTextRolesWithoutEditable() })
+        await run("InsertionSafetyTests.numericSelectionAcceptsNonTextRoleWithoutEditable", { InsertionSafetyTests().numericSelectionAcceptsNonTextRoleWithoutEditable() })
         await run("InsertionSafetyTests.recaptureClassifiesOnlyCurrentIdentityWithoutCaretOrContent", { InsertionSafetyTests().recaptureClassifiesOnlyCurrentIdentityWithoutCaretOrContent() })
         await run("InsertionSafetyTests.validCaptureAndCurrentFocusPermitPaste", { InsertionSafetyTests().validCaptureAndCurrentFocusPermitPaste() })
         await run("InsertionSafetyTests.unknownCaretMayPasteOnlyWhenTheSameTextFieldIsVerified", { InsertionSafetyTests().unknownCaretMayPasteOnlyWhenTheSameTextFieldIsVerified() })

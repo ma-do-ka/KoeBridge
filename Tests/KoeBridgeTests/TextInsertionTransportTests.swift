@@ -203,7 +203,8 @@ import KoeBridgeCore
             #expect(InsertionTarget.secureExclusionReadable(nil, status: status))
         }
         #expect(InsertionTarget.secureExclusionReadable("AXSearchField" as CFString, status: .success))
-        #expect(DeliveryTargetPolicy.blockedReason(role: "AXTextField", subrole: "AXSecureTextField", editable: true) == "secure_text_field")
+        #expect(DeliveryTargetPolicy.blockedReason(role: "AXTextField", subrole: "AXSecureTextField", editable: true,
+                                                  hasTextSelection: true) == "secure_text_field")
     }
 
     @Test func cancellationBeforeDeliveryDoesNotCaptureOrPost() async {

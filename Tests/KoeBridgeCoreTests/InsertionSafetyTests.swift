@@ -42,22 +42,50 @@ struct InsertionSafetyTests {
 
 extension InsertionSafetyTests {
     @Test func currentTextInputValidationExcludesSecureAndNonInputTargets() {
-        for role in ["AXTextField", "AXTextArea", "AXComboBox"] {
-            #expect(DeliveryTargetPolicy.blockedReason(role: role, subrole: nil, editable: false) == nil)
-            #expect(DeliveryTargetPolicy.blockedReason(role: role, subrole: "AXSecureTextField", editable: true) == "secure_text_field")
+        for hasTextSelection in [false, true] {
+            for role in ["AXTextField", "AXTextArea", "AXComboBox"] {
+                #expect(DeliveryTargetPolicy.blockedReason(role: role, subrole: nil, editable: false,
+                                                          hasTextSelection: hasTextSelection) == nil)
+                #expect(DeliveryTargetPolicy.blockedReason(role: role, subrole: "AXSecureTextField", editable: true,
+                                                          hasTextSelection: hasTextSelection) == "secure_text_field")
+            }
+            #expect(DeliveryTargetPolicy.blockedReason(role: "AXSecureTextField", subrole: nil, editable: true,
+                                                      hasTextSelection: hasTextSelection,
+                                                      subroleReadable: false) == "secure_text_field")
+            #expect(DeliveryTargetPolicy.blockedReason(role: "AXGroup", subrole: nil, editable: true,
+                                                      hasTextSelection: hasTextSelection) == nil)
+            // Failed/invalid subrole reads cannot be treated as a known missing
+            // subrole, even with selection evidence. Legitimate absence passes above.
+            for role in ["AXTextField", "AXGroup"] {
+                #expect(DeliveryTargetPolicy.blockedReason(role: role, subrole: nil, editable: true,
+                                                          hasTextSelection: hasTextSelection,
+                                                          subroleReadable: false) == "target_unavailable_at_delivery")
+            }
+            #expect(DeliveryTargetPolicy.blockedReason(role: nil, subrole: nil, editable: true,
+                                                      hasTextSelection: hasTextSelection) == "target_unavailable_at_delivery")
+            #expect(DeliveryTargetPolicy.blockedReason(role: nil, subrole: "AXSecureTextField", editable: true,
+                                                      hasTextSelection: hasTextSelection,
+                                                      subroleReadable: false) == "secure_text_field")
         }
-        #expect(DeliveryTargetPolicy.blockedReason(role: "AXSecureTextField", subrole: nil, editable: true) == "secure_text_field")
-        #expect(DeliveryTargetPolicy.blockedReason(role: "AXGroup", subrole: nil, editable: true) == nil)
-        // Failed/invalid subrole reads cannot be treated as a known missing
-        // subrole; ordinary unsupported/no-value reads remain usable above.
-        #expect(DeliveryTargetPolicy.blockedReason(role: "AXTextField", subrole: nil, editable: true,
-                                                  subroleReadable: false) == "target_unavailable_at_delivery")
-        #expect(DeliveryTargetPolicy.blockedReason(role: "AXGroup", subrole: nil, editable: true,
-                                                  subroleReadable: false) == "target_unavailable_at_delivery")
         for role in ["AXButton", "AXStaticText", "AXWebArea", "AXGroup"] {
-            #expect(DeliveryTargetPolicy.blockedReason(role: role, subrole: nil, editable: false) == "current_target_not_text_input")
+            #expect(DeliveryTargetPolicy.blockedReason(role: role, subrole: nil, editable: false,
+                                                      hasTextSelection: false) == "current_target_not_text_input")
         }
-        #expect(DeliveryTargetPolicy.blockedReason(role: nil, subrole: nil, editable: true) == "target_unavailable_at_delivery")
+    }
+
+    @Test func markerSelectionAcceptsNonTextRolesWithoutEditable() {
+        // Incident shape: AXSelectedTextMarkerRange is the only positive text evidence.
+        // No role-name exclusion may override it, including for WebView roles.
+        for role in ["AXGroup", "AXWebArea"] {
+            #expect(DeliveryTargetPolicy.blockedReason(role: role, subrole: nil, editable: false,
+                                                      hasTextSelection: true) == nil)
+        }
+    }
+
+    @Test func numericSelectionAcceptsNonTextRoleWithoutEditable() {
+        // AXSelectedTextRange supplies the same positive evidence to this policy.
+        #expect(DeliveryTargetPolicy.blockedReason(role: "AXGroup", subrole: nil, editable: false,
+                                                  hasTextSelection: true) == nil)
     }
 
     @Test func recaptureClassifiesOnlyCurrentIdentityWithoutCaretOrContent() {
