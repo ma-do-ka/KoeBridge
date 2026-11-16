@@ -30,6 +30,9 @@ extension Notification.Name {
     let onToggleMeeting: () -> Void
     let onDiscard: () -> Void
     let onCopyRecord: (TranscriptRecord) -> Void
+    let onHoverRecord: (TranscriptRecord, NSRect, NSWindow) -> Void
+    let onLeaveRecord: (UUID) -> Void
+    let onHideHistoryPreview: () -> Void
     let onContentSizeChange: (CGSize) -> Void
     @State private var historyExpanded = false
 
@@ -42,25 +45,27 @@ extension Notification.Name {
                         Text(controller.isRecording ? "■ 音声入力を確定" : "● 音声入力を開始")
                             .fontWeight(.semibold)
                         Text(controller.shortcutChoice.label).font(.caption2)
-                    }.frame(maxWidth: .infinity).padding(.vertical, 7)
-                }.buttonStyle(.borderedProminent)
+                    }.frame(maxWidth: .infinity)
+                }.buttonStyle(PopoverButtonStyle(appearance: .prominent))
                 if controller.busy && controller.isRecording {
                     Button("録音を破棄", action: onDiscard).font(.caption).foregroundStyle(.secondary)
+                        .buttonStyle(PopoverButtonStyle())
                 }
             }
             if controller.lastTextOperationOutput != nil && !controller.textOperationRunning {
                 Button("途中までの変換結果をコピー") { controller.copyTextOperationOutput() }
-                    .font(.caption)
+                    .font(.caption).buttonStyle(PopoverButtonStyle(appearance: .bordered))
             }
             if controller.meetingModeEnabled || controller.meetingRunning {
                 Button(controller.meetingRunning ? "会議モードを停止" : "会議モードを開始") {
                     onToggleMeeting()
-                }.disabled(!controller.meetingRunning && !controller.canStartMeeting)
+                }.buttonStyle(PopoverButtonStyle(appearance: .bordered))
+                    .disabled(!controller.meetingRunning && !controller.canStartMeeting)
                 if !controller.meetingStatus.isEmpty {
                     Text(controller.meetingStatus).font(.caption).foregroundStyle(.secondary)
                 }
             }
-            Button(action: onOpenUsage) { usageCard }.buttonStyle(.plain)
+            Button(action: onOpenUsage) { usageCard }.buttonStyle(PopoverButtonStyle())
             Button(action: onOpenPermissions) {
                 VStack(alignment: .leading, spacing: 5) {
                     Label(guide.needsAttention ? "権限の確認が必要です" : "権限はすべて正常",
@@ -72,20 +77,21 @@ extension Notification.Name {
                         permissionLabel("自動入力", granted: guide.accessibilityGranted && guide.postEventGranted)
                     }.font(.caption2)
                 }.frame(maxWidth: .infinity, alignment: .leading)
-            }.buttonStyle(.plain)
-                .padding(8)
-                .background(guide.needsAttention ? Color.orange.opacity(0.14) : Color.clear,
-                            in: RoundedRectangle(cornerRadius: 10))
+                    .padding(8)
+                    .background(guide.needsAttention ? Color.orange.opacity(0.14) : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 10))
+            }.buttonStyle(PopoverButtonStyle())
             Divider()
             Button {
                 historyExpanded.toggle()
+                if !historyExpanded { onHideHistoryPreview() }
             } label: {
                 HStack {
                     Text("認識履歴（直近\(RecentHistoryMenuPolicy.maximumDisplayedRecords)件）")
                     Spacer()
                     Image(systemName: historyExpanded ? "chevron.down" : "chevron.right")
                 }
-            }.buttonStyle(.plain)
+            }.buttonStyle(PopoverButtonStyle())
             if historyExpanded {
                 let entries = RecentHistoryMenuPolicy.entries(from: controller.history)
                 if entries.isEmpty {
@@ -105,21 +111,26 @@ extension Notification.Name {
                                             .font(.caption2).foregroundStyle(.secondary)
                                         Text(entry.preview).font(.caption).lineLimit(1)
                                     }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-                                }.buttonStyle(.plain).help(entry.copyHelp)
+                                }.buttonStyle(PopoverButtonStyle()).help(entry.copyHelp)
+                                    .background(HistoryHoverAnchor(
+                                        onEnter: { rect, window in
+                                            if let record = controller.history.first(where: { $0.id == entry.recordID }) {
+                                                onHoverRecord(record, rect, window)
+                                            }
+                                        }, onExit: { onLeaveRecord(entry.recordID) }))
                             }
                         }
-                    }.frame(height: min(CGFloat(entries.count) * 42, 210))
+                    }.frame(height: min(CGFloat(entries.count) * 46, 230))
                 }
                 Button("履歴をすべて表示…", action: onOpenHistory).font(.caption)
+                    .buttonStyle(PopoverButtonStyle(appearance: .bordered))
             }
             Divider()
             HStack {
                 Button("設定…", action: onOpenSettings).help("⌘,")
-                Spacer()
                 Button("アップデート…", action: onCheckForUpdates)
-                Spacer()
                 Button("終了", action: onQuit)
-            }.font(.caption).buttonStyle(.plain).foregroundStyle(.secondary)
+            }.font(.caption).buttonStyle(PopoverButtonStyle()).foregroundStyle(.secondary)
         }
         .padding(16).frame(width: 348).fixedSize(horizontal: false, vertical: true)
         .background(.regularMaterial)
@@ -154,8 +165,9 @@ extension Notification.Name {
                     Button { controller.requestedMode = mode } label: {
                         Text(mode == .gemini ? "Gemini" : "Apple")
                             .font(.caption).frame(maxWidth: .infinity)
+                            .foregroundStyle(controller.requestedMode == mode ? Color.accentColor : Color.secondary)
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(PopoverButtonStyle(appearance: .bordered, selected: controller.requestedMode == mode))
                     .tint(controller.requestedMode == mode ? Color.accentColor : Color.secondary)
                     .accessibilityLabel(mode.label)
                     .accessibilityAddTraits(controller.requestedMode == mode ? [.isSelected] : [])
