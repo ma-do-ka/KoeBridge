@@ -67,13 +67,20 @@ import KoeBridgeCore
 
     @Test func deliveryAcceptsEditorsWithNoNumericOrMarkerSelection() throws {
         let attributes: [String?] = [nil, kAXSelectedTextRangeAttribute as String, "AXSelectedTextMarkerRange"]
+        let controls = ["AXButton", "AXCheckBox", "AXRadioButton", "AXPopUpButton",
+                     "AXMenuButton", "AXMenuItem", "AXMenuBarItem", "AXLink",
+                     "AXSlider", "AXIncrementor", "AXStepper", "AXSwitch",
+                     "AXStaticText", "AXImage", "AXDisclosureTriangle"]
         for selectionAttribute in attributes {
             let current = target(selectionAttribute: selectionAttribute)
             // ecf0cc05 and the Build 66/67 editor shapes share the same gate:
             // neither AXEditable nor a selection is needed to accept them.
-            for role in ["AXGroup", "AXWebArea", "AXTextField", "AXTextArea", "AXComboBox", "AXCustomEditor"] {
+            for role in ["AXGroup", "AXWebArea", "AXTextField", "AXTextArea", "AXComboBox", "AXCustomEditor"] + controls {
+                let isControl = controls.contains(role)
+                if isControl && current.selection == nil { continue }
                 let prepared = TextInsertion.prepareTarget(takeStart: current, capture: { _ in
-                    if let reason = DeliveryTargetPolicy.blockedReason(role: role, subrole: nil) {
+                    if let reason = DeliveryTargetPolicy.blockedReason(role: role, subrole: nil,
+                        editable: false, hasTextSelection: current.selection != nil) {
                         return (nil, reason)
                     }
                     return (current, "ok")
@@ -100,7 +107,7 @@ import KoeBridgeCore
         }
     }
 
-    @Test func deliveryBlocksControlsSecureAndUnavailableTargetsRegardlessOfSelection() {
+    @Test func deliveryBlocksControlsWithoutEvidenceAndAlwaysBlocksSecureOrUnavailableTargets() {
         let attributes: [String?] = [nil, kAXSelectedTextRangeAttribute as String, "AXSelectedTextMarkerRange"]
         var cases: [(String?, String?, Bool, String)] = [
             ("AXSecureTextField", nil, true, "secure_text_field"),
@@ -121,14 +128,46 @@ import KoeBridgeCore
         for selectionAttribute in attributes {
             let current = target(selectionAttribute: selectionAttribute)
             for (role, subrole, readable, expected) in cases {
+                // Controls with live selection are accepted in v4 (tested above).
+                if expected == "current_target_not_text_input" && current.selection != nil { continue }
                 let prepared = TextInsertion.prepareTarget(takeStart: current, capture: { _ in
                     if let reason = DeliveryTargetPolicy.blockedReason(role: role, subrole: subrole,
+                                                                       editable: false,
+                                                                       hasTextSelection: current.selection != nil,
                                                                        subroleReadable: readable) {
                         return (nil, reason)
                     }
                     return (current, "ok")
                 })
                 #expect(prepared.target == nil && prepared.reason == expected)
+            }
+        }
+    }
+
+    @Test func deliveryEditableEvidenceOverridesControlsButNeverSecureOrUnavailable() throws {
+        let current = target(selectionAttribute: nil)
+        let cases: [(role: String?, subrole: String?, readable: Bool, expected: String)] = [
+            ("AXStaticText", nil, true, "ok"),
+            ("AXButton", nil, true, "ok"),
+            ("AXSecureTextField", nil, true, "secure_text_field"),
+            ("AXButton", "AXSecureTextField", true, "secure_text_field"),
+            (nil, nil, true, "target_unavailable_at_delivery"),
+            ("AXButton", nil, false, "target_unavailable_at_delivery")
+        ]
+        for item in cases {
+            let prepared = TextInsertion.prepareTarget(takeStart: current, capture: { _ in
+                if let reason = DeliveryTargetPolicy.blockedReason(role: item.role, subrole: item.subrole,
+                    editable: true, hasTextSelection: false, subroleReadable: item.readable) {
+                    return (nil, reason)
+                }
+                return (current, "ok")
+            })
+            #expect(prepared.reason == item.expected)
+            if item.expected == "ok" {
+                let fresh = try #require(prepared.target)
+                #expect(fresh.sameElement(as: current))
+            } else {
+                #expect(prepared.target == nil)
             }
         }
     }
@@ -279,7 +318,8 @@ import KoeBridgeCore
             #expect(InsertionTarget.secureExclusionReadable(nil, status: status))
         }
         #expect(InsertionTarget.secureExclusionReadable("AXSearchField" as CFString, status: .success))
-        #expect(DeliveryTargetPolicy.blockedReason(role: "AXTextField", subrole: "AXSecureTextField") == "secure_text_field")
+        #expect(DeliveryTargetPolicy.blockedReason(role: "AXTextField", subrole: "AXSecureTextField",
+            editable: true, hasTextSelection: true) == "secure_text_field")
     }
 
     @Test func cancellationBeforeDeliveryDoesNotCaptureOrPost() async {
