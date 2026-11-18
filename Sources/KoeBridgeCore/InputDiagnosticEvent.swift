@@ -174,6 +174,7 @@ public struct InputDiagnosticEvent: Equatable, Sendable {
         case focusedWindowChanged = "focused_window_changed"
         case focusedElementOwnerChanged = "focused_element_owner_changed"
         case caretOrSelectionChanged = "caret_or_selection_changed"
+        case snapshotTextAndSelectionChanged = "snapshot_text_and_selection_changed"
         case snapshotTextChanged = "snapshot_text_changed"
         case snapshotSelectionChanged = "snapshot_selection_changed"
         case markerSelectionChanged = "marker_selection_changed"

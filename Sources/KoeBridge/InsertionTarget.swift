@@ -47,9 +47,10 @@ import KoeBridgeCore
         let selectedRange: AttributeRead
         let selectedMarker: AttributeRead?
         let editable: AttributeRead
+        var roleStatus: AXError = .success
 
         func rejection(hasTextSelection: Bool, diagnostics: InputDiagnosticTrace?,
-                       stage: InputDiagnosticEvent.Stage, began: TimeInterval?, retryCandidate: Bool = false) -> String? {
+                       stage: InputDiagnosticEvent.Stage, began: TimeInterval?, retryCandidate: @autoclosure () -> Bool = false) -> String? {
             let subroleValue = subrole.value as? String
             let editableValue = editable.value as? Bool
             guard let reason = DeliveryTargetPolicy.blockedReason(
@@ -57,6 +58,7 @@ import KoeBridgeCore
                 hasTextSelection: hasTextSelection,
                 subroleReadable: InsertionTarget.secureExclusionReadable(subrole.value, status: subrole.status)
             ) else { return nil }
+            let pending = retryCandidate()
             guard let diagnostics, diagnostics.isCollecting else { return reason }
             let editableState: InputDiagnosticEvent.Token
             if let rawEditable = editable.value, CFGetTypeID(rawEditable) == CFBooleanGetTypeID(),
@@ -65,8 +67,8 @@ import KoeBridgeCore
             } else {
                 editableState = editable.diagnosticState(hasValue: false, classifyTimeout: false)
             }
-            diagnostics.record(retryCandidate ? .retry : .target, stage: stage, [
-                .reason: .reason(reason), .outcome: .token(retryCandidate ? .pendingRetry : .blocked),
+            diagnostics.record(pending ? .retry : .target, stage: stage, [
+                .reason: .reason(reason), .outcome: .token(pending ? .pendingRetry : .blocked),
                 .elapsedMS: .integer(began.map { InsertionTarget.elapsedMilliseconds(since: $0) } ?? 0),
                 .roleBucket: .roleBucket(role),
                 .subroleState: .token(subrole.diagnosticState(hasValue: subroleValue != nil)),
@@ -135,7 +137,7 @@ import KoeBridgeCore
     /// Capture and revalidation must use the same resolution rule. Some web
     /// editors expose focus on the application's tree but not the system tree.
     private static func focusedElement(for pid: pid_t, timeout: Float = 0.08,
-                                       diagnostics: InputDiagnosticTrace?, stage: Stage) -> CFTypeRef? {
+                                       diagnostics: InputDiagnosticTrace?, stage: Stage) -> (value: CFTypeRef, system: Bool)? {
         let diagnostics = diagnostics?.isCollecting == true ? diagnostics : nil
         let app = AXUIElementCreateApplication(pid)
         let system = AXUIElementCreateSystemWide()
@@ -157,7 +159,7 @@ import KoeBridgeCore
                 .owner: .token(owner.status == .success ? (owner.pid == pid ? .same : .different) : .unavailable)
             ])
             if owner.status == .success && owner.pid == pid {
-                return candidate
+                return (candidate, scope == .system)
             }
         }
         return nil
@@ -169,44 +171,64 @@ import KoeBridgeCore
             || (status == .success && (value == nil || value is String))
     }
 
-    /// AX grants belong to the actual running process, including its signature.
+    enum CaptureSample {
+        case accepted(InsertionTarget)
+        case rejected(DeliveryRejection, String)
+        case unavailable(InputDiagnosticEvent.Token, pid: pid_t?, focused: CFTypeRef?, ownerStatus: AXError?)
+
+        var resolution: (target: InsertionTarget?, reason: String) {
+            switch self {
+            case .accepted(let target): return (target, "ok")
+            case .rejected(_, let reason): return (nil, reason)
+            case .unavailable(let reason, _, _, _): return (nil, reason.rawValue)
+            }
+        }
+    }
+
     static func capture(diagnostics: InputDiagnosticTrace? = nil,
-                        stage: InputDiagnosticEvent.Stage = .capture, requireTextInput: Bool = false,
-                        onGateRejection: ((DeliveryRejection) -> Void)? = nil)
+                        stage: InputDiagnosticEvent.Stage = .capture, requireTextInput: Bool = false)
         -> (target: InsertionTarget?, reason: String) {
+        captureSample(diagnostics: diagnostics, stage: stage, requireTextInput: requireTextInput).resolution
+    }
+
+    static func captureSample(diagnostics: InputDiagnosticTrace?, stage: InputDiagnosticEvent.Stage,
+                              requireTextInput: Bool) -> CaptureSample {
         let diagnostics = diagnostics?.isCollecting == true ? diagnostics : nil
         let began = diagnostics.map { _ in ProcessInfo.processInfo.systemUptime }
-        func failure(_ reason: String) -> (target: InsertionTarget?, reason: String) {
+        func failure(_ reason: Token, pid: pid_t? = nil, focused: CFTypeRef? = nil,
+                     ownerStatus: AXError? = nil) -> CaptureSample {
             diagnostics?.record(.target, stage: stage, [
-                .reason: .reason(reason), .outcome: .token(.blocked),
+                .reason: .token(reason), .outcome: .token(.blocked),
                 .elapsedMS: .integer(began.map { Self.elapsedMilliseconds(since: $0) } ?? 0)
             ])
-            return (nil, reason)
+            return .unavailable(reason, pid: pid, focused: focused, ownerStatus: ownerStatus)
         }
         let trusted = AXIsProcessTrusted()
         diagnostics?.record(.target, stage: stage, [.axTrusted: .flag(trusted)])
-        guard trusted else { return failure("accessibility_not_granted") }
+        guard trusted else { return failure(.accessibilityNotGranted) }
         guard let app = NSWorkspace.shared.frontmostApplication else {
-            return failure("no_frontmost_application")
+            return failure(.noFrontmostApplication)
         }
         diagnostics?.record(.target, stage: stage, [
             .pid: .integer(Int(app.processIdentifier)),
             .app: app.bundleIdentifier.map { .application($0) } ?? .token(.unavailable)
         ])
         guard app.processIdentifier != ProcessInfo.processInfo.processIdentifier else {
-            return failure("koebridge_window_is_frontmost")
+            return failure(.koebridgeWindowIsFrontmost, pid: app.processIdentifier)
         }
         let appAX = AXUIElementCreateApplication(app.processIdentifier)
-        guard let focused = focusedElement(for: app.processIdentifier, diagnostics: diagnostics, stage: stage) else {
-            return failure("focused_text_element_unavailable")
+        guard let resolved = focusedElement(for: app.processIdentifier, diagnostics: diagnostics, stage: stage) else {
+            return failure(.focusedTextElementUnavailable, pid: app.processIdentifier)
         }
+        let focused = resolved.value
         let element = unsafeBitCast(focused, to: AXUIElement.self)
         let owner = Self.owner(of: element, diagnostics: diagnostics, stage: stage)
-        guard owner.status == .success else { return failure("focus_owner_unavailable") }
-        guard owner.pid == app.processIdentifier else { return failure("focus_owner_mismatch") }
-        let window = copyAX(appAX, name: kAXFocusedWindowAttribute as CFString,
+        guard owner.status == .success else { return failure(.focusOwnerUnavailable, pid: app.processIdentifier, focused: focused, ownerStatus: owner.status) }
+        guard owner.pid == app.processIdentifier else { return failure(.focusOwnerMismatch, pid: app.processIdentifier, focused: focused, ownerStatus: owner.status) }
+        let windowRead = copyAX(appAX, name: kAXFocusedWindowAttribute as CFString,
                             operation: .focusedWindow, scope: .application,
-                            diagnostics: diagnostics, stage: stage).value
+                            diagnostics: diagnostics, stage: stage)
+        let window = windowRead.value
         let selectionAttribute: String?
         let selection: CFTypeRef?
         let rangeRead = copyAX(element, name: kAXSelectedTextRangeAttribute as CFString,
@@ -230,20 +252,21 @@ import KoeBridgeCore
                                      capturedAt: ProcessInfo.processInfo.systemUptime,
                                      blockedReason: nil)
         if requireTextInput {
-            let role = copyAX(element, name: kAXRoleAttribute as CFString, operation: .role,
-                              diagnostics: diagnostics, stage: stage).value as? String
+            let roleRead = copyAX(element, name: kAXRoleAttribute as CFString, operation: .role,
+                              diagnostics: diagnostics, stage: stage)
             let subroleRead = copyAX(element, name: kAXSubroleAttribute as CFString, operation: .subrole,
                                      diagnostics: diagnostics, stage: stage)
             let editableRead = copyAX(element, name: "AXEditable" as CFString, operation: .editable,
                                       diagnostics: diagnostics, stage: stage)
-            let gate = DeliveryGateRead(role: role, subrole: subroleRead, selectedRange: rangeRead,
-                                        selectedMarker: markerRead, editable: editableRead)
-            let rejection = DeliveryRejection(target: target, gate: gate, rejectedAt: ProcessInfo.processInfo.systemUptime)
+            let gate = DeliveryGateRead(role: roleRead.value as? String, subrole: subroleRead, selectedRange: rangeRead,
+                                        selectedMarker: markerRead, editable: editableRead, roleStatus: roleRead.status)
+            lazy var rejection = DeliveryRejection(target: target, gate: gate, rejectedAt: ProcessInfo.processInfo.systemUptime,
+                                                   windowStatus: windowRead.status, ownerPID: owner.pid,
+                                                   systemFocus: resolved.system)
             if let reason = gate.rejection(hasTextSelection: selection != nil, diagnostics: diagnostics,
                                            stage: stage, began: began,
-                                           retryCandidate: onGateRejection != nil && rejection.eligible) {
-                onGateRejection?(rejection)
-                return (nil, reason)
+                                           retryCandidate: rejection.eligible) {
+                return .rejected(rejection, reason)
             }
         }
         // Keep this ephemeral and never log it. Explicit context opt-in may
@@ -280,7 +303,7 @@ import KoeBridgeCore
             }
             diagnostics.record(.target, stage: stage, fields)
         }
-        return (target, "ok")
+        return .accepted(target)
     }
 
     /// Optional context read; secure fields disclose nothing.
@@ -528,7 +551,7 @@ import KoeBridgeCore
     struct FocusReads {
         var frontPID: @MainActor () -> pid_t? = { NSWorkspace.shared.frontmostApplication?.processIdentifier }
         var focused: @MainActor (pid_t, Float, InputDiagnosticTrace?, InputDiagnosticEvent.Stage) -> CFTypeRef? = {
-            InsertionTarget.focusedElement(for: $0, timeout: $1, diagnostics: $2, stage: $3)
+            InsertionTarget.focusedElement(for: $0, timeout: $1, diagnostics: $2, stage: $3)?.value
         }
         var owner: @MainActor (AXUIElement, InputDiagnosticTrace?, InputDiagnosticEvent.Stage) -> (pid: pid_t, status: AXError) = {
             InsertionTarget.owner(of: $0, diagnostics: $1, stage: $2)

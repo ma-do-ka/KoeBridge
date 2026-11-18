@@ -173,11 +173,8 @@ import KoeBridgeCore
 
     struct Transport {
         var ax = RecoveryAX()
-        var capture: @MainActor (InputDiagnosticTrace?) -> (target: InsertionTarget?, reason: String, rejection: DeliveryRejection?) = { trace in
-            var rejection: DeliveryRejection?
-            let sample = InsertionTarget.capture(diagnostics: trace, stage: .preflight, requireTextInput: true,
-                                                 onGateRejection: { rejection = $0 })
-            return (sample.target, sample.reason, rejection)
+        var capture: @MainActor (InputDiagnosticTrace?) -> InsertionTarget.CaptureSample = {
+            InsertionTarget.captureSample(diagnostics: $0, stage: .preflight, requireTextInput: true)
         }
         var permissions: @MainActor () -> (Bool, Bool) = { (isTrusted, mayPostEvents) }
         var checkFocus: @MainActor (InsertionTarget, Bool, InputDiagnosticTrace?, InputDiagnosticEvent.Stage, Int) -> (allowed: Bool, reason: String) = {
@@ -189,6 +186,8 @@ import KoeBridgeCore
                                                    eligibility: { eligibility = $0 })?.snapshot
             return (snapshot, eligibility)
         }
+        var source: @MainActor () -> CGEventSource? = { makePostingSource() }
+        var events: @MainActor (String, CGEventSource) -> (CGEvent, CGEvent)? = { makeUnicodeEvents($0, source: $1) }
         var post: (CGEvent, CGEvent) -> Void = { down, up in
             down.post(tap: .cgAnnotatedSessionEventTap)
             up.post(tap: .cgAnnotatedSessionEventTap)
@@ -228,13 +227,58 @@ import KoeBridgeCore
         return (fresh, "ok")
     }
 
+    private static func acquireDeliveryTarget(takeStart: InsertionTarget?, unverifiedPredecessors: [InsertionTarget],
+                                              diagnostics: InputDiagnosticTrace?, capture: TargetCapture?,
+                                              transport: Transport, stopReason: (InsertionTarget) -> String?) async
+        -> (target: InsertionTarget?, reason: String, recovered: (DeliveryRecovery, DeliveryRecovery.Host)?) {
+        // Custom captures supply the older, single-sample contract.
+        let sample: InsertionTarget.CaptureSample?
+        let initial: (target: InsertionTarget?, reason: String)
+        if let capture {
+            sample = nil
+            initial = capture(diagnostics)
+        } else {
+            let observed = transport.capture(diagnostics)
+            sample = observed
+            initial = observed.resolution
+        }
+        func failed(_ reason: String) -> (InsertionTarget?, String, (DeliveryRecovery, DeliveryRecovery.Host)?) {
+            diagnostics?.record(.target, stage: .preflight, [.targetRecapture: .token(.unavailable), .reason: .reason(reason)])
+            return (nil, reason, nil)
+        }
+        var current = initial
+        var recovered: (DeliveryRecovery, DeliveryRecovery.Host)?
+        if case .rejected(let denied, "current_target_not_text_input") = sample, denied.eligible {
+            let (trusted, mayPost) = transport.permissions()
+            guard trusted else { return failed("accessibility_not_granted") }
+            guard mayPost else { return failed("post_event_permission_missing") }
+            let retry = DeliveryRecovery(rejection: denied, ax: transport.ax)
+            let result = await retry.acquire(diagnostics: diagnostics) { stopReason(denied.target) }
+            guard let host = result.host else { return failed(result.reason) }
+            if let stop = stopReason(host.target) { return failed(stop) }
+            do {
+                if let snapshot = try retry.confirmedBaseline(host, mayObserve: { stopReason(host.target) == nil }) {
+                    guard let target = host.target.rebased(to: snapshot) else { return failed("recovery_host_changed") }
+                    current = (target, "ok")
+                } else { current = (host.target, "ok") }
+            } catch {
+                if let stop = stopReason(host.target) { return failed(stop) }
+                return failed(retry.ax.now() >= retry.deadline ? "recovery_deadline_expired" : "recovery_host_changed")
+            }
+            recovered = (retry, host)
+        }
+        let recaptured = prepareTarget(takeStart: takeStart, unverifiedPredecessors: unverifiedPredecessors,
+                                       diagnostics: diagnostics, capture: { _ in current })
+        return (recaptured.target, recaptured.reason, recovered)
+    }
+
     /// Clipboard-free, serial delivery. Read-back is bounded and runs while a
     /// following recording may continue. No outcome ever resubmits posted keys.
     static func deliver(_ text: String, to takeStart: InsertionTarget?,
                         diagnostics: InputDiagnosticTrace? = nil,
                         unverifiedPredecessors: [InsertionTarget] = [],
-                        capture: TargetCapture? = nil, transport: Transport = Transport(),
                         livePriorBlock: (InsertionTarget) -> Bool = { _ in false },
+                        capture: TargetCapture? = nil, transport: Transport = Transport(),
                         shouldContinue: @MainActor () -> Bool = { true }) async -> Report {
         await deliverPayload(.dictation(text), takeStart: takeStart, diagnostics: diagnostics,
                              unverifiedPredecessors: unverifiedPredecessors, capture: capture,
@@ -245,8 +289,8 @@ import KoeBridgeCore
     static func deliverCommandText(_ command: VoiceCommandID, to takeStart: InsertionTarget?,
                                    diagnostics: InputDiagnosticTrace? = nil,
                                    unverifiedPredecessors: [InsertionTarget] = [],
-                                   capture: TargetCapture? = nil, transport: Transport = Transport(),
                                    livePriorBlock: (InsertionTarget) -> Bool = { _ in false },
+                                   capture: TargetCapture? = nil, transport: Transport = Transport(),
                                    shouldContinue: @MainActor () -> Bool) async -> Report {
         await deliverPayload(.command(command), takeStart: takeStart, diagnostics: diagnostics,
                              unverifiedPredecessors: unverifiedPredecessors, capture: capture,
@@ -324,13 +368,6 @@ import KoeBridgeCore
         guard !Task.isCancelled, shouldContinue() else {
             return report(.cancelled, "delivery_cancelled_before_post")
         }
-        let sample = capture.map { custom in
-            let result = custom(diagnostics)
-            return (target: result.target, reason: result.reason, rejection: nil as DeliveryRejection?)
-        } ?? transport.capture(diagnostics)
-        let initial = (target: sample.target, reason: sample.reason)
-        var recovery: DeliveryRecovery?
-        var adopted: DeliveryRecovery.Host?
         func stopReason(_ candidate: InsertionTarget) -> String? {
             if Task.isCancelled || !shouldContinue() { return "delivery_cancelled_before_post" }
             if takeStart?.isBlocked == true || livePriorBlock(candidate)
@@ -339,35 +376,19 @@ import KoeBridgeCore
             }
             return nil
         }
-        var current = initial
-        if initial.reason == "current_target_not_text_input", let denied = sample.rejection, denied.eligible {
-            let retry = DeliveryRecovery(rejection: denied, ax: transport.ax)
-            let result = await retry.acquire(diagnostics: diagnostics) { stopReason(denied.target) }
-            if let host = result.host {
-                if let stop = stopReason(host.target) {
-                    return report(stop == "delivery_cancelled_before_post" ? .cancelled : .focusChanged, stop)
-                }
-                do {
-                    let snapshot = try retry.confirmedBaseline(host)
-                    current = (snapshot.flatMap { host.target.rebased(to: $0) } ?? host.target, "ok")
-                } catch {
-                    return report(.focusChanged, retry.ax.now() >= retry.deadline ? "recovery_deadline_expired" : "recovery_host_changed")
-                }
-                recovery = retry
-                adopted = host
-            } else if result.reason == initial.reason {
-                current = initial
-            } else {
-                return report(result.reason == "delivery_cancelled_before_post" ? .cancelled : .focusChanged, result.reason)
-            }
-        }
-        let recaptured = prepareTarget(takeStart: takeStart, unverifiedPredecessors: unverifiedPredecessors,
-                                       diagnostics: diagnostics, capture: { _ in current })
+        let recaptured = await acquireDeliveryTarget(takeStart: takeStart, unverifiedPredecessors: unverifiedPredecessors,
+            diagnostics: diagnostics, capture: capture, transport: transport, stopReason: stopReason)
         target = recaptured.target
         pacingProfile = target.map { DeliveryPacingPolicy.profile(selectionKind: $0.selectionKind) }
         guard recaptured.reason == "ok" else {
-            return report(recaptured.reason == "accessibility_not_granted" ? .notPermitted : .focusChanged,
-                          recaptured.reason)
+            let outcome: Result
+            switch recaptured.reason {
+            case "accessibility_not_granted": outcome = .notPermitted
+            case "post_event_permission_missing": outcome = .eventPermissionMissing
+            case "delivery_cancelled_before_post": outcome = .cancelled
+            default: outcome = .focusChanged
+            }
+            return report(outcome, recaptured.reason)
         }
         let safeText: String
         let parts: [String]
@@ -401,12 +422,19 @@ import KoeBridgeCore
         }
         guard let target else { return report(.focusChanged, "target_not_captured") }
         let before: InsertionReceiptPolicy.Snapshot?
-        if let recovery, let adopted {
+        if let (recovery, adopted) = recaptured.recovered {
             if let stop = stopReason(target) {
                 return report(stop == "delivery_cancelled_before_post" ? .cancelled : .focusChanged, stop)
             }
-            do { before = try recovery.confirmedBaseline(adopted) }
+            do {
+                guard case .editor(let current) = recovery.observe(until: recovery.deadline),
+                      adopted.matches(current) else { throw RecoveryAX.Failure.unavailable }
+                before = try recovery.confirmedBaseline(current, mayObserve: { stopReason(target) == nil })
+            }
             catch {
+                if let stop = stopReason(target) {
+                    return report(stop == "delivery_cancelled_before_post" ? .cancelled : .focusChanged, stop)
+                }
                 return report(.focusChanged, recovery.ax.now() >= recovery.deadline ? "recovery_deadline_expired" : "recovery_host_changed")
             }
             receiptEligibility = before != nil ? .snapshotAvailable
@@ -435,12 +463,14 @@ import KoeBridgeCore
                 .selectionLength: .integer(before.selection.length)
             ])
             guard captured == before else {
-                let reason = InsertionReceiptPolicy.sameText(captured.text, before.text)
-                    ? "snapshot_selection_changed" : "snapshot_text_changed"
+                let reason: String
+                if InsertionReceiptPolicy.sameText(captured.text, before.text) { reason = "snapshot_selection_changed" }
+                else if captured.selection == before.selection { reason = "snapshot_text_changed" }
+                else { reason = "snapshot_text_and_selection_changed" }
                 return report(.focusChanged, "field_value_or_selection_changed", diagnosticReason: reason)
             }
         }
-        guard let source = makePostingSource() else {
+        guard let source = transport.source() else {
             return report(.eventUnavailable, "event_source_unavailable")
         }
         let modifierMask: CGEventFlags = [.maskAlphaShift, .maskShift, .maskControl,
@@ -473,17 +503,17 @@ import KoeBridgeCore
             }
             // Own input moves the selection. Keep field/window/owner checks
             // throughout, and the original caret check until the first post.
-            if recovery == nil && index % 4 == 0 {
+            if recaptured.recovered == nil && index % 4 == 0 {
                 let check = transport.checkFocus(target, index == 0, diagnostics, .posting, index + 1)
                 if !check.allowed {
                     return report(sent == 0 ? .focusChanged : .partiallySubmitted, check.reason,
                                   diagnosticReason: index == 0 ? "first_chunk_" + check.reason : check.reason)
                 }
             }
-            guard let (down, up) = makeUnicodeEvents(part, source: source) else {
+            guard let (down, up) = transport.events(part, source) else {
                 return report(sent == 0 ? .eventUnavailable : .partiallySubmitted, "keyboard_event_unavailable")
             }
-            if let recovery, let adopted {
+            if let (recovery, adopted) = recaptured.recovered {
                 let limit = index == 0 ? recovery.deadline : recovery.ax.now() + 0.100
                 if index == 0, let stop = stopReason(target) {
                     return report(stop == "delivery_cancelled_before_post" ? .cancelled : .focusChanged, stop)
@@ -495,6 +525,9 @@ import KoeBridgeCore
                 }
                 if index == 0, let stop = stopReason(target) {
                     return report(stop == "delivery_cancelled_before_post" ? .cancelled : .focusChanged, stop)
+                }
+                if sent > 0, Task.isCancelled || !shouldContinue() {
+                    return report(.partiallySubmitted, "delivery_cancelled_after_partial_post")
                 }
                 guard recovery.ax.now() < limit else {
                     return report(sent == 0 ? .focusChanged : .partiallySubmitted, "recovery_deadline_expired")
