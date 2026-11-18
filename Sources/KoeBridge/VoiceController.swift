@@ -253,14 +253,16 @@ import KoeBridgeCore
                     if let usage = output.usage {
                         DiagnosticLog.record("gemini transform step=\(step) usage; promptTokens=\(usage.promptTokens.map(String.init) ?? "unknown") responseTokens=\(usage.responseTokens.map(String.init) ?? "unknown") totalTokens=\(usage.totalTokens)")
                     }
-                    if index == steps.count - 1,
-                       self.textOperationID != id || Task.isCancelled || ProcessInfo.processInfo.systemUptime >= deadline {
-                        self.saveGeneratedResult(output.text, kind: kind, report: nil)
+                    let final = index == steps.count - 1
+                    guard self.textOperationID == id, !Task.isCancelled else {
+                        self.saveGeneratedResult(output.text, kind: kind, final: final, report: nil)
                         return
                     }
-                    guard self.textOperationID == id, !Task.isCancelled else { return }
-                    guard ProcessInfo.processInfo.systemUptime < deadline,
-                          !output.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    guard ProcessInfo.processInfo.systemUptime < deadline else {
+                        self.saveGeneratedResult(output.text, kind: kind, final: final, report: nil)
+                        throw GeminiRecheckWire.RecheckError.invalidResponse
+                    }
+                    guard !output.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                         throw GeminiRecheckWire.RecheckError.invalidResponse
                     }
                     working = output.text
@@ -268,7 +270,7 @@ import KoeBridgeCore
                 }
                 guard self.textOperationID == id, !Task.isCancelled, ProcessInfo.processInfo.systemUptime < deadline else {
                     self.saveGeneratedResult(working, kind: kind, report: nil)
-                    return
+                    throw GeminiRecheckWire.RecheckError.invalidResponse
                 }
                 self.textOperationDeadlineTask?.cancel()
                 self.textOperationDeadlineTask = nil
@@ -628,7 +630,7 @@ import KoeBridgeCore
     }
 
     private var localRecoveryBusy = false
-    private var deferredFeedback: [(UUID, OverlayFeedback)] = []
+    private var deferredFeedback = DictationDelivery.DeferredFeedback()
     private var overlayOwner: UUID?
     private var overlayDismissal: Task<Void, Never>?
     private var deliveryWorker: Task<Void, Never>?
@@ -1547,9 +1549,9 @@ import KoeBridgeCore
             outcome = skipped
             if take.acousticReviewRequired, !take.automaticDeliverySuppressed,
                take.shouldPaste, skipped.delivery == .reviewRequired, !text.isEmpty {
-                let copied = TextInsertion.copy(text)
-                completionFeedback = copied ? .heldForReview : .saved
-                DiagnosticLog.recordMicrophoneEvidence("held_text_rescued take=\(id.uuidString.prefix(8)) chars=\(text.count) copied=\(copied ? 1 : 0)")
+                let rescue = DictationDelivery.HeldCopy(copied: TextInsertion.copy(text))
+                completionFeedback = rescue.feedback
+                DiagnosticLog.recordMicrophoneEvidence("held_text_rescued take=\(id.uuidString.prefix(8)) chars=\(text.count) \(rescue.diagnostic)")
             }
             take.inputDiagnostics?.record(.result, stage: .result, [
                 .outcome: .token(.skipped),
@@ -1578,14 +1580,11 @@ import KoeBridgeCore
                 DiagnosticLog.record("delivery resolved; id=\(id.uuidString.prefix(8)); outcome=\(outcome.delivery.rawValue); reason=\(report.reason)")
             }
         }
-        if let recordID { updateRemembered(recordID, delivery: outcome.delivery, detail: outcome.detail) }
+        if let recordID { outcome.updateSavedRecord(recordID, in: &historyStore) }
         if outcome.submitted, let stoppedAt = take.stoppingAt {
             lastStopToInputSeconds = Date().timeIntervalSince(stoppedAt)
         }
-        if !OverlayFeedback.mayUpdate(owner: overlayOwner, resolved: id, newRecordingActive: active != nil),
-           let feedback = outcome.deferredFeedback {
-            deferredFeedback.append((id, feedback))
-        } else {
+        if !deferredFeedback.enqueueIfSuppressed(outcome, id: id, owner: overlayOwner, recording: active != nil) {
             showCompletionFeedback(outcome.submissionFeedback ?? completionFeedback, for: id)
         }
         if active == nil {
@@ -1633,14 +1632,21 @@ import KoeBridgeCore
 
     enum GeneratedOperation: String, CaseIterable {
         case voiceTransform, fixLastInput, selectionTranslation, presetChain
+
+        @MainActor func save(_ text: String, final: Bool, report: TextInsertion.Report?,
+                             engine: String, in history: inout TranscriptHistoryStore) {
+            guard final, report?.outcome != .verifiedInserted else { return }
+            let outcome = report.map(DictationDelivery.classify)
+            history.remember(text, isPartial: false, delivery: outcome?.delivery ?? .blockedFocus,
+                engine: engine, kind: rawValue, deliveryDetail: outcome?.detail ?? "操作の中断により未送信です。",
+                preserveWhitespace: true)
+        }
     }
 
-    private func saveGeneratedResult(_ text: String, kind: GeneratedOperation, report: TextInsertion.Report?) {
-        guard report?.outcome != .verifiedInserted else { return }
-        let outcome = report.map(DictationDelivery.classify)
-        historyStore.remember(text, isPartial: false, delivery: outcome?.delivery ?? .blockedFocus,
-            engine: usedMode.isEmpty ? requestedMode.label : usedMode, kind: kind.rawValue,
-            deliveryDetail: outcome?.detail ?? "操作の中断により未送信です。", preserveWhitespace: true)
+    private func saveGeneratedResult(_ text: String, kind: GeneratedOperation, final: Bool = true,
+                                     report: TextInsertion.Report?) {
+        kind.save(text, final: final, report: report, engine: usedMode.isEmpty ? requestedMode.label : usedMode,
+                  in: &historyStore)
         refreshRetainedAudio()
     }
 
@@ -1847,13 +1853,12 @@ import KoeBridgeCore
             do { try await Task.sleep(for: .milliseconds(hold)) } catch { return }
             guard let self, self.overlayOwner == id, self.active == nil else { return }
             self.hideOverlay()
-            self.presentDeferredFeedbackIfIdle()
         }
     }
 
     private func presentDeferredFeedbackIfIdle() {
-        guard active == nil, overlayOwner == nil, inFlight.isEmpty, !deferredFeedback.isEmpty else { return }
-        let (id, feedback) = deferredFeedback.removeFirst()
+        guard let (id, feedback) = deferredFeedback.next(owner: overlayOwner, recording: active != nil,
+                                                         pendingTakes: !inFlight.isEmpty) else { return }
         overlayOwner = id
         showCompletionFeedback(feedback, for: id)
         onShowPreview?()
@@ -1865,6 +1870,8 @@ import KoeBridgeCore
         overlayOwner = nil
         overlayFeedback = .hidden
         onHidePreview?()
+        // Let any synchronous transition install its new owner before draining.
+        Task { @MainActor [weak self] in self?.presentDeferredFeedbackIfIdle() }
     }
 
     private static func safeFailureCode(_ reason: String?) -> String {
