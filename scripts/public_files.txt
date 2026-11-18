@@ -98,6 +98,7 @@ Tests/KoeBridgeCoreTests/SessionTransitionsTests.swift
 Tests/KoeBridgeCoreTests/StressTests.swift
 Tests/KoeBridgeCoreTests/TranscriptionStyleTests.swift
 Tests/KoeBridgeCoreTests/UserFacingErrorMessageTests.swift
+Tests/KoeBridgeTests/Build73DeliveryTests.swift
 Tests/KoeBridgeTests/GeminiLiveConnectionTests.swift
 Tests/KoeBridgeTests/HistoryHoverPanelTests.swift
 Tests/KoeBridgeTests/KoeBridgeUpdateUserDriverTests.swift
@@ -335,6 +336,5 @@ Tests/KoeBridgeCoreTests/DeliveryPacingPolicyTests.swift
 Tests/KoeBridgeCoreTests/MicrophoneRevalidationPolicyTests.swift
 Tests/KoeBridgeCoreTests/MicrophoneStartupGateSettlingTests.swift
 Tests/KoeBridgeCoreTests/StartupPreviewPolicyTests.swift
-Tests/KoeBridgeTests/Build73DeliveryTests.swift
 Tests/KoeBridgeTests/TextInsertionTransportTests.swift
 AGENTS.md
