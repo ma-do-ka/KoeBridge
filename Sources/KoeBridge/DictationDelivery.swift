@@ -96,7 +96,7 @@ import KoeBridgeCore
         default: break
         }
         switch reason {
-        case "caret_or_selection_changed": return "入力準備中にカーソルまたは選択範囲が変わったため、入力せず履歴に保存しました。"
+        case "marker_selection_changed", "caret_or_selection_changed": return "入力準備中にカーソルまたは選択範囲が変わったため、入力せず履歴に保存しました。"
         case "target_unavailable_at_delivery": return "現在の入力欄を取得できないため、入力せず履歴に保存しました。"
         case "secure_text_field": return "現在の入力先がパスワード欄のため、入力せず履歴に保存しました。"
         case "current_target_not_text_input": return "現在の入力先がテキスト入力欄ではないため、入力せず履歴に保存しました。"

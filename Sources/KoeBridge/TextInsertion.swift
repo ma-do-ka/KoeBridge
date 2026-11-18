@@ -278,7 +278,7 @@ import KoeBridgeCore
         var phase: InputDiagnosticEvent.Token = .preflight
         var target: InsertionTarget?
         var pacingProfile: DeliveryPacingPolicy.Profile?
-        func report(_ outcome: Result, _ reason: String, receipt: Receipt? = nil) -> Report {
+        func report(_ outcome: Result, _ reason: String, diagnosticReason: String? = nil, receipt: Receipt? = nil) -> Report {
             diagnostics?.record(.eligibility, stage: .result, [
                 .selectionKind: .token(target?.selectionKind ?? .unknown),
                 .receiptSkippedReason: .reason(receiptEligibility.rawValue),
@@ -291,7 +291,7 @@ import KoeBridgeCore
                 fields[.pacingBudgetExceeded] = .flag(pacingBudgetExceeded)
                 let completed = reason == "posted_without_observable_edit" || reason == "verified_value_and_selection"
                 fields[.abortPhase] = .token(completed ? .none : phase)
-                fields[.abortReason] = completed ? .token(.none) : .reason(reason)
+                fields[.abortReason] = completed ? .token(.none) : .reason(diagnosticReason ?? reason)
                 if let pacingProfile {
                     fields[.pacingProfile] = .token(pacingProfile.name)
                     fields[.pacingVersion] = .integer(pacingProfile.version)
@@ -312,7 +312,7 @@ import KoeBridgeCore
                 ])
             }
             let resultUptimeMS = diagnostics?.record(.result, stage: .result, [
-                .outcome: .token(outcome.diagnosticOutcome), .reason: .reason(reason),
+                .outcome: .token(outcome.diagnosticOutcome), .reason: .reason(diagnosticReason ?? reason),
                 .plannedChunks: .integer(planned), .sentChunks: .integer(sent),
                 .eventsPosted: .flag(sent > 0), .receiptAvailable: .flag(receipt != nil),
                 .totalMS: .integer(InputDiagnosticTrace.milliseconds(since: beganAt))
@@ -434,7 +434,11 @@ import KoeBridgeCore
                 .selectionStart: .integer(before.selection.location),
                 .selectionLength: .integer(before.selection.length)
             ])
-            guard captured == before else { return report(.focusChanged, "field_value_or_selection_changed") }
+            guard captured == before else {
+                let reason = InsertionReceiptPolicy.sameText(captured.text, before.text)
+                    ? "snapshot_selection_changed" : "snapshot_text_changed"
+                return report(.focusChanged, "field_value_or_selection_changed", diagnosticReason: reason)
+            }
         }
         guard let source = makePostingSource() else {
             return report(.eventUnavailable, "event_source_unavailable")
@@ -464,14 +468,16 @@ import KoeBridgeCore
                               sent == 0 ? "delivery_cancelled_before_post" : "delivery_cancelled_after_partial_post")
             }
             if transport.ax.frontPID() != target.pid {
-                return report(sent == 0 ? .focusChanged : .partiallySubmitted, "active_app_changed")
+                return report(sent == 0 ? .focusChanged : .partiallySubmitted, "active_app_changed",
+                              diagnosticReason: index == 0 ? "first_chunk_active_app_changed" : nil)
             }
             // Own input moves the selection. Keep field/window/owner checks
             // throughout, and the original caret check until the first post.
             if recovery == nil && index % 4 == 0 {
                 let check = transport.checkFocus(target, index == 0, diagnostics, .posting, index + 1)
                 if !check.allowed {
-                    return report(sent == 0 ? .focusChanged : .partiallySubmitted, check.reason)
+                    return report(sent == 0 ? .focusChanged : .partiallySubmitted, check.reason,
+                                  diagnosticReason: index == 0 ? "first_chunk_" + check.reason : check.reason)
                 }
             }
             guard let (down, up) = makeUnicodeEvents(part, source: source) else {

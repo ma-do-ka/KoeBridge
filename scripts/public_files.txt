@@ -335,5 +335,6 @@ Tests/KoeBridgeCoreTests/DeliveryPacingPolicyTests.swift
 Tests/KoeBridgeCoreTests/MicrophoneRevalidationPolicyTests.swift
 Tests/KoeBridgeCoreTests/MicrophoneStartupGateSettlingTests.swift
 Tests/KoeBridgeCoreTests/StartupPreviewPolicyTests.swift
+Tests/KoeBridgeTests/Build73DeliveryTests.swift
 Tests/KoeBridgeTests/TextInsertionTransportTests.swift
 AGENTS.md

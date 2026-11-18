@@ -1716,7 +1716,7 @@ import KoeBridgeCore
             reason = "入力欄が変わりました"
         case "focused_window_changed", "posted_then_focused_window_changed":
             reason = "入力先のウインドウが変わりました"
-        case "caret_or_selection_changed", "posted_then_caret_or_selection_changed":
+        case "marker_selection_changed", "caret_or_selection_changed", "posted_then_caret_or_selection_changed":
             reason = "カーソル位置または選択範囲が変わりました"
         case "prior_input_unverified", "posted_then_prior_input_unverified":
             reason = "直前の入力を確認できませんでした"

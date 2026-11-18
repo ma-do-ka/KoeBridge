@@ -525,10 +525,24 @@ import KoeBridgeCore
         return updated
     }
 
+    struct FocusReads {
+        var frontPID: @MainActor () -> pid_t? = { NSWorkspace.shared.frontmostApplication?.processIdentifier }
+        var focused: @MainActor (pid_t, Float, InputDiagnosticTrace?, InputDiagnosticEvent.Stage) -> CFTypeRef? = {
+            InsertionTarget.focusedElement(for: $0, timeout: $1, diagnostics: $2, stage: $3)
+        }
+        var owner: @MainActor (AXUIElement, InputDiagnosticTrace?, InputDiagnosticEvent.Stage) -> (pid: pid_t, status: AXError) = {
+            InsertionTarget.owner(of: $0, diagnostics: $1, stage: $2)
+        }
+        var attribute: @MainActor (AXUIElement, CFString, InputDiagnosticEvent.Token, InputDiagnosticEvent.Token,
+                                   Float, InputDiagnosticTrace?, InputDiagnosticEvent.Stage) -> AttributeRead = {
+            InsertionTarget.copyAX($0, name: $1, operation: $2, scope: $3, timeout: $4, diagnostics: $5, stage: $6)
+        }
+    }
+
     func focusCheck(requireOriginalSelection: Bool = true, timeout: Float = 0.08,
                     diagnostics: InputDiagnosticTrace? = nil,
                     stage: InputDiagnosticEvent.Stage = .preflight,
-                    chunkOrdinal: Int = 0) -> (allowed: Bool, reason: String) {
+                    chunkOrdinal: Int = 0, reads: FocusReads = FocusReads()) -> (allowed: Bool, reason: String) {
         let diagnostics = diagnostics?.isCollecting == true ? diagnostics : nil
         let began = diagnostics.map { _ in ProcessInfo.processInfo.systemUptime }
         var evidence: [Field: Value]? = diagnostics.map { _ in [
@@ -555,13 +569,12 @@ import KoeBridgeCore
             return (allowed, reason)
         }
         if let blockedReason { return result(false, blockedReason) }
-        let frontPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        let frontPID = reads.frontPID()
         evidence?[.frontPID] = frontPID.map { .integer(Int($0)) } ?? .token(.unavailable)
         guard let frontPID else { return result(false, "frontmost_application_unavailable") }
         let sameProcess = frontPID == pid
         guard sameProcess else { return result(false, "active_app_changed") }
-        guard let currentFocused = Self.focusedElement(for: pid, timeout: timeout,
-                                                       diagnostics: diagnostics, stage: stage) else {
+        guard let currentFocused = reads.focused(pid, timeout, diagnostics, stage) else {
             evidence?[.element] = .token(.unavailable)
             return result(false, "focused_element_unavailable_on_recheck")
         }
@@ -572,9 +585,8 @@ import KoeBridgeCore
         var windowFailure: String?
         if let original = window {
             let appAX = AXUIElementCreateApplication(pid)
-            let currentWindow = Self.copyAX(appAX, name: kAXFocusedWindowAttribute as CFString,
-                                             operation: .focusedWindow, scope: .application,
-                                             timeout: timeout, diagnostics: diagnostics, stage: stage)
+            let currentWindow = reads.attribute(appAX, kAXFocusedWindowAttribute as CFString, .focusedWindow,
+                                                .application, timeout, diagnostics, stage)
             if let value = currentWindow.value {
                 if CFGetTypeID(original) == AXUIElementGetTypeID(), CFGetTypeID(value) == AXUIElementGetTypeID() {
                     sameWindow = CFEqual(original, value)
@@ -597,7 +609,7 @@ import KoeBridgeCore
             evidence?[.window] = .token(.unknown)
         }
         let element = unsafeBitCast(currentFocused, to: AXUIElement.self)
-        let owner = Self.owner(of: element, diagnostics: diagnostics, stage: stage)
+        let owner = reads.owner(element, diagnostics, stage)
         let sameElementOwner = owner.status == .success && owner.pid == pid
         evidence?[.owner] = .token(owner.status != .success ? .unavailable
                                    : sameElementOwner ? .same : .different)
@@ -605,9 +617,9 @@ import KoeBridgeCore
         var selectionFailure: String?
         if requireOriginalSelection, let selectionAttribute, let selection {
             let numeric = selectionAttribute == kAXSelectedTextRangeAttribute as String
-            let currentSelection = Self.copyAX(element, name: selectionAttribute as CFString,
-                                                operation: numeric ? .selectedRange : .selectedMarker,
-                                                timeout: timeout, diagnostics: diagnostics, stage: stage)
+            let currentSelection = reads.attribute(element, selectionAttribute as CFString,
+                                                   numeric ? .selectedRange : .selectedMarker, .focusedElement,
+                                                   timeout, diagnostics, stage)
             if let value = currentSelection.value {
                 if numeric {
                     let expected = Self.numericSelection(selection)
@@ -635,7 +647,7 @@ import KoeBridgeCore
                     // or substitute pointer identity for their CF equality.
                     selectionMatches = CFEqual(selection, value)
                     evidence?[.selection] = .token(selectionMatches == true ? .same : .different)
-                    if selectionMatches == false { selectionFailure = "caret_or_selection_changed" }
+                    if selectionMatches == false { selectionFailure = "marker_selection_changed" }
                 }
             } else {
                 selectionMatches = false
