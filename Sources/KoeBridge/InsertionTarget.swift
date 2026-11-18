@@ -49,7 +49,7 @@ import KoeBridgeCore
         let editable: AttributeRead
 
         func rejection(hasTextSelection: Bool, diagnostics: InputDiagnosticTrace?,
-                       stage: InputDiagnosticEvent.Stage, began: TimeInterval?) -> String? {
+                       stage: InputDiagnosticEvent.Stage, began: TimeInterval?, retryCandidate: Bool = false) -> String? {
             let subroleValue = subrole.value as? String
             let editableValue = editable.value as? Bool
             guard let reason = DeliveryTargetPolicy.blockedReason(
@@ -65,8 +65,8 @@ import KoeBridgeCore
             } else {
                 editableState = editable.diagnosticState(hasValue: false, classifyTimeout: false)
             }
-            diagnostics.record(.target, stage: stage, [
-                .reason: .reason(reason), .outcome: .token(.blocked),
+            diagnostics.record(retryCandidate ? .retry : .target, stage: stage, [
+                .reason: .reason(reason), .outcome: .token(retryCandidate ? .pendingRetry : .blocked),
                 .elapsedMS: .integer(began.map { InsertionTarget.elapsedMilliseconds(since: $0) } ?? 0),
                 .roleBucket: .roleBucket(role),
                 .subroleState: .token(subrole.diagnosticState(hasValue: subroleValue != nil)),
@@ -171,7 +171,8 @@ import KoeBridgeCore
 
     /// AX grants belong to the actual running process, including its signature.
     static func capture(diagnostics: InputDiagnosticTrace? = nil,
-                        stage: InputDiagnosticEvent.Stage = .capture, requireTextInput: Bool = false)
+                        stage: InputDiagnosticEvent.Stage = .capture, requireTextInput: Bool = false,
+                        onGateRejection: ((DeliveryRejection) -> Void)? = nil)
         -> (target: InsertionTarget?, reason: String) {
         let diagnostics = diagnostics?.isCollecting == true ? diagnostics : nil
         let began = diagnostics.map { _ in ProcessInfo.processInfo.systemUptime }
@@ -222,6 +223,12 @@ import KoeBridgeCore
             selectionAttribute = read.value == nil ? nil : "AXSelectedTextMarkerRange"
             selection = read.value
         }
+        var target = InsertionTarget(bundleIdentifier: app.bundleIdentifier, localizedName: app.localizedName,
+                                     pid: app.processIdentifier, focused: focused,
+                                     window: window, selectionAttribute: selectionAttribute,
+                                     selection: selection, textSnapshot: nil,
+                                     capturedAt: ProcessInfo.processInfo.systemUptime,
+                                     blockedReason: nil)
         if requireTextInput {
             let role = copyAX(element, name: kAXRoleAttribute as CFString, operation: .role,
                               diagnostics: diagnostics, stage: stage).value as? String
@@ -231,17 +238,14 @@ import KoeBridgeCore
                                       diagnostics: diagnostics, stage: stage)
             let gate = DeliveryGateRead(role: role, subrole: subroleRead, selectedRange: rangeRead,
                                         selectedMarker: markerRead, editable: editableRead)
+            let rejection = DeliveryRejection(target: target, gate: gate, rejectedAt: ProcessInfo.processInfo.systemUptime)
             if let reason = gate.rejection(hasTextSelection: selection != nil, diagnostics: diagnostics,
-                                           stage: stage, began: began) {
+                                           stage: stage, began: began,
+                                           retryCandidate: onGateRejection != nil && rejection.eligible) {
+                onGateRejection?(rejection)
                 return (nil, reason)
             }
         }
-        var target = InsertionTarget(bundleIdentifier: app.bundleIdentifier, localizedName: app.localizedName,
-                                     pid: app.processIdentifier, focused: focused,
-                                     window: window, selectionAttribute: selectionAttribute,
-                                     selection: selection, textSnapshot: nil,
-                                     capturedAt: ProcessInfo.processInfo.systemUptime,
-                                     blockedReason: nil)
         // Keep this ephemeral and never log it. Explicit context opt-in may
         // project a capped excerpt for the separate audio recheck request.
         // A second bounded attempt covers an editor consuming an earlier take.
@@ -460,8 +464,8 @@ import KoeBridgeCore
         return (snapshot, last)
     }
 
-    private static func numericSelection(_ value: CFTypeRef)
-        -> (range: InsertionReceiptPolicy.Selection?, outcome: Token) {
+    static func numericSelection(_ value: CFTypeRef)
+        -> (range: InsertionReceiptPolicy.Selection?, outcome: InputDiagnosticEvent.Token) {
         guard CFGetTypeID(value) == AXValueGetTypeID() else { return (nil, .invalidType) }
         let axValue = unsafeBitCast(value, to: AXValue.self)
         guard AXValueGetType(axValue) == .cfRange else { return (nil, .invalidType) }

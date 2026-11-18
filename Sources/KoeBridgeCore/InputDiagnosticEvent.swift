@@ -9,11 +9,14 @@ public struct InputDiagnosticEvent: Equatable, Sendable {
 
     public enum Kind: String, CaseIterable, Sendable {
         case session, target, ax, focus, snapshot, payload, receipt, reconcile, result
-        case eligibility, progress, observation
+        case eligibility, progress, observation, retry
         case reconcileAttachment = "reconcile_attachment"
     }
 
     public enum Field: String, CaseIterable, Hashable, Sendable {
+        case retryIndex = "retry_index"
+        case elementWindow = "element_window"
+        case frontMatches = "front_matches"
         case operation, scope, error
         case timeoutError = "timeout_error"
         case resetError = "reset_error"
@@ -117,6 +120,9 @@ public struct InputDiagnosticEvent: Equatable, Sendable {
     /// separately validated application bundle identifier. Add codes here;
     /// never interpolate a platform error description or an AX attribute value.
     public enum Token: String, CaseIterable, Sendable {
+        case pendingRetry = "pending_retry"
+        case recoveryExpired = "recovery_deadline_expired"
+        case recoveryHostChanged = "recovery_host_changed"
         case ok, same, different, unavailable, missing
         case sameElement = "same_element"
         case differentElement = "different_element"

@@ -276,7 +276,8 @@ import KoeBridgeCore
                 // caret/selection when the completed transform is delivered.
                 self.lastDeliveryAnchor = nil
                 let report = await TextInsertion.deliver(working, to: target,
-                    unverifiedPredecessors: self.textOperationUnverifiedTargets) {
+                    unverifiedPredecessors: self.textOperationUnverifiedTargets,
+                    livePriorBlock: { candidate in self.textOperationUnverifiedTargets.contains { candidate.sameElement(as: $0) } }) {
                     self.textOperationID == id && !Task.isCancelled
                 }
                 self.reconcileDelivery(report)
@@ -1561,7 +1562,8 @@ import KoeBridgeCore
             deliveringTakeID = id
             outcome = await DictationDelivery.send(text, to: take.target,
                                                   diagnostics: take.inputDiagnostics,
-                                                  unverifiedPredecessors: take.unverifiedInputTargets) { [weak self, weak take] in
+                                                  unverifiedPredecessors: take.unverifiedInputTargets,
+                livePriorBlock: { take.hasPriorBlock(for: $0) }) { [weak self, weak take] in
                 guard let self, let take else { return false }
                 return !take.automaticDeliverySuppressed && self.inFlight[take.id] === take
             }
@@ -1665,7 +1667,8 @@ import KoeBridgeCore
         lastDeliveryAnchor = nil
         deliveringTakeID = take.id
         let report = await TextInsertion.deliverCommandText(command, to: take.target, diagnostics: take.inputDiagnostics,
-                                                            unverifiedPredecessors: take.unverifiedInputTargets) { [weak self, weak take] in
+                                                            unverifiedPredecessors: take.unverifiedInputTargets,
+                livePriorBlock: { take.hasPriorBlock(for: $0) }) { [weak self, weak take] in
             guard let self, let take else { return false }
             return !take.automaticDeliverySuppressed && self.inFlight[take.id] === take
         }
@@ -1767,8 +1770,9 @@ import KoeBridgeCore
             lastDeliveryAnchor = nil
             deliveringTakeID = take.id
             let report = await TextInsertion.deliver(output.text, to: take.target, diagnostics: take.inputDiagnostics,
-                                                     unverifiedPredecessors: take.unverifiedInputTargets) {
-                !take.automaticDeliverySuppressed
+                                                     unverifiedPredecessors: take.unverifiedInputTargets,
+                livePriorBlock: { take.hasPriorBlock(for: $0) }) {
+                !take.automaticDeliverySuppressed && self.inFlight[take.id] === take
             }
             deliveringTakeID = nil
             if take.isFixLastInput, report.outcome == .verifiedInserted, let receipt = report.receipt {
