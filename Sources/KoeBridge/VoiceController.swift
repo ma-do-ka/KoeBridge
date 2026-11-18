@@ -197,11 +197,12 @@ import KoeBridgeCore
         guard let key = KeychainStore.load() else { status = AppError.noKey.localizedDescription; return }
         let direction = translationDirection == .auto ? TranslationPolicy.direction(for: selected) : translationDirection
         runTextOperation(target: target, original: selected,
+                         kind: translating ? .selectionTranslation : .presetChain,
                          steps: translating ? [TranslationPolicy.instruction(for: direction)] : steps, apiKey: key)
     }
 
     /// No DictationTake: intermediate results remain in memory until every step succeeds.
-    private func runTextOperation(target: InsertionTarget, original: String, steps: [String], apiKey: String) {
+    private func runTextOperation(target: InsertionTarget, original: String, kind: GeneratedOperation, steps: [String], apiKey: String) {
         let id = UUID()
         textOperationID = id
         textOperationRunning = true
@@ -252,6 +253,11 @@ import KoeBridgeCore
                     if let usage = output.usage {
                         DiagnosticLog.record("gemini transform step=\(step) usage; promptTokens=\(usage.promptTokens.map(String.init) ?? "unknown") responseTokens=\(usage.responseTokens.map(String.init) ?? "unknown") totalTokens=\(usage.totalTokens)")
                     }
+                    if index == steps.count - 1,
+                       self.textOperationID != id || Task.isCancelled || ProcessInfo.processInfo.systemUptime >= deadline {
+                        self.saveGeneratedResult(output.text, kind: kind, report: nil)
+                        return
+                    }
                     guard self.textOperationID == id, !Task.isCancelled else { return }
                     guard ProcessInfo.processInfo.systemUptime < deadline,
                           !output.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -260,9 +266,9 @@ import KoeBridgeCore
                     working = output.text
                     self.lastTextOperationOutput = working
                 }
-                guard self.textOperationID == id, !Task.isCancelled else { return }
-                guard ProcessInfo.processInfo.systemUptime < deadline else {
-                    throw GeminiRecheckWire.RecheckError.invalidResponse
+                guard self.textOperationID == id, !Task.isCancelled, ProcessInfo.processInfo.systemUptime < deadline else {
+                    self.saveGeneratedResult(working, kind: kind, report: nil)
+                    return
                 }
                 self.textOperationDeadlineTask?.cancel()
                 self.textOperationDeadlineTask = nil
@@ -274,7 +280,7 @@ import KoeBridgeCore
                     self.textOperationID == id && !Task.isCancelled
                 }
                 self.reconcileDelivery(report)
-                self.saveBlockedTransform(working, report: report)
+                self.saveGeneratedResult(working, kind: kind, report: report)
                 guard self.textOperationID == id, !Task.isCancelled else { return }
                 let verified = report.outcome == .verifiedInserted
                 self.finishTextOperation(verified: verified, copied: !verified && TextInsertion.copy(working), id: id)
@@ -1623,11 +1629,17 @@ import KoeBridgeCore
         }
     }
 
-    private func saveBlockedTransform(_ text: String, report: TextInsertion.Report) {
-        guard report.outcome == .focusChanged, !report.eventsPosted,
-              let recordID = remember(text, isPartial: false, delivery: .blockedFocus) else { return }
-        updateRemembered(recordID, delivery: .blockedFocus,
-                         detail: DictationDelivery.description(.blockedFocus, reason: report.reason))
+    enum GeneratedOperation: String, CaseIterable {
+        case voiceTransform, fixLastInput, selectionTranslation, presetChain
+    }
+
+    private func saveGeneratedResult(_ text: String, kind: GeneratedOperation, report: TextInsertion.Report?) {
+        guard report?.outcome != .verifiedInserted else { return }
+        let outcome = report.map(DictationDelivery.classify)
+        historyStore.remember(text, isPartial: false, delivery: outcome?.delivery ?? .blockedFocus,
+            engine: usedMode.isEmpty ? requestedMode.label : usedMode, kind: kind.rawValue,
+            deliveryDetail: outcome?.detail ?? "操作の中断により未送信です。", preserveWhitespace: true)
+        refreshRetainedAudio()
     }
 
     private func deliverCommand(_ command: VoiceCommandID, blockedReason: String?, take: DictationTake) async {
@@ -1743,7 +1755,11 @@ import KoeBridgeCore
             if let usage = output.usage {
                 DiagnosticLog.record("gemini transform usage; promptTokens=\(usage.promptTokens.map(String.init) ?? "unknown") responseTokens=\(usage.responseTokens.map(String.init) ?? "unknown") totalTokens=\(usage.totalTokens)")
             }
-            guard !take.automaticDeliverySuppressed else { return }
+            let kind: GeneratedOperation = take.isFixLastInput ? .fixLastInput : .voiceTransform
+            guard !take.automaticDeliverySuppressed, !Task.isCancelled else {
+                saveGeneratedResult(output.text, kind: kind, report: nil)
+                return
+            }
             // The source selection stays fixed for recognition/transformation.
             // Delivery follows the current target, including fix-last-input;
             // its initial anchor eligibility was checked before recording.
@@ -1759,7 +1775,7 @@ import KoeBridgeCore
                 lastDeliveryAnchor = LastDeliveryAnchor(receipt: receipt, sourceRecordID: sourceRecordID)
             }
             reconcileDelivery(report, sourceTakeID: take.id)
-            saveBlockedTransform(output.text, report: report)
+            saveGeneratedResult(output.text, kind: kind, report: report)
             let verified = report.outcome == .verifiedInserted
             let copied = !verified && TextInsertion.copy(output.text)
             showCompletionFeedback(verified ? .sent : (copied ? .transformCopied : .transformFailed), for: take.id)

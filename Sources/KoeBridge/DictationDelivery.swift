@@ -66,6 +66,10 @@ import KoeBridgeCore
         let report = await TextInsertion.deliver(text, to: target, diagnostics: diagnostics,
                                                  unverifiedPredecessors: unverifiedPredecessors, capture: capture,
                                                  shouldContinue: shouldContinue)
+        return classify(report)
+    }
+
+    static func classify(_ report: TextInsertion.Report) -> Outcome {
         let delivery: TranscriptRecord.Delivery
         switch report.outcome {
         case .verifiedInserted: delivery = .verifiedInserted
