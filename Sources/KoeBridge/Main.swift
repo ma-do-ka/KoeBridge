@@ -463,11 +463,18 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
         // Capture the original editor while the non-activating UI is still shown.
         let target = InsertionTarget.capture().target
         afterClosingPopover { delegate in
-            guard let current = delegate.controller.history.first(where: { $0.id == record.id }),
-                  !delegate.controller.hasPendingWork else { return }
+            let current = delegate.controller.history.first { $0.id == record.id }
+            guard let current, !delegate.controller.hasPendingWork else {
+                delegate.windows.showHistoryFeedback(title: "未送信",
+                    detail: current == nil ? "履歴の項目が見つかりません" : "録音または入力処理中です",
+                    success: false, statusButton: delegate.item.button)
+                return
+            }
             Task { @MainActor in
-                _ = await DictationDelivery.send(current.text, to: target,
+                let outcome = await DictationDelivery.send(current.text, to: target,
                     shouldContinue: { !delegate.controller.hasPendingWork })
+                delegate.windows.showHistoryFeedback(title: outcome.historyInsertionTitle, detail: outcome.detail,
+                    success: outcome.delivery == .verifiedInserted, statusButton: delegate.item.button)
             }
         }
     }

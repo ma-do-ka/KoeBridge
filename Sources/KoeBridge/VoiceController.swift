@@ -621,6 +621,7 @@ import KoeBridgeCore
     }
 
     private var localRecoveryBusy = false
+    private var deferredFeedback: [(UUID, OverlayFeedback)] = []
     private var overlayOwner: UUID?
     private var overlayDismissal: Task<Void, Never>?
     private var deliveryWorker: Task<Void, Never>?
@@ -1475,6 +1476,7 @@ import KoeBridgeCore
                     // receipts, so rebasing reaches finished and recording takes.
                     await self.deliver(result, take: take)
                     self.inFlight.removeValue(forKey: id)
+                    self.presentDeferredFeedbackIfIdle()
                 }
             }
         }
@@ -1538,9 +1540,9 @@ import KoeBridgeCore
             outcome = skipped
             if take.acousticReviewRequired, !take.automaticDeliverySuppressed,
                take.shouldPaste, skipped.delivery == .reviewRequired, !text.isEmpty {
-                TextInsertion.copy(text)
-                completionFeedback = .heldForReview
-                DiagnosticLog.recordMicrophoneEvidence("held_text_rescued take=\(id.uuidString.prefix(8)) chars=\(text.count) copied=1")
+                let copied = TextInsertion.copy(text)
+                completionFeedback = copied ? .heldForReview : .saved
+                DiagnosticLog.recordMicrophoneEvidence("held_text_rescued take=\(id.uuidString.prefix(8)) chars=\(text.count) copied=\(copied ? 1 : 0)")
             }
             take.inputDiagnostics?.record(.result, stage: .result, [
                 .outcome: .token(.skipped),
@@ -1572,7 +1574,12 @@ import KoeBridgeCore
         if outcome.submitted, let stoppedAt = take.stoppingAt {
             lastStopToInputSeconds = Date().timeIntervalSince(stoppedAt)
         }
-        showCompletionFeedback(outcome.submissionFeedback ?? completionFeedback, for: id)
+        if !OverlayFeedback.mayUpdate(owner: overlayOwner, resolved: id, newRecordingActive: active != nil),
+           let feedback = outcome.deferredFeedback {
+            deferredFeedback.append((id, feedback))
+        } else {
+            showCompletionFeedback(outcome.submissionFeedback ?? completionFeedback, for: id)
+        }
         if active == nil {
             status = outcome.detail + (take.review?.status == .incomplete ? " 追加チェックは未完了です。" : "")
         }
@@ -1812,7 +1819,7 @@ import KoeBridgeCore
         overlayDismissal = Task { [weak self] in
             let hold: Int
             switch feedback {
-            case .heldForReview, .transformCopied, .sentUnconfirmed: hold = 3_000
+            case .heldForReview, .transformCopied, .sentUnconfirmed, .deferredUnsent, .deferredPartial, .deferredUnconfirmed: hold = 3_000
             case .noInput: hold = 330
             case .failed, .transformFailed, .commandBlocked, .commandFailed: hold = 1_000
             default: hold = 520
@@ -1820,7 +1827,16 @@ import KoeBridgeCore
             do { try await Task.sleep(for: .milliseconds(hold)) } catch { return }
             guard let self, self.overlayOwner == id, self.active == nil else { return }
             self.hideOverlay()
+            self.presentDeferredFeedbackIfIdle()
         }
+    }
+
+    private func presentDeferredFeedbackIfIdle() {
+        guard active == nil, overlayOwner == nil, inFlight.isEmpty, !deferredFeedback.isEmpty else { return }
+        let (id, feedback) = deferredFeedback.removeFirst()
+        overlayOwner = id
+        showCompletionFeedback(feedback, for: id)
+        onShowPreview?()
     }
 
     private func hideOverlay() {

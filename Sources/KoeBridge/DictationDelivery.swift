@@ -12,6 +12,24 @@ import KoeBridgeCore
 
         var submitted: Bool { delivery == .verifiedInserted || delivery == .attemptedUnconfirmed }
 
+        var deferredFeedback: OverlayFeedback? {
+            switch delivery {
+            case .verifiedInserted, .automaticPasteDisabled, .pending: return nil
+            case .attemptedUnconfirmed: return .deferredUnconfirmed
+            case .partiallyDirect: return .deferredPartial
+            default: return .deferredUnsent
+            }
+        }
+
+        var historyInsertionTitle: String {
+            switch delivery {
+            case .verifiedInserted: return "入力先への反映を確認しました"
+            case .attemptedUnconfirmed: return "受理未確認"
+            case .partiallyDirect: return "部分送信"
+            default: return "未送信"
+            }
+        }
+
         var submissionFeedback: OverlayFeedback? {
             switch delivery {
             case .verifiedInserted: return .sent

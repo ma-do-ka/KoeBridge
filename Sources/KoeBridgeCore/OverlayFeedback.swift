@@ -14,7 +14,7 @@ public enum OverlayFeedback: String, Equatable, Sendable {
     case noInput
     case sent
     case sentUnconfirmed
-    case saved
+    case saved, deferredUnsent, deferredPartial, deferredUnconfirmed
     case heldForReview
     case failed
 
@@ -37,6 +37,9 @@ public enum OverlayFeedback: String, Equatable, Sendable {
         case .noInput: return "音声入力なし"
         case .sentUnconfirmed: return "入力イベントを送信しました（受理は未確認）"
         case .sent: return "入力イベントを送信しました"
+        case .deferredUnsent: return "前の入力は未送信です。履歴を確認してください"
+        case .deferredPartial: return "前の入力は部分送信です。履歴と入力先を確認してください"
+        case .deferredUnconfirmed: return "前の入力は受理未確認です。再送前に入力先を確認してください"
         case .saved: return "文字起こしを履歴に保存しました"
         case .heldForReview: return "発話を確認できず保留しました。文章をコピーしました"
         case .failed: return "文字起こしを確認できませんでした"
