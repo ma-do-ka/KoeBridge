@@ -10,6 +10,7 @@ public struct InputDiagnosticEvent: Equatable, Sendable {
     public enum Kind: String, CaseIterable, Sendable {
         case session, target, ax, focus, snapshot, payload, receipt, reconcile, result
         case eligibility, progress, observation
+        case reconcileAttachment = "reconcile_attachment"
     }
 
     public enum Field: String, CaseIterable, Hashable, Sendable {
@@ -24,6 +25,12 @@ public struct InputDiagnosticEvent: Equatable, Sendable {
         case outcome, pid
         case frontPID = "front_pid"
         case app, role, subrole
+        case roleBucket = "role_bucket"
+        case subroleState = "subrole_state"
+        case selectedRangeState = "selected_range_state"
+        case selectedMarkerState = "selected_marker_state"
+        case editableState = "editable_state"
+        case denylistHit = "denylist_hit"
         case selectionKind = "selection_kind"
         case targetRecapture = "target_recapture"
         case window, element, owner, selection, text
@@ -70,6 +77,16 @@ public struct InputDiagnosticEvent: Equatable, Sendable {
         case eventsPosted = "events_posted"
         case receiptAvailable = "receipt_available"
         case capturedDuring = "captured_during"
+        case startBlocked = "start_blocked"
+        case freshMatchesPrior = "fresh_matches_prior"
+        case unverifiedPredecessorCount = "unverified_predecessor_count"
+        case sourceTake = "source_take"
+        case candidateTake = "candidate_take"
+        case sourceEventsPosted = "source_events_posted"
+        case sourceReceiptPresent = "source_receipt_present"
+        case candidateState = "candidate_state"
+        case sourceResultUptimeMS = "source_result_uptime_ms"
+        case candidateCaptureUptimeMS = "candidate_capture_uptime_ms"
         case modifiers
         case hardwareModifiers = "hardware_modifiers"
         case suppressed
@@ -112,6 +129,10 @@ public struct InputDiagnosticEvent: Equatable, Sendable {
         case numericRange = "numeric_range"
         case textMarker = "text_marker"
         case none, unknown, application, system
+        case noValue, unsupported, timeout, error
+        case trueValue = "true"
+        case falseValue = "false"
+        case recording, finished
         case focusedElement = "focused_element"
         case focusedWindow = "focused_window"
         case selectedRange = "selected_range"
@@ -218,6 +239,9 @@ public struct InputDiagnosticEvent: Equatable, Sendable {
         case flag(Bool)
         case token(Token)
         case identifier(UUID)
+        case shortIdentifier(UUID)
+        /// Restricted to the delivery role allowlist before the event retains it.
+        case roleBucket(String?)
         /// Only use a bundle identifier obtained from the actual target app.
         /// Validation happens before the event retains or renders this value.
         case application(String)
@@ -228,6 +252,9 @@ public struct InputDiagnosticEvent: Equatable, Sendable {
         }
 
         fileprivate var normalized: Self {
+            if case .roleBucket(let role) = self {
+                return .roleBucket(role.map(DeliveryTargetPolicy.diagnosticRoleBucket))
+            }
             guard case .application(let identifier) = self else { return self }
             let bytes = identifier.utf8
             guard !bytes.isEmpty, bytes.count <= 96,
@@ -246,6 +273,8 @@ public struct InputDiagnosticEvent: Equatable, Sendable {
             case .flag(let value): return value ? "1" : "0"
             case .token(let value): return value.rawValue
             case .identifier(let value): return value.uuidString.lowercased()
+            case .shortIdentifier(let value): return String(value.uuidString.prefix(8)).lowercased()
+            case .roleBucket(let value): return value ?? "none"
             case .application(let value): return value
             }
         }

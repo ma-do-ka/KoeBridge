@@ -171,6 +171,29 @@ struct InputDiagnosticTests {
 
 // Synthetic fixtures only. Do not check a user's diagnostic logs into the repo.
 extension InputDiagnosticTests {
+    @Test func reconcileAttachmentSurvivesEvictionAndAppearsInSummary() {
+        var buffer = InputDiagnosticBuffer(takeID: takeID)
+        let noise = InputDiagnosticEvent(kind: .ax, stage: .capture, fields: [:])
+        for index in 0..<InputDiagnosticBuffer.preservedInitialEvents {
+            buffer.append(noise, elapsedMS: index)
+        }
+        let attachment = InputDiagnosticEvent(kind: .reconcileAttachment, stage: .reconcile, fields: [
+            .sourceResultUptimeMS: .integer(1_188)
+        ])
+        let attachmentSequence = buffer.totalCount + 1
+        buffer.append(attachment, elapsedMS: 40)
+        for index in 0..<InputDiagnosticBuffer.maximumEvents {
+            buffer.append(noise, elapsedMS: 50 + index)
+        }
+        #expect(buffer.retainedCount == InputDiagnosticBuffer.maximumEvents && buffer.droppedCount > 0)
+        #expect(buffer.entries.contains { $0.sequence == attachmentSequence && $0.event == attachment })
+        #expect(buffer.renderedLines().contains {
+            $0.hasPrefix("input_summary v=2 section=reconcile_attachment ")
+                && $0.contains("event=\(attachmentSequence) ")
+                && $0.contains("source_result_uptime_ms=1188")
+        })
+    }
+
     @Test func numericCapabilityKeepsTheExistingBaselineMilestone() {
         var buffer = InputDiagnosticBuffer(takeID: takeID)
         for index in 0..<40 {

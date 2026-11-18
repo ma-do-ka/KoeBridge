@@ -1,6 +1,7 @@
 #if os(macOS)
 import ApplicationServices
 import CoreGraphics
+import Foundation
 import Testing
 import KoeBridgeCore
 @testable import KoeBridge
@@ -226,6 +227,166 @@ import KoeBridgeCore
         #expect(sticky.reason == "prior_input_unverified")
     }
 
+    // Keep telemetry in memory with isolated consent. These cases do not
+    // inspect the live accessibility tree, post events, or write diagnostic files.
+    private func trace(_ id: UUID = UUID()) throws -> InputDiagnosticTrace {
+        let consent = InputDiagnosticConsent(enabled: true)
+        return InputDiagnosticTrace(takeID: id, consent: try #require(consent.token),
+                                    permits: { consent.allows($0) })
+    }
+
+    @Test func captureRejectionsRetainRawAXEvidence() throws {
+        let diagnostics = try trace()
+        let absent = InsertionTarget.AttributeRead(value: nil, status: .noValue)
+        let unsupported = InsertionTarget.AttributeRead(value: nil, status: .attributeUnsupported)
+        let timeout = InsertionTarget.AttributeRead(value: nil, status: .cannotComplete)
+        let secure = InsertionTarget.AttributeRead(value: "AXSecureTextField" as CFString, status: .success)
+        let editableTrue = InsertionTarget.AttributeRead(value: kCFBooleanTrue, status: .success)
+        let editableFalse = InsertionTarget.AttributeRead(value: kCFBooleanFalse, status: .success)
+        typealias Gate = InsertionTarget.DeliveryGateRead
+        let cases: [(gate: Gate, selected: Bool, reason: String, fields: [String])] = [
+            (Gate(role: "AXStaticText", subrole: absent, selectedRange: absent,
+                  selectedMarker: absent, editable: absent),
+             false, "current_target_not_text_input",
+             ["role_bucket=AXStaticText", "subrole_state=noValue", "selected_range_state=noValue",
+              "selected_marker_state=noValue", "editable_state=noValue", "denylist_hit=1"]),
+            (Gate(role: "AXSecureTextField", subrole: absent, selectedRange: absent,
+                  selectedMarker: unsupported, editable: editableFalse),
+             false, "secure_text_field",
+             ["role_bucket=AXSecureTextField", "subrole_state=noValue", "selected_range_state=noValue",
+              "selected_marker_state=unsupported", "editable_state=false", "denylist_hit=0"]),
+            (Gate(role: "AXTextField", subrole: secure,
+                  selectedRange: .init(value: target().selection, status: .success),
+                  selectedMarker: nil, editable: editableTrue),
+             true, "secure_text_field",
+             ["role_bucket=AXTextField", "subrole_state=value", "selected_range_state=value",
+              "selected_marker_state=skipped", "editable_state=true", "denylist_hit=0"]),
+            (Gate(role: "private-field-name", subrole: timeout, selectedRange: unsupported,
+                  selectedMarker: timeout, editable: timeout),
+             false, "target_unavailable_at_delivery",
+             ["role_bucket=other", "subrole_state=timeout", "selected_range_state=unsupported",
+              "selected_marker_state=timeout", "editable_state=error", "denylist_hit=0"]),
+            (Gate(role: nil, subrole: unsupported, selectedRange: .init(value: nil, status: .failure),
+                  selectedMarker: absent, editable: unsupported),
+             false, "target_unavailable_at_delivery",
+             ["role_bucket=none", "subrole_state=unsupported", "selected_range_state=error",
+              "selected_marker_state=noValue", "editable_state=unsupported", "denylist_hit=0"]),
+            (Gate(role: "AXSecureTextField", subrole: absent, selectedRange: absent,
+                  selectedMarker: absent, editable: .init(value: NSNumber(value: 0), status: .success)),
+             false, "secure_text_field",
+             ["role_bucket=AXSecureTextField", "subrole_state=noValue", "selected_range_state=noValue",
+              "selected_marker_state=noValue", "editable_state=error", "denylist_hit=0"])
+        ]
+        for (gate, selected, reason, expectedFields) in cases {
+            let count = diagnostics.buffer.entries.count
+            #expect(gate.rejection(hasTextSelection: selected, diagnostics: diagnostics,
+                                   stage: .preflight, began: nil) == reason)
+            #expect(diagnostics.buffer.entries.count == count + 1)
+            let event = try #require(diagnostics.buffer.entries.last?.event)
+            #expect(event.kind == .target && event.stage == .preflight)
+            #expect(event.fields[.reason] == .reason(reason))
+            #expect(event.fields[.outcome] == .token(.blocked))
+            var line = InputDiagnosticBuffer(takeID: diagnostics.takeID)
+            line.append(event, elapsedMS: 0)
+            let rendered = line.renderedLines().joined(separator: " ")
+            for field in expectedFields { #expect(rendered.contains(field)) }
+            #expect(!rendered.contains("private-field-name"))
+        }
+    }
+
+    @Test func markerOnlyOverlapRecordsAttachmentAndBothGuardConditionsWithoutPosting() async throws {
+        let sourceID = UUID()
+        let current = target(selectionAttribute: "AXSelectedTextMarkerRange")
+        let source = TextInsertion.Report(outcome: .inserted, reason: "posted_without_observable_edit",
+                                          receipt: nil, eventsPosted: true, target: current, diagnostics: nil,
+                                          resultUptimeMS: 1_188)
+        let candidate = DictationTake(preferred: .local, style: .verbatim, japaneseHint: false,
+                                      vocabulary: [], shouldPaste: true, options: .init())
+        candidate.target = current
+        let diagnostics = try trace(candidate.id)
+        candidate.inputDiagnostics = diagnostics
+        VoiceController.reconcileDelivery(source, sourceTakeID: sourceID, into: candidate)
+        #expect(candidate.target?.isBlocked == true)
+        #expect(candidate.unverifiedInputTargets.count == 1)
+        #expect(candidate.unverifiedInputTargets.first?.sameElement(as: current) == true)
+
+        let attachment = try #require(diagnostics.buffer.entries.first { $0.event.kind == .reconcileAttachment }?.event)
+        #expect(attachment.stage == .reconcile)
+        #expect(attachment.fields[.sourceTake] == .shortIdentifier(sourceID))
+        #expect(attachment.fields[.candidateTake] == .shortIdentifier(candidate.id))
+        #expect(attachment.fields[.sourceEventsPosted] == .flag(true))
+        #expect(attachment.fields[.sourceReceiptPresent] == .flag(false))
+        #expect(attachment.fields[.candidateState] == .token(.recording))
+        #expect(attachment.fields[.sourceResultUptimeMS] == .integer(1_188))
+        #expect(attachment.fields[.candidateCaptureUptimeMS] == .integer(1_000))
+        let fields = try #require(diagnostics.buffer.entries.first { $0.event.kind == .reconcile }?.event.fields)
+        #expect(fields[.capturedDuring] == .token(.unknown))
+        let sent = await TextInsertion.deliver("synthetic", to: candidate.target, diagnostics: diagnostics,
+            unverifiedPredecessors: candidate.unverifiedInputTargets, capture: { _ in (current, "ok") })
+        #expect(sent.outcome == .focusChanged && sent.reason == "prior_input_unverified" && !sent.eventsPosted)
+        let both = try #require(diagnostics.buffer.entries.first { $0.event.fields[.startBlocked] != nil }?.event.fields)
+        #expect(both[.startBlocked] == .flag(true))
+        #expect(both[.freshMatchesPrior] == .flag(true))
+        #expect(both[.unverifiedPredecessorCount] == .integer(1))
+        let result = try #require(diagnostics.buffer.entries.last { $0.event.kind == .result }?.event.fields)
+        #expect(result[.sentChunks] == .integer(0))
+        #expect(result[.uptimeMS] == .integer(sent.resultUptimeMS))
+
+        let cases: [(InsertionTarget?, [InsertionTarget], Bool, Bool)] = [
+            (candidate.target, [], true, false),
+            (nil, [current], false, true)
+        ]
+        for (start, predecessors, startBlocked, freshMatches) in cases {
+            let trace = try self.trace()
+            let prepared = TextInsertion.prepareTarget(takeStart: start, unverifiedPredecessors: predecessors,
+                                                       diagnostics: trace, capture: { _ in (current, "ok") })
+            #expect(prepared.reason == "prior_input_unverified")
+            let evidence = try #require(trace.buffer.entries.last?.event.fields)
+            #expect(evidence[.startBlocked] == .flag(startBlocked))
+            #expect(evidence[.freshMatchesPrior] == .flag(freshMatches))
+            #expect(evidence[.unverifiedPredecessorCount] == .integer(predecessors.count))
+        }
+
+        let rendered = diagnostics.buffer.renderedLines().joined(separator: " ") + " "
+        #expect(rendered.contains("captured_during=unknown"))
+        #expect(rendered.contains("source_take=\(sourceID.uuidString.prefix(8).lowercased()) "))
+        #expect(rendered.contains("candidate_take=\(candidate.id.uuidString.prefix(8).lowercased()) "))
+        #expect(!rendered.contains("synthetic") && !rendered.contains("opaque-marker"))
+    }
+
+    @Test func finishedCandidateWithoutCaptureStillRecordsAnAttachedUnknownPredecessor() throws {
+        let candidate = DictationTake(preferred: .local, style: .verbatim, japaneseHint: false,
+                                      vocabulary: [], shouldPaste: true, options: .init())
+        candidate.finished = true
+        let diagnostics = try trace(candidate.id)
+        candidate.inputDiagnostics = diagnostics
+        let source = TextInsertion.Report(outcome: .inserted, reason: "posted_without_observable_edit",
+            receipt: nil, eventsPosted: true, target: target(), diagnostics: nil, resultUptimeMS: 1_188)
+        VoiceController.reconcileDelivery(source, sourceTakeID: nil, into: candidate)
+        #expect(candidate.target == nil && candidate.unverifiedInputTargets.count == 1)
+        let attachment = try #require(diagnostics.buffer.entries.first { $0.event.kind == .reconcileAttachment }?.event)
+        #expect(attachment.fields[.sourceTake] == .token(.unknown))
+        #expect(attachment.fields[.candidateState] == .token(.finished))
+        #expect(attachment.fields[.candidateCaptureUptimeMS] == .token(.unknown))
+    }
+
+    @Test func capturedDuringWithReceiptStillRendersTheInclusivePostingWindow() throws {
+        let current = target()
+        let before = try #require(current.textSnapshot)
+        let after = try #require(InsertionReceiptPolicy.expectedAfter(before: before, inserted: "B"))
+        let proof = try #require(InsertionReceiptPolicy.verify(before: before, inserted: "B", after: after, sameTarget: true))
+        for (posted, verified, expected) in [(1.0, 2.0, true), (0.0, 1.0, true), (1.1, 2.0, false)] {
+            let diagnostics = try trace()
+            let report = TextInsertion.Report(outcome: .verifiedInserted, reason: "verified_value_and_selection",
+                receipt: .init(target: current, proof: proof, postedAt: posted, verifiedAt: verified),
+                eventsPosted: true, target: current, diagnostics: diagnostics, resultUptimeMS: 2_000)
+            _ = report.reconciled(current)
+            let event = try #require(diagnostics.buffer.entries.last?.event)
+            #expect(event.fields[.capturedDuring] == .flag(expected))
+            #expect(diagnostics.buffer.renderedLines().contains { $0.contains("captured_during=\(expected ? 1 : 0)") })
+        }
+    }
+
     @Test func unavailableAndInvalidCurrentTargetsBlockBothTransportEntrypointsAndHistoryOutcome() async {
         let start = target()
         for reason in ["focused_text_element_unavailable", "koebridge_window_is_frontmost",
@@ -289,7 +450,7 @@ import KoeBridgeCore
         let proof = try #require(InsertionReceiptPolicy.verify(before: before, inserted: "語", after: after, sameTarget: true))
         let receipt = TextInsertion.Receipt(target: delivery, proof: proof, postedAt: 1, verifiedAt: 2)
         let verified = TextInsertion.Report(outcome: .verifiedInserted, reason: "verified_value_and_selection",
-                                           receipt: receipt, eventsPosted: true, target: delivery, diagnostics: nil)
+                                           receipt: receipt, eventsPosted: true, target: delivery, diagnostics: nil, resultUptimeMS: 2_000)
         #expect(verified.unverifiedTarget == nil)
         #expect(verified.reconciled(takeStart).sameElement(as: takeStart))
         let pending = target(pid: delivery.pid, caret: 1)
@@ -303,7 +464,7 @@ import KoeBridgeCore
         // A latch installed by an actually unverified predecessor is sticky.
         #expect(verified.reconciled(pending.blockedByPriorInput(), recaptureBeforeDelivery: true).isBlocked)
         let unknown = TextInsertion.Report(outcome: .inserted, reason: "posted_receipt_timeout",
-                                          receipt: nil, eventsPosted: true, target: delivery, diagnostics: nil)
+                                          receipt: nil, eventsPosted: true, target: delivery, diagnostics: nil, resultUptimeMS: 2_000)
         #expect(unknown.unverifiedTarget?.sameElement(as: delivery) == true)
         #expect(unknown.unverifiedTarget?.sameElement(as: takeStart) == false)
         #expect(unknown.reconciled(pending, recaptureBeforeDelivery: true).isBlocked)

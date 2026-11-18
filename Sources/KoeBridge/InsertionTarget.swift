@@ -24,9 +24,60 @@ import KoeBridgeCore
     private typealias Token = InputDiagnosticEvent.Token
     private typealias Stage = InputDiagnosticEvent.Stage
 
-    private struct AttributeRead {
+    struct AttributeRead {
         let value: CFTypeRef?
         let status: AXError
+
+        func diagnosticState(hasValue: Bool, classifyTimeout: Bool = true) -> InputDiagnosticEvent.Token {
+            switch status {
+            case .success:
+                if hasValue { return .value }
+                return value == nil ? .noValue : .error
+            case .noValue: return .noValue
+            case .attributeUnsupported: return .unsupported
+            case .cannotComplete where classifyTimeout: return .timeout
+            default: return .error
+            }
+        }
+    }
+
+    @MainActor struct DeliveryGateRead {
+        let role: String?
+        let subrole: AttributeRead
+        let selectedRange: AttributeRead
+        let selectedMarker: AttributeRead?
+        let editable: AttributeRead
+
+        func rejection(hasTextSelection: Bool, diagnostics: InputDiagnosticTrace?,
+                       stage: InputDiagnosticEvent.Stage, began: TimeInterval?) -> String? {
+            let subroleValue = subrole.value as? String
+            let editableValue = editable.value as? Bool
+            guard let reason = DeliveryTargetPolicy.blockedReason(
+                role: role, subrole: subroleValue, editable: editableValue ?? false,
+                hasTextSelection: hasTextSelection,
+                subroleReadable: InsertionTarget.secureExclusionReadable(subrole.value, status: subrole.status)
+            ) else { return nil }
+            guard let diagnostics, diagnostics.isCollecting else { return reason }
+            let editableState: InputDiagnosticEvent.Token
+            if let rawEditable = editable.value, CFGetTypeID(rawEditable) == CFBooleanGetTypeID(),
+               let editableValue {
+                editableState = editableValue ? .trueValue : .falseValue
+            } else {
+                editableState = editable.diagnosticState(hasValue: false, classifyTimeout: false)
+            }
+            diagnostics.record(.target, stage: stage, [
+                .reason: .reason(reason), .outcome: .token(.blocked),
+                .elapsedMS: .integer(began.map { InsertionTarget.elapsedMilliseconds(since: $0) } ?? 0),
+                .roleBucket: .roleBucket(role),
+                .subroleState: .token(subrole.diagnosticState(hasValue: subroleValue != nil)),
+                .selectedRangeState: .token(selectedRange.diagnosticState(hasValue: selectedRange.value != nil)),
+                // A successful numeric read skips the marker read entirely.
+                .selectedMarkerState: .token(selectedMarker.map { $0.diagnosticState(hasValue: $0.value != nil) } ?? .skipped),
+                .editableState: .token(editableState),
+                .denylistHit: .flag(DeliveryTargetPolicy.isDenylisted(role: role))
+            ])
+            return reason
+        }
     }
 
     /// Record content-free status and duration for bounded AX reads.
@@ -157,34 +208,32 @@ import KoeBridgeCore
                             diagnostics: diagnostics, stage: stage).value
         let selectionAttribute: String?
         let selection: CFTypeRef?
-        if let range = copyAX(element, name: kAXSelectedTextRangeAttribute as CFString,
-                              operation: .selectedRange, diagnostics: diagnostics, stage: stage).value {
+        let rangeRead = copyAX(element, name: kAXSelectedTextRangeAttribute as CFString,
+                               operation: .selectedRange, diagnostics: diagnostics, stage: stage)
+        let markerRead: AttributeRead?
+        if let range = rangeRead.value {
+            markerRead = nil
             selectionAttribute = kAXSelectedTextRangeAttribute as String
             selection = range
-        } else if let marker = copyAX(element, name: "AXSelectedTextMarkerRange" as CFString,
-                                     operation: .selectedMarker, diagnostics: diagnostics, stage: stage).value {
-            selectionAttribute = "AXSelectedTextMarkerRange"
-            selection = marker
         } else {
-            selectionAttribute = nil
-            selection = nil
+            let read = copyAX(element, name: "AXSelectedTextMarkerRange" as CFString,
+                              operation: .selectedMarker, diagnostics: diagnostics, stage: stage)
+            markerRead = read
+            selectionAttribute = read.value == nil ? nil : "AXSelectedTextMarkerRange"
+            selection = read.value
         }
         if requireTextInput {
             let role = copyAX(element, name: kAXRoleAttribute as CFString, operation: .role,
                               diagnostics: diagnostics, stage: stage).value as? String
             let subroleRead = copyAX(element, name: kAXSubroleAttribute as CFString, operation: .subrole,
                                      diagnostics: diagnostics, stage: stage)
-            let subrole = subroleRead.value as? String
-            // Unsupported/no-value is a legitimate nonsecure-role editor.
-            // A timed-out/failed or mistyped read cannot establish exclusion.
-            let subroleReadable = secureExclusionReadable(subroleRead.value, status: subroleRead.status)
-            // Reuse the numeric/marker reads above: live text evidence wins over role.
-            let editable = copyAX(element, name: "AXEditable" as CFString, operation: .editable,
-                                  diagnostics: diagnostics, stage: stage).value as? Bool ?? false
-            if let reason = DeliveryTargetPolicy.blockedReason(role: role, subrole: subrole, editable: editable,
-                                                               hasTextSelection: selection != nil,
-                                                               subroleReadable: subroleReadable) {
-                return failure(reason)
+            let editableRead = copyAX(element, name: "AXEditable" as CFString, operation: .editable,
+                                      diagnostics: diagnostics, stage: stage)
+            let gate = DeliveryGateRead(role: role, subrole: subroleRead, selectedRange: rangeRead,
+                                        selectedMarker: markerRead, editable: editableRead)
+            if let reason = gate.rejection(hasTextSelection: selection != nil, diagnostics: diagnostics,
+                                           stage: stage, began: began) {
+                return (nil, reason)
             }
         }
         var target = InsertionTarget(bundleIdentifier: app.bundleIdentifier, localizedName: app.localizedName,
