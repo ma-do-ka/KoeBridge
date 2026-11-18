@@ -52,6 +52,7 @@ import KoeBridgeCore
         let eventsPosted: Bool
         let target: InsertionTarget?
         let diagnostics: InputDiagnosticTrace?
+        let resultUptimeMS: Int
 
         /// Preserve the actual delivery target even when a pending take was
         /// captured in another field (or had no take-start target at all).
@@ -81,9 +82,9 @@ import KoeBridgeCore
                         .element: .token(target.map { candidate.sameElement(as: $0) ? .same : .different } ?? .unavailable),
                         .window: .token(window),
                         .selection: .token(candidate.textSnapshot == nil ? .unavailable : .ok),
-                        .capturedDuring: .flag(receipt.map {
-                            candidate.capturedAt >= $0.postedAt && candidate.capturedAt <= $0.verifiedAt
-                        } ?? false)
+                        .capturedDuring: receipt.map {
+                            .flag(candidate.capturedAt >= $0.postedAt && candidate.capturedAt <= $0.verifiedAt)
+                        } ?? .token(.unknown)
                     ]
                     if let related { values[.relatedTake] = .identifier(related) }
                     return values
@@ -192,6 +193,12 @@ import KoeBridgeCore
         }
         guard takeStart?.isBlocked != true,
               !unverifiedPredecessors.contains(where: { fresh.sameElement(as: $0) }) else {
+            diagnostics?.record(.target, stage: .preflight, [
+                .reason: .token(.priorInputUnverified),
+                .startBlocked: .flag(takeStart?.isBlocked == true),
+                .freshMatchesPrior: .flag(unverifiedPredecessors.contains { fresh.sameElement(as: $0) }),
+                .unverifiedPredecessorCount: .integer(unverifiedPredecessors.count)
+            ])
             return (fresh, "prior_input_unverified")
         }
         return (fresh, "ok")
@@ -279,14 +286,15 @@ import KoeBridgeCore
                     .elapsedMS: .integer(InputDiagnosticTrace.milliseconds(since: receiptStartedAt))
                 ])
             }
-            diagnostics?.record(.result, stage: .result, [
+            let resultUptimeMS = diagnostics?.record(.result, stage: .result, [
                 .outcome: .token(outcome.diagnosticOutcome), .reason: .reason(reason),
                 .plannedChunks: .integer(planned), .sentChunks: .integer(sent),
                 .eventsPosted: .flag(sent > 0), .receiptAvailable: .flag(receipt != nil),
                 .totalMS: .integer(InputDiagnosticTrace.milliseconds(since: beganAt))
-            ])
+            ]) ?? InputDiagnosticTrace.uptimeMilliseconds(ProcessInfo.processInfo.systemUptime)
             return Report(outcome: outcome, reason: reason, receipt: receipt,
-                          eventsPosted: sent > 0, target: target, diagnostics: diagnostics)
+                          eventsPosted: sent > 0, target: target, diagnostics: diagnostics,
+                          resultUptimeMS: resultUptimeMS)
         }
         guard !Task.isCancelled, shouldContinue() else {
             return report(.cancelled, "delivery_cancelled_before_post")

@@ -25,6 +25,7 @@ public struct InputDiagnosticBuffer: Sendable {
         case requested, target, captured, recognition, preflight, focus, recapture
         case before, payload, posted, expected, firstObserved = "first_observed"
         case observed, counts, result, firstReconcile = "first_reconcile", reconcile
+        case reconcileAttachment = "reconcile_attachment"
         case capability, eligibility, progress, observation, firstCheckpoint = "first_checkpoint", checkpoint
     }
     private var milestones: [Milestone: Entry] = [:]
@@ -74,6 +75,8 @@ public struct InputDiagnosticBuffer: Sendable {
         case (.reconcile, .reconcile):
             if milestones[.firstReconcile] == nil { milestones[.firstReconcile] = entry }
             milestones[.reconcile] = entry
+        case (.reconcileAttachment, .reconcile):
+            milestones[.reconcileAttachment] = entry
         default: break
         }
     }

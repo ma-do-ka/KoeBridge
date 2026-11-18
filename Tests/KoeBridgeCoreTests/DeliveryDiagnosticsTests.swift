@@ -80,4 +80,28 @@ struct DeliveryDiagnosticsTests {
         #expect(progress.lastPostedOrdinal == Int.max)
         #expect(progress.fields[.postingStallTotalUS] == .integer(Int(clamping: UInt64.max / 1_000)))
     }
+
+    @Test func roleBucketsOnlyRetainKnownDeliveryRoles() {
+        let controls = ["AXButton", "AXCheckBox", "AXRadioButton", "AXPopUpButton", "AXMenuButton",
+                        "AXMenuItem", "AXMenuBarItem", "AXLink", "AXSlider", "AXIncrementor",
+                        "AXStepper", "AXSwitch", "AXStaticText", "AXImage", "AXDisclosureTriangle"]
+        let inputs = ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField", "AXSecureTextField"]
+        for role in controls + inputs + ["private field", "AXGroup", "unknown"] {
+            let expected = (controls + inputs).contains(role) ? role : "other"
+            var buffer = InputDiagnosticBuffer(takeID: UUID())
+            let event = InputDiagnosticEvent(kind: .target, stage: .preflight, fields: [
+                .roleBucket: .roleBucket(role),
+                .denylistHit: .flag(DeliveryTargetPolicy.isDenylisted(role: role))
+            ])
+            buffer.append(event, elapsedMS: 0)
+            #expect(event.fields[.roleBucket] == .roleBucket(expected))
+            #expect(buffer.renderedLines().contains { $0.contains("role_bucket=\(expected)") })
+            #expect(event.fields[.denylistHit] == .flag(controls.contains(role)))
+        }
+        let absent = InputDiagnosticEvent(kind: .target, stage: .preflight, fields: [.roleBucket: .roleBucket(nil)])
+        var buffer = InputDiagnosticBuffer(takeID: UUID())
+        buffer.append(absent, elapsedMS: 0)
+        #expect(buffer.renderedLines().contains { $0.contains("role_bucket=none") })
+        #expect(!DeliveryTargetPolicy.isDenylisted(role: nil))
+    }
 }

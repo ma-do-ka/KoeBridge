@@ -1586,11 +1586,33 @@ import KoeBridgeCore
             textOperationUnverifiedTargets.append(target)
         }
         for other in inFlight.values where other.id != sourceTakeID {
-            if let target = report.unverifiedTarget { other.unverifiedInputTargets.append(target) }
-            if other.transformSelection == nil, let target = other.target {
-                other.target = report.reconciled(target, sourceTakeID: sourceTakeID, candidateTakeID: other.id,
-                                                diagnostics: other.inputDiagnostics, recaptureBeforeDelivery: true)
-            }
+            Self.reconcileDelivery(report, sourceTakeID: sourceTakeID, into: other)
+        }
+    }
+
+    /// Apply one source report to a pending take before advancing the sender.
+    static func reconcileDelivery(_ report: TextInsertion.Report, sourceTakeID: UUID?, into other: DictationTake) {
+        let unverifiedTarget = report.unverifiedTarget
+        if let unverifiedTarget { other.unverifiedInputTargets.append(unverifiedTarget) }
+        let candidate = other.target
+        if other.transformSelection == nil, let target = candidate {
+            other.target = report.reconciled(target, sourceTakeID: sourceTakeID, candidateTakeID: other.id,
+                                            diagnostics: other.inputDiagnostics, recaptureBeforeDelivery: true)
+        }
+        let newlyBlocked = candidate?.isBlocked == false && other.target?.isBlocked == true
+        if unverifiedTarget != nil || newlyBlocked {
+            let diagnostics = other.inputDiagnostics ?? report.diagnostics
+            diagnostics?.record(.reconcileAttachment, stage: .reconcile, [
+                .sourceTake: sourceTakeID.map { .shortIdentifier($0) } ?? .token(.unknown),
+                .candidateTake: .shortIdentifier(other.id),
+                .sourceEventsPosted: .flag(report.eventsPosted),
+                .sourceReceiptPresent: .flag(report.receipt != nil),
+                .candidateState: .token(other.finished ? .finished : .recording),
+                .sourceResultUptimeMS: .integer(report.resultUptimeMS),
+                .candidateCaptureUptimeMS: candidate.map {
+                    .integer(InputDiagnosticTrace.uptimeMilliseconds($0.capturedAt))
+                } ?? .token(.unknown)
+            ])
         }
     }
 

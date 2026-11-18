@@ -16,6 +16,26 @@ public enum InsertionFocusPolicy {
 /// takes priority over role names; without evidence, known controls are excluded.
 /// Other focused editors need not expose selection or AXEditable.
 public enum DeliveryTargetPolicy {
+    private static let nonTextRoles = [
+        "AXButton", "AXCheckBox", "AXRadioButton", "AXPopUpButton", "AXMenuButton",
+        "AXMenuItem", "AXMenuBarItem", "AXLink", "AXSlider", "AXIncrementor",
+        "AXStepper", "AXSwitch", "AXStaticText", "AXImage", "AXDisclosureTriangle"
+    ]
+
+    public static func isDenylisted(role: String?) -> Bool {
+        role.map { nonTextRoles.contains($0) } ?? false
+    }
+
+    static func diagnosticRoleBucket(_ role: String) -> String {
+        if nonTextRoles.contains(role) { return role }
+        switch role {
+        case "AXTextField", "AXTextArea", "AXComboBox", "AXSearchField", "AXSecureTextField":
+            return role
+        default:
+            return "other"
+        }
+    }
+
     public static func blockedReason(role: String?, subrole: String?, editable: Bool,
                                      hasTextSelection: Bool,
                                      subroleReadable: Bool = true) -> String? {
@@ -24,9 +44,7 @@ public enum DeliveryTargetPolicy {
         }
         guard subroleReadable, let role else { return "target_unavailable_at_delivery" }
         if hasTextSelection || editable { return nil }
-        if ["AXButton", "AXCheckBox", "AXRadioButton", "AXPopUpButton", "AXMenuButton",
-            "AXMenuItem", "AXMenuBarItem", "AXLink", "AXSlider", "AXIncrementor",
-            "AXStepper", "AXSwitch", "AXStaticText", "AXImage", "AXDisclosureTriangle"].contains(role) {
+        if nonTextRoles.contains(role) {
             return "current_target_not_text_input"
         }
         return nil
