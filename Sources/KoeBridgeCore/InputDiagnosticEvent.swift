@@ -9,11 +9,14 @@ public struct InputDiagnosticEvent: Equatable, Sendable {
 
     public enum Kind: String, CaseIterable, Sendable {
         case session, target, ax, focus, snapshot, payload, receipt, reconcile, result
-        case eligibility, progress, observation
+        case eligibility, progress, observation, retry
         case reconcileAttachment = "reconcile_attachment"
     }
 
     public enum Field: String, CaseIterable, Hashable, Sendable {
+        case retryIndex = "retry_index"
+        case elementWindow = "element_window"
+        case frontMatches = "front_matches"
         case operation, scope, error
         case timeoutError = "timeout_error"
         case resetError = "reset_error"
@@ -117,6 +120,9 @@ public struct InputDiagnosticEvent: Equatable, Sendable {
     /// separately validated application bundle identifier. Add codes here;
     /// never interpolate a platform error description or an AX attribute value.
     public enum Token: String, CaseIterable, Sendable {
+        case pendingRetry = "pending_retry"
+        case recoveryExpired = "recovery_deadline_expired"
+        case recoveryHostChanged = "recovery_host_changed"
         case ok, same, different, unavailable, missing
         case sameElement = "same_element"
         case differentElement = "different_element"
@@ -168,6 +174,25 @@ public struct InputDiagnosticEvent: Equatable, Sendable {
         case focusedWindowChanged = "focused_window_changed"
         case focusedElementOwnerChanged = "focused_element_owner_changed"
         case caretOrSelectionChanged = "caret_or_selection_changed"
+        case snapshotTextAndSelectionChanged = "snapshot_text_and_selection_changed"
+        case snapshotTextChanged = "snapshot_text_changed"
+        case snapshotSelectionChanged = "snapshot_selection_changed"
+        case markerSelectionChanged = "marker_selection_changed"
+        case firstChunkActiveAppChanged = "first_chunk_active_app_changed"
+        case firstChunkFrontmostApplicationUnavailable = "first_chunk_frontmost_application_unavailable"
+        case firstChunkFocusedElementUnavailableOnRecheck = "first_chunk_focused_element_unavailable_on_recheck"
+        case firstChunkFocusedFieldChanged = "first_chunk_focused_field_changed"
+        case firstChunkFocusedWindowChanged = "first_chunk_focused_window_changed"
+        case firstChunkFocusedWindowInvalidOnRecheck = "first_chunk_focused_window_invalid_on_recheck"
+        case firstChunkFocusedWindowUnavailableOnRecheck = "first_chunk_focused_window_unavailable_on_recheck"
+        case firstChunkFocusedElementOwnerUnavailable = "first_chunk_focused_element_owner_unavailable"
+        case firstChunkFocusedElementOwnerChanged = "first_chunk_focused_element_owner_changed"
+        case firstChunkCapturedSelectionInvalid = "first_chunk_captured_selection_invalid"
+        case firstChunkSelectionValueInvalidOnRecheck = "first_chunk_selection_value_invalid_on_recheck"
+        case firstChunkSelectionUnavailableOnRecheck = "first_chunk_selection_unavailable_on_recheck"
+        case firstChunkCaretOrSelectionChanged = "first_chunk_caret_or_selection_changed"
+        case firstChunkMarkerSelectionChanged = "first_chunk_marker_selection_changed"
+        case firstChunkFocusVerificationFailed = "first_chunk_focus_verification_failed"
         case focusVerificationFailed = "focus_verification_failed"
         case deliveryCancelledBeforePost = "delivery_cancelled_before_post"
         case emptyTypingPayload = "empty_typing_payload"

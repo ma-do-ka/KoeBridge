@@ -26,6 +26,7 @@ public struct InputDiagnosticBuffer: Sendable {
         case before, payload, posted, expected, firstObserved = "first_observed"
         case observed, counts, result, firstReconcile = "first_reconcile", reconcile
         case reconcileAttachment = "reconcile_attachment"
+        case retryInitial, retryFirst, retrySecond, retryResult
         case capability, eligibility, progress, observation, firstCheckpoint = "first_checkpoint", checkpoint
     }
     private var milestones: [Milestone: Entry] = [:]
@@ -36,6 +37,10 @@ public struct InputDiagnosticBuffer: Sendable {
         switch (event.kind, event.stage) {
         case (.target, .preflight) where fields[.targetRecapture] != nil:
             milestones[.recapture] = entry
+        case (.retry, .result): milestones[.retryResult] = entry
+        case (.retry, _) where fields[.retryIndex] == .integer(1): milestones[.retryFirst] = entry
+        case (.retry, _) where fields[.retryIndex] == .integer(2): milestones[.retrySecond] = entry
+        case (.retry, _): milestones[.retryInitial] = entry
         case (.eligibility, _): milestones[.eligibility] = entry
         case (.progress, _): milestones[.progress] = entry
         case (.observation, _): milestones[.observation] = entry

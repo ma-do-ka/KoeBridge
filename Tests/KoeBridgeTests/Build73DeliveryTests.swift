@@ -1,0 +1,497 @@
+#if os(macOS)
+import ApplicationServices
+import Foundation
+import Testing
+import KoeBridgeCore
+@testable import KoeBridge
+
+@MainActor struct Build73DeliveryTests {
+    private typealias Read = InsertionTarget.AttributeRead
+
+    /// Real CF identities and CF ranges, with an in-memory AX tree and no CGEvent posting.
+    @MainActor private final class Fixture {
+        let pid: pid_t = 12345
+        let field = AXUIElementCreateApplication(12345)
+        let window = AXUIElementCreateApplication(12346)
+        let other = AXUIElementCreateApplication(12347)
+        var now = 0.0
+        var slots: [Double] = []
+        var posts = 0
+        var captures = 0
+        var role: String? = "AXButton"
+        var bundle = "com.meta.endo"
+        var subrole = Read(value: nil, status: .noValue)
+        var selection = Read(value: nil, status: .noValue)
+        var marker = Read(value: nil, status: .noValue)
+        var editable = Read(value: nil, status: .noValue)
+        var front: pid_t = 12345
+        var owner: pid_t? = 12345
+        var currentWindow: AXUIElement?
+        var currentField: AXUIElement?
+        var elementWindow: AXUIElement?
+        var allowed = true
+        var blocked = false
+        var timeoutOK = true
+        var onWait: (() -> Void)?
+        var onRead: ((String) -> Void)?
+        var onPost: (() -> Void)?
+        var initialSnapshot: InsertionReceiptPolicy.Snapshot?
+        var before: InsertionReceiptPolicy.Snapshot?
+        var value = Read(value: nil, status: .attributeUnsupported)
+        var attributes: [String] = []
+        var checkpoints: [InputDiagnosticEvent.Stage] = []
+        var onCheck: ((InputDiagnosticEvent.Stage) -> Void)?
+
+        init() {
+            currentWindow = window
+            currentField = field
+            elementWindow = window
+        }
+
+        func range(_ location: Int = 0, _ length: Int = 0) -> Read {
+            var range = CFRange(location: location, length: length)
+            return Read(value: AXValueCreate(.cfRange, &range), status: .success)
+        }
+
+        func recover(_ newRole: String = "AXTextField") {
+            role = newRole
+            selection = range()
+        }
+
+        func liveMarker(_ seed: UInt8 = 2) -> Read {
+            var start = seed, end = seed + 1
+            return Read(value: AXTextMarkerRangeCreateWithBytes(nil, &start, 1, &end, 1), status: .success)
+        }
+
+        func attribute(_ name: String) -> Read {
+            attributes.append(name)
+            onRead?(name)
+            func identity(_ value: CFTypeRef?) -> Read {
+                Read(value: value, status: value == nil ? .noValue : .success)
+            }
+            switch name {
+            case kAXFocusedUIElementAttribute: return identity(currentField)
+            case kAXFocusedWindowAttribute: return identity(currentWindow)
+            case kAXWindowAttribute: return identity(elementWindow)
+            case kAXRoleAttribute: return identity(role.map { $0 as CFString })
+            case kAXSubroleAttribute: return subrole
+            case kAXSelectedTextRangeAttribute: return selection
+            case "AXSelectedTextMarkerRange": return marker
+            case "AXEditable": return editable
+            case kAXValueAttribute: return value
+            default: Issue.record("unexpected AX attribute"); return Read(value: nil, status: .failure)
+            }
+        }
+
+        func transport() -> TextInsertion.Transport {
+            var t = TextInsertion.Transport()
+            t.ax.now = { self.now }
+            t.ax.sleep = { delay in
+                await MainActor.run {
+                    self.now += delay
+                    self.slots.append(self.now)
+                    self.onWait?()
+                }
+            }
+            t.ax.frontPID = { self.front }
+            t.ax.setTimeout = { _, duration in
+                #expect(duration > 0 && duration <= 0.080)
+                if self.posts == 0 { #expect(Double(duration) <= 0.100 - self.now) }
+                return self.timeoutOK ? .success : .failure
+            }
+            t.ax.owner = { _ in self.owner }
+            t.ax.attribute = { _, name in self.attribute(name as String) }
+            t.capture = { trace in
+                self.captures += 1
+                let name: String? = self.selection.value != nil ? kAXSelectedTextRangeAttribute
+                    : self.marker.value != nil ? "AXSelectedTextMarkerRange" : nil
+                let target = InsertionTarget(bundleIdentifier: self.bundle, localizedName: nil,
+                    pid: self.pid, focused: self.field, window: self.currentWindow, selectionAttribute: name,
+                    selection: self.selection.value ?? self.marker.value, textSnapshot: self.initialSnapshot,
+                    capturedAt: self.now, blockedReason: nil)
+                let gate = InsertionTarget.DeliveryGateRead(role: self.role, subrole: self.subrole,
+                    selectedRange: self.selection, selectedMarker: self.marker, editable: self.editable)
+                let rejection = DeliveryRejection(target: target, gate: gate, rejectedAt: self.now, ownerPID: self.owner ?? 0)
+                if let reason = gate.rejection(hasTextSelection: name != nil, diagnostics: trace, stage: .preflight,
+                                               began: nil, retryCandidate: rejection.eligible) {
+                    return .rejected(rejection, reason)
+                }
+                return .accepted(target)
+            }
+            t.permissions = { (true, true) }
+            t.snapshot = { _, _ in (self.before, self.before == nil ? .selectionMissing : .snapshotAvailable) }
+            t.checkFocus = { target, original, trace, stage, ordinal in
+                self.checkpoints.append(stage)
+                self.onCheck?(stage)
+                var reads = InsertionTarget.FocusReads()
+                reads.frontPID = { self.front }
+                reads.focused = { _, _, _, _ in self.currentField }
+                reads.owner = { _, _, _ in (self.owner ?? 0, self.owner == nil ? .failure : .success) }
+                reads.attribute = { _, name, _, _, _, _, _ in self.attribute(name as String) }
+                return target.focusCheck(requireOriginalSelection: original, diagnostics: trace,
+                                         stage: stage, chunkOrdinal: ordinal, reads: reads)
+            }
+            t.post = { _, _ in self.posts += 1; self.onPost?() }
+            return t
+        }
+
+        func deliver(_ text: String = "x", trace: InputDiagnosticTrace? = nil) async -> TextInsertion.Report {
+            await TextInsertion.deliver(text, to: nil, diagnostics: trace,
+                livePriorBlock: { _ in self.blocked }, transport: transport(), shouldContinue: { self.allowed })
+        }
+    }
+
+    @Test func endoAndFirstSampleControl() async {
+        let stuck = Fixture()
+        let report = await stuck.deliver()
+        #expect(report.reason == "current_target_not_text_input" && stuck.posts == 0)
+        #expect(stuck.captures == 1 && stuck.slots == [0.030, 0.060])
+        #expect(!stuck.attributes.contains("AXParent") && !stuck.attributes.contains("AXChildren"))
+        for slot in [1, 2] {
+            let f = Fixture()
+            f.onWait = { if f.slots.count == slot { f.recover(slot == 1 ? "AXTextField" : "AXTextArea") } }
+            let sent = await f.deliver()
+            #expect(sent.outcome == .inserted && sent.receipt == nil && f.posts == 1)
+            #expect(f.slots.count == slot && f.captures == 1)
+        }
+        // Representative non-denylisted role; the original trace did not record its name.
+        let normal = Fixture()
+        normal.role = "AXGroup"
+        let control = await normal.deliver(String(repeating: "a", count: 29))
+        #expect(control.outcome == .inserted && normal.posts == 2 && normal.slots.isEmpty)
+        #expect(normal.captures == 1 && !normal.attributes.contains(kAXRoleAttribute))
+    }
+
+    @Test func parentMarkerProvidesNoAuthorityAndHistoryRechecksPendingWork() async {
+        let button = Fixture()
+        var transport = button.transport()
+        let parent = AXUIElementCreateApplication(8888)
+        let retainedMarker = button.liveMarker()
+        var ancestorReads = 0
+        transport.ax.attribute = { element, name in
+            if name as String == kAXParentAttribute {
+                ancestorReads += 1
+                return Read(value: parent, status: .success)
+            }
+            if CFEqual(parent, element) {
+                ancestorReads += 1
+                return name as String == "AXSelectedTextMarkerRange" ? retainedMarker : Read(value: nil, status: .noValue)
+            }
+            return button.attribute(name as String)
+        }
+        let blocked = await DictationDelivery.send("x", to: nil, transport: transport, shouldContinue: { true })
+        #expect(blocked.historyInsertionDetail.contains("current_target_not_text_input"))
+        #expect(blocked.delivery == .blockedFocus && button.slots.count == 2 && button.posts == 0 && ancestorReads == 0)
+        let history = Fixture()
+        var pending = false
+        history.onWait = { history.recover(); pending = true }
+        let busy = await DictationDelivery.send("x", to: nil, transport: history.transport(), shouldContinue: { !pending })
+        #expect(busy.report?.outcome == .cancelled && history.posts == 0 && history.attributes.isEmpty)
+        let explicit = Fixture()
+        explicit.onWait = { explicit.recover() }
+        let submitted = await DictationDelivery.send("x", to: nil, transport: explicit.transport(), shouldContinue: { true })
+        #expect(submitted.delivery == .attemptedUnconfirmed && explicit.posts == 1)
+    }
+
+    @Test func initialEligibilityIsNarrow() async {
+        let cases: [(Fixture) -> Void] = [
+            { $0.bundle = "com.example.Editor" }, { $0.role = "AXCheckBox" }, { $0.currentWindow = nil },
+            { $0.role = nil }, { $0.role = "AXSecureTextField" }, { $0.blocked = true },
+            { $0.selection = Read(value: nil, status: .cannotComplete) },
+            { $0.editable = Read(value: nil, status: .attributeUnsupported) },
+            { $0.marker = Read(value: nil, status: .attributeUnsupported) },
+            { $0.subrole = Read(value: nil, status: .failure) }
+        ]
+        for change in cases {
+            let f = Fixture()
+            change(f)
+            _ = await f.deliver()
+            #expect(f.posts == 0 && f.slots.isEmpty)
+        }
+    }
+
+    @Test func recoveryRefusesInvalidOrDifferentHostsAtFirstObservation() async {
+        let changes: [(Fixture) -> Void] = [
+            { $0.front += 1 }, { $0.owner = nil }, { $0.owner = 9 },
+            { $0.currentWindow = $0.other }, { $0.currentWindow = nil }, { $0.currentField = $0.other },
+            { $0.elementWindow = $0.other }, { $0.role = nil }, { $0.role = "AXSecureTextField" },
+            { $0.subrole = Read(value: "AXSecureTextField" as CFString, status: .success) },
+            { $0.subrole = Read(value: kCFBooleanTrue, status: .success) },
+            { $0.subrole = Read(value: nil, status: .cannotComplete) },
+            { $0.selection = Read(value: nil, status: .noValue) },
+            { $0.selection = $0.range(-1) }, { $0.selection = $0.range(Int.max, 1) },
+            { $0.selection = Read(value: "bad" as CFString, status: .success); $0.marker = $0.liveMarker() },
+            { $0.selection = Read(value: nil, status: .noValue); $0.marker = Read(value: "bad" as CFString, status: .success) },
+            { $0.role = "AXButton"; $0.selection = Read(value: nil, status: .noValue); $0.marker = $0.liveMarker() },
+            { $0.timeoutOK = false }
+        ]
+        for change in changes {
+            let f = Fixture()
+            f.onWait = { f.recover(); change(f) }
+            let result = await f.deliver()
+            #expect(result.outcome == .focusChanged && f.posts == 0 && f.slots.count == 1)
+        }
+    }
+
+    @Test func deadlineAndInterruptedWait() async {
+        for time in [0.09999, 0.100, 0.101] {
+            let f = Fixture()
+            f.onWait = { f.recover(); f.now = time }
+            _ = await f.deliver()
+            #expect(f.posts == (time < 0.100 ? 1 : 0))
+        }
+        let slow = Fixture()
+        slow.onWait = { slow.recover() }
+        slow.onRead = { if $0 == kAXSelectedTextRangeAttribute { slow.now = 0.101 } }
+        _ = await slow.deliver()
+        #expect(slow.posts == 0)
+        let missed = Fixture()
+        missed.onWait = { missed.now = 0.070 }
+        _ = await missed.deliver()
+        #expect(missed.posts == 0 && missed.slots.count == 1)
+        for reason in ["prior_input_unverified", "delivery_cancelled_before_post"] {
+            let f = Fixture()
+            f.onWait = { f.recover(); f.blocked = reason == "prior_input_unverified"; f.allowed = f.blocked }
+            let result = await f.deliver()
+            #expect(result.reason == reason && f.posts == 0 && f.attributes.isEmpty)
+        }
+        let delayed = Fixture()
+        delayed.onWait = {
+            if delayed.slots.count == 1 { delayed.now = 0.045 }
+            else { delayed.recover() }
+        }
+        _ = await delayed.deliver()
+        #expect(delayed.slots == [0.030, 0.060] && delayed.posts == 1)
+        let cancelled = Fixture()
+        cancelled.onWait = { withUnsafeCurrentTask { $0?.cancel() } }
+        let result = await Task { await cancelled.deliver() }.value
+        #expect(result.outcome == .cancelled && cancelled.posts == 0)
+    }
+
+    @Test func commandAndCommitChecks() async {
+        let markerOnly = Fixture()
+        markerOnly.onWait = { markerOnly.role = "AXTextArea"; markerOnly.marker = markerOnly.liveMarker() }
+        let command = await TextInsertion.deliverCommandText(.newline, to: nil, transport: markerOnly.transport()) { true }
+        #expect(command.reason == "command_baseline_unavailable" && markerOnly.posts == 0)
+        let markerOK = Fixture()
+        markerOK.onWait = { markerOK.role = "AXTextArea"; markerOK.marker = markerOK.liveMarker() }
+        _ = await markerOK.deliver()
+        #expect(markerOK.posts == 1)
+        for regression in ["role", "secure", "selection", "latch", "deadline", "focus"] {
+            let f = Fixture()
+            var reads = 0
+            f.onWait = { f.recover() }
+            f.onRead = { name in
+                if name == kAXSelectedTextRangeAttribute {
+                    reads += 1
+                    if reads == 5 {
+                        switch regression {
+                        case "role": f.role = "AXButton"
+                        case "secure": f.subrole = Read(value: "AXSecureTextField" as CFString, status: .success)
+                        case "selection": f.selection = f.range(1)
+                        case "latch": f.blocked = true
+                        case "deadline": f.now = 0.100
+                        default: f.currentField = f.other
+                        }
+                    }
+                }
+            }
+            _ = await f.deliver()
+            #expect(reads == 5 && f.posts == 0 && f.slots.count == 1)
+        }
+        for regression in ["secure", "role", "window", "selection", "movedCaret"] {
+            let f = Fixture()
+            f.onWait = { f.recover() }
+            f.onPost = {
+                switch regression {
+                case "secure": f.subrole = Read(value: "AXSecureTextField" as CFString, status: .success)
+                case "role": f.role = "AXButton"
+                case "window": f.currentWindow = f.other
+                case "selection": f.selection = Read(value: nil, status: .noValue)
+                default: f.selection = f.range(1)
+                }
+            }
+            let result = await f.deliver(String(repeating: "x", count: 17))
+            #expect(result.outcome == (regression == "movedCaret" ? .inserted : .partiallySubmitted))
+            #expect(f.posts == (regression == "movedCaret" ? 2 : 1) && f.slots.count == 1 && f.captures == 1)
+        }
+    }
+
+    @Test func zeroPostReasonsComeFromTheFailingReads() async throws {
+        typealias Stage = InputDiagnosticEvent.Stage
+        let cases: [(String, Stage, (Fixture) -> Void)] = [
+            ("focused_field_changed", .preflight, { $0.currentField = $0.other }),
+            ("first_chunk_focused_field_changed", .posting, { $0.currentField = $0.other }),
+            ("first_chunk_focused_window_changed", .posting, { $0.currentWindow = $0.other }),
+            ("first_chunk_focused_element_owner_changed", .posting, { $0.owner = 99 }),
+            ("first_chunk_marker_selection_changed", .posting, { $0.marker = $0.liveMarker(5) }),
+            ("first_chunk_focused_window_unavailable_on_recheck", .posting, { $0.currentWindow = nil }),
+            ("first_chunk_focused_element_owner_unavailable", .posting, { $0.owner = nil }),
+            ("first_chunk_focused_element_unavailable_on_recheck", .posting, { $0.currentField = nil }),
+            ("captured_selection_invalid", .preflight, { _ in }),
+            ("field_value_unavailable_on_recheck", .preflight, { _ in }),
+            ("snapshot_text_changed", .preflight, { $0.before = .init(text: "y", selection: .init(location: 0, length: 0)) }),
+            ("snapshot_text_and_selection_changed", .preflight, { $0.before = .init(text: "y", selection: .init(location: 1, length: 0)) }),
+            ("snapshot_selection_changed", .preflight, { $0.before = .init(text: "x", selection: .init(location: 1, length: 0)) })
+        ]
+        for (reason, stage, change) in cases {
+            let f = Fixture()
+            f.role = "AXTextArea"
+            if reason == "captured_selection_invalid" {
+                f.selection = Read(value: "bad" as CFString, status: .success)
+                f.marker = f.liveMarker()
+            } else if reason.contains("snapshot") || reason.contains("field_value") {
+                f.selection = f.range()
+                f.initialSnapshot = .init(text: "x", selection: .init(location: 0, length: 0))
+            } else { f.marker = f.liveMarker() }
+            f.onCheck = { if $0 == stage { change(f) } }
+            let consent = InputDiagnosticConsent(enabled: true)
+            let trace = InputDiagnosticTrace(takeID: UUID(), consent: try #require(consent.token),
+                                             permits: { consent.allows($0) })
+            let result = await f.deliver(trace: trace)
+            #expect(result.outcome == .focusChanged && f.posts == 0 && f.slots.isEmpty)
+            let code = try #require(InputDiagnosticEvent.Token(rawValue: reason))
+            #expect(trace.buffer.entries.last?.event.fields[.reason] == .token(code))
+        }
+    }
+    @Test func rejectionTraceAndSavedHistoryHaveOneTerminalOutcome() async throws {
+        let consent = InputDiagnosticConsent(enabled: true)
+        let trace = InputDiagnosticTrace(takeID: UUID(), consent: try #require(consent.token),
+                                         permits: { consent.allows($0) })
+        let f = Fixture()
+        let result = await f.deliver(trace: trace)
+        let entries = trace.buffer.entries.map(\.event)
+        let attempts = entries.filter { $0.kind == .retry && $0.stage == .preflight && $0.fields[.retryIndex] != nil }
+        #expect(attempts.count == 2)
+        for attempt in attempts {
+            #expect(attempt.fields[.roleBucket] == .roleBucket("AXButton"))
+            #expect(attempt.fields[.selectedRangeState] == .token(.noValue))
+            #expect(attempt.fields[.selectedMarkerState] == .token(.noValue))
+            #expect(attempt.fields[.editableState] == .token(.noValue))
+            #expect(attempt.fields[.element] == .flag(true) && attempt.fields[.window] == .flag(true))
+            #expect(attempt.fields[.deadlineExceeded] == .flag(false))
+        }
+        #expect(entries.filter { $0.fields[.outcome] == .token(.blocked) }.count == 1)
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: path) }
+        let file = path.appendingPathComponent("history.json")
+        var history = TranscriptHistoryStore(fileURL: file)
+        let pending = history.remember("fixture", isPartial: false, delivery: .pending, engine: "test")
+        let id = try #require(pending)
+        DictationDelivery.classify(result).updateSavedRecord(id, in: &history)
+        let entry = try #require(try RecentTranscriptArchive(fileURL: file).entries.first)
+        #expect(entry.id == id && entry.delivery == .blockedFocus && entry.deliveryDetail?.contains("テキスト入力欄") == true)
+    }
+
+    @Test func normalPermissionEventAndCancellationAbortsPostNothing() async {
+        for reason in ["accessibility_not_granted", "post_event_permission_missing", "event_source_unavailable",
+                       "keyboard_event_unavailable", "delivery_cancelled_before_post", "empty_typing_payload"] {
+            let f = Fixture()
+            f.role = "AXGroup"
+            var t = f.transport()
+            switch reason {
+            case "accessibility_not_granted": t.permissions = { (false, true) }
+            case "post_event_permission_missing": t.permissions = { (true, false) }
+            case "event_source_unavailable": t.source = { nil }
+            case "keyboard_event_unavailable": t.events = { _, _ in nil }
+            case "delivery_cancelled_before_post": f.onCheck = { _ in f.allowed = false }
+            default: break
+            }
+            let result = await TextInsertion.deliver(reason == "empty_typing_payload" ? "" : "x", to: nil,
+                                                      transport: t, shouldContinue: { f.allowed })
+            #expect(result.reason == reason && f.posts == 0 && f.captures == 1 && f.slots.isEmpty)
+        }
+    }
+
+    @Test func numericCommandRequiresTwoMatchingBaselinesAndCommitsOnce() async {
+        for changed in [false, true] {
+            let f = Fixture()
+            var values = 0
+            f.onWait = { f.recover() }
+            f.onRead = { name in
+                if name == kAXValueAttribute {
+                    values += 1
+                    f.value = Read(value: (changed && values == 2 ? "b" : "a") as CFString, status: .success)
+                }
+            }
+            // End receipt polling after the one posted chunk; no real AX is consulted.
+            f.onPost = { f.allowed = false }
+            let result = await TextInsertion.deliverCommandText(.newline, to: nil, transport: f.transport()) { f.allowed }
+            #expect(values == 2 && f.posts == (changed ? 0 : 1))
+            #expect(result.outcome == (changed ? .focusChanged : .inserted))
+            #expect(result.receipt == nil)
+        }
+    }
+
+    @Test func historyAndDeferredFeedbackRespectOwnership() {
+        let old = UUID(), newer = UUID()
+        for (delivery, title, feedback) in [
+            (TranscriptRecord.Delivery.verifiedInserted, "入力先への反映を確認しました", nil as OverlayFeedback?),
+            (.attemptedUnconfirmed, "受理未確認", .deferredUnconfirmed),
+            (.partiallyDirect, "部分送信", .deferredPartial),
+            (.blockedFocus, "未送信", .deferredUnsent)
+        ] {
+            var queue = DictationDelivery.DeferredFeedback()
+            let detail = DictationDelivery.description(delivery, reason: "secure_text_field")
+            let outcome = DictationDelivery.Outcome(delivery: delivery, detail: detail, report: nil)
+            #expect(outcome.historyInsertionTitle == title)
+            if delivery == .blockedFocus { #expect(outcome.detail.contains("パスワード")) }
+            let suppressed = queue.enqueueIfSuppressed(outcome, id: old, owner: old, recording: false)
+            #expect(!suppressed)
+            for recording in [true, false] {
+                #expect(queue.enqueueIfSuppressed(outcome, id: old, owner: newer, recording: recording) == (feedback != nil))
+                #expect(queue.next(owner: newer, recording: true, pendingTakes: true) == nil)
+                #expect(queue.next(owner: newer, recording: false, pendingTakes: false) == nil)
+                #expect(queue.next(owner: nil, recording: false, pendingTakes: true) == nil)
+                let next = queue.next(owner: nil, recording: false, pendingTakes: false)
+                #expect(next?.1 == feedback)
+                if feedback != nil { #expect(next?.0 == old) }
+                #expect(queue.next(owner: nil, recording: false, pendingTakes: false) == nil)
+            }
+        }
+        let record = TranscriptRecord(recordedAt: Date(), engine: "test", text: "fixture", isPartial: false,
+                                      delivery: .blockedFocus)
+        #expect(DictationDelivery.historyStart(record: record, busy: true) == .failure(.busy))
+        #expect(DictationDelivery.historyStart(record: nil, busy: false) == .failure(.missing))
+        #expect(DictationDelivery.historyStart(record: record, busy: false) == .success(record))
+        for copied in [true, false] {
+            let rescue = DictationDelivery.HeldCopy(copied: copied)
+            #expect(rescue.feedback == (copied ? .heldForReview : .saved))
+            #expect(rescue.diagnostic == (copied ? "copied=1" : "copied=0"))
+        }
+    }
+
+    @Test func onlyWholeNonverifiedFinalResultsSurviveArchiveReload() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("history.json")
+        var store = TranscriptHistoryStore(fileURL: file)
+        let classifications: [(TextInsertion.Result?, TranscriptRecord.Delivery?)] = [
+            (nil, .blockedFocus), (.cancelled, .blockedFocus), (.focusChanged, .blockedFocus),
+            (.eventUnavailable, .insertionUnavailable), (.notPermitted, .missingPermission),
+            (.eventPermissionMissing, .missingPermission), (.partiallySubmitted, .partiallyDirect),
+            (.inserted, .attemptedUnconfirmed), (.verifiedInserted, nil)
+        ]
+        var expected = 0
+        for kind in VoiceController.GeneratedOperation.allCases {
+            for (result, delivery) in classifications {
+                let report = result.map {
+                    TextInsertion.Report(outcome: $0, reason: "ok", receipt: nil,
+                        eventsPosted: [.verifiedInserted, .partiallySubmitted, .inserted].contains($0),
+                        target: nil, diagnostics: nil, resultUptimeMS: 0)
+                }
+                kind.save("intermediate", final: false, report: report, engine: "test", in: &store)
+                let final = "  final " + String(expected) + "\n"
+                kind.save(final, final: true, report: report, engine: "test", in: &store)
+                if let delivery {
+                    expected += 1
+                    let record = try #require(store.entries.first { $0.text == final && $0.kind == kind.rawValue })
+                    #expect(record.delivery == delivery && !record.isPartial && record.deliveryDetail != nil)
+                }
+                #expect(store.entries.count == expected)
+            }
+        }
+        #expect(try RecentTranscriptArchive(fileURL: file).entries == store.entries)
+    }
+}
+#endif

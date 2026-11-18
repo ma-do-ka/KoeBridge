@@ -197,11 +197,12 @@ import KoeBridgeCore
         guard let key = KeychainStore.load() else { status = AppError.noKey.localizedDescription; return }
         let direction = translationDirection == .auto ? TranslationPolicy.direction(for: selected) : translationDirection
         runTextOperation(target: target, original: selected,
+                         kind: translating ? .selectionTranslation : .presetChain,
                          steps: translating ? [TranslationPolicy.instruction(for: direction)] : steps, apiKey: key)
     }
 
     /// No DictationTake: intermediate results remain in memory until every step succeeds.
-    private func runTextOperation(target: InsertionTarget, original: String, steps: [String], apiKey: String) {
+    private func runTextOperation(target: InsertionTarget, original: String, kind: GeneratedOperation, steps: [String], apiKey: String) {
         let id = UUID()
         textOperationID = id
         textOperationRunning = true
@@ -252,16 +253,23 @@ import KoeBridgeCore
                     if let usage = output.usage {
                         DiagnosticLog.record("gemini transform step=\(step) usage; promptTokens=\(usage.promptTokens.map(String.init) ?? "unknown") responseTokens=\(usage.responseTokens.map(String.init) ?? "unknown") totalTokens=\(usage.totalTokens)")
                     }
-                    guard self.textOperationID == id, !Task.isCancelled else { return }
-                    guard ProcessInfo.processInfo.systemUptime < deadline,
-                          !output.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    let final = index == steps.count - 1
+                    guard self.textOperationID == id, !Task.isCancelled else {
+                        self.saveGeneratedResult(output.text, kind: kind, final: final, report: nil)
+                        return
+                    }
+                    guard ProcessInfo.processInfo.systemUptime < deadline else {
+                        self.saveGeneratedResult(output.text, kind: kind, final: final, report: nil)
+                        throw GeminiRecheckWire.RecheckError.invalidResponse
+                    }
+                    guard !output.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                         throw GeminiRecheckWire.RecheckError.invalidResponse
                     }
                     working = output.text
                     self.lastTextOperationOutput = working
                 }
-                guard self.textOperationID == id, !Task.isCancelled else { return }
-                guard ProcessInfo.processInfo.systemUptime < deadline else {
+                guard self.textOperationID == id, !Task.isCancelled, ProcessInfo.processInfo.systemUptime < deadline else {
+                    self.saveGeneratedResult(working, kind: kind, report: nil)
                     throw GeminiRecheckWire.RecheckError.invalidResponse
                 }
                 self.textOperationDeadlineTask?.cancel()
@@ -270,11 +278,12 @@ import KoeBridgeCore
                 // caret/selection when the completed transform is delivered.
                 self.lastDeliveryAnchor = nil
                 let report = await TextInsertion.deliver(working, to: target,
-                    unverifiedPredecessors: self.textOperationUnverifiedTargets) {
+                    unverifiedPredecessors: self.textOperationUnverifiedTargets,
+                    livePriorBlock: { candidate in self.textOperationUnverifiedTargets.contains { candidate.sameElement(as: $0) } }) {
                     self.textOperationID == id && !Task.isCancelled
                 }
                 self.reconcileDelivery(report)
-                self.saveBlockedTransform(working, report: report)
+                self.saveGeneratedResult(working, kind: kind, report: report)
                 guard self.textOperationID == id, !Task.isCancelled else { return }
                 let verified = report.outcome == .verifiedInserted
                 self.finishTextOperation(verified: verified, copied: !verified && TextInsertion.copy(working), id: id)
@@ -621,6 +630,7 @@ import KoeBridgeCore
     }
 
     private var localRecoveryBusy = false
+    private var deferredFeedback = DictationDelivery.DeferredFeedback()
     private var overlayOwner: UUID?
     private var overlayDismissal: Task<Void, Never>?
     private var deliveryWorker: Task<Void, Never>?
@@ -1475,6 +1485,7 @@ import KoeBridgeCore
                     // receipts, so rebasing reaches finished and recording takes.
                     await self.deliver(result, take: take)
                     self.inFlight.removeValue(forKey: id)
+                    self.presentDeferredFeedbackIfIdle()
                 }
             }
         }
@@ -1538,9 +1549,9 @@ import KoeBridgeCore
             outcome = skipped
             if take.acousticReviewRequired, !take.automaticDeliverySuppressed,
                take.shouldPaste, skipped.delivery == .reviewRequired, !text.isEmpty {
-                TextInsertion.copy(text)
-                completionFeedback = .heldForReview
-                DiagnosticLog.recordMicrophoneEvidence("held_text_rescued take=\(id.uuidString.prefix(8)) chars=\(text.count) copied=1")
+                let rescue = DictationDelivery.HeldCopy(copied: TextInsertion.copy(text))
+                completionFeedback = rescue.feedback
+                DiagnosticLog.recordMicrophoneEvidence("held_text_rescued take=\(id.uuidString.prefix(8)) chars=\(text.count) \(rescue.diagnostic)")
             }
             take.inputDiagnostics?.record(.result, stage: .result, [
                 .outcome: .token(.skipped),
@@ -1553,7 +1564,8 @@ import KoeBridgeCore
             deliveringTakeID = id
             outcome = await DictationDelivery.send(text, to: take.target,
                                                   diagnostics: take.inputDiagnostics,
-                                                  unverifiedPredecessors: take.unverifiedInputTargets) { [weak self, weak take] in
+                                                  unverifiedPredecessors: take.unverifiedInputTargets,
+                livePriorBlock: { take.hasPriorBlock(for: $0) }) { [weak self, weak take] in
                 guard let self, let take else { return false }
                 return !take.automaticDeliverySuppressed && self.inFlight[take.id] === take
             }
@@ -1568,11 +1580,13 @@ import KoeBridgeCore
                 DiagnosticLog.record("delivery resolved; id=\(id.uuidString.prefix(8)); outcome=\(outcome.delivery.rawValue); reason=\(report.reason)")
             }
         }
-        if let recordID { updateRemembered(recordID, delivery: outcome.delivery, detail: outcome.detail) }
+        if let recordID { outcome.updateSavedRecord(recordID, in: &historyStore) }
         if outcome.submitted, let stoppedAt = take.stoppingAt {
             lastStopToInputSeconds = Date().timeIntervalSince(stoppedAt)
         }
-        showCompletionFeedback(outcome.submissionFeedback ?? completionFeedback, for: id)
+        if !deferredFeedback.enqueueIfSuppressed(outcome, id: id, owner: overlayOwner, recording: active != nil) {
+            showCompletionFeedback(outcome.submissionFeedback ?? completionFeedback, for: id)
+        }
         if active == nil {
             status = outcome.detail + (take.review?.status == .incomplete ? " 追加チェックは未完了です。" : "")
         }
@@ -1616,11 +1630,24 @@ import KoeBridgeCore
         }
     }
 
-    private func saveBlockedTransform(_ text: String, report: TextInsertion.Report) {
-        guard report.outcome == .focusChanged, !report.eventsPosted,
-              let recordID = remember(text, isPartial: false, delivery: .blockedFocus) else { return }
-        updateRemembered(recordID, delivery: .blockedFocus,
-                         detail: DictationDelivery.description(.blockedFocus, reason: report.reason))
+    enum GeneratedOperation: String, CaseIterable {
+        case voiceTransform, fixLastInput, selectionTranslation, presetChain
+
+        @MainActor func save(_ text: String, final: Bool, report: TextInsertion.Report?,
+                             engine: String, in history: inout TranscriptHistoryStore) {
+            guard final, report?.outcome != .verifiedInserted else { return }
+            let outcome = report.map(DictationDelivery.classify)
+            history.remember(text, isPartial: false, delivery: outcome?.delivery ?? .blockedFocus,
+                engine: engine, kind: rawValue, deliveryDetail: outcome?.detail ?? "操作の中断により未送信です。",
+                preserveWhitespace: true)
+        }
+    }
+
+    private func saveGeneratedResult(_ text: String, kind: GeneratedOperation, final: Bool = true,
+                                     report: TextInsertion.Report?) {
+        kind.save(text, final: final, report: report, engine: usedMode.isEmpty ? requestedMode.label : usedMode,
+                  in: &historyStore)
+        refreshRetainedAudio()
     }
 
     private func deliverCommand(_ command: VoiceCommandID, blockedReason: String?, take: DictationTake) async {
@@ -1646,7 +1673,8 @@ import KoeBridgeCore
         lastDeliveryAnchor = nil
         deliveringTakeID = take.id
         let report = await TextInsertion.deliverCommandText(command, to: take.target, diagnostics: take.inputDiagnostics,
-                                                            unverifiedPredecessors: take.unverifiedInputTargets) { [weak self, weak take] in
+                                                            unverifiedPredecessors: take.unverifiedInputTargets,
+                livePriorBlock: { take.hasPriorBlock(for: $0) }) { [weak self, weak take] in
             guard let self, let take else { return false }
             return !take.automaticDeliverySuppressed && self.inFlight[take.id] === take
         }
@@ -1694,7 +1722,7 @@ import KoeBridgeCore
             reason = "入力欄が変わりました"
         case "focused_window_changed", "posted_then_focused_window_changed":
             reason = "入力先のウインドウが変わりました"
-        case "caret_or_selection_changed", "posted_then_caret_or_selection_changed":
+        case "marker_selection_changed", "caret_or_selection_changed", "posted_then_caret_or_selection_changed":
             reason = "カーソル位置または選択範囲が変わりました"
         case "prior_input_unverified", "posted_then_prior_input_unverified":
             reason = "直前の入力を確認できませんでした"
@@ -1736,7 +1764,11 @@ import KoeBridgeCore
             if let usage = output.usage {
                 DiagnosticLog.record("gemini transform usage; promptTokens=\(usage.promptTokens.map(String.init) ?? "unknown") responseTokens=\(usage.responseTokens.map(String.init) ?? "unknown") totalTokens=\(usage.totalTokens)")
             }
-            guard !take.automaticDeliverySuppressed else { return }
+            let kind: GeneratedOperation = take.isFixLastInput ? .fixLastInput : .voiceTransform
+            guard !take.automaticDeliverySuppressed, !Task.isCancelled else {
+                saveGeneratedResult(output.text, kind: kind, report: nil)
+                return
+            }
             // The source selection stays fixed for recognition/transformation.
             // Delivery follows the current target, including fix-last-input;
             // its initial anchor eligibility was checked before recording.
@@ -1744,15 +1776,16 @@ import KoeBridgeCore
             lastDeliveryAnchor = nil
             deliveringTakeID = take.id
             let report = await TextInsertion.deliver(output.text, to: take.target, diagnostics: take.inputDiagnostics,
-                                                     unverifiedPredecessors: take.unverifiedInputTargets) {
-                !take.automaticDeliverySuppressed
+                                                     unverifiedPredecessors: take.unverifiedInputTargets,
+                livePriorBlock: { take.hasPriorBlock(for: $0) }) {
+                !take.automaticDeliverySuppressed && self.inFlight[take.id] === take
             }
             deliveringTakeID = nil
             if take.isFixLastInput, report.outcome == .verifiedInserted, let receipt = report.receipt {
                 lastDeliveryAnchor = LastDeliveryAnchor(receipt: receipt, sourceRecordID: sourceRecordID)
             }
             reconcileDelivery(report, sourceTakeID: take.id)
-            saveBlockedTransform(output.text, report: report)
+            saveGeneratedResult(output.text, kind: kind, report: report)
             let verified = report.outcome == .verifiedInserted
             let copied = !verified && TextInsertion.copy(output.text)
             showCompletionFeedback(verified ? .sent : (copied ? .transformCopied : .transformFailed), for: take.id)
@@ -1812,7 +1845,7 @@ import KoeBridgeCore
         overlayDismissal = Task { [weak self] in
             let hold: Int
             switch feedback {
-            case .heldForReview, .transformCopied, .sentUnconfirmed: hold = 3_000
+            case .heldForReview, .transformCopied, .sentUnconfirmed, .deferredUnsent, .deferredPartial, .deferredUnconfirmed: hold = 3_000
             case .noInput: hold = 330
             case .failed, .transformFailed, .commandBlocked, .commandFailed: hold = 1_000
             default: hold = 520
@@ -1823,12 +1856,22 @@ import KoeBridgeCore
         }
     }
 
+    private func presentDeferredFeedbackIfIdle() {
+        guard let (id, feedback) = deferredFeedback.next(owner: overlayOwner, recording: active != nil,
+                                                         pendingTakes: !inFlight.isEmpty) else { return }
+        overlayOwner = id
+        showCompletionFeedback(feedback, for: id)
+        onShowPreview?()
+    }
+
     private func hideOverlay() {
         overlayDismissal?.cancel()
         overlayDismissal = nil
         overlayOwner = nil
         overlayFeedback = .hidden
         onHidePreview?()
+        // Let any synchronous transition install its new owner before draining.
+        Task { @MainActor [weak self] in self?.presentDeferredFeedbackIfIdle() }
     }
 
     private static func safeFailureCode(_ reason: String?) -> String {

@@ -12,6 +12,40 @@ import KoeBridgeCore
 
         var submitted: Bool { delivery == .verifiedInserted || delivery == .attemptedUnconfirmed }
 
+        func updateSavedRecord(_ id: UUID, in history: inout TranscriptHistoryStore) {
+            history.updateDelivery(id, to: delivery, detail: detail)
+        }
+
+        var deferredFeedback: OverlayFeedback? {
+            switch delivery {
+            case .verifiedInserted, .automaticPasteDisabled, .pending: return nil
+            case .attemptedUnconfirmed: return .deferredUnconfirmed
+            case .partiallyDirect: return .deferredPartial
+            default: return .deferredUnsent
+            }
+        }
+
+        var historyInsertionTitle: String {
+            switch delivery {
+            case .verifiedInserted: return "入力先への反映を確認しました"
+            case .attemptedUnconfirmed: return "受理未確認"
+            case .partiallyDirect: return "部分送信"
+            default: return "未送信"
+            }
+        }
+
+        var historyInsertionDetail: String {
+            guard let report, !report.eventsPosted, report.outcome != .verifiedInserted else { return detail }
+            switch report.reason {
+            case "recovery_deadline_expired": return "制限時間内に入力先を確認できませんでした。"
+            case "recovery_host_changed": return "入力欄・選択範囲の安全確認に失敗しました。"
+            case "delivery_cancelled_before_post": return "処理が中断されたため、入力前に停止しました。"
+            default:
+                guard let reason = InputDiagnosticEvent.Token(rawValue: report.reason) else { return detail }
+                return detail + "（" + reason.rawValue + "）"
+            }
+        }
+
         var submissionFeedback: OverlayFeedback? {
             switch delivery {
             case .verifiedInserted: return .sent
@@ -19,6 +53,38 @@ import KoeBridgeCore
             default: return nil
             }
         }
+    }
+
+    struct DeferredFeedback {
+        private var waiting: [(UUID, OverlayFeedback)] = []
+
+        mutating func enqueueIfSuppressed(_ outcome: Outcome, id: UUID, owner: UUID?, recording: Bool) -> Bool {
+            guard !OverlayFeedback.mayUpdate(owner: owner, resolved: id, newRecordingActive: recording),
+                  let feedback = outcome.deferredFeedback else { return false }
+            waiting.append((id, feedback))
+            return true
+        }
+
+        mutating func next(owner: UUID?, recording: Bool, pendingTakes: Bool) -> (UUID, OverlayFeedback)? {
+            guard owner == nil, !recording, !pendingTakes, !waiting.isEmpty else { return nil }
+            return waiting.removeFirst()
+        }
+    }
+
+    enum HistoryStartFailure: String, Error {
+        case missing = "履歴の項目が見つかりません"
+        case busy = "録音または入力処理中です"
+    }
+
+    static func historyStart(record: TranscriptRecord?, busy: Bool) -> Result<TranscriptRecord, HistoryStartFailure> {
+        guard let record else { return .failure(.missing) }
+        return busy ? .failure(.busy) : .success(record)
+    }
+
+    struct HeldCopy {
+        let copied: Bool
+        var feedback: OverlayFeedback { copied ? .heldForReview : .saved }
+        var diagnostic: String { copied ? "copied=1" : "copied=0" }
     }
 
     static func skipped(suppressed: Bool, requiresReview: Bool,
@@ -42,12 +108,17 @@ import KoeBridgeCore
     static func send(_ text: String, to target: InsertionTarget?,
                      diagnostics: InputDiagnosticTrace? = nil,
                      unverifiedPredecessors: [InsertionTarget] = [],
-                     capture: TextInsertion.TargetCapture = { InsertionTarget.capture(diagnostics: $0, stage: .preflight,
-                                                                                     requireTextInput: true) },
+                     livePriorBlock: (InsertionTarget) -> Bool = { _ in false },
+                     capture: TextInsertion.TargetCapture? = nil, transport: TextInsertion.Transport = .init(),
                      shouldContinue: @MainActor () -> Bool) async -> Outcome {
         let report = await TextInsertion.deliver(text, to: target, diagnostics: diagnostics,
-                                                 unverifiedPredecessors: unverifiedPredecessors, capture: capture,
+                                                 unverifiedPredecessors: unverifiedPredecessors, livePriorBlock: livePriorBlock,
+                                                 capture: capture, transport: transport,
                                                  shouldContinue: shouldContinue)
+        return classify(report)
+    }
+
+    static func classify(_ report: TextInsertion.Report) -> Outcome {
         let delivery: TranscriptRecord.Delivery
         switch report.outcome {
         case .verifiedInserted: delivery = .verifiedInserted
@@ -73,7 +144,7 @@ import KoeBridgeCore
         default: break
         }
         switch reason {
-        case "caret_or_selection_changed": return "入力準備中にカーソルまたは選択範囲が変わったため、入力せず履歴に保存しました。"
+        case "marker_selection_changed", "caret_or_selection_changed": return "入力準備中にカーソルまたは選択範囲が変わったため、入力せず履歴に保存しました。"
         case "target_unavailable_at_delivery": return "現在の入力欄を取得できないため、入力せず履歴に保存しました。"
         case "secure_text_field": return "現在の入力先がパスワード欄のため、入力せず履歴に保存しました。"
         case "current_target_not_text_input": return "現在の入力先がテキスト入力欄ではないため、入力せず履歴に保存しました。"

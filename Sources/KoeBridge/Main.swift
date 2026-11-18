@@ -463,11 +463,19 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
         // Capture the original editor while the non-activating UI is still shown.
         let target = InsertionTarget.capture().target
         afterClosingPopover { delegate in
-            guard let current = delegate.controller.history.first(where: { $0.id == record.id }),
-                  !delegate.controller.hasPendingWork else { return }
-            Task { @MainActor in
-                _ = await DictationDelivery.send(current.text, to: target,
-                    shouldContinue: { !delegate.controller.hasPendingWork })
+            let start = DictationDelivery.historyStart(record: delegate.controller.history.first { $0.id == record.id },
+                                                       busy: delegate.controller.hasPendingWork)
+            switch start {
+            case .failure(let reason):
+                delegate.windows.showHistoryFeedback(title: "未送信", detail: reason.rawValue,
+                    success: false, statusButton: delegate.item.button)
+            case .success(let current):
+                Task { @MainActor in
+                    let outcome = await DictationDelivery.send(current.text, to: target,
+                        shouldContinue: { !delegate.controller.hasPendingWork })
+                    delegate.windows.showHistoryFeedback(title: outcome.historyInsertionTitle, detail: outcome.historyInsertionDetail,
+                        success: outcome.delivery == .verifiedInserted, statusButton: delegate.item.button)
+                }
             }
         }
     }

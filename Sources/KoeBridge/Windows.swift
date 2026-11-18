@@ -113,9 +113,15 @@ import KoeBridgeCore
     /// Transient, non-activating status feedback. Do not steal focus from
     /// the editor or interfere with the separate dictation preview panel.
     func showClipboardFeedback(success: Bool, statusButton: NSStatusBarButton?) {
+        showHistoryFeedback(title: success ? "コピーしました" : "コピーできませんでした",
+                            detail: success ? "⌘Vで貼り付けできます" : "クリップボードの状態をご確認ください",
+                            success: success, statusButton: statusButton)
+    }
+
+    func showHistoryFeedback(title: String, detail: String, success: Bool, statusButton: NSStatusBarButton?) {
         clipboardFeedbackDismissal?.cancel()
-        let width: CGFloat = 312
-        let height: CGFloat = 66
+        let width: CGFloat = 360
+        let height: CGFloat = 80
         let panel: NSPanel
         if let clipboardFeedbackPanel {
             panel = clipboardFeedbackPanel
@@ -136,7 +142,7 @@ import KoeBridgeCore
             panel.isReleasedWhenClosed = false
             clipboardFeedbackPanel = panel
         }
-        panel.contentView = NSHostingView(rootView: ClipboardFeedbackBubble(success: success))
+        panel.contentView = NSHostingView(rootView: ClipboardFeedbackBubble(success: success, title: title, detail: detail))
         let anchor: NSRect? = statusButton.flatMap { button in
             guard let window = button.window else { return nil }
             return window.convertToScreen(button.convert(button.bounds, to: nil))
@@ -176,6 +182,8 @@ import KoeBridgeCore
 
 private struct ClipboardFeedbackBubble: View {
     let success: Bool
+    let title: String
+    let detail: String
 
     var body: some View {
         HStack(spacing: 10) {
@@ -183,9 +191,9 @@ private struct ClipboardFeedbackBubble: View {
                 .font(.system(size: 22))
                 .foregroundStyle(success ? Color.green : Color.orange)
             VStack(alignment: .leading, spacing: 3) {
-                Text(success ? "コピーしました" : "コピーできませんでした")
+                Text(title)
                     .font(.system(size: 14, weight: .semibold))
-                Text(success ? "⌘Vで貼り付けできます" : "クリップボードの状態をご確認ください")
+                Text(detail)
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
             }

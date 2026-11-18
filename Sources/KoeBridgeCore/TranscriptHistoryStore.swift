@@ -22,13 +22,14 @@ public struct TranscriptHistoryStore {
 
     @discardableResult public mutating func remember(
         _ text: String, isPartial: Bool, delivery: TranscriptRecord.Delivery,
-        engine: String, review: TranscriptReview? = nil, recordedAt: Date = Date(), kind: String? = nil
+        engine: String, review: TranscriptReview? = nil, recordedAt: Date = Date(), kind: String? = nil,
+        deliveryDetail: String? = nil, preserveWhitespace: Bool = false
     ) -> UUID? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         let record = TranscriptRecord(recordedAt: recordedAt, engine: engine,
-                                      text: trimmed, isPartial: isPartial,
-                                      delivery: delivery, review: review, kind: kind)
+                                      text: preserveWhitespace ? text : trimmed, isPartial: isPartial,
+                                      delivery: delivery, review: review, deliveryDetail: deliveryDetail, kind: kind)
         guard archive != nil else {
             entries.insert(record, at: 0)
             entries.sort { $0.recordedAt > $1.recordedAt }
