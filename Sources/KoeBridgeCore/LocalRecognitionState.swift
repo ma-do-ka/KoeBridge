@@ -22,7 +22,22 @@ public struct LocalRecognitionState: Sendable {
     public private(set) var preview = RecognitionPreview()
     public private(set) var failure: String?
 
+    private var resultsEnded = false
+    private var finalizeSucceeded = false
+
     public init() {}
+
+    /// SpeechAnalyzer reports the stream end and finalize acknowledgement independently.
+    public enum AnalyzerCompletion { case resultsEnded, finalizeSucceeded }
+    @discardableResult public mutating func analyzerFinished(_ event: AnalyzerCompletion) -> Bool {
+        guard phase == .finishing else { return false }
+        switch event {
+        case .resultsEnded: resultsEnded = true
+        case .finalizeSucceeded: finalizeSucceeded = true
+        }
+        guard resultsEnded && finalizeSucceeded else { return false }
+        return receiveSegment("", finalized: true, completesRequest: true)
+    }
 
     public var acceptsAudio: Bool { phase == .recognizing }
     public var acceptsUpdates: Bool { phase == .recognizing || phase == .finishing }

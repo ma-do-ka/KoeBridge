@@ -66,7 +66,7 @@ import KoeBridgeCore
                     }
                     guard let self, !Task.isCancelled else { return }
                     if self.state.phase == .finishing {
-                        self.receiveSegment("", finalized: true, completesRequest: true)
+                        if self.state.analyzerFinished(.resultsEnded) { self.onUpdate?(self.state.preview) }
                     } else if self.state.acceptsAudio {
                         self.state.receiveFailure(LocalError.endedBeforeAudio.localizedDescription)
                     }
@@ -88,9 +88,9 @@ import KoeBridgeCore
         guard state.phase != .cancelled else { throw CancellationError() }
     }
 
-    private func receiveSegment(_ text: String, finalized: Bool, completesRequest: Bool = false) {
+    private func receiveSegment(_ text: String, finalized: Bool) {
         // Notify on every accepted provider update, including stability-only changes.
-        if state.receiveSegment(text, finalized: finalized, completesRequest: completesRequest) {
+        if state.receiveSegment(text, finalized: finalized) {
             onUpdate?(state.preview)
         }
     }
@@ -171,8 +171,10 @@ import KoeBridgeCore
             // Keep the framework await inside the same five-second deadline as
             // the results stream. A hung finalize must never return a partial.
             finalizationTask = Task { [weak self] in
-                do { try await analyzer.finalizeAndFinishThroughEndOfInput() }
-                catch {
+                do {
+                    try await analyzer.finalizeAndFinishThroughEndOfInput()
+                    if let self, self.state.analyzerFinished(.finalizeSucceeded) { self.onUpdate?(self.state.preview) }
+                } catch {
                     DiagnosticLog.record("speechAnalyzer finalization failed: \(error.localizedDescription)")
                     self?.state.receiveFailure(UserFacingErrorMessage.message(for: error, operation: "ローカル音声認識の確定"))
                 }

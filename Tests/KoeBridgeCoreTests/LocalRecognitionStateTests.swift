@@ -2,6 +2,30 @@ import Testing
 @testable import KoeBridgeCore
 
 struct LocalRecognitionStateTests {
+    @Test func analyzerNeedsBothSignalsExactlyOnceInEitherOrder() {
+        for first in [LocalRecognitionState.AnalyzerCompletion.resultsEnded, .finalizeSucceeded] {
+            let second: LocalRecognitionState.AnalyzerCompletion = first == .resultsEnded ? .finalizeSucceeded : .resultsEnded
+            var state = LocalRecognitionState()
+            state.beginAuthorization()
+            state.beginRecognition()
+            state.receiveSegment("確定区間", finalized: true)
+            state.endAudio()
+            let premature = state.analyzerFinished(first)
+            #expect(!premature)
+            #expect(!state.isFinal)
+            var failed = state
+            failed.receiveFailure("interrupted")
+            let afterFailure = failed.analyzerFinished(second)
+            #expect(!afterFailure)
+            #expect(!failed.isFinal)
+            let completed = state.analyzerFinished(second)
+            #expect(completed)
+            #expect(state.isFinal && state.transcript == "確定区間")
+            let duplicate = state.analyzerFinished(second)
+            #expect(!duplicate)
+        }
+    }
+
     @Test func cancelledPermissionCannotStartRecognition() {
         var state = LocalRecognitionState()
         let authorizationBegan = state.beginAuthorization()
