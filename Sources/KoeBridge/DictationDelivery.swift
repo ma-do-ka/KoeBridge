@@ -62,18 +62,28 @@ import KoeBridgeCore
     }
 
     struct DeferredFeedback {
-        private var waiting: [(UUID, OverlayFeedback)] = []
+        private var waiting: [OverlayFeedback: Int] = [:]
+        private var latestID: UUID?
+        var kindCount: Int { waiting.count }
 
         mutating func enqueueIfSuppressed(_ outcome: Outcome, id: UUID, owner: UUID?, recording: Bool) -> Bool {
             guard !OverlayFeedback.mayUpdate(owner: owner, resolved: id, newRecordingActive: recording),
                   let feedback = outcome.deferredFeedback else { return false }
-            waiting.append((id, feedback))
+            waiting[feedback, default: 0] += 1
+            latestID = id
             return true
         }
 
-        mutating func next(owner: UUID?, recording: Bool, pendingTakes: Bool) -> (UUID, OverlayFeedback)? {
-            guard owner == nil, !recording, !pendingTakes, !waiting.isEmpty else { return nil }
-            return waiting.removeFirst()
+        mutating func next(owner: UUID?, recording: Bool, pendingTakes: Bool) -> (UUID, OverlayFeedback, String)? {
+            guard owner == nil, !recording, !pendingTakes, let id = latestID else { return nil }
+            let kinds: [(OverlayFeedback, String)] = [
+                (.deferredPartial, "部分送信"), (.deferredUnconfirmed, "受理未確認"), (.deferredUnsent, "未送信")
+            ]
+            let counts = kinds.compactMap { kind, label in waiting[kind].map { (kind, "\(label) \($0)件") } }
+            guard let first = counts.first else { return nil }
+            waiting.removeAll()
+            latestID = nil
+            return (id, first.0, counts.map(\.1).joined(separator: "・") + "。履歴と入力先を確認してください。")
         }
     }
 

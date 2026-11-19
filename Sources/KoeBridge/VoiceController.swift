@@ -645,6 +645,7 @@ import KoeBridgeCore
     }
 
     private var localRecoveryBusy = false
+    private(set) var deferredSummary: String?
     private var deferredFeedback = DictationDelivery.DeferredFeedback()
     private var overlayOwner: UUID?
     private var overlayDismissal: Task<Void, Never>?
@@ -1856,9 +1857,10 @@ import KoeBridgeCore
     }
 
     private func presentDeferredFeedbackIfIdle() {
-        guard let (id, feedback) = deferredFeedback.next(owner: overlayOwner, recording: active != nil,
+        guard let (id, feedback, summary) = deferredFeedback.next(owner: overlayOwner, recording: active != nil,
                                                          pendingTakes: !inFlight.isEmpty) else { return }
         overlayOwner = id
+        deferredSummary = summary
         showCompletionFeedback(feedback, for: id)
         onShowPreview?()
     }
@@ -1868,6 +1870,7 @@ import KoeBridgeCore
         overlayDismissal = nil
         overlayOwner = nil
         overlayFeedback = .hidden
+        deferredSummary = nil
         onHidePreview?()
         // Let any synchronous transition install its new owner before draining.
         Task { @MainActor [weak self] in self?.presentDeferredFeedbackIfIdle() }

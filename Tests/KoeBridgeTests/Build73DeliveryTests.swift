@@ -556,6 +556,23 @@ import KoeBridgeCore
         #expect(readCount == 0)
     }
 
+    @Test func deferredSummaryIncludesEveryKindOnceWithCounts() throws {
+        var queue = DictationDelivery.DeferredFeedback()
+        let deliveries: [TranscriptRecord.Delivery] = [.partiallyDirect, .attemptedUnconfirmed, .blockedFocus]
+        for _ in 0..<100 {
+            for value in deliveries {
+                let queued = queue.enqueueIfSuppressed(.init(delivery: value, detail: "", report: nil),
+                                                       id: UUID(), owner: nil, recording: true)
+                #expect(queued)
+            }
+        }
+        #expect(queue.kindCount == 3)
+        let next = queue.next(owner: nil, recording: false, pendingTakes: false)
+        let summary = try #require(next)
+        for label in ["部分送信", "受理未確認", "未送信"] { #expect(summary.2.contains("\(label) 100件")) }
+        #expect(queue.kindCount == 0)
+    }
+
     @Test func historyAndDeferredFeedbackRespectOwnership() {
         let old = UUID(), newer = UUID()
         for (delivery, title, feedback) in [

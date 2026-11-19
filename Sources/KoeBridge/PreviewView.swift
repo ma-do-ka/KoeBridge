@@ -11,6 +11,8 @@ struct PreviewView: View {
 
     private var visibleTranscript: String {
         let stage = controller.overlayFeedback
+        if [.deferredUnsent, .deferredPartial, .deferredUnconfirmed].contains(stage),
+           let summary = controller.deferredSummary { return summary }
         if stage == .transforming && controller.textOperationRunning { return controller.status }
         guard stage == .recording else { return stage.message }
         let full = controller.previewText.trimmingCharacters(in: .whitespacesAndNewlines)
