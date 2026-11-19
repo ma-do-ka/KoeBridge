@@ -681,5 +681,58 @@ import KoeBridgeCore
             #expect(f.posts == 0 && f.slots.isEmpty)
         }
     }
+
+    @Test func denylistedRolesRecoverInEndoAndChromeAndFailClosedWhenPersistingOrSecure() async {
+        // 1 & 2. AXStaticText with all-noValue evidence in com.meta.endo and com.google.Chrome
+        //        transitioning to AXTextArea with a valid numeric selection at slot 1 or slot 2 -> delivers once.
+        for bundle in ["com.meta.endo", "com.google.Chrome"] {
+            for recoverSlot in [1, 2] {
+                let f = Fixture()
+                f.bundle = bundle
+                f.role = "AXStaticText"
+                f.onWait = {
+                    if f.slots.count == recoverSlot {
+                        f.recover("AXTextArea")
+                    }
+                }
+                let result = await f.deliver()
+                #expect(result.outcome == .inserted && f.posts == 1 && f.slots.count == recoverSlot)
+            }
+        }
+
+        // 3. AXStaticText persisting across all slots -> 0 posts, reason current_target_not_text_input.
+        for bundle in ["com.meta.endo", "com.google.Chrome"] {
+            let f = Fixture()
+            f.bundle = bundle
+            f.role = "AXStaticText"
+            let result = await f.deliver()
+            #expect(result.outcome == .focusChanged && result.reason == "current_target_not_text_input")
+            #expect(f.posts == 0 && f.slots == [0.030, 0.060])
+        }
+
+        // 4. AXButton persisting -> unchanged behaviour (0 posts, reason current_target_not_text_input, 2 slots).
+        do {
+            let f = Fixture()
+            f.bundle = "com.meta.endo"
+            f.role = "AXButton"
+            let result = await f.deliver()
+            #expect(result.outcome == .focusChanged && result.reason == "current_target_not_text_input")
+            #expect(f.posts == 0 && f.slots == [0.030, 0.060])
+        }
+
+        // 5. Secure field / unreadable subrole with a denylisted role -> never enters recovery (0 retries / 0 slots).
+        let ineligibleCases: [(Fixture) -> Void] = [
+            { $0.role = "AXStaticText"; $0.subrole = Read(value: "AXSecureTextField" as CFString, status: .success) },
+            { $0.role = "AXButton"; $0.subrole = Read(value: "AXSecureTextField" as CFString, status: .success) },
+            { $0.role = "AXStaticText"; $0.subrole = Read(value: nil, status: .failure) },
+            { $0.role = "AXStaticText"; $0.subrole = Read(value: nil, status: .cannotComplete) }
+        ]
+        for configure in ineligibleCases {
+            let f = Fixture()
+            configure(f)
+            let result = await f.deliver()
+            #expect(result.outcome == .focusChanged && f.posts == 0 && f.slots.isEmpty)
+        }
+    }
 }
 #endif

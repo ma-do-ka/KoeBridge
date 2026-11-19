@@ -14,8 +14,8 @@ import KoeBridgeCore
     var systemFocus = false
 
     var eligible: Bool {
-        target.bundleIdentifier == "com.meta.endo" && ownerPID == target.pid && windowStatus == .success
-            && gate.roleStatus == .success && gate.role == "AXButton"
+        ownerPID == target.pid && windowStatus == .success
+            && gate.roleStatus == .success && DeliveryTargetPolicy.isDenylisted(role: gate.role)
             && gate.selectedRange.status == .noValue && gate.selectedMarker?.status == .noValue
             && gate.editable.status == .noValue && gate.subrole.value as? String != "AXSecureTextField"
             && InsertionTarget.secureExclusionReadable(gate.subrole.value, status: gate.subrole.status)
@@ -222,7 +222,8 @@ struct RecoveryAX {
                   sub.value as? String != "AXSecureTextField",
                   role != "AXSecureTextField" else { return .rejected }
             if isSameElement {
-                guard ["AXButton", "AXTextField", "AXTextArea"].contains(role) else { return .rejected }
+                guard DeliveryTargetPolicy.isDenylisted(role: role)
+                    || ["AXTextField", "AXTextArea"].contains(role) else { return .rejected }
             } else {
                 // Case B: Different element in the same window/process requires positive editor evidence
                 // and must not be a denylisted control role unless AXEditable == true with live selection.
@@ -254,7 +255,7 @@ struct RecoveryAX {
                 else { return .rejected }
                 let marker = try read(markerName)
                 fields[.selectedMarkerState] = .token(marker.diagnosticState(hasValue: marker.value != nil))
-                if isSameElement && role == "AXButton" {
+                if isSameElement && DeliveryTargetPolicy.isDenylisted(role: role) {
                     guard range.status == .noValue, marker.status == .noValue else { return .rejected }
                     let editable = try read("AXEditable")
                     fields[.editableState] = .token(editable.diagnosticState(hasValue: editable.value != nil))

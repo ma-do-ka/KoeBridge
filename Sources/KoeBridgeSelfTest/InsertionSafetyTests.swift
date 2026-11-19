@@ -148,12 +148,27 @@ extension InsertionSafetyTests {
     }
 
     func recoveryCandidateRequiresSameWindowAndPositiveEditorEvidenceForDifferentElement() {
-        // Case A (Build 73 pin): Same element transitions from AXButton -> AXTextField/AXTextArea with selection.
-        check(DeliveryTargetPolicy.recoveryCandidateAction(
-            requireSameElement: true, sameProcess: true, sameOwner: true, sameFocusedWindow: true,
-            sameElementWindow: true, isSameElement: true, role: "AXButton", subrole: nil,
-            subroleReadable: true, hasValidNumericSelection: false, hasValidMarkerSelection: false,
-            rangeAbsent: true, markerAbsent: true, editable: nil, editableAbsent: true) == .waitOnButton)
+        // Case A (Build 73 + Fix 2 part 3): Same element transitions from any denylisted role
+        // (e.g. AXButton, AXStaticText) with all-noValue evidence -> AXTextField/AXTextArea with selection.
+        for denylisted in ["AXButton", "AXStaticText", "AXCheckBox", "AXLink"] {
+            check(DeliveryTargetPolicy.isDenylisted(role: denylisted))
+            check(DeliveryTargetPolicy.recoveryCandidateAction(
+                requireSameElement: true, sameProcess: true, sameOwner: true, sameFocusedWindow: true,
+                sameElementWindow: true, isSameElement: true, role: denylisted, subrole: nil,
+                subroleReadable: true, hasValidNumericSelection: false, hasValidMarkerSelection: false,
+                rangeAbsent: true, markerAbsent: true, editable: nil, editableAbsent: true) == .waitOnButton)
+            // Secure subrole or unreadable subrole with a denylisted role never waits or enters recovery.
+            check(DeliveryTargetPolicy.recoveryCandidateAction(
+                requireSameElement: true, sameProcess: true, sameOwner: true, sameFocusedWindow: true,
+                sameElementWindow: true, isSameElement: true, role: denylisted, subrole: "AXSecureTextField",
+                subroleReadable: true, hasValidNumericSelection: false, hasValidMarkerSelection: false,
+                rangeAbsent: true, markerAbsent: true, editable: nil, editableAbsent: true) == .reject)
+            check(DeliveryTargetPolicy.recoveryCandidateAction(
+                requireSameElement: true, sameProcess: true, sameOwner: true, sameFocusedWindow: true,
+                sameElementWindow: true, isSameElement: true, role: denylisted, subrole: nil,
+                subroleReadable: false, hasValidNumericSelection: false, hasValidMarkerSelection: false,
+                rangeAbsent: true, markerAbsent: true, editable: nil, editableAbsent: true) == .reject)
+        }
         for role in ["AXTextField", "AXTextArea"] {
             check(DeliveryTargetPolicy.recoveryCandidateAction(
                 requireSameElement: true, sameProcess: true, sameOwner: true, sameFocusedWindow: true,

@@ -85,9 +85,8 @@ public enum DeliveryTargetPolicy {
     ]
 
     /// Evaluate a candidate element observed during bounded pre-send recovery.
-    /// - Case A (`isSameElement == true`): matches Build 73 Endo AXButton recovery
-    ///   (`AXButton` waits when selection/editable are absent; `AXTextField`/`AXTextArea`
-    ///   with live selection accepts).
+    /// - Case A (`isSameElement == true`): any denylisted role (`DeliveryTargetPolicy.isDenylisted(role:)`)
+    ///   waits when selection/editable are absent; `AXTextField`/`AXTextArea` with live selection accepts.
     /// - Case B (`isSameElement == false`, allowed only when `requireSameElement == false`):
     ///   requires same process, same owner, same focused window, same element window,
     ///   non-secure role/subrole, and positive editor evidence (either a positive text role
@@ -112,7 +111,7 @@ public enum DeliveryTargetPolicy {
         guard isSameElement || !requireSameElement else { return .reject }
         guard let role, subroleReadable,
               role != "AXSecureTextField", subrole != "AXSecureTextField" else { return .reject }
-        if isSameElement && role == "AXButton" {
+        if isSameElement && isDenylisted(role: role) {
             guard rangeAbsent, markerAbsent, editableAbsent else { return .reject }
             return .waitOnButton
         }
