@@ -473,6 +473,9 @@ import KoeBridgeCore
         meetingSession = session
         meetingStatus = session.liveStatus
         session.onStatus = { [weak self] in self?.meetingStatus = $0 }
+        session.onUsage = { [weak self] event, tokens in
+            self?.usageStore.append(engineEvents: [event], tokenEvents: tokens)
+        }
         session.onFinished = { [weak self, weak session] text, partial in
             guard let self, let session, meetingSession === session else { return }
             let recordID = session.save(text, partial: partial, to: &historyStore)
@@ -1395,6 +1398,7 @@ import KoeBridgeCore
         }
         // Freeze the exact deliverable before both ordered completion and history.
         // Save-only, suppressed, review-held, stale and no-input takes never expand.
+        let usage = take.usageSamples(recognizedText: text, cancelled: noInput || take.automaticDeliverySuppressed || reason == "録音をキャンセルしました")
         if isCommand { text = nil }
         if take.transformSelection == nil, !noInput, finished.pending.contains(take.id), let original = text, !original.isEmpty,
            DictationDelivery.skipped(suppressed: take.automaticDeliverySuppressed,
@@ -1453,8 +1457,7 @@ import KoeBridgeCore
         // Usage telemetry is secondary and must not delay those key events.
         deliverOrderedResults()
         if noInput && active == nil && overlayOwner == take.id { status = "音声入力なし" }
-        recordUsage(take, succeeded: text?.isEmpty == false,
-                    cancelled: noInput || reason == "録音をキャンセルしました")
+        usageStore.append(engineEvents: usage.engines, tokenEvents: usage.tokens)
         if retainAudioEnabled, take.retainAudioGeneration == retentionGeneration,
            let id = take.historyRecordID, let record = historyStore.entries.first(where: { $0.id == id }) {
             retainedAudio.write(pcm: take.audioBackup, record: record, history: &historyStore)
@@ -1468,13 +1471,6 @@ import KoeBridgeCore
             }
         } else { resumeMicrophoneWarm() }
         scheduleWarmGemini()
-    }
-
-    /// Called exactly once per take, including failures and fallback.
-    /// No transcript, audio, credentials, or platform error messages are stored.
-    private func recordUsage(_ take: DictationTake, succeeded: Bool, cancelled: Bool) {
-        let samples = take.usageSamples(succeeded: succeeded, cancelled: cancelled)
-        usageStore.append(engineEvents: samples.engines, tokenEvents: samples.tokens)
     }
 
     private func deliverOrderedResults() {

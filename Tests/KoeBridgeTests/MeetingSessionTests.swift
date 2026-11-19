@@ -6,6 +6,34 @@ import KoeBridgeCore
 @testable import KoeBridge
 
 @MainActor struct MeetingSessionTests {
+    @Test func commandAndBothMeetingSourcesRecordSuccessfulUsage() async {
+        let take = DictationTake(preferred: .local, style: .verbatim, japaneseHint: false, vocabulary: [],
+                                 shouldPaste: true, options: .init())
+        take.commandCandidate = .newline
+        take.appleAttempted = true
+        take.successfulEngine = .local
+        let command = take.usageSamples(recognizedText: "改行", cancelled: false)
+        #expect(command.engines.map(\.outcome) == [.success])
+
+        let session = MeetingSession(engine: .local, vocabulary: [], style: .verbatim,
+            japaneseHint: false, apiKey: nil, microphoneUID: "")
+        var started = 0
+        var events: [EngineUsageSample] = []
+        session.onUsage = { event, tokens in events.append(event); #expect(tokens.isEmpty) }
+        await withCheckedContinuation { done in
+            session.onFinished = { _, _ in done.resume() }
+            session.start { chunk, source in
+                started += 1
+                while started < 2 { await Task.yield() }
+                chunk.localProcessedBytes = source == .microphone ? 32_000 : 64_000
+                chunk.finalText = "fixture"
+                session.stop()
+            }
+        }
+        #expect(events.map(\.audioSeconds).sorted() == [1, 2])
+        #expect(events.allSatisfy { $0.engine == .apple && $0.outcome == .success })
+    }
+
     @Test func stopOutcomesSurviveHistoryReload() async throws {
         for (losses, recognitionFailed) in [(1, false), (0, true), (0, false)] {
             let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

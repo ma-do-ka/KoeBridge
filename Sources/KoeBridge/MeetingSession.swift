@@ -28,6 +28,7 @@ private final class MeetingAudioCount: @unchecked Sendable {
     private var micFailed = false
     private var completed = false
     private var recognitionProblems: [String] = []
+    var onUsage: ((EngineUsageSample, [GeminiTokenSample]) -> Void)?
     var onStatus: ((String) -> Void)?
     var onFinished: ((String, Bool) -> Void)?
 
@@ -41,6 +42,9 @@ private final class MeetingAudioCount: @unchecked Sendable {
         var captureDrain: Task<Void, Never>?
         var failed = false
         var startedAt = ProcessInfo.processInfo.systemUptime
+        fileprivate var usageRecorded = false
+        let requestedAt = Date()
+        var localProcessedBytes = 0
         var admittedBytes = 0
         fileprivate let emittedAudio = MeetingAudioCount()
         var timer: Task<Void, Never>?
@@ -117,6 +121,7 @@ private final class MeetingAudioCount: @unchecked Sendable {
         stop()
         var snapshot = transcript
         for (source, chunk) in chunks {
+            recordUsage(chunk, interrupted: true)
             snapshot.append(source: source, offset: segmentOffset(chunk, source: source), text: chunk.partial)
             chunk.timer?.cancel(); chunk.worker?.cancel()
             chunk.cloud?.cancel(); chunk.local?.cancel()
@@ -186,10 +191,24 @@ private final class MeetingAudioCount: @unchecked Sendable {
             }
             recordChunk(source: source, offset: segmentOffset(chunk, source: source), text: chunk.partial,
                         recognitionFailed: chunk.failed, dropped: chunk.integrity.droppedChunks)
+            recordUsage(chunk, interrupted: completed)
             chunk.cloud?.cancel(); chunk.local?.cancel()
             chunks[source] = nil
             if chunk.failed { break }
         }
+    }
+
+    private func recordUsage(_ chunk: Chunk, interrupted: Bool) {
+        guard !chunk.usageRecorded else { return }
+        chunk.usageRecorded = true
+        let bytes = engine == .local ? chunk.localProcessedBytes : chunk.cloud?.sentAudioBytes ?? 0
+        let outcome: UsageOutcome
+        if interrupted { outcome = .cancelled }
+        else if chunk.failed || chunk.integrity.droppedChunks > 0 { outcome = .failure }
+        else { outcome = chunk.finalText == nil ? .cancelled : .success }
+        onUsage?(EngineUsageSample(at: chunk.requestedAt, engine: engine == .local ? .apple : .gemini,
+                                   audioSeconds: Double(bytes) / 32_000, outcome: outcome),
+                 chunk.cloud?.tokenSamples ?? [])
     }
 
     private func recordChunk(source: MeetingTranscript.Source, offset: TimeInterval, text: String,
@@ -232,7 +251,10 @@ private final class MeetingAudioCount: @unchecked Sendable {
                 for await data in stream {
                     chunk.admittedBytes += data.count
                     if let cloud = chunk.cloud { try await cloud.sendAudio(data) }
-                    else { try chunk.local?.appendPCM16(data) }
+                    else if let local = chunk.local {
+                        try local.appendPCM16(data)
+                        chunk.localProcessedBytes += data.count
+                    }
                 }
                 guard integrity.droppedChunks == 0 else { throw VoiceController.AppError.audioDropped }
                 guard chunk.admittedBytes > 0 else { return "" }

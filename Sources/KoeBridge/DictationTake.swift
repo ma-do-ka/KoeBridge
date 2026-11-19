@@ -188,10 +188,10 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
 
     /// Snapshot before resources are released. No transcript, PCM, platform
     /// error details, or credentials are included in the persisted counters.
-    func usageSamples(succeeded: Bool, cancelled: Bool) -> (engines: [EngineUsageSample], tokens: [GeminiTokenSample]) {
+    func usageSamples(recognizedText: String?, cancelled: Bool) -> (engines: [EngineUsageSample], tokens: [GeminiTokenSample]) {
         let fallbackTime = startedAt ?? Date()
         func outcome(for mode: RecognitionMode) -> UsageOutcome {
-            if succeeded && successfulEngine == mode { return .success }
+            if recognizedText?.isEmpty == false && successfulEngine == mode { return .success }
             return cancelled ? .cancelled : .failure
         }
         var rows: [EngineUsageSample] = []
