@@ -7,8 +7,13 @@ import KoeBridgeCore
 @MainActor final class MicrophoneWarmKeeper {
     var onConfigurationChange: (() -> Void)?
     private let worker = Worker()
+    private var pending: MicrophoneStartupGate?
 
     func resume(enabled: Bool, selectedUID: String, takeActive: Bool, reason: String) {
+        pending?.cancelWarmPreparation()
+        let gate = MicrophoneStartupGate(configuring: true)
+        pending = gate
+        let deadline = ProcessInfo.processInfo.systemUptime + MicrophoneStartupRetryPolicy().attemptTimeout
         // Never prompt for permission just to warm an idle route.
         let permitted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
         let changed: @Sendable () -> Void = { [weak self] in
@@ -17,13 +22,15 @@ import KoeBridgeCore
         let worker = worker
         MicrophoneCapture.warmLifecycleQueue.async {
             worker.resume(enabled: enabled && permitted, uid: selectedUID,
-                          takeActive: takeActive, reason: reason, changed: changed)
+                          takeActive: takeActive, reason: reason, gate: gate, deadline: deadline, changed: changed)
         }
     }
 
     /// Enqueued before capture.start: FIFO on the shared lane completes the
     /// handoff before capture can acquire its lease. No warm lease spans a take.
     func suspend(reason: String = "take") {
+        pending?.cancelWarmPreparation()
+        pending = nil
         let worker = worker
         MicrophoneCapture.warmLifecycleQueue.async { worker.stop(reason: reason) }
     }
@@ -32,12 +39,18 @@ import KoeBridgeCore
         // Accessed exclusively on MicrophoneCapture.warmLifecycleQueue.
         private var lease: MicrophoneEngineLifetime<AVAudioEngine>.Lease?
         private var target: MicrophoneSelectionTarget?
-        private var tapInstalled = false
+        private let tap = MicrophoneTapInstallation()
+        private var activeGate: MicrophoneStartupGate?
         private var tapPlan: MicrophoneTapFormatPlan?
         private var observer: NSObjectProtocol?
 
         func resume(enabled: Bool, uid: String, takeActive: Bool, reason: String,
-                    changed: @escaping @Sendable () -> Void) {
+                    gate: MicrophoneStartupGate, deadline: TimeInterval, changed: @escaping @Sendable () -> Void) {
+            guard !gate.isStopped else { return }
+            guard enabled, !takeActive, ProcessInfo.processInfo.systemUptime < deadline else {
+                stop(reason: "policy")
+                return
+            }
             let snapshot = MicrophoneDevices.snapshot()
             guard let selected = try? MicrophoneSelectionPolicy.resolve(uid: uid,
                 devices: snapshot.devices, systemDefaultID: snapshot.defaultID) else {
@@ -52,7 +65,10 @@ import KoeBridgeCore
                MicrophoneDevices.isStillSelected(selected, node: lease.resource.inputNode),
                let tapPlan {
                 let hardware = lease.resource.inputNode.inputFormat(forBus: 0)
-                if tapPlan.matches(sampleRate: hardware.sampleRate, channels: hardware.channelCount) { return }
+                let applied = lease.resource.inputNode.outputFormat(forBus: 0)
+                if tapPlan.matches(sampleRate: hardware.sampleRate, channels: hardware.channelCount),
+                   tapPlan.matches(sampleRate: applied.sampleRate, channels: applied.channelCount),
+                   applied.commonFormat == .pcmFormatFloat32, !applied.isInterleaved { return }
             }
             stop(reason: "route")
             guard let acquired = MicrophoneCapture.warmEngineLifetime.acquire() else {
@@ -60,47 +76,47 @@ import KoeBridgeCore
                 return
             }
             lease = acquired
+            activeGate = gate
             let engine = acquired.resource
             do {
                 let node = engine.inputNode
                 try MicrophoneDevices.bind(selected, to: node)
                 observer = NotificationCenter.default.addObserver(
                     forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil
-                ) { _ in changed() }
-                let hardware = node.inputFormat(forBus: 0)
-                guard let plan = MicrophoneTapFormatPlan(hardwareSampleRate: hardware.sampleRate,
-                                                        hardwareChannels: hardware.channelCount),
-                      let input = AVAudioFormat(commonFormat: .pcmFormatFloat32,
-                                                sampleRate: plan.sampleRate, channels: plan.channelCount,
-                                                interleaved: false) else {
-                    stop(reason: "format-invalid")
+                ) { _ in
+                    if gate.warmConfigurationChanged() { changed() }
+                }
+                let graph = LeasedMicrophoneTapGraph(lifetime: MicrophoneCapture.warmEngineLifetime,
+                                                     lease: acquired, node: node) {
+                    MicrophoneDevices.isStillSelected(selected, node: node)
+                }
+                tapPlan = try tap.installAndPrepare(graph: graph, gate: gate, deadline: deadline,
+                                                    sink: .warm)
+                try engine.start()
+                guard !gate.isStopped, ProcessInfo.processInfo.systemUptime < deadline,
+                      MicrophoneDevices.isStillSelected(selected, node: node),
+                      gate.finishWarmStart(deadline: deadline) else {
+                    stop(reason: "invalidated")
                     return
                 }
-                guard engine.outputConnectionPoints(for: node, outputBus: 0).isEmpty else {
-                    stop(reason: "format")
-                    return
-                }
-                // Deliberately no buffer access, conversion, storage or analysis.
-                node.installTap(onBus: 0, bufferSize: 1024, format: input) { _, _ in }
-                tapInstalled = true
-                tapPlan = plan
-                engine.prepare()
-                if !engine.isRunning { try engine.start() }
                 target = selected
                 log("mic warm start reason=\(reason)")
             } catch {
-                stop(reason: "failed")
+                stop(reason: (error as? MicrophoneGraphError)?.rawValue ?? "failed")
             }
         }
 
         func stop(reason: String) {
             guard let lease else { return }
+            activeGate?.stop()
+            activeGate = nil
             if let observer { NotificationCenter.default.removeObserver(observer) }
             observer = nil
             let engine = lease.resource
-            engine.stop()
-            if tapInstalled { engine.inputNode.removeTap(onBus: 0) }
-            tapInstalled = false
+            if MicrophoneCapture.warmEngineLifetime.isCurrent(token: lease.token) {
+                engine.stop()
+                tap.removeIfOwned()
+            }
             tapPlan = nil
             target = nil
             self.lease = nil

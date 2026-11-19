@@ -29,6 +29,8 @@ Sources/KoeBridge/MicrophoneCapture.swift
 Sources/KoeBridge/TextInsertion.swift
 Sources/KoeBridge/VoiceController.swift
 Sources/KoeBridge/Windows.swift
+Sources/KoeBridgeAudioTap/InputTap.m
+Sources/KoeBridgeAudioTap/include/KoeBridgeAudioTap.h
 Sources/KoeBridgeCore/AudioDurationPolicy.swift
 Sources/KoeBridgeCore/AudioIntegrityState.swift
 Sources/KoeBridgeCore/DiagnosticFileStore.swift
@@ -98,6 +100,8 @@ Tests/KoeBridgeCoreTests/SessionTransitionsTests.swift
 Tests/KoeBridgeCoreTests/StressTests.swift
 Tests/KoeBridgeCoreTests/TranscriptionStyleTests.swift
 Tests/KoeBridgeCoreTests/UserFacingErrorMessageTests.swift
+Tests/KoeBridgeTapFixtures/FakeTapNode.m
+Tests/KoeBridgeTapFixtures/include/KoeBridgeTapFixtures.h
 Tests/KoeBridgeTests/Build73DeliveryTests.swift
 Tests/KoeBridgeTests/GeminiLiveConnectionTests.swift
 Tests/KoeBridgeTests/HistoryHoverPanelTests.swift
@@ -230,6 +234,7 @@ docs/releases/v1.1.5.md
 Sources/KoeBridgeCore/MicrophonePreparationDiagnostics.swift
 Tests/KoeBridgeCoreTests/MicrophonePreparationDiagnosticsTests.swift
 Sources/KoeBridgeCore/MicrophoneTapFormatPlan.swift
+Sources/KoeBridgeCore/MicrophoneTapInstallation.swift
 Tests/KoeBridgeCoreTests/MicrophoneTapFormatPlanTests.swift
 docs/mic-log-retention.md
 docs/gate-tuning.md
@@ -329,6 +334,7 @@ Sources/KoeBridgeSelfTest/DeliveryPacingPolicyTests.swift
 Sources/KoeBridgeSelfTest/MicrophonePreparationDiagnosticsTests.swift
 Sources/KoeBridgeSelfTest/MicrophoneRevalidationPolicyTests.swift
 Sources/KoeBridgeSelfTest/MicrophoneStartupGateSettlingTests.swift
+Sources/KoeBridgeSelfTest/MicrophoneTapInstallationTests.swift
 Sources/KoeBridgeSelfTest/OverlayFeedbackTests.swift
 Sources/KoeBridgeSelfTest/StartupPreviewPolicyTests.swift
 Tests/KoeBridgeCoreTests/DeliveryDiagnosticsTests.swift
