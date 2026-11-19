@@ -78,7 +78,7 @@ struct ProtectedTextSpans {
             if let pair = active {
                 // Only the outer family owns this span. An unmatched foreign
                 // quote inside it cannot start a second span beyond its end.
-                if CharacterSet.newlines.contains(ch) {
+                if pair.open == pair.close && CharacterSet.newlines.contains(ch) {
                     depth = 0
                 } else if escaped {
                     escaped = false

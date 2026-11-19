@@ -10,9 +10,18 @@ struct TranscriptReviewTests {
             #expect(AgentInstructionFormatting.format(nested) == nested)
             #expect(TextContextChecking.check(nested).changes == 0)
             let unclosed = open + "残 す\n次 行"
-            #expect(JapaneseDictationSpacing.adopt(unclosed, enabled: true, protectedTerms: []) == open + "残 す\n次行")
+            #expect(JapaneseDictationSpacing.adopt(unclosed, enabled: true, protectedTerms: []) == unclosed)
         }
         #expect(JapaneseDictationSpacing.adopt("'残 す\n次 行", enabled: true, protectedTerms: []) == "'残 す\n次行")
+    }
+
+    @Test func balancedTypographicQuotesProtectBothLines() {
+        for (open, close) in [("「", "」"), ("『", "』"), ("“", "”"), ("‘", "’")] {
+            let quoted = open + "一行 目\n二行 目" + close
+            let source = quoted + " 後 文"
+            #expect(ProtectedTextSpans(source).contents == [Data(quoted.utf8)])
+            #expect(JapaneseDictationSpacing.adopt(source, enabled: true, protectedTerms: []) == quoted + " 後文")
+        }
     }
 
     @Test func apostrophesInWordsAndQuotations() {
@@ -66,7 +75,7 @@ struct TranscriptReviewTests {
         }
     }
 
-    @Test func escapedClosersStayLiteralAndUnclosedQuotesStopAtLineBreaks() {
+    @Test func escapedClosersStayLiteralAndOnlyASCIIQuotesStopAtLineBreaks() {
         for quoted in [#""前\" 残 す ' 後""#, #"'前\' 残 す " 後'"#] {
             #expect(JapaneseDictationSpacing.adopt(quoted + " 後 文", enabled: true, protectedTerms: []) == quoted + " 後文")
         }
@@ -74,7 +83,8 @@ struct TranscriptReviewTests {
             for newline in ["\n", "\r", "\r\n", "\u{2028}", "\u{2029}"] {
                 let prefix = open + " 残 す" + newline
                 let source = prefix + "次 行"
-                #expect(JapaneseDictationSpacing.adopt(source, enabled: true, protectedTerms: []) == prefix + "次行")
+                let expected = (open == "\"" || open == "'") ? prefix + "次行" : source
+                #expect(JapaneseDictationSpacing.adopt(source, enabled: true, protectedTerms: []) == expected)
             }
         }
     }
