@@ -46,10 +46,26 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
     // Only reports received while this take is pending participate. A newly
     // started take does not inherit an earlier take's unconfirmed submission.
     func hasPriorBlock(for candidate: InsertionTarget) -> Bool {
-        target?.isBlocked == true || unverifiedInputTargets.contains { candidate.sameElement(as: $0) }
+        if unverifiedInputTargets.contains(where: { candidate.sameElement(as: $0) }) {
+            return true
+        }
+        if target?.isBlocked == true, target.map({ candidate.sameElement(as: $0) }) == true {
+            let allowSettledDictation = commandCandidate == nil && transformSelection == nil && !isFixLastInput
+            if allowSettledDictation,
+               settledUnconfirmedInputTargets.contains(where: { candidate.sameField(as: $0.target) }) {
+                return false
+            }
+            return true
+        }
+        if settledUnconfirmedInputTargets.contains(where: { candidate.sameElement(as: $0.target) }) {
+            let allowSettledDictation = commandCandidate == nil && transformSelection == nil && !isFixLastInput
+            return !allowSettledDictation
+        }
+        return false
     }
 
     var unverifiedInputTargets: [InsertionTarget] = []
+    var settledUnconfirmedInputTargets: [TextInsertion.SettledUnconfirmedPredecessor] = []
     var targetCaptureReason = "not_attempted"
     var mic: MicrophoneCapture?
     var continuation: AsyncStream<Data>.Continuation?

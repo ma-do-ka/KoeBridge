@@ -342,6 +342,7 @@ struct KoeBridgeSelfTest {
         await run("GeminiWireTests.segmentAssemblyPreservesNumbersNamesAndNegations", { GeminiWireTests().segmentAssemblyPreservesNumbersNamesAndNegations() })
         await run("GeminiWireTests.finalSegmentMetadataIsOptionalAndContentFree", { GeminiWireTests().finalSegmentMetadataIsOptionalAndContentFree() })
         await run("InsertionReceiptPolicyTests.ambiguousWindowIdentityCannotUnlockAConcurrentTake", { try InsertionReceiptPolicyTests().ambiguousWindowIdentityCannotUnlockAConcurrentTake() })
+        await run("InsertionReceiptPolicyTests.settledUnconfirmedPredecessorAndTargetScopedLatchGateFollowUpTakes", { InsertionReceiptPolicyTests().settledUnconfirmedPredecessorAndTargetScopedLatchGateFollowUpTakes() })
         await run("GeminiFinalizationTests.conflictingTextForTheSameRangeRemainsRecoverable", { GeminiFinalizationTests().conflictingTextForTheSameRangeRemainsRecoverable() })
         await run("GeminiFinalizationTests.manualEndAcceptsFastCompletionOnlyAfterSuccessfulWrite", { GeminiFinalizationTests().manualEndAcceptsFastCompletionOnlyAfterSuccessfulWrite() })
         await run("GeminiFinalizationTests.manualEndIgnoresCompletionBeforeItsWriteBegins", { GeminiFinalizationTests().manualEndIgnoresCompletionBeforeItsWriteBegins() })

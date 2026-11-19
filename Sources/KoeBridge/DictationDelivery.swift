@@ -108,11 +108,14 @@ import KoeBridgeCore
     static func send(_ text: String, to target: InsertionTarget?,
                      diagnostics: InputDiagnosticTrace? = nil,
                      unverifiedPredecessors: [InsertionTarget] = [],
+                     settledUnconfirmedPredecessors: [TextInsertion.SettledUnconfirmedPredecessor] = [],
                      livePriorBlock: (InsertionTarget) -> Bool = { _ in false },
                      capture: TextInsertion.TargetCapture? = nil, transport: TextInsertion.Transport = .init(),
                      shouldContinue: @MainActor () -> Bool) async -> Outcome {
         let report = await TextInsertion.deliver(text, to: target, diagnostics: diagnostics,
-                                                 unverifiedPredecessors: unverifiedPredecessors, livePriorBlock: livePriorBlock,
+                                                 unverifiedPredecessors: unverifiedPredecessors,
+                                                 settledUnconfirmedPredecessors: settledUnconfirmedPredecessors,
+                                                 livePriorBlock: livePriorBlock,
                                                  capture: capture, transport: transport,
                                                  shouldContinue: shouldContinue)
         return classify(report)

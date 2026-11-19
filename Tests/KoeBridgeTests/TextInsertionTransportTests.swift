@@ -493,5 +493,42 @@ import KoeBridgeCore
         #expect(report.outcome == .cancelled && report.reason == "delivery_cancelled_before_post")
         #expect(DictationDelivery.skipped(suppressed: true, requiresReview: false, shouldPaste: true)?.delivery == .blockedFocus)
     }
+
+    @Test func settledUnconfirmedPredecessorAndTargetScopedLatchTransportBehavior() async throws {
+        let fieldA = target(pid: 10_001, selectionAttribute: "AXSelectedTextMarkerRange")
+        let fieldB = target(pid: 10_002, selectionAttribute: "AXSelectedTextMarkerRange")
+        let source = TextInsertion.Report(outcome: .inserted, reason: "posted_without_observable_edit",
+                                          receipt: nil, eventsPosted: true, target: fieldA, diagnostics: nil,
+                                          resultUptimeMS: 1_100, exactBaselineAvailable: false,
+                                          completedAtUptime: 1.000)
+        #expect(source.settledUnconfirmedPredecessor != nil)
+        let candidate = DictationTake(preferred: .local, style: .verbatim, japaneseHint: false,
+                                      vocabulary: [], shouldPaste: true, options: .init())
+        candidate.target = fieldA
+        VoiceController.reconcileDelivery(source, sourceTakeID: UUID(), into: candidate)
+        #expect(candidate.target?.isBlocked == true)
+        #expect(candidate.unverifiedInputTargets.count == 1)
+        #expect(candidate.settledUnconfirmedInputTargets.count == 1)
+
+        // 1. Target-scoped latch: moving to unrelated fieldB unblocks prepareTarget.
+        let movedToB = TextInsertion.prepareTarget(takeStart: candidate.target,
+                                                   unverifiedPredecessors: candidate.unverifiedInputTargets,
+                                                   settledUnconfirmedPredecessors: candidate.settledUnconfirmedInputTargets,
+                                                   capture: { _ in (fieldB, "ok") })
+        #expect(movedToB.reason == "ok" && movedToB.target?.sameElement(as: fieldB) == true)
+
+        // 2. Voice commands keep strict rule even when settledUnconfirmedInputTargets is populated.
+        let commandBlocked = await TextInsertion.deliverCommandText(.newline, to: candidate.target,
+                                                                    unverifiedPredecessors: candidate.unverifiedInputTargets,
+                                                                    capture: { _ in (fieldA, "ok") }) { true }
+        #expect(commandBlocked.outcome == .focusChanged && commandBlocked.reason == "prior_input_unverified" && !commandBlocked.eventsPosted)
+
+        // 3. Predecessor with exactBaselineAvailable == true (posted_receipt_timeout) never creates settledUnconfirmedPredecessor.
+        let timeoutSource = TextInsertion.Report(outcome: .inserted, reason: "posted_receipt_timeout",
+                                                 receipt: nil, eventsPosted: true, target: fieldA, diagnostics: nil,
+                                                 resultUptimeMS: 1_100, exactBaselineAvailable: true,
+                                                 completedAtUptime: 1.000)
+        #expect(timeoutSource.settledUnconfirmedPredecessor == nil)
+    }
 }
 #endif

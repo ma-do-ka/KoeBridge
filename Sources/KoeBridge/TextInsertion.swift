@@ -45,6 +45,11 @@ import KoeBridgeCore
         }
     }
 
+    @MainActor struct SettledUnconfirmedPredecessor {
+        let target: InsertionTarget
+        let completedAt: TimeInterval
+    }
+
     @MainActor struct Report {
         let outcome: Result
         let reason: String
@@ -53,11 +58,23 @@ import KoeBridgeCore
         let target: InsertionTarget?
         let diagnostics: InputDiagnosticTrace?
         let resultUptimeMS: Int
+        var exactBaselineAvailable: Bool = false
+        var completedAtUptime: TimeInterval = ProcessInfo.processInfo.systemUptime
 
         /// Preserve the actual delivery target even when a pending take was
         /// captured in another field (or had no take-start target at all).
         var unverifiedTarget: InsertionTarget? {
             eventsPosted && receipt == nil ? target : nil
+        }
+
+        /// Predecessor delivered all chunks without post-send focus failure on a target
+        /// where exact receipt verification is structurally unavailable (e.g. marker-only).
+        var settledUnconfirmedPredecessor: SettledUnconfirmedPredecessor? {
+            guard outcome == .inserted, eventsPosted, receipt == nil,
+                  !exactBaselineAvailable,
+                  reason == "posted_without_observable_edit",
+                  let target else { return nil }
+            return SettledUnconfirmedPredecessor(target: target, completedAt: completedAtUptime)
         }
 
         /// Run for every still-live take before advancing the serial sender.
@@ -198,6 +215,7 @@ import KoeBridgeCore
     /// transforms. Take-start contents/caret are only diagnostic context here.
     /// Pending unverified input remains a latch; recapture cannot unlock it.
     static func prepareTarget(takeStart: InsertionTarget?, unverifiedPredecessors: [InsertionTarget] = [],
+                              settledUnconfirmedPredecessors: [SettledUnconfirmedPredecessor] = [],
                               diagnostics: InputDiagnosticTrace? = nil,
                               capture: TargetCapture = { InsertionTarget.capture(diagnostics: $0, stage: .preflight,
                                                                                 requireTextInput: true) })
@@ -214,12 +232,29 @@ import KoeBridgeCore
                             "accessibility_not_granted"]
             return (nil, specific.contains(current.reason) ? current.reason : "target_unavailable_at_delivery")
         }
-        guard takeStart?.isBlocked != true,
-              !unverifiedPredecessors.contains(where: { fresh.sameElement(as: $0) }) else {
+        let matchingUnverified = unverifiedPredecessors.filter { fresh.sameElement(as: $0) }
+        let matchingSettled = settledUnconfirmedPredecessors.filter { fresh.sameField(as: $0.target) }
+        let hasHardUnverifiedOnFresh = matchingUnverified.contains { unverified in
+            !matchingSettled.contains { $0.target.sameField(as: unverified) }
+        }
+        let freshMatchesStart = takeStart.map { fresh.sameElement(as: $0) } ?? false
+        let startBlocksFresh: Bool
+        if takeStart?.isBlocked == true {
+            if !freshMatchesStart && (!unverifiedPredecessors.isEmpty || !settledUnconfirmedPredecessors.isEmpty) {
+                startBlocksFresh = false
+            } else if freshMatchesStart && !matchingSettled.isEmpty && !hasHardUnverifiedOnFresh {
+                startBlocksFresh = false
+            } else {
+                startBlocksFresh = true
+            }
+        } else {
+            startBlocksFresh = false
+        }
+        guard !startBlocksFresh, !hasHardUnverifiedOnFresh else {
             diagnostics?.record(.target, stage: .preflight, [
                 .reason: .token(.priorInputUnverified),
                 .startBlocked: .flag(takeStart?.isBlocked == true),
-                .freshMatchesPrior: .flag(unverifiedPredecessors.contains { fresh.sameElement(as: $0) }),
+                .freshMatchesPrior: .flag(!matchingUnverified.isEmpty),
                 .unverifiedPredecessorCount: .integer(unverifiedPredecessors.count)
             ])
             return (fresh, "prior_input_unverified")
@@ -227,9 +262,83 @@ import KoeBridgeCore
         return (fresh, "ok")
     }
 
+    private static func verifySettledPredecessors(_ settled: [SettledUnconfirmedPredecessor],
+                                                  for fresh: InsertionTarget,
+                                                  takeStart: InsertionTarget?,
+                                                  unverifiedPredecessors: [InsertionTarget],
+                                                  diagnostics: InputDiagnosticTrace?,
+                                                  transport: Transport,
+                                                  shouldContinue: @MainActor () -> Bool) async -> Bool {
+        func readSelectionEqual(_ left: InsertionTarget.AttributeRead, _ right: InsertionTarget.AttributeRead,
+                                kind: InputDiagnosticEvent.Token) -> Bool {
+            switch kind {
+            case .numericRange:
+                guard left.status == .success, right.status == .success,
+                      let lv = left.value, let rv = right.value,
+                      CFGetTypeID(lv) == AXValueGetTypeID(), CFGetTypeID(rv) == AXValueGetTypeID(),
+                      AXValueGetType(lv as! AXValue) == .cfRange, AXValueGetType(rv as! AXValue) == .cfRange else {
+                    return false
+                }
+                var lr = CFRange()
+                var rr = CFRange()
+                guard AXValueGetValue(lv as! AXValue, .cfRange, &lr),
+                      AXValueGetValue(rv as! AXValue, .cfRange, &rr) else { return false }
+                return lr.location == rr.location && lr.length == rr.length
+            case .textMarker:
+                guard left.status == .success, right.status == .success,
+                      let lv = left.value, let rv = right.value,
+                      CFGetTypeID(lv) == AXTextMarkerRangeGetTypeID(),
+                      CFGetTypeID(rv) == AXTextMarkerRangeGetTypeID() else {
+                    return false
+                }
+                return CFEqual(lv, rv)
+            case .none:
+                let leftAbsent = left.status == .noValue || left.status == .attributeUnsupported
+                let rightAbsent = right.status == .noValue || right.status == .attributeUnsupported
+                return leftAbsent && rightAbsent
+            default:
+                return false
+            }
+        }
+
+        let now = transport.ax.now()
+        guard let minElapsed = settled.map({ now - $0.completedAt }).min() else { return false }
+        let read1Focus = transport.checkFocus(fresh, false, diagnostics, .preflight, 0)
+        guard read1Focus.allowed else { return false }
+        let selAttr = fresh.selectionAttribute ?? (fresh.selectionKind == .textMarker ? "AXSelectedTextMarkerRange" : kAXSelectedTextRangeAttribute)
+        let focusedElement: AXUIElement? = CFGetTypeID(fresh.focused) == AXUIElementGetTypeID()
+            ? (fresh.focused as! AXUIElement) : nil
+        let read1Selection = focusedElement.flatMap { try? transport.ax.read($0, selAttr, until: transport.ax.now() + 0.040) }
+            ?? InsertionTarget.AttributeRead(value: fresh.selection, status: fresh.selection != nil ? .success : .noValue)
+        try? await transport.ax.sleep(0.035)
+        guard !Task.isCancelled, shouldContinue() else { return false }
+        let read2Focus = transport.checkFocus(fresh, false, diagnostics, .preflight, 0)
+        guard read2Focus.allowed else { return false }
+        let read2Selection = focusedElement.flatMap { try? transport.ax.read($0, selAttr, until: transport.ax.now() + 0.040) }
+            ?? InsertionTarget.AttributeRead(value: fresh.selection, status: fresh.selection != nil ? .success : .noValue)
+        let selectionStable = readSelectionEqual(read1Selection, read2Selection, kind: fresh.selectionKind)
+        return InsertionReceiptPolicy.mayProceedWithPredecessorState(
+            operation: .dictation,
+            startBlocked: takeStart?.isBlocked == true,
+            freshMatchesStart: takeStart.map { fresh.sameElement(as: $0) } ?? false,
+            hasHardUnverifiedPredecessorOnFresh: false,
+            hasSettledUnconfirmedPredecessorOnFresh: true,
+            predecessorAllEventsPosted: true,
+            predecessorPostSendFocusOK: true,
+            predecessorExactBaselineAvailable: false,
+            elapsedSincePredecessorSeconds: minElapsed,
+            firstBracketedIdentityMatches: read1Focus.allowed,
+            secondBracketedIdentityMatches: read2Focus.allowed,
+            bracketedSelectionStable: selectionStable)
+    }
+
     private static func acquireDeliveryTarget(takeStart: InsertionTarget?, unverifiedPredecessors: [InsertionTarget],
+                                              settledUnconfirmedPredecessors: [SettledUnconfirmedPredecessor],
+                                              operation: InsertionReceiptPolicy.SettledUnconfirmedOperation,
                                               diagnostics: InputDiagnosticTrace?, capture: TargetCapture?,
-                                              transport: Transport, stopReason: (InsertionTarget) -> String?) async
+                                              transport: Transport,
+                                              shouldContinue: @MainActor () -> Bool,
+                                              stopReason: (InsertionTarget) -> String?) async
         -> (target: InsertionTarget?, reason: String, recovered: (DeliveryRecovery, DeliveryRecovery.Host)?) {
         // Custom captures supply the older, single-sample contract.
         let sample: InsertionTarget.CaptureSample?
@@ -289,8 +398,27 @@ import KoeBridgeCore
             }
             recovered = (retry, host)
         }
+        let effectiveSettled = operation == .dictation ? settledUnconfirmedPredecessors : []
         let recaptured = prepareTarget(takeStart: takeStart, unverifiedPredecessors: unverifiedPredecessors,
+                                       settledUnconfirmedPredecessors: effectiveSettled,
                                        diagnostics: diagnostics, capture: { _ in current })
+        if recaptured.reason == "ok", let fresh = recaptured.target {
+            let matchingSettled = effectiveSettled.filter { fresh.sameField(as: $0.target) }
+            if !matchingSettled.isEmpty {
+                let verified = await verifySettledPredecessors(matchingSettled, for: fresh, takeStart: takeStart,
+                    unverifiedPredecessors: unverifiedPredecessors, diagnostics: diagnostics,
+                    transport: transport, shouldContinue: shouldContinue)
+                if !verified {
+                    diagnostics?.record(.target, stage: .preflight, [
+                        .reason: .token(.priorInputUnverified),
+                        .startBlocked: .flag(takeStart?.isBlocked == true),
+                        .freshMatchesPrior: .flag(unverifiedPredecessors.contains { fresh.sameElement(as: $0) }),
+                        .unverifiedPredecessorCount: .integer(unverifiedPredecessors.count)
+                    ])
+                    return (fresh, "prior_input_unverified", nil)
+                }
+            }
+        }
         return (recaptured.target, recaptured.reason, recovered)
     }
 
@@ -299,12 +427,15 @@ import KoeBridgeCore
     static func deliver(_ text: String, to takeStart: InsertionTarget?,
                         diagnostics: InputDiagnosticTrace? = nil,
                         unverifiedPredecessors: [InsertionTarget] = [],
+                        settledUnconfirmedPredecessors: [SettledUnconfirmedPredecessor] = [],
                         livePriorBlock: (InsertionTarget) -> Bool = { _ in false },
                         capture: TargetCapture? = nil, transport: Transport = Transport(),
                         shouldContinue: @MainActor () -> Bool = { true }) async -> Report {
         await deliverPayload(.dictation(text), takeStart: takeStart, diagnostics: diagnostics,
-                             unverifiedPredecessors: unverifiedPredecessors, capture: capture,
-                             transport: transport, livePriorBlock: livePriorBlock, shouldContinue: shouldContinue)
+                             unverifiedPredecessors: unverifiedPredecessors,
+                             settledUnconfirmedPredecessors: settledUnconfirmedPredecessors,
+                             capture: capture, transport: transport, livePriorBlock: livePriorBlock,
+                             shouldContinue: shouldContinue)
     }
 
     /// Only a fixed command ID can authorize newline controls; never accepts arbitrary text.
@@ -315,15 +446,19 @@ import KoeBridgeCore
                                    capture: TargetCapture? = nil, transport: Transport = Transport(),
                                    shouldContinue: @MainActor () -> Bool) async -> Report {
         await deliverPayload(.command(command), takeStart: takeStart, diagnostics: diagnostics,
-                             unverifiedPredecessors: unverifiedPredecessors, capture: capture,
-                             transport: transport, livePriorBlock: livePriorBlock, shouldContinue: shouldContinue)
+                             unverifiedPredecessors: unverifiedPredecessors,
+                             settledUnconfirmedPredecessors: [],
+                             capture: capture, transport: transport, livePriorBlock: livePriorBlock,
+                             shouldContinue: shouldContinue)
     }
 
     private enum Payload { case dictation(String), command(VoiceCommandID) }
 
     private static func deliverPayload(_ payload: Payload, takeStart: InsertionTarget?,
                                        diagnostics: InputDiagnosticTrace?,
-                                       unverifiedPredecessors: [InsertionTarget], capture: TargetCapture?, transport: Transport,
+                                       unverifiedPredecessors: [InsertionTarget],
+                                       settledUnconfirmedPredecessors: [SettledUnconfirmedPredecessor],
+                                       capture: TargetCapture?, transport: Transport,
                                        livePriorBlock: (InsertionTarget) -> Bool,
                                        shouldContinue: @MainActor () -> Bool) async -> Report {
         let beganAt = ProcessInfo.processInfo.systemUptime
@@ -402,21 +537,47 @@ import KoeBridgeCore
                 ?? InputDiagnosticTrace.uptimeMilliseconds(ProcessInfo.processInfo.systemUptime)
             return Report(outcome: outcome, reason: reason, receipt: receipt,
                           eventsPosted: sent > 0, target: target, diagnostics: diagnostics,
-                          resultUptimeMS: resultUptimeMS)
+                          resultUptimeMS: resultUptimeMS, exactBaselineAvailable: exactBaselineAvailable,
+                          completedAtUptime: transport.ax.now())
         }
         guard !Task.isCancelled, shouldContinue() else {
             return report(.cancelled, "delivery_cancelled_before_post")
         }
+        let operation: InsertionReceiptPolicy.SettledUnconfirmedOperation
+        switch payload {
+        case .dictation: operation = .dictation
+        case .command: operation = .command
+        }
+        let effectiveSettled = operation == .dictation ? settledUnconfirmedPredecessors : []
         func stopReason(_ candidate: InsertionTarget) -> String? {
             if Task.isCancelled || !shouldContinue() { return "delivery_cancelled_before_post" }
-            if takeStart?.isBlocked == true || livePriorBlock(candidate)
-                || unverifiedPredecessors.contains(where: { candidate.sameElement(as: $0) }) {
+            let matchingUnverified = unverifiedPredecessors.filter { candidate.sameElement(as: $0) }
+            let matchingSettled = effectiveSettled.filter { candidate.sameField(as: $0.target) }
+            let hasHardUnverified = matchingUnverified.contains { unverified in
+                !matchingSettled.contains { $0.target.sameField(as: unverified) }
+            }
+            let startBlocks: Bool
+            if takeStart?.isBlocked == true {
+                let sameStart = takeStart.map { candidate.sameElement(as: $0) } ?? false
+                if !sameStart && (!unverifiedPredecessors.isEmpty || !effectiveSettled.isEmpty) {
+                    startBlocks = false
+                } else if sameStart && !matchingSettled.isEmpty && !hasHardUnverified {
+                    startBlocks = false
+                } else {
+                    startBlocks = true
+                }
+            } else {
+                startBlocks = false
+            }
+            if startBlocks || livePriorBlock(candidate) || hasHardUnverified {
                 return "prior_input_unverified"
             }
             return nil
         }
         let recaptured = await acquireDeliveryTarget(takeStart: takeStart, unverifiedPredecessors: unverifiedPredecessors,
-            diagnostics: diagnostics, capture: capture, transport: transport, stopReason: stopReason)
+            settledUnconfirmedPredecessors: effectiveSettled, operation: operation,
+            diagnostics: diagnostics, capture: capture, transport: transport,
+            shouldContinue: shouldContinue, stopReason: stopReason)
         target = recaptured.target
         pacingProfile = target.map { DeliveryPacingPolicy.profile(selectionKind: $0.selectionKind) }
         guard recaptured.reason == "ok" else {

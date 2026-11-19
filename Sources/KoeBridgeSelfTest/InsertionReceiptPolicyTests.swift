@@ -226,4 +226,184 @@ struct InsertionReceiptPolicyTests {
         check(Policy.verify(before: state("A\nB\n\n\n", 1), inserted: "X",
                             after: state("AX\nB", 2), sameTarget: true) == nil)
     }
+
+    func settledUnconfirmedPredecessorAndTargetScopedLatchGateFollowUpTakes() {
+        // 1. Target-scoped latch: moving to an unrelated field B when start was blocked on field A is permitted.
+        check(Policy.mayProceedWithPredecessorState(
+            operation: .dictation,
+            startBlocked: true,
+            freshMatchesStart: false,
+            hasHardUnverifiedPredecessorOnFresh: false,
+            hasSettledUnconfirmedPredecessorOnFresh: false))
+
+        // 2. Staying on blocked field A without settled unconfirmed predecessor blocks.
+        check(!Policy.mayProceedWithPredecessorState(
+            operation: .dictation,
+            startBlocked: true,
+            freshMatchesStart: true,
+            hasHardUnverifiedPredecessorOnFresh: false,
+            hasSettledUnconfirmedPredecessorOnFresh: false))
+
+        // 3. Hard unverified predecessor on fresh always blocks even if settled unconfirmed also present.
+        check(!Policy.mayProceedWithPredecessorState(
+            operation: .dictation,
+            startBlocked: false,
+            freshMatchesStart: false,
+            hasHardUnverifiedPredecessorOnFresh: true,
+            hasSettledUnconfirmedPredecessorOnFresh: true,
+            predecessorAllEventsPosted: true,
+            predecessorPostSendFocusOK: true,
+            predecessorExactBaselineAvailable: false,
+            elapsedSincePredecessorSeconds: 0.200,
+            firstBracketedIdentityMatches: true,
+            secondBracketedIdentityMatches: true,
+            bracketedSelectionStable: true))
+
+        // 4. Settled marker-only predecessor unblocks follow-up dictation when >= 150ms elapsed
+        //    and two bracketed reads separated by 35ms confirm identity AND selection stability.
+        check(Policy.mayProceedWithPredecessorState(
+            operation: .dictation,
+            startBlocked: true,
+            freshMatchesStart: true,
+            hasHardUnverifiedPredecessorOnFresh: false,
+            hasSettledUnconfirmedPredecessorOnFresh: true,
+            predecessorAllEventsPosted: true,
+            predecessorPostSendFocusOK: true,
+            predecessorExactBaselineAvailable: false,
+            elapsedSincePredecessorSeconds: 0.150,
+            firstBracketedIdentityMatches: true,
+            secondBracketedIdentityMatches: true,
+            bracketedSelectionStable: true))
+
+        // 5. Elapsed < 150ms fails closed.
+        check(!Policy.mayProceedWithPredecessorState(
+            operation: .dictation,
+            startBlocked: true,
+            freshMatchesStart: true,
+            hasHardUnverifiedPredecessorOnFresh: false,
+            hasSettledUnconfirmedPredecessorOnFresh: true,
+            predecessorAllEventsPosted: true,
+            predecessorPostSendFocusOK: true,
+            predecessorExactBaselineAvailable: false,
+            elapsedSincePredecessorSeconds: 0.149,
+            firstBracketedIdentityMatches: true,
+            secondBracketedIdentityMatches: true,
+            bracketedSelectionStable: true))
+
+        // 6. Bracketed read 1 or read 2 identity mismatch fails closed.
+        check(!Policy.mayProceedWithPredecessorState(
+            operation: .dictation,
+            startBlocked: true,
+            freshMatchesStart: true,
+            hasHardUnverifiedPredecessorOnFresh: false,
+            hasSettledUnconfirmedPredecessorOnFresh: true,
+            predecessorAllEventsPosted: true,
+            predecessorPostSendFocusOK: true,
+            predecessorExactBaselineAvailable: false,
+            elapsedSincePredecessorSeconds: 0.200,
+            firstBracketedIdentityMatches: false,
+            secondBracketedIdentityMatches: true,
+            bracketedSelectionStable: true))
+        check(!Policy.mayProceedWithPredecessorState(
+            operation: .dictation,
+            startBlocked: true,
+            freshMatchesStart: true,
+            hasHardUnverifiedPredecessorOnFresh: false,
+            hasSettledUnconfirmedPredecessorOnFresh: true,
+            predecessorAllEventsPosted: true,
+            predecessorPostSendFocusOK: true,
+            predecessorExactBaselineAvailable: false,
+            elapsedSincePredecessorSeconds: 0.200,
+            firstBracketedIdentityMatches: true,
+            secondBracketedIdentityMatches: false,
+            bracketedSelectionStable: true))
+
+        // 7. Bracketed selection/marker change between reads fails closed.
+        check(!Policy.mayProceedWithPredecessorState(
+            operation: .dictation,
+            startBlocked: true,
+            freshMatchesStart: true,
+            hasHardUnverifiedPredecessorOnFresh: false,
+            hasSettledUnconfirmedPredecessorOnFresh: true,
+            predecessorAllEventsPosted: true,
+            predecessorPostSendFocusOK: true,
+            predecessorExactBaselineAvailable: false,
+            elapsedSincePredecessorSeconds: 0.200,
+            firstBracketedIdentityMatches: true,
+            secondBracketedIdentityMatches: true,
+            bracketedSelectionStable: false))
+
+        // 8. Predecessor with exactBaselineAvailable == true (e.g. posted_receipt_timeout)
+        //    or incomplete post or post-send focus failure stays hard-blocked.
+        check(!Policy.mayProceedWithPredecessorState(
+            operation: .dictation,
+            startBlocked: true,
+            freshMatchesStart: true,
+            hasHardUnverifiedPredecessorOnFresh: false,
+            hasSettledUnconfirmedPredecessorOnFresh: true,
+            predecessorAllEventsPosted: true,
+            predecessorPostSendFocusOK: true,
+            predecessorExactBaselineAvailable: true,
+            elapsedSincePredecessorSeconds: 0.200,
+            firstBracketedIdentityMatches: true,
+            secondBracketedIdentityMatches: true,
+            bracketedSelectionStable: true))
+        check(!Policy.mayProceedWithPredecessorState(
+            operation: .dictation,
+            startBlocked: true,
+            freshMatchesStart: true,
+            hasHardUnverifiedPredecessorOnFresh: false,
+            hasSettledUnconfirmedPredecessorOnFresh: true,
+            predecessorAllEventsPosted: false,
+            predecessorPostSendFocusOK: true,
+            predecessorExactBaselineAvailable: false,
+            elapsedSincePredecessorSeconds: 0.200,
+            firstBracketedIdentityMatches: true,
+            secondBracketedIdentityMatches: true,
+            bracketedSelectionStable: true))
+        check(!Policy.mayProceedWithPredecessorState(
+            operation: .dictation,
+            startBlocked: true,
+            freshMatchesStart: true,
+            hasHardUnverifiedPredecessorOnFresh: false,
+            hasSettledUnconfirmedPredecessorOnFresh: true,
+            predecessorAllEventsPosted: true,
+            predecessorPostSendFocusOK: false,
+            predecessorExactBaselineAvailable: false,
+            elapsedSincePredecessorSeconds: 0.200,
+            firstBracketedIdentityMatches: true,
+            secondBracketedIdentityMatches: true,
+            bracketedSelectionStable: true))
+
+        // 9. Condition 3: Voice commands (.command) and transforms (.transform) keep the strict rule
+        //    and NEVER unlock via settled unconfirmed predecessor.
+        for op: Policy.SettledUnconfirmedOperation in [.command, .transform] {
+            check(!Policy.mayProceedWithPredecessorState(
+                operation: op,
+                startBlocked: true,
+                freshMatchesStart: true,
+                hasHardUnverifiedPredecessorOnFresh: false,
+                hasSettledUnconfirmedPredecessorOnFresh: true,
+                predecessorAllEventsPosted: true,
+                predecessorPostSendFocusOK: true,
+                predecessorExactBaselineAvailable: false,
+                elapsedSincePredecessorSeconds: 0.250,
+                firstBracketedIdentityMatches: true,
+                secondBracketedIdentityMatches: true,
+                bracketedSelectionStable: true))
+            check(!Policy.mayProceedWithPredecessorState(
+                operation: op,
+                startBlocked: false,
+                freshMatchesStart: false,
+                hasHardUnverifiedPredecessorOnFresh: false,
+                hasSettledUnconfirmedPredecessorOnFresh: true,
+                predecessorAllEventsPosted: true,
+                predecessorPostSendFocusOK: true,
+                predecessorExactBaselineAvailable: false,
+                elapsedSincePredecessorSeconds: 0.250,
+                firstBracketedIdentityMatches: true,
+                secondBracketedIdentityMatches: true,
+                bracketedSelectionStable: true))
+        }
+    }
 }

@@ -169,6 +169,53 @@ public enum InsertionReceiptPolicy {
         return .rebased(receipt.after)
     }
 
+    public enum SettledUnconfirmedOperation: Equatable, Sendable {
+        case dictation
+        case command
+        case transform
+    }
+
+    /// Evaluate whether a follow-up operation may proceed after an unconfirmed predecessor
+    /// on the same target (Mode B) or after moving to a different target (target-scoped latch).
+    /// - Target-scoped latch: if `freshMatchesBlockedStart == false`, `hasHardUnverifiedPredecessorOnFresh == false`,
+    ///   and `hasSettledUnconfirmedPredecessorOnFresh == false`, moving to an unrelated field is permitted.
+    /// - Settled unconfirmed predecessor (Mode B): applies ONLY to `.dictation` when all events of the
+    ///   predecessor were posted without post-send focus drift on a target where exact baseline/receipt
+    ///   verification is structurally unavailable (`predecessorExactBaselineAvailable == false`),
+    ///   at least 150 ms have elapsed since predecessor completion, and two bracketed reads separated
+    ///   by 35 ms confirm both identical element/window/owner identity AND identical selection/marker state.
+    /// - Voice commands (`.command`) and transforms (`.transform`) always keep the strict rule.
+    public static func mayProceedWithPredecessorState(operation: SettledUnconfirmedOperation,
+                                                      startBlocked: Bool,
+                                                      freshMatchesStart: Bool,
+                                                      hasHardUnverifiedPredecessorOnFresh: Bool,
+                                                      hasSettledUnconfirmedPredecessorOnFresh: Bool,
+                                                      predecessorAllEventsPosted: Bool = true,
+                                                      predecessorPostSendFocusOK: Bool = true,
+                                                      predecessorExactBaselineAvailable: Bool = false,
+                                                      elapsedSincePredecessorSeconds: Double = 0,
+                                                      firstBracketedIdentityMatches: Bool = false,
+                                                      secondBracketedIdentityMatches: Bool = false,
+                                                      bracketedSelectionStable: Bool = false) -> Bool {
+        if hasHardUnverifiedPredecessorOnFresh { return false }
+        let startBlocksFresh = startBlocked && freshMatchesStart
+        if !startBlocksFresh && !hasSettledUnconfirmedPredecessorOnFresh {
+            return true
+        }
+        guard operation == .dictation,
+              hasSettledUnconfirmedPredecessorOnFresh,
+              predecessorAllEventsPosted,
+              predecessorPostSendFocusOK,
+              !predecessorExactBaselineAvailable,
+              elapsedSincePredecessorSeconds >= 0.150,
+              firstBracketedIdentityMatches,
+              secondBracketedIdentityMatches,
+              bracketedSelectionStable else {
+            return false
+        }
+        return true
+    }
+
     private static func isIntermediate(_ candidate: Snapshot, of receipt: Receipt) -> Bool {
         let untouchedCount = receipt.before.text.utf16.count - receipt.before.selection.length
         let prefixCount = candidate.text.utf16.count - untouchedCount
