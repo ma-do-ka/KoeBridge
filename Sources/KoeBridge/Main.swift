@@ -462,7 +462,7 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
     }
 
     private func insertRecentHistory(_ record: TranscriptRecord) {
-        guard let ticket = controller.historyInsertionTicket else {
+        guard let ticket = controller.reserveHistoryInsertion() else {
             statusPopover.performClose(nil)
             windows.showHistoryFeedback(title: "未送信", detail: DictationDelivery.postingBusyDetail,
                                         success: false, statusButton: item.button)
@@ -470,19 +470,24 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
         }
         // Capture the original editor while the non-activating UI is still shown.
         let target = InsertionTarget.capture().target
-        afterClosingPopover { delegate in
-            let start = DictationDelivery.historyStart(record: delegate.controller.history.first { $0.id == record.id },
-                                                       busy: delegate.controller.hasPendingWork)
-            switch start {
-            case .failure(let reason):
-                delegate.windows.showHistoryFeedback(title: "未送信", detail: reason.rawValue,
-                    success: false, statusButton: delegate.item.button)
-            case .success(let current):
-                let outcome = await delegate.controller.insertHistory(current.text, to: target, ticket: ticket)
-                let detail = delegate.controller.isHistorySaved(current.id)
-                    ? outcome.historyInsertionDetail : "文字起こしは未保存です。再送する前に入力先を確認してください。"
-                delegate.windows.showHistoryFeedback(title: outcome.historyInsertionTitle, detail: detail,
-                    success: outcome.delivery == .verifiedInserted, statusButton: delegate.item.button)
+        statusPopover.performClose(nil)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(1))
+        Task { @MainActor [weak self, controller] in
+            await controller.performHistoryIntent(ticket, deadline: deadline) {
+                guard let delegate = self else { return }
+                let start = DictationDelivery.historyStart(record: delegate.controller.history.first { $0.id == record.id },
+                                                           busy: delegate.controller.historyAdmissionBusy)
+                switch start {
+                case .failure(let reason):
+                    delegate.windows.showHistoryFeedback(title: "未送信", detail: reason.rawValue,
+                        success: false, statusButton: delegate.item.button)
+                case .success(let current):
+                    let outcome = await delegate.controller.insertHistory(current.text, to: target, ticket: ticket)
+                    let detail = delegate.controller.isHistorySaved(current.id)
+                        ? outcome.historyInsertionDetail : "文字起こしは未保存です。再送する前に入力先を確認してください。"
+                    delegate.windows.showHistoryFeedback(title: outcome.historyInsertionTitle, detail: detail,
+                        success: outcome.delivery == .verifiedInserted, statusButton: delegate.item.button)
+                }
             }
         }
     }

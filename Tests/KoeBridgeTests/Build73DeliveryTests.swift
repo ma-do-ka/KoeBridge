@@ -1287,6 +1287,73 @@ import KoeBridgeCore
         #expect(!anchor.isFresh(at: origin.advanced(by: .seconds(600))))
     }
 
+    @Test func historyIntentCoversWaitAndReleasesOnEveryExit() async throws {
+        enum Exit: CaseIterable { case completed, refused, expired, interrupted, waitCancelled }
+        for exit in Exit.allCases {
+            let gate = TextInsertion.PostingGate { _, _ in }
+            let ticket = try #require(gate.reserveHistory())
+            let sender = Sender(ticket: ticket)
+            var performed = false
+            var updateStarts = 0
+            func checkUpdate() {
+                KoeBridgeInAppUpdater.checkForUpdatesFromMenu(isUpdateCycleActive: false, hasPendingWork: gate.hasPendingWork,
+                    configured: true, explanation: "", setStatus: { _ in }, presentInformationalAlert: { _, _, _, _ in nil },
+                    showUpdateInFocus: {}, showUpdatePage: {}, check: { updateStarts += 1 })
+            }
+            let deadline = ContinuousClock.now.advanced(by: .seconds(exit == .expired ? -1 : 5))
+            await gate.performHistoryIntent(ticket, deadline: deadline, wait: {
+                checkUpdate()
+                #expect(updateStarts == 0 && !gate.isHeld)
+                if exit == .interrupted { gate.interrupt() }
+                if exit == .waitCancelled { throw CancellationError() }
+            }) {
+                performed = true
+                if exit == .refused { return }
+                sender.f.onPost = { checkUpdate(); #expect(updateStarts == 0) }
+                _ = await gate.post(.dictation("B"), from: sender.source(.history), transport: sender.transport()) { true }
+            }
+            #expect(performed == (exit == .completed || exit == .refused))
+            if exit == .interrupted {
+                _ = await gate.post(.dictation("B"), from: sender.source(.history), transport: sender.transport()) { true }
+            }
+            #expect(sender.f.posts == (exit == .completed ? 1 : 0))
+            checkUpdate()
+            #expect(updateStarts == 1 && !gate.hasPendingWork)
+        }
+    }
+
+    @Test func explicitHistoryPinsFieldWhileOrdinaryRecaptureUsesCurrentField() async throws {
+        for producer in [Producer.history, .take] {
+            let gate = TextInsertion.PostingGate { _, _ in }
+            let sender = Sender(ticket: try #require(gate.historyTicket))
+            sender.f.currentWindow = sender.f.other
+            let report = await gate.post(.dictation("B"), from: sender.source(producer), transport: sender.transport()) { true }
+            #expect(report.outcome == (producer == .history ? .focusChanged : .verifiedInserted))
+            #expect(sender.f.posts == (producer == .history ? 0 : 1))
+        }
+    }
+
+    @Test func predecessorIsReconciledUnderOwnershipAfterFinalize() async throws {
+        var sequence: [String] = []
+        let pending = Sender(ticket: UUID())
+        var gate: TextInsertion.PostingGate!
+        gate = TextInsertion.PostingGate { report, sourceID in
+            #expect(gate.isHeld && gate.historyTicket == nil)
+            VoiceController.reconcileDelivery(report, sourceTakeID: sourceID, into: pending.take)
+            sequence.append("reconcile")
+        }
+        let sender = Sender(ticket: try #require(gate.historyTicket))
+        sender.f.onPost = { gate.interrupt() }
+        _ = await gate.post(.dictation(String(repeating: "z", count: 96)), from: sender.source(.take),
+                            transport: sender.transport(), finalize: { _ in
+            #expect(gate.isHeld && gate.historyTicket == nil)
+            sequence.append("finalize")
+        }) { true }
+        #expect(sequence == ["finalize", "reconcile"] && !gate.isHeld)
+        let next = await gate.post(.dictation("x"), from: pending.source(.take), transport: pending.transport()) { true }
+        #expect(next.reason == "prior_input_unverified" && pending.f.posts == 0)
+    }
+
     @Test func competingProducersPostZeroUntilReceiptAndReconciliationFinish() async {
         let pairs: [(Producer, Producer)] = [
             (.translation, .take), (.preset, .take), (.take, .translation), (.take, .preset),

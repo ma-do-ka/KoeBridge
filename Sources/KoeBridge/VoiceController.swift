@@ -744,7 +744,10 @@ import KoeBridgeCore
 
     var hasKey: Bool { KeychainStore.load() != nil }
     var busy: Bool { active != nil }
-    var historyInsertionTicket: UUID? { postingGate.historyTicket }
+    func reserveHistoryInsertion() -> UUID? { postingGate.reserveHistory() }
+    func performHistoryIntent(_ ticket: UUID, deadline: ContinuousClock.Instant, perform: () async -> Void) async {
+        await postingGate.performHistoryIntent(ticket, deadline: deadline, perform: perform)
+    }
 
     func insertHistory(_ text: String, to target: InsertionTarget?, ticket: UUID) async -> DictationDelivery.Outcome {
         let report = await postingGate.post(.dictation(text), from: .history(target, requestedAt: ticket)) {
@@ -754,7 +757,9 @@ import KoeBridgeCore
     }
 
     // Updating must not terminate background recognition or pending delivery.
-    var hasPendingWork: Bool { postingGate.isHeld || active != nil || !inFlight.isEmpty || deliveryWorker != nil || textOperationRunning || meetingRunning || replayRecordID != nil }
+    var hasPendingWork: Bool { postingGate.hasPendingWork || otherDeliveryWorkPending }
+    var historyAdmissionBusy: Bool { postingGate.isHeld || otherDeliveryWorkPending }
+    private var otherDeliveryWorkPending: Bool { active != nil || !inFlight.isEmpty || deliveryWorker != nil || textOperationRunning || meetingRunning || replayRecordID != nil }
 
     func shortcutPressBegan() {
         if phase == .idle { beginRecording() }

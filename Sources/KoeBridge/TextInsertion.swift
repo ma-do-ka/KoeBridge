@@ -496,7 +496,29 @@ import KoeBridgeCore
         private var generation = UUID()
         var historyTicket: UUID? { isHeld ? nil : generation }
 
-        func interrupt() { generation = UUID() }
+        private var pendingHistoryIntent: UUID?
+        var hasPendingWork: Bool { isHeld || pendingHistoryIntent != nil }
+
+        func reserveHistory() -> UUID? {
+            guard !hasPendingWork else { return nil }
+            generation = UUID()
+            pendingHistoryIntent = generation
+            return generation
+        }
+
+        func performHistoryIntent(_ ticket: UUID, deadline: ContinuousClock.Instant,
+                                  wait: () async throws -> Void = { try await Task.sleep(for: .milliseconds(100)) },
+                                  perform: () async -> Void) async {
+            defer { if pendingHistoryIntent == ticket { pendingHistoryIntent = nil } }
+            do { try await wait() } catch { return }
+            guard !Task.isCancelled, ContinuousClock.now < deadline, pendingHistoryIntent == ticket else { return }
+            await perform()
+        }
+
+        func interrupt() {
+            generation = UUID()
+            pendingHistoryIntent = nil
+        }
 
         private func acquire() -> UUID? {
             guard !isHeld else { return nil }
@@ -553,10 +575,12 @@ import KoeBridgeCore
             case .take, .selection: lastDeliveryAnchor = nil
             case .history, nil: break
             }
+            let pinHistoryTarget: Bool
+            if case .history = source { pinHistoryTarget = true } else { pinHistoryTarget = false }
             let report = await deliverPayload(payload, takeStart: takeStart(), diagnostics: diagnostics,
                 unverifiedPredecessors: unverifiedPredecessors(), settledUnconfirmedPredecessors: settledUnconfirmedPredecessors(),
                 capture: capture, transport: transport, livePriorBlock: livePriorBlock,
-                shouldContinue: { self.generation == owner && shouldContinue() })
+                pinHistoryTarget: pinHistoryTarget, shouldContinue: { self.generation == owner && shouldContinue() })
             finalize(report)
             reconcile(report, sourceTakeID)
             return report
@@ -578,7 +602,7 @@ import KoeBridgeCore
                                        settledUnconfirmedPredecessors: [SettledUnconfirmedPredecessor],
                                        capture: TargetCapture?, transport: Transport,
                                        livePriorBlock: (InsertionTarget) -> Bool,
-                                       shouldContinue: @MainActor () -> Bool) async -> Report {
+                                       pinHistoryTarget: Bool, shouldContinue: @MainActor () -> Bool) async -> Report {
         let beganAt = ProcessInfo.processInfo.systemUptime
         var sent = 0
         var planned = 0
@@ -700,6 +724,11 @@ import KoeBridgeCore
             default: outcome = .focusChanged
             }
             return report(outcome, recaptured.reason)
+        }
+        if pinHistoryTarget {
+            guard let takeStart, let target, target.sameField(as: takeStart) else {
+                return report(.focusChanged, "focused_field_changed")
+            }
         }
         let safeText: String
         let parts: [String]
