@@ -1,5 +1,30 @@
 import Foundation
 
+/// Bound once at capture start, before any admission work is dispatched.
+public struct MicrophoneEvidenceWriter: Sendable {
+    private let token: InputDiagnosticConsent.Token
+    private let permits: @MainActor @Sendable (InputDiagnosticConsent.Token) -> Bool
+    private let append: @MainActor @Sendable (String) -> Void
+
+    public init?(token: InputDiagnosticConsent.Token?,
+                 permits: @escaping @MainActor @Sendable (InputDiagnosticConsent.Token) -> Bool,
+                 append: @escaping @MainActor @Sendable (String) -> Void) {
+        guard let token else { return nil }
+        self.token = token
+        self.permits = permits
+        self.append = append
+    }
+
+    @MainActor public func write(_ event: String) {
+        guard permits(token) else { return }
+        append(event)
+    }
+
+    @discardableResult public func enqueue(_ event: String) -> Task<Void, Never> {
+        Task { @MainActor in write(event) }
+    }
+}
+
 /// Bounded, opt-in evidence only. This object NEVER changes capture decisions,
 /// queries hardware, reads audio samples, or logs device names/UIDs or text.
 /// The tap updates counters only; formatting and file I/O belong to the sink.

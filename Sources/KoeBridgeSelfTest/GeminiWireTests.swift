@@ -120,7 +120,7 @@ struct GeminiWireTests {
 
     func decodedErrorKeepsDiagnosticsContentFree() throws {
         let frame = try GeminiWire.decode("{\"error\":{\"message\":\"PRIVATE_FAILURE\"}}")
-        check(frame.events == [.error("PRIVATE_FAILURE")])
+        check(frame.events == [.providerError(GeminiProviderError(code: nil))])
         check(frame.diagnosticKind == "error")
         check(frame.finalSegmentIdentity == nil)
         check(frame.tokenUsage == nil)

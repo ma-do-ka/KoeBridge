@@ -227,13 +227,15 @@ import KoeBridgeCore
     }
 
     static func capture(diagnostics: InputDiagnosticTrace? = nil,
-                        stage: InputDiagnosticEvent.Stage = .capture, requireTextInput: Bool = false)
+                        stage: InputDiagnosticEvent.Stage = .capture, requireTextInput: Bool = false,
+                        externalText: ExternalTextAccess? = nil)
         -> (target: InsertionTarget?, reason: String) {
-        captureSample(diagnostics: diagnostics, stage: stage, requireTextInput: requireTextInput).resolution
+        captureSample(diagnostics: diagnostics, stage: stage, requireTextInput: requireTextInput,
+                      externalText: externalText).resolution
     }
 
     static func captureSample(diagnostics: InputDiagnosticTrace?, stage: InputDiagnosticEvent.Stage,
-                              requireTextInput: Bool) -> CaptureSample {
+                              requireTextInput: Bool, externalText: ExternalTextAccess? = nil) -> CaptureSample {
         let diagnostics = diagnostics?.isCollecting == true ? diagnostics : nil
         let began = diagnostics.map { _ in ProcessInfo.processInfo.systemUptime }
         func failure(_ reason: Token, pid: pid_t? = nil, focused: CFTypeRef? = nil,
@@ -310,16 +312,18 @@ import KoeBridgeCore
                 return .rejected(rejection, reason)
             }
         }
-        // Keep this ephemeral and never log it. Explicit context opt-in may
-        // project a capped excerpt for the separate audio recheck request.
+        // Keep this delivery baseline ephemeral. External surrounding context
+        // takes a fresh security-checked snapshot.
         // A second bounded attempt covers an editor consuming an earlier take.
         if selectionAttribute == kAXSelectedTextRangeAttribute as String {
             for _ in 0..<2 {
-                if let observed = target.observedSnapshot(timeout: 0.04, diagnostics: diagnostics, stage: stage) {
+                if let observed = target.observedSnapshot(timeout: 0.04, diagnostics: diagnostics, stage: stage,
+                                                          externalText: externalText) {
                     target.textSnapshot = observed.snapshot
                     target.selection = observed.selection
                     break
                 }
+                if externalText?.refused == true { break }
             }
         }
         target.capturedAt = ProcessInfo.processInfo.systemUptime
@@ -347,15 +351,47 @@ import KoeBridgeCore
         return .accepted(target)
     }
 
-    /// Optional context read; secure fields disclose nothing.
-    func selectedContextText() -> String? {
+    /// Receipt reads allow editors without a subrole. Text leaving the app
+    /// requires affirmative, typed answers from both security attributes.
+    final class ExternalTextAccess {
+        private(set) var refused = false
+
+        // One operation can perform multiple reads (including snapshot retries).
+        // A later successful AX call cannot undo an earlier security refusal.
+        func permits(role: AttributeRead, subrole: AttributeRead) -> Bool {
+            guard !refused, role.status == .success, let roleName = role.value as? String,
+                  subrole.status == .success, let subroleName = subrole.value as? String,
+                  roleName != "AXSecureTextField", subroleName != "AXSecureTextField" else {
+                refused = true
+                return false
+            }
+            return true
+        }
+    }
+
+    static func captureExternalSelection(
+        captureTarget: @MainActor (ExternalTextAccess) -> InsertionTarget? = { InsertionTarget.capture(externalText: $0).target },
+        reads: FocusReads = FocusReads()
+    ) -> (InsertionTarget, String)? {
+        let access = ExternalTextAccess()
+        guard let target = captureTarget(access), !access.refused, target.selection != nil,
+              let selected = target.selectedContextText(externalText: access, reads: reads), !selected.isEmpty else { return nil }
+        return (target, selected)
+    }
+
+    func selectedContextText(externalText: ExternalTextAccess?, reads: FocusReads = FocusReads()) -> String? {
         guard CFGetTypeID(focused) == AXUIElementGetTypeID() else { return nil }
         let element = unsafeBitCast(focused, to: AXUIElement.self)
-        let role = Self.copyAX(element, name: kAXSubroleAttribute as CFString,
-                              operation: .subrole, diagnostics: nil, stage: .capture)
-        if role.status == .success, role.value as? String == "AXSecureTextField" { return nil }
-        return Self.copyAX(element, name: kAXSelectedTextAttribute as CFString,
-                           operation: .value, diagnostics: nil, stage: .capture).value as? String
+        func read(_ name: String, _ operation: Token) -> AttributeRead {
+            reads.attribute(element, name as CFString, operation, .focusedElement, 0.08, nil, .capture)
+        }
+        let subrole = read(kAXSubroleAttribute, .subrole)
+        if let externalText {
+            guard externalText.permits(role: read(kAXRoleAttribute, .role), subrole: subrole) else { return nil }
+        } else if subrole.status == .success, subrole.value as? String == "AXSecureTextField" {
+            return nil
+        }
+        return read(kAXSelectedTextAttribute, .value).value as? String
     }
 
     var selectionKind: InputDiagnosticEvent.Token {
@@ -369,7 +405,8 @@ import KoeBridgeCore
     /// authorize a caret rebase, and secure field contents are not collected.
     func observedValue(timeout: Float = 0.04, diagnostics: InputDiagnosticTrace? = nil,
                        stage: InputDiagnosticEvent.Stage = .preflight,
-                       requireKnownNonsecure: Bool = false,
+                       requireKnownNonsecure: Bool = false, externalText: ExternalTextAccess? = nil,
+                       reads: FocusReads = FocusReads(),
                        observation: ((Bool, InputDiagnosticEvent.Token) -> Void)? = nil) -> String? {
         let diagnostics = diagnostics?.isCollecting == true ? diagnostics : nil
         var evidence: [Field: Value]? = diagnostics.map { _ in [.operation: .token(.value)] }
@@ -392,9 +429,13 @@ import KoeBridgeCore
             return nil
         }
         let element = unsafeBitCast(focused, to: AXUIElement.self)
-        let subrole = Self.copyAX(element, name: kAXSubroleAttribute as CFString,
-                                  operation: .subrole, timeout: timeout,
-                                  diagnostics: diagnostics, stage: stage)
+        let subrole = reads.attribute(element, kAXSubroleAttribute as CFString, .subrole, .focusedElement,
+                                      timeout, diagnostics, stage)
+        if let externalText {
+            let role = reads.attribute(element, kAXRoleAttribute as CFString, .role, .focusedElement,
+                                       timeout, diagnostics, stage)
+            guard externalText.permits(role: role, subrole: subrole) else { return nil }
+        }
         if subrole.status == .success, (subrole.value as? String) == "AXSecureTextField" {
             evidence?[.subrole] = .token(.secure)
             outcome = .secure
@@ -409,11 +450,9 @@ import KoeBridgeCore
             outcome = .unknown
             return nil
         }
-        // The existing value read shares the timeout installed for subrole.
         attempted = true
-        let value = Self.copyAX(element, name: kAXValueAttribute as CFString,
-                                operation: .value, timeout: timeout, configureTimeout: false,
-                                diagnostics: diagnostics, stage: stage)
+        let value = reads.attribute(element, kAXValueAttribute as CFString, .value, .focusedElement,
+                                    timeout, diagnostics, stage)
         guard let raw = value.value else {
             outcome = value.status == .success ? .missing : .unavailable
             return nil
@@ -437,6 +476,7 @@ import KoeBridgeCore
     /// ranges cannot be turned into numeric offsets by guessing.
     func observedSnapshot(timeout: Float, diagnostics: InputDiagnosticTrace? = nil,
                           stage: InputDiagnosticEvent.Stage = .preflight,
+                          externalText: ExternalTextAccess? = nil, reads: FocusReads = FocusReads(),
                           eligibility: ((ReceiptEligibilityReason) -> Void)? = nil)
         -> (snapshot: InsertionReceiptPolicy.Snapshot, selection: CFTypeRef)? {
         let diagnostics = diagnostics?.isCollecting == true ? diagnostics : nil
@@ -469,25 +509,23 @@ import KoeBridgeCore
             return nil
         }
         let element = unsafeBitCast(focused, to: AXUIElement.self)
-        let firstRead = Self.copyAX(element, name: kAXSelectedTextRangeAttribute as CFString,
-                                    operation: .selectedRange, timeout: timeout,
-                                    diagnostics: diagnostics, stage: stage)
+        let firstRead = reads.attribute(element, kAXSelectedTextRangeAttribute as CFString, .selectedRange,
+                                        .focusedElement, timeout, diagnostics, stage)
         selectionRead = firstRead.status != .success ? .unavailable : firstRead.value == nil ? .missing : .ok
         guard let first = firstRead.value else {
             evidence?[.selection] = .token(firstRead.status == .success ? .missing : .unavailable)
             return nil
         }
         guard let text = observedValue(timeout: timeout, diagnostics: diagnostics, stage: stage,
-                                      observation: { attempted, result in
+                                      externalText: externalText, reads: reads, observation: { attempted, result in
                                           valueAttempted = attempted
                                           valueRead = result
                                       }) else {
             evidence?[.text] = .token(.unavailable)
             return nil
         }
-        let lastRead = Self.copyAX(element, name: kAXSelectedTextRangeAttribute as CFString,
-                                   operation: .selectedRange, timeout: timeout,
-                                   diagnostics: diagnostics, stage: stage)
+        let lastRead = reads.attribute(element, kAXSelectedTextRangeAttribute as CFString, .selectedRange,
+                                        .focusedElement, timeout, diagnostics, stage)
         selectionRead = lastRead.status != .success ? .unavailable : lastRead.value == nil ? .missing : .ok
         guard let last = lastRead.value else {
             evidence?[.selection] = .token(lastRead.status == .success ? .missing : .unavailable)
@@ -578,7 +616,7 @@ import KoeBridgeCore
         guard AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, value) == .success,
               target.focusCheck().allowed,
               target.observedSnapshot(timeout: 0.08)?.snapshot == selected,
-              let readBack = target.selectedContextText(),
+              let readBack = target.selectedContextText(externalText: nil),
               InsertionReceiptPolicy.sameText(readBack, submitted) else { return nil }
         return target
     }
@@ -599,7 +637,9 @@ import KoeBridgeCore
         }
         var attribute: @MainActor (AXUIElement, CFString, InputDiagnosticEvent.Token, InputDiagnosticEvent.Token,
                                    Float, InputDiagnosticTrace?, InputDiagnosticEvent.Stage) -> AttributeRead = {
-            InsertionTarget.copyAX($0, name: $1, operation: $2, scope: $3, timeout: $4, diagnostics: $5, stage: $6)
+            // AXValue is read immediately after its security attributes on the same element.
+            InsertionTarget.copyAX($0, name: $1, operation: $2, scope: $3, timeout: $4,
+                                   configureTimeout: ($1 as String) != kAXValueAttribute, diagnostics: $5, stage: $6)
         }
     }
 

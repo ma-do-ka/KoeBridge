@@ -7,7 +7,7 @@ struct GeminiFailureTests {
         let parsed = try GeminiWire.parse("""
             {"error":{"code":429,"message":"RESOURCE_EXHAUSTED"}}
             """)
-        check(parsed == [.error("RESOURCE_EXHAUSTED")])
+        check(parsed == [.providerError(GeminiProviderError(code: 429))])
     }
 
     func liveAPIUnknownMessageIsIgnored() throws {

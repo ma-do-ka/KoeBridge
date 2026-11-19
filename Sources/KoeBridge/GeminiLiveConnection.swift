@@ -83,10 +83,7 @@ private final class GeminiPingCompletion: @unchecked Sendable {
                     let frame = try Self.decode(try await ws.receive())
                     captureUsage(frame.tokenUsage)
                     for event in frame.events {
-                        if case .error(let reason) = event {
-                            DiagnosticLog.record("gemini setup API error: \(reason)")
-                            throw ConnectionError.setup(reason)
-                        }
+                        if case .providerError(let failure) = event { throw failure }
                         if case .setupComplete = event { setupComplete = true }
                     }
                 }
@@ -98,7 +95,7 @@ private final class GeminiPingCompletion: @unchecked Sendable {
                 ready = true
             } onCancel: { ws.cancel(with: .goingAway, reason: nil) }
         } catch {
-            DiagnosticLog.record("gemini connection failed: \(error.localizedDescription)")
+            DiagnosticLog.record("gemini connection failed; \(Self.diagnosticFailure(error))")
             let reason = failure ?? Self.connectionFailureReason(for: error)
             cancel()
             if Task.isCancelled || error is CancellationError { throw CancellationError() }
@@ -108,8 +105,13 @@ private final class GeminiPingCompletion: @unchecked Sendable {
         DiagnosticLog.record("gemini connected; speechStartDeferred=true setupSeconds=\(String(format: "%.3f", Date().timeIntervalSince(connectionBeganAt)))")
     }
 
-    /// Raw setup replies are mapped once, before the catch adds the API prefix.
+    static func diagnosticFailure(_ error: Error) -> String {
+        if let provider = error as? GeminiProviderError { return provider.diagnostic }
+        return "kind=connection code=\((error as NSError).code)"
+    }
+
     static func connectionFailureReason(for error: Error) -> String {
+        if let provider = error as? GeminiProviderError { return provider.localizedDescription }
         if let connectionError = error as? ConnectionError {
             if case .setup = connectionError {
                 return UserFacingErrorMessage.message(for: error, operation: "Geminiへの接続")
@@ -135,10 +137,9 @@ private final class GeminiPingCompletion: @unchecked Sendable {
                     }
                 }
                 for event in frame.events {
-                    if case .error(let reason) = event {
-                        DiagnosticLog.record("gemini API error: \(reason)")
-                        handle(.error(UserFacingErrorMessage.message(
-                            for: ConnectionError.setup(reason), operation: "音声認識")),
+                    if case .providerError(let failure) = event {
+                        DiagnosticLog.record("gemini API error; \(Self.diagnosticFailure(failure))")
+                        handle(.error(failure.localizedDescription),
                             segmentIdentity: frame.finalSegmentIdentity)
                     } else {
                         handle(event, segmentIdentity: frame.finalSegmentIdentity)
@@ -146,7 +147,7 @@ private final class GeminiPingCompletion: @unchecked Sendable {
                 }
             } catch {
                 if !closedByClient && !Task.isCancelled {
-                    DiagnosticLog.record("gemini receive failed: \(error.localizedDescription)")
+                    DiagnosticLog.record("gemini receive failed; \(Self.diagnosticFailure(error))")
                     handle(.error(UserFacingErrorMessage.message(for: error, operation: "Geminiの受信")))
                 }
                 return

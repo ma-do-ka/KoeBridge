@@ -3,6 +3,36 @@ import Testing
 @testable import KoeBridgeCore
 
 struct InputDiagnosticTests {
+    @MainActor @Test func queuedAdmissionEvidenceUsesOriginalConsent() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = DiagnosticFileStore(fileURL: url)
+        defer { try? store.deleteAll() }
+        var consent = InputDiagnosticConsent(enabled: true)
+        func writer() -> MicrophoneEvidenceWriter? {
+            MicrophoneEvidenceWriter(token: consent.token, permits: { consent.allows($0) }) { line in
+                do { try store.append(line) } catch { Issue.record("Cannot write fixture") }
+            }
+        }
+        let beforeDelete = try #require(writer()).enqueue("admission_opened")
+        consent.invalidate()
+        try store.deleteAll()
+        await beforeDelete.value
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+
+        let beforeCycle = try #require(writer()).enqueue("admission_recovered")
+        consent.setEnabled(false)
+        let whileOff = writer()
+        consent.setEnabled(true)
+        #expect(whileOff == nil)
+        await beforeCycle.value
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+
+        await (try #require(writer())).enqueue("admission_opened").value
+        let lines = try String(contentsOf: url, encoding: .utf8).split(separator: "\n")
+        #expect(lines.count == 1)
+        #expect(lines.first?.hasSuffix(" admission_opened") == true)
+    }
+
     private let takeID = UUID(uuidString: "00000000-0000-4000-8000-000000000001")!
     private let relatedID = UUID(uuidString: "00000000-0000-4000-8000-000000000002")!
 

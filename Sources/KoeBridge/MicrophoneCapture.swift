@@ -52,6 +52,7 @@ final class MicrophoneCapture: @unchecked Sendable {
     private let diagnosticID = UUID()
     @MainActor private var speechTrace: InputDiagnosticTrace?
     // Assigned once before dispatching startBlocking, then read-only across queues.
+    private var microphoneEvidence: MicrophoneEvidenceWriter?
     private var startupDiagnostics: MicrophonePreparationDiagnostics?
 
     struct StartTimings {
@@ -121,6 +122,7 @@ final class MicrophoneCapture: @unchecked Sendable {
         let beganAt = ProcessInfo.processInfo.systemUptime
         let deadline = requestedDeadline ?? (beganAt + MicrophoneStartupRetryPolicy().attemptTimeout)
         attemptDeadline = deadline
+        microphoneEvidence = DiagnosticLog.microphoneEvidenceWriter()
         startupDiagnostics = DiagnosticLog.microphoneTrace(captureID: diagnosticID,
                                                            explicitSelection: !selectedInputUID.isEmpty)
         startupDiagnostics?.begin(.lifecycle)
@@ -139,7 +141,7 @@ final class MicrophoneCapture: @unchecked Sendable {
         defer { diagnosticWatch?.cancel() }
         speechTrace = DiagnosticLog.inputTrace(takeID: diagnosticID)
         if speechTrace?.isCollecting == true {
-            DiagnosticLog.recordMicrophoneEvidence("speech_classifier_started capture=\(diagnosticID.uuidString) build=\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown")")
+            self.microphoneEvidence?.write("speech_classifier_started capture=\(diagnosticID.uuidString) build=\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown")")
         }
         do {
             try await withTaskCancellationHandler {
@@ -304,7 +306,7 @@ final class MicrophoneCapture: @unchecked Sendable {
         // Never stop/deallocate an engine in its notification callback.
         DispatchQueue.main.async { [weak self] in
             guard let self, !self.startupGate.isStopped else { return }
-            DiagnosticLog.recordMicrophoneEvidence("mic_interrupted capture=\(self.diagnosticID.uuidString) category=\(reason.rawValue)")
+            self.microphoneEvidence?.write("mic_interrupted capture=\(self.diagnosticID.uuidString) category=\(reason.rawValue)")
             onDeviceChanged()
         }
     }
@@ -656,10 +658,7 @@ final class MicrophoneCapture: @unchecked Sendable {
     private func recordAdmissionOpened() {
         guard let geometry = admission.openGeometry else { return }
         let firstSpeechMS = geometry.firstSpeechStart.map { Int($0 * 1_000) } ?? -1
-        let message = "admission_opened capture=\(diagnosticID.uuidString) first_speech_ms=\(firstSpeechMS) released_from_ms=\(Int(geometry.releasedFrom * 1_000)) buffered_ms=\(Int(geometry.bufferedDuration * 1_000))"
-        Task { @MainActor in
-            DiagnosticLog.recordMicrophoneEvidence(message)
-        }
+        microphoneEvidence?.enqueue("admission_opened capture=\(diagnosticID.uuidString) first_speech_ms=\(firstSpeechMS) released_from_ms=\(Int(geometry.releasedFrom * 1_000)) buffered_ms=\(Int(geometry.bufferedDuration * 1_000))")
     }
 
     private func emit(_ pcm: Data) {
@@ -749,10 +748,7 @@ final class MicrophoneCapture: @unchecked Sendable {
                     if speech.allowsTranscript {
                         self.recordAdmissionOpened()
                     } else {
-                        let message = "admission_recovered capture=\(self.diagnosticID.uuidString) buffered_ms=\(Int(Double(remainder.count) / 32_000 * 1_000))"
-                        Task { @MainActor in
-                            DiagnosticLog.recordMicrophoneEvidence(message)
-                        }
+                        self.microphoneEvidence?.enqueue("admission_recovered capture=\(self.diagnosticID.uuidString) buffered_ms=\(Int(Double(remainder.count) / 32_000 * 1_000))")
                     }
                     self.emit(remainder)
                 }
@@ -760,7 +756,7 @@ final class MicrophoneCapture: @unchecked Sendable {
                 Task { @MainActor [self] in
                     if let trace = self.speechTrace, trace.isCollecting {
                         let score = Int((speech.maximumConfidence * 1_000).rounded())
-                        DiagnosticLog.recordMicrophoneEvidence("speech_classifier capture=\(self.diagnosticID.uuidString) state=\(speech.state.rawValue) windows=\(speech.windows) positives=\(speech.positiveWindows) max_permille=\(score) allowed=\(speech.allowsTranscript) first_speech_ms=\(speech.firstSpeechStart.map { Int($0 * 1_000) } ?? -1)")
+                        self.microphoneEvidence?.write("speech_classifier capture=\(self.diagnosticID.uuidString) state=\(speech.state.rawValue) windows=\(speech.windows) positives=\(speech.positiveWindows) max_permille=\(score) allowed=\(speech.allowsTranscript) first_speech_ms=\(speech.firstSpeechStart.map { Int($0 * 1_000) } ?? -1)")
                         trace.finish()
                     }
                 }

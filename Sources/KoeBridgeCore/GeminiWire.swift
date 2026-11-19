@@ -12,6 +12,7 @@ public enum TranscribeEvent: Equatable, Sendable {
     case final(String)
     case turnComplete
     case activityEnd
+    case providerError(GeminiProviderError)
     case error(String)
 }
 

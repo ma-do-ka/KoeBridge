@@ -189,8 +189,7 @@ import KoeBridgeCore
             }
             steps = preset.steps
         } else { steps = [] }
-        guard let target = InsertionTarget.capture().target, target.selection != nil,
-              let selected = target.selectedContextText(), !selected.isEmpty else {
+        guard let (target, selected) = InsertionTarget.captureExternalSelection() else {
             status = translating ? "翻訳するテキストを選択してください" : "変換するテキストを選択してください"
             return
         }
@@ -316,9 +315,7 @@ import KoeBridgeCore
         cancelTextOperation()
         if active?.transformSelection != nil { toggle(); return }
         guard active == nil else { return }
-        let capture = InsertionTarget.capture()
-        guard let target = capture.target, target.selection != nil,
-              let selected = target.selectedContextText(), !selected.isEmpty else {
+        guard let (target, selected) = InsertionTarget.captureExternalSelection() else {
             status = "変換するテキストを選択してください"
             return
         }
@@ -583,7 +580,7 @@ import KoeBridgeCore
                 historyStore.appendRetranscription(record.id, result: .init(engine: engine.label, text: text))
                 replayStatus = "再文字起こし結果を履歴に追加しました"
             } catch {
-                DiagnosticLog.record("audio replay recognition failed: \(error.localizedDescription)")
+                DiagnosticLog.record("audio replay recognition failed; category=\(Self.failureCategory(error))")
                 if replayJob == job, !Task.isCancelled {
                     replayStatus = Self.userFacingFailure(error, operation: "再文字起こし")
                 }
@@ -1356,7 +1353,6 @@ import KoeBridgeCore
         } catch {
             guard !take.finished, !Task.isCancelled else { return }
             DiagnosticLog.record("recognition failure; category=\(Self.failureCategory(error))")
-            DiagnosticLog.record("recognition failure detail: \(error.localizedDescription)")
             resolve(take, text: nil, reason: Self.userFacingFailure(error, operation: "音声認識"))
         }
     }

@@ -35,11 +35,16 @@ import KoeBridgeCore
 
     /// Mirror the same diagnostic event under the existing consent/token gate.
     static func recordMicrophoneEvidence(_ event: @autoclosure () -> String) {
+        microphoneEvidenceWriter()?.write(event())
+    }
+
+    static func microphoneEvidenceWriter() -> MicrophoneEvidenceWriter? {
         inputConsent.setEnabled(isEnabled)
-        guard let token = inputConsent.token else { return }
-        let line = event()
-        writeInputTrace([line], consent: token)
-        writeMicrophoneTrace([line], consent: token)
+        return MicrophoneEvidenceWriter(token: inputConsent.token, permits: { permitsInputTrace($0) }) { line in
+            // Both stores are synchronous on MainActor under the same consent.
+            try? store.append(line)
+            try? microphoneStore.append(line)
+        }
     }
 
     private static func writeMicrophoneTrace(_ lines: [String], consent: InputDiagnosticConsent.Token) {
