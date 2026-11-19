@@ -5,6 +5,15 @@ struct InsertionReceiptPolicyTests {
     private typealias Policy = InsertionReceiptPolicy
     private typealias Snapshot = InsertionReceiptPolicy.Snapshot
 
+    @Test func onlyObservedNewlineLossCanNormalize() {
+        func mode(_ before: String, _ after: String) -> Policy.VerificationMode? {
+            Policy.verify(before: state("p"+before, 1), inserted: "X", after: state("pX"+after, 2), sameTarget: true)?.mode
+        }
+        #expect(mode("q", "q\r\n") == nil)
+        #expect(mode("q\n\n\n", "q\n\n") == .trailingNewlineNormalized)
+        #expect(mode("q\r\n", "q\n") == .trailingNewlineNormalized)
+    }
+
     private func state(_ text: String, _ location: Int, _ length: Int = 0) -> Snapshot {
         Snapshot(text: text, selection: .init(location: location, length: length))
     }

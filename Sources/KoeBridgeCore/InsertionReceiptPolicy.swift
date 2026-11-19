@@ -122,22 +122,14 @@ public enum InsertionReceiptPolicy {
         // Branch (a): Trailing-newline normalization where the editor strips or
         // collapses up to 2 trailing newline code units (\n or \r) at the end of
         // a non-empty suffix while preserving every non-newline suffix unit.
-        if stripTrailingNewlines(beforeSuffix, maxUnits: 2) == stripTrailingNewlines(afterSuffix, maxUnits: 2) {
-            return Receipt(before: before, after: after, inserted: inserted, mode: .trailingNewlineNormalized)
-        }
-        return nil
-    }
-
-    private static func stripTrailingNewlines(_ units: [UInt16], maxUnits: Int) -> [UInt16] {
-        var end = units.count
-        var stripped = 0
-        while end > 0, stripped < maxUnits {
-            let unit = units[end - 1]
-            guard unit == 0x000A || unit == 0x000D else { break }
-            end -= 1
-            stripped += 1
-        }
-        return Array(units.prefix(end))
+        let missing = beforeSuffix.count - afterSuffix.count
+        guard (1...2).contains(missing) else { return nil }
+        let newline: (UInt16) -> Bool = { $0 == 10 || $0 == 13 }
+        let stripped = beforeSuffix.starts(with: afterSuffix) && beforeSuffix.suffix(missing).allSatisfy(newline)
+        let collapsedCRLF = missing == 1 && beforeSuffix.suffix(2).elementsEqual([13, 10])
+            && afterSuffix.last == 10 && beforeSuffix.dropLast(2).elementsEqual(afterSuffix.dropLast())
+        guard stripped || collapsedCRLF else { return nil }
+        return Receipt(before: before, after: after, inserted: inserted, mode: .trailingNewlineNormalized)
     }
 
     /// Reconcile only a concurrent recording for the exact same target. A
