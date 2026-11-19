@@ -49,6 +49,10 @@ import KoeBridgeCore
         #expect(throws: RetainedAudioStore.ReplayError.retryableRead) { try store.read(record.id, history: &history) }
         #expect(try Data(contentsOf: file) == original)
         #expect(history.entries.first?.audioAsset != nil)
+        let statFailure = RetainedAudioStore(directory: directory, attributes: { _ in throw CocoaError(.fileReadUnknown) })
+        #expect(throws: RetainedAudioStore.ReplayError.retryableRead) { try statFailure.read(record.id, history: &history) }
+        #expect(try Data(contentsOf: file) == original)
+        #expect(history.entries.first?.audioAsset != nil)
         #expect(TranscriptHistoryStore(fileURL: url).loadOutcome == .loaded)
         let other = directory.appendingPathComponent("keep.json")
         try Data([7]).write(to: other)

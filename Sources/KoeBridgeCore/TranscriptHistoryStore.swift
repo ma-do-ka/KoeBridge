@@ -10,6 +10,14 @@ public struct TranscriptHistoryStore {
     /// Latest size-rejected result is copyable for this session, outside the archive budget.
     public private(set) var rejectedResult: (recordID: UUID, text: String)?
     public private(set) var unsavedIDs: Set<UUID> = []
+    private var unsavedDeliveries: [UUID: (state: TranscriptRecord.Delivery, detail: String?)] = [:]
+    public var referencedAudioIDs: Set<UUID> {
+        // On a failed write the working copy may already have evicted a
+        // record that still owns a WAV in the on-disk archive.
+        let durable = persisted.lazy.filter { $0.audioAsset != nil }.map(\.id)
+        return Set(durable).union(entries.lazy.filter { $0.audioAsset != nil }.map(\.id))
+    }
+
     private var persisted: [TranscriptRecord] = []
     public func isSaved(_ id: UUID?) -> Bool {
         guard let id else { return false }
@@ -70,8 +78,19 @@ public struct TranscriptHistoryStore {
             }
             return
         }
+        unsavedDeliveries.removeValue(forKey: id)
         changeArchive(failure: "履歴の状態更新に失敗しました") {
             try $0.updateDelivery(id: id, to: delivery, detail: detail)
+        }
+        // A text that fitted exactly can exceed the limit once its delivery
+        // detail is known. Keep the actual outcome visible without retrying
+        // that oversized edit as part of every subsequent archive write.
+        if let i = entries.firstIndex(where: { $0.id == id }),
+           entries[i].delivery != delivery || entries[i].deliveryDetail != detail {
+            unsavedDeliveries[id] = (delivery, detail)
+            entries[i].delivery = delivery
+            entries[i].deliveryDetail = detail
+            unsavedIDs.insert(id)
         }
     }
 
@@ -136,6 +155,17 @@ public struct TranscriptHistoryStore {
         // working copy. A later successful write persists those same records.
         archive = store
         entries = store.entries
+        if !unsavedDeliveries.isEmpty {
+            let live = Set(entries.map(\.id))
+            unsavedDeliveries = unsavedDeliveries.filter { live.contains($0.key) }
+            for i in entries.indices {
+                if let pending = unsavedDeliveries[entries[i].id] {
+                    entries[i].delivery = pending.state
+                    entries[i].deliveryDetail = pending.detail
+                    unsavedIDs.insert(entries[i].id)
+                }
+            }
+        }
         return problem.isEmpty
     }
 }
