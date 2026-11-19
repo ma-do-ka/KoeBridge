@@ -696,7 +696,8 @@ final class MicrophoneCapture: @unchecked Sendable {
             self.configurationObserver = nil
         }
         startupDiagnostics?.end(.stopGate)
-        if let engine, !Self.engineLifetime.isQuarantined {
+        if let lease = engineLease, Self.engineLifetime.isCurrent(token: lease.token) {
+            let engine = lease.resource
             startupDiagnostics?.begin(.engineStop)
             engine.stop()
             startupDiagnostics?.end(.engineStop)
@@ -722,7 +723,7 @@ final class MicrophoneCapture: @unchecked Sendable {
             converter = nil
             if !flushPendingAudio { admission = SpeechAdmissionBuffer(); onAudio = nil }
         }
-        // Old processing work has drained and the tap is gone. Subsequent
+        // Old processing work has drained and its generation is closed. Subsequent
         // classifier completion only uses this capture's buffers, not the engine.
         // Clear the local lease before returning its token; the lifetime owner
         // retains the engine and stale stop callbacks cannot release a new lease.

@@ -113,7 +113,7 @@ import KoeBridgeCore
             if let observer { NotificationCenter.default.removeObserver(observer) }
             observer = nil
             let engine = lease.resource
-            if !MicrophoneCapture.warmEngineLifetime.isQuarantined {
+            if MicrophoneCapture.warmEngineLifetime.isCurrent(token: lease.token) {
                 engine.stop()
                 tap.removeIfOwned()
             }
