@@ -985,11 +985,11 @@ import KoeBridgeCore
             let focus = transport.receiptFocus(target, timeout, diagnostics, sent)
             guard focus.allowed else { return report(.inserted, "posted_then_" + focus.reason) }
             let observed = transport.receiptSnapshot(target, timeout, diagnostics)
-            let spans = InputReceiptObservation.compareSpans(before: before, inserted: safeText, after: observed)
-            if let spans { lastSpanComparison = spans }
             // Diagnostic classification never grants input/rebase permission.
             // The exact, existing receipt verification below remains the gate.
             if diagnostics?.isCollecting == true {
+                let spans = InputReceiptObservation.compareSpans(before: before, inserted: safeText, after: observed)
+                if let spans { lastSpanComparison = spans }
                 let observation = InputReceiptObservation.classify(before: before, expected: expected, after: observed)
                 switch observation {
                 case .unavailable, .invalidSnapshot, .notComparable: unavailable += 1
