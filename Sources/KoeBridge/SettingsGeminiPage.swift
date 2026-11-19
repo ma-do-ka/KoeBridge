@@ -145,7 +145,9 @@ struct SettingsGeminiPage: View {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("学習した語彙（\(controller.learnedTerms.count)語）").font(.headline)
                             Button("履歴から修正して学習") { controller.onShowHistory?() }.settingsControlFocus("learned-terms")
-                            if controller.learnedTerms.isEmpty {
+                            if controller.learnedTermsStore.state == .corrupt {
+                                CorruptSettingsNotice(reset: controller.resetLearnedTerms)
+                            } else if controller.learnedTerms.isEmpty {
                                 Text("まだありません。履歴の「修正して学習」から追加できます。")
                                     .foregroundStyle(.secondary)
                             }

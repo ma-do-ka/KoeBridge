@@ -6,6 +6,52 @@ import Combine
 import SwiftUI
 import KoeBridgeCore
 
+/// Keep the decoded rows bound to the defaults value they came from.
+struct SettingsArray<Row: Codable> {
+    enum State { case unset, loaded, corrupt }
+    private let key: String
+    private let defaults: UserDefaults
+    private var original: NSObject?
+    private(set) var state: State = .unset
+    private(set) var rows: [Row] = []
+
+    init(_ key: String, defaults: UserDefaults = .standard) {
+        self.key = key
+        self.defaults = defaults
+        reload()
+    }
+
+    private mutating func reload() {
+        original = defaults.object(forKey: key) as? NSObject
+        rows = []
+        guard let original else { state = .unset; return }
+        guard let data = original as? Data,
+              let decoded = try? JSONDecoder().decode([Row].self, from: data) else {
+            state = .corrupt
+            return
+        }
+        rows = decoded
+        state = .loaded
+    }
+
+    @discardableResult mutating func save(_ updated: [Row]) -> Bool {
+        guard original == defaults.object(forKey: key) as? NSObject else { reload(); return false }
+        guard state != .corrupt, let data = try? JSONEncoder().encode(updated) else { return false }
+        defaults.set(data, forKey: key)
+        original = data as NSData
+        rows = updated
+        state = .loaded
+        return true
+    }
+
+    mutating func resetCorruptValue() {
+        if state == .corrupt, original == defaults.object(forKey: key) as? NSObject {
+            defaults.removeObject(forKey: key)
+        }
+        reload()
+    }
+}
+
 @MainActor final class VoiceController: ObservableObject {
     static let shared = VoiceController()
     typealias Phase = VoiceSessionPhase
@@ -137,14 +183,12 @@ import KoeBridgeCore
     @Published var selectedTransformPresetID = UserDefaults.standard.string(forKey: "selectedTransformPresetID").flatMap(UUID.init(uuidString:)) {
         didSet { UserDefaults.standard.set(selectedTransformPresetID?.uuidString, forKey: "selectedTransformPresetID") }
     }
-    @Published var transformPresets: [TransformPreset] = UserDefaults.standard.data(forKey: "transformPresets")
-        .flatMap { try? JSONDecoder().decode([TransformPreset].self, from: $0) } ?? [] {
-        didSet {
-            if let data = try? JSONEncoder().encode(transformPresets) {
-                UserDefaults.standard.set(data, forKey: "transformPresets")
-            }
-        }
+    @Published private(set) var transformPresetsStore = SettingsArray<TransformPreset>("transformPresets")
+    var transformPresets: [TransformPreset] {
+        get { transformPresetsStore.rows }
+        set { transformPresetsStore.save(newValue) }
     }
+    func resetTransformPresets() { transformPresetsStore.resetCorruptValue() }
     @Published private(set) var lastTextOperationOutput: String?
     @Published private(set) var textOperationRunning = false
     private var textOperationID: UUID?
@@ -326,27 +370,25 @@ import KoeBridgeCore
         guard KeychainStore.load() != nil else { status = AppError.noKey.localizedDescription; return }
         beginRecording(transformTarget: target, selection: selected)
     }
-    @Published var appProfiles: [AppProfile] {
-        didSet {
-            if let data = try? JSONEncoder().encode(appProfiles) {
-                UserDefaults.standard.set(data, forKey: "appProfiles")
-            }
-        }
+    @Published private(set) var appProfilesStore = SettingsArray<AppProfile>("appProfiles")
+    var appProfiles: [AppProfile] {
+        get { appProfilesStore.rows }
+        set { appProfilesStore.save(newValue) }
     }
-    @Published var learnedTerms: [LearnedTerm] = UserDefaults.standard.data(forKey: "learnedTerms")
-        .flatMap { try? JSONDecoder().decode([LearnedTerm].self, from: $0) } ?? [] {
-        didSet {
-            if let data = try? JSONEncoder().encode(learnedTerms) {
-                UserDefaults.standard.set(data, forKey: "learnedTerms")
-            }
-            scheduleWarmGemini()
-        }
+    func resetAppProfiles() { appProfilesStore.resetCorruptValue() }
+    @Published private(set) var learnedTermsStore = SettingsArray<LearnedTerm>("learnedTerms")
+    var learnedTerms: [LearnedTerm] {
+        get { learnedTermsStore.rows }
+        set { if learnedTermsStore.save(newValue) { scheduleWarmGemini() } }
     }
+    func resetLearnedTerms() { learnedTermsStore.resetCorruptValue() }
 
     func learn(fragment: String, term: String, from record: TranscriptRecord) -> Bool {
         guard LearnedTermPolicy.validationHint(fragment: fragment, term: term, recordText: record.text) == nil else { return false }
-        learnedTerms = LearnedTermPolicy.saving(
+        let updated = LearnedTermPolicy.saving(
             LearnedTerm(term: term, originalFragment: fragment, sourceRecordID: record.id), in: learnedTerms)
+        guard learnedTermsStore.save(updated) else { return false }
+        scheduleWarmGemini()
         return true
     }
 
@@ -384,13 +426,12 @@ import KoeBridgeCore
         beginRecording(transformTarget: target, selection: anchor.submittedText, fixingLastInput: true)
     }
 
-    @Published var snippets: [SnippetRule] {
-        didSet {
-            if let data = try? JSONEncoder().encode(snippets) {
-                UserDefaults.standard.set(data, forKey: "snippets")
-            }
-        }
+    @Published private(set) var snippetsStore = SettingsArray<SnippetRule>("snippets")
+    var snippets: [SnippetRule] {
+        get { snippetsStore.rows }
+        set { snippetsStore.save(newValue) }
     }
+    func resetSnippets() { snippetsStore.resetCorruptValue() }
     @Published var shortcutActivationMode: ShortcutActivationMode {
         didSet {
             UserDefaults.standard.set(shortcutActivationMode.rawValue, forKey: "shortcutActivationMode")
@@ -670,8 +711,6 @@ import KoeBridgeCore
     private init() {
         let d = UserDefaults.standard
         bluetoothMicWarmEnabled = d.bool(forKey: "bluetoothMicWarm")
-        appProfiles = d.data(forKey: "appProfiles").flatMap { try? JSONDecoder().decode([AppProfile].self, from: $0) } ?? []
-        snippets = d.data(forKey: "snippets").flatMap { try? JSONDecoder().decode([SnippetRule].self, from: $0) } ?? []
         shortcutActivationMode = ShortcutActivationMode(rawValue: d.string(forKey: "shortcutActivationMode") ?? "") ?? .toggle
         mouseTriggerButton = MouseTriggerButton(rawValue: d.string(forKey: "mouseTriggerButton") ?? "") ?? .none
         requestedMode = RecognitionMode(rawValue: d.string(forKey: "engine") ?? "gemini") ?? .gemini

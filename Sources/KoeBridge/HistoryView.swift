@@ -222,7 +222,7 @@ private struct HistoryLearningEditor: View {
                 Button("閉じる") { dismiss() }
                 Spacer()
                 Button("語彙に学習する") { saved = controller.learn(fragment: fragment, term: term, from: record) }
-                    .disabled(hint != nil)
+                    .disabled(hint != nil || controller.learnedTermsStore.state == .corrupt)
             }
         }
         .textFieldStyle(.roundedBorder)

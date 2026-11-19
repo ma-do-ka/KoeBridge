@@ -31,7 +31,10 @@ struct SettingsSnippetsPage: View {
                     DispatchQueue.main.async { focusedTrigger = rule.id }
                 } label: { Label("スニペットを追加", systemImage: "plus") }
                 .settingsControlFocus("snippets")
-                if controller.snippets.isEmpty {
+                .disabled(controller.snippetsStore.state == .corrupt)
+                if controller.snippetsStore.state == .corrupt {
+                    CorruptSettingsNotice(reset: controller.resetSnippets)
+                } else if controller.snippets.isEmpty {
                     Text("例：「メール締め」と言うと署名入りの定型文が入ります。")
                         .foregroundStyle(.secondary)
                 }

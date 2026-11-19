@@ -360,4 +360,21 @@ struct SettingsView: View {
         }
     }
 }
+struct CorruptSettingsNotice: View {
+    let reset: () -> Void
+    @State private var confirming = false
+
+    var body: some View {
+        VStack(alignment: .leading) {
+            Text("この一覧を読み込めません。元のデータを保持し、編集を停止しています。")
+            Button("この一覧を初期化…", role: .destructive) { confirming = true }
+        }
+        .alert("この一覧を初期化しますか？", isPresented: $confirming) {
+            Button("初期化", role: .destructive, action: reset)
+            Button("キャンセル", role: .cancel) {}
+        } message: {
+            Text("この一覧に保存されているすべての項目を削除します。取り消せません。")
+        }
+    }
+}
 #endif

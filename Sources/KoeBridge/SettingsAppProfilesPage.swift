@@ -59,7 +59,9 @@ struct SettingsAppProfilesPage: View {
                         ForEach(runningApps) { app in Text(app.name).tag(app.id) }
                     }
                     .settingsControlFocus("app-profiles")
-                    if controller.appProfiles.isEmpty {
+                    if controller.appProfilesStore.state == .corrupt {
+                        CorruptSettingsNotice(reset: controller.resetAppProfiles)
+                    } else if controller.appProfiles.isEmpty {
                         Text("プロファイルはまだありません。よく使うアプリごとに、エンジンや文体を切り替えられます。")
                             .foregroundStyle(.secondary)
                     }
@@ -103,7 +105,7 @@ struct SettingsAppProfilesPage: View {
                             DispatchQueue.main.async { proxy.scrollTo(id, anchor: .top) }
                         }
                     } label: { Label("プロファイルを追加", systemImage: "plus") }
-                    .disabled(bundleToAdd.isEmpty)
+                    .disabled(bundleToAdd.isEmpty || controller.appProfilesStore.state == .corrupt)
                     Text("プロファイルのあるアプリで録音すると、そのアプリ専用の設定が自動で適用されます。")
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
