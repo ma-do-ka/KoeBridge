@@ -10,16 +10,14 @@ struct HistoryView: View {
     @State private var query = ""
     @State private var learningRecord: TranscriptRecord?
 
-    private var filteredHistory: [TranscriptRecord] {
-        HistorySearch.filter(controller.history, query: query)
+    private struct SearchKey: Equatable {
+        let revision: UInt64
+        let query: String
     }
+    @State private var searchCache = DisplayCache<SearchKey, [TranscriptRecord]>()
 
     private var isSearching: Bool {
         !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    private var selected: TranscriptRecord? {
-        filteredHistory.first(where: { $0.id == selectedID }) ?? filteredHistory.first
     }
 
     private func recordLabel(_ record: TranscriptRecord) -> String {
@@ -36,7 +34,11 @@ struct HistoryView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        let filteredHistory = searchCache.value(for: SearchKey(revision: controller.historyRevision, query: query)) {
+            HistorySearch.filter(controller.history, query: query)
+        }
+        let selected = filteredHistory.first(where: { $0.id == selectedID }) ?? filteredHistory.first
+        return VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text(isSearching
                      ? "\(filteredHistory.count)件が一致（全\(controller.history.count)件）"
@@ -184,7 +186,7 @@ struct HistoryView: View {
                                 Button("この文章を削除", role: .destructive) {
                                     let removing = selected.id
                                     controller.deleteRecord(removing)
-                                    selectedID = filteredHistory.first?.id
+                                    selectedID = HistorySearch.filter(controller.history, query: query).first?.id
                                 }
                             }
                         }

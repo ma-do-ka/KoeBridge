@@ -6,15 +6,29 @@ import Combine
 import SwiftUI
 import KoeBridgeCore
 
+/// Memoizes derived display values without publishing from a SwiftUI body.
+@MainActor final class DisplayCache<Key: Equatable, Value> {
+    private var entry: (Key, Value)?
+
+    func value(for key: Key, compute: () -> Value) -> Value {
+        if let entry, entry.0 == key { return entry.1 }
+        let result = compute()
+        entry = (key, result)
+        return result
+    }
+}
+
 @MainActor final class VoiceController: ObservableObject {
     static let shared = VoiceController()
     typealias Phase = VoiceSessionPhase
     @Published private(set) var phase: Phase = .idle
     @Published var status = "待機中"
-    @Published var previewFinalizedText = ""
-    @Published var previewVolatileText = ""
+    private(set) var previewRevision: UInt64 = 0
+    @Published var previewFinalizedText = "" { didSet { previewRevision &+= 1 } }
+    @Published var previewVolatileText = "" { didSet { previewRevision &+= 1 } }
     @Published var previewText = "" {
         didSet {
+            previewRevision &+= 1
             if previewText.isEmpty { previewFinalizedText = ""; previewVolatileText = "" }
         }
     }
@@ -428,10 +442,12 @@ import KoeBridgeCore
     }
     @Published private(set) var lastMetrics = ""
     @Published private(set) var usedMode = ""
-    @Published private(set) var history: [TranscriptRecord] = []
+    private(set) var historyRevision: UInt64 = 0
+    @Published private(set) var history: [TranscriptRecord] = [] { didSet { historyRevision &+= 1 } }
     @Published private(set) var historyProblem = ""
-    @Published private(set) var monitorEvents: [EngineUsageSample] = []
-    @Published private(set) var monitorTokens: [GeminiTokenSample] = []
+    private(set) var usageRevision: UInt64 = 0
+    @Published private(set) var monitorEvents: [EngineUsageSample] = [] { didSet { usageRevision &+= 1 } }
+    @Published private(set) var monitorTokens: [GeminiTokenSample] = [] { didSet { usageRevision &+= 1 } }
     @Published private(set) var monitorProblem = ""
     @Published private(set) var shortcutChoice: RecordingShortcut = .controlOptionSpace
     @Published private(set) var shortcutProblem = ""
@@ -1064,9 +1080,10 @@ import KoeBridgeCore
                         guard let self, let take, let candidate, take.cloud === candidate, !take.finished else { return }
                         switch event {
                         case .interim, .final:
-                            take.partialText = candidate.assembler.displayText
-                            take.previewFinalizedText = candidate.assembler.preview.finalizedPrefix
-                            take.previewVolatileText = candidate.assembler.preview.volatileTail
+                            let preview = candidate.assembler.preview
+                            take.partialText = preview.text
+                            take.previewFinalizedText = preview.finalizedPrefix
+                            take.previewVolatileText = preview.volatileTail
                             if take.firstPreviewAt == nil, !take.partialText.isEmpty {
                                 take.firstPreviewAt = Date()
                             }

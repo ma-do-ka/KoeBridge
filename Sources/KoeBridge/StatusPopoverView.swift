@@ -201,10 +201,21 @@ private struct HistoryMenuButtonStyle: ButtonStyle {
         }
     }
 
+    private struct WeekKey: Equatable {
+        let revision: UInt64
+        let calendar: Calendar
+        let day: Date
+    }
+    @State private var weekCache = DisplayCache<WeekKey, [UsageSummary.DayTotal]>()
+
     private var usageCard: some View {
         let now = Date()
-        let today = UsageSummary.todayTotals(events: controller.monitorEvents, now: now)
-        let days = UsageSummary.dailyTotals(events: controller.monitorEvents, days: 7, now: now)
+        let calendar = Calendar.current
+        let key = WeekKey(revision: controller.usageRevision, calendar: calendar, day: calendar.startOfDay(for: now))
+        let days = weekCache.value(for: key) {
+            UsageSummary.dailyTotals(events: controller.monitorEvents, days: 7, now: now, calendar: calendar)
+        }
+        let today = days[6]
         let maximum = max(days.map(\.totalSeconds).max() ?? 0, 1)
         return VStack(alignment: .leading, spacing: 8) {
             Text("今日の利用").font(.caption).fontWeight(.semibold)
