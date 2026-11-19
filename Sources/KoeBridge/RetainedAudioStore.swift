@@ -25,7 +25,7 @@ import KoeBridgeCore
     }
 
     func write(pcm: Data, record: TranscriptRecord, history: inout TranscriptHistoryStore) {
-        guard history.loadOutcome != .failed, record.kind != "meeting", history.entries.contains(where: { $0.id == record.id }),
+        guard history.isSaved(record.id), record.kind != "meeting",
               !pcm.isEmpty, pcm.count <= GeminiRecheckWire.maximumPCMBytes else { return }
         do {
             let manager = FileManager.default
@@ -53,6 +53,10 @@ import KoeBridgeCore
     private func canSweep(_ history: TranscriptHistoryStore) -> Bool {
         guard history.loadOutcome != .failed else {
             DiagnosticLog.record("retained_audio_sweep_held reason=history_load_failed")
+            return false
+        }
+        guard history.unsavedIDs.isEmpty else {
+            DiagnosticLog.record("retained_audio_sweep_held reason=history_write_pending")
             return false
         }
         return true

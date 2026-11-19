@@ -522,12 +522,12 @@ struct SettingsArray<Row: Codable> {
         session.onFinished = { [weak self, weak session] text, partial in
             guard let self, let session, meetingSession === session else { return }
             // Saved-only is the existing non-failure status; no target or delivery queue.
-            _ = historyStore.remember(text, isPartial: partial, delivery: .automaticPasteDisabled,
+            let recordID = historyStore.remember(text, isPartial: partial, delivery: .automaticPasteDisabled,
                 engine: session.engine.label, recordedAt: session.recordedAt, kind: "meeting")
             refreshRetainedAudio()
             meetingSession = nil; meetingRunning = false
             meetingStatusTask?.cancel(); meetingStatusTask = nil
-            status = text.isEmpty ? "会議モードを終了しました（文字起こしなし）" : "会議の文字起こしを履歴に保存しました"
+            status = text.isEmpty ? "会議モードを終了しました（文字起こしなし）" : (historyStore.isSaved(recordID) ? "会議の文字起こしを履歴に保存しました" : "会議の文字起こしは未保存です")
             meetingStatus = status
             resumeMicrophoneWarm(); scheduleWarmGemini()
         }
@@ -577,6 +577,10 @@ struct SettingsArray<Row: Codable> {
         if let id = replayRecordID, !historyStore.entries.contains(where: { $0.id == id && $0.audioAsset != nil }) {
             cancelReplay()
         }
+        if historyStore.loadOutcome == .failed {
+            retentionStatus = "履歴の参照を読み込めないため、保存音声の自動整理を保留しています。"
+            return
+        }
         retentionStatus = "\(retainedAudio.bytesUsed) / 250,000,000 bytes・\(retainedAudio.fileCount)ファイル・7日間"
     }
     func cancelReplay() {
@@ -621,8 +625,8 @@ struct SettingsArray<Row: Codable> {
                 }
                 try Task.checkCancellation()
                 guard replayJob == job, historyStore.entries.contains(where: { $0.id == record.id }) else { return }
-                historyStore.appendRetranscription(record.id, result: .init(engine: engine.label, text: text))
-                replayStatus = "再文字起こし結果を履歴に追加しました"
+                let saved = historyStore.appendRetranscription(record.id, result: .init(engine: engine.label, text: text))
+                replayStatus = saved ? "再文字起こし結果を履歴に追加しました" : "再文字起こし結果は未保存です"
             } catch {
                 DiagnosticLog.record("audio replay recognition failed; category=\(Self.failureCategory(error))")
                 if replayJob == job, !Task.isCancelled {
@@ -636,6 +640,10 @@ struct SettingsArray<Row: Codable> {
         AgentVocabulary.terms(user: vocabulary.components(separatedBy: .newlines), learned: learnedTerms.map(\.term),
             registeredEnabled: registeredVocabularyEnabled, topicEnabled: topicVocabularyEnabled)
     }
+
+    var rejectedHistoryText: String? { historyStore.rejectedResult?.text }
+    func isHistorySaved(_ id: UUID) -> Bool { historyStore.isSaved(id) }
+    var savedHistoryCount: Int { history.count - historyStore.unsavedIDs.count }
 
     private var historyStore: TranscriptHistoryStore {
         didSet {
@@ -1638,6 +1646,8 @@ struct SettingsArray<Row: Codable> {
             DiagnosticLog.record("delivery resolved; id=\(id.uuidString.prefix(8)); outcome=\(outcome.delivery.rawValue); reason=\(report.reason)")
         }
         if let recordID { outcome.updateSavedRecord(recordID, in: &historyStore) }
+        let saved = historyStore.isSaved(recordID)
+        if !saved && completionFeedback == .saved { completionFeedback = .notSaved }
         if outcome.submitted, let stoppedAt = take.stoppingAt {
             lastStopToInputSeconds = Date().timeIntervalSince(stoppedAt)
         }
@@ -1646,7 +1656,7 @@ struct SettingsArray<Row: Codable> {
         }
         if active == nil {
             let message = outcome.delivery == .attemptedUnconfirmed ? OverlayFeedback.sentUnconfirmed.message : outcome.detail
-            status = message + (take.review?.status == .incomplete ? " 追加チェックは未完了です。" : "")
+            status = (saved ? message : outcome.historyInsertionTitle + "。文字起こしは未保存です。") + (take.review?.status == .incomplete ? " 追加チェックは未完了です。" : "")
         }
     }
 
@@ -1900,7 +1910,7 @@ struct SettingsArray<Row: Codable> {
         overlayDismissal = Task { [weak self] in
             let hold: Int
             switch feedback {
-            case .heldForReview, .transformCopied, .sentUnconfirmed, .deferredUnsent, .deferredPartial, .deferredUnconfirmed: hold = 3_000
+            case .notSaved, .heldForReview, .transformCopied, .sentUnconfirmed, .deferredUnsent, .deferredPartial, .deferredUnconfirmed: hold = 3_000
             case .noInput: hold = 330
             case .failed, .transformFailed, .commandBlocked, .commandFailed: hold = 1_000
             default: hold = 520

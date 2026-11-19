@@ -345,7 +345,7 @@ struct SettingsView: View {
             }
         case .history:
             SettingsPrivacyPage(
-                controller: controller, historyCount: controller.history.count, diagnosticsEnabled: $diagnosticsEnabled,
+                controller: controller, historyCount: controller.savedHistoryCount, diagnosticsEnabled: $diagnosticsEnabled,
                 logNotice: logNotice, focusRequest: navigation.focusRequest,
                 showHistory: { controller.onShowHistory?() },
                 requestLogDeletion: { confirmDeleteLog = true }

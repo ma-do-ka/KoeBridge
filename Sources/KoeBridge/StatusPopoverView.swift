@@ -129,7 +129,7 @@ private struct HistoryMenuButtonStyle: ButtonStyle {
                                         Text(entry.recordedAt.formatted(date: .abbreviated, time: .shortened))
                                             .font(.caption2)
                                             .foregroundStyle(historyMenu.hovered == row ? Color(nsColor: .selectedMenuItemTextColor) : .secondary)
-                                        Text(entry.preview).font(.caption).lineLimit(1)
+                                        Text(controller.isHistorySaved(entry.recordID) ? entry.preview : "未保存・" + entry.preview).font(.caption).lineLimit(1)
                                     }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
                                 }.buttonStyle(HistoryMenuButtonStyle(highlighted: historyMenu.hovered == row)).help(entry.copyHelp)
                                     .background(HistoryHoverAnchor(

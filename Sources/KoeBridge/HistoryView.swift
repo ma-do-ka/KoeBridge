@@ -22,12 +22,25 @@ struct HistoryView: View {
         filteredHistory.first(where: { $0.id == selectedID }) ?? filteredHistory.first
     }
 
+    private func recordLabel(_ record: TranscriptRecord) -> String {
+        if controller.isHistorySaved(record.id) {
+            return record.kind == "meeting" ? "会議の文字起こし（履歴に保存）" : record.delivery.label
+        }
+        let delivery: String
+        switch record.delivery {
+        case .automaticPasteDisabled: delivery = "自動入力なし"
+        case .recognitionInterrupted: delivery = "認識中断"
+        default: delivery = record.delivery.label
+        }
+        return "未保存（起動中のみ）・" + delivery
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text(isSearching
                      ? "\(filteredHistory.count)件が一致（全\(controller.history.count)件）"
-                     : "保存した文章：\(controller.history.count) / \(RecentTranscriptArchive.maximumRecords)件")
+                     : "保存した文章：\(controller.savedHistoryCount) / \(RecentTranscriptArchive.maximumRecords)件")
                     .font(.headline)
                 Spacer()
                 Text("直近\(RecentTranscriptArchive.maximumRecords)件を保存。音声保存は個別設定・APIキーは履歴に保存しません")
@@ -37,6 +50,12 @@ struct HistoryView: View {
                 Text(controller.historyProblem)
                     .font(.caption).foregroundStyle(.red)
                     .textSelection(.enabled)
+            }
+            if let text = controller.rejectedHistoryText {
+                HStack {
+                    Text("履歴上限を超えた直近の結果は未保存です。")
+                    Button("未保存の結果をコピー") { TextInsertion.copy(text) }
+                }
             }
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass")
@@ -84,7 +103,7 @@ struct HistoryView: View {
                                                 .font(.caption2).foregroundStyle(.secondary)
                                             Text(record.text.replacingOccurrences(of: "\n", with: " "))
                                                 .lineLimit(2).font(.body)
-                                            Text(record.delivery.label)
+                                            Text(recordLabel(record))
                                                 .font(.caption2).foregroundStyle(.secondary)
                                         }
                                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -104,9 +123,9 @@ struct HistoryView: View {
                         if let selected {
                             Text("\(selected.engine) / \(selected.isPartial ? "認識途中" : "確定結果")")
                                 .font(.caption).foregroundStyle(.secondary)
-                            Text(selected.kind == "meeting" ? "会議の文字起こし（履歴に保存）" : selected.delivery.label)
+                            Text(recordLabel(selected))
                                 .font(.caption).foregroundStyle(.secondary)
-                            if let detail = selected.deliveryDetail {
+                            if controller.isHistorySaved(selected.id), let detail = selected.deliveryDetail {
                                 Text(detail).font(.caption).foregroundStyle(.secondary)
                                     .textSelection(.enabled)
                             }
@@ -178,7 +197,7 @@ struct HistoryView: View {
                     .font(.caption2).foregroundStyle(.secondary)
                 Spacer()
                 Button("履歴をすべて削除", role: .destructive) { confirmDeleteAll = true }
-                    .disabled(controller.history.isEmpty)
+                    .disabled(controller.history.isEmpty && controller.rejectedHistoryText == nil)
             }
         }
         .padding(16)

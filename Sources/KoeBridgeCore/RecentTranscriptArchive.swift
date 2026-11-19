@@ -133,13 +133,12 @@ public struct RecentTranscriptArchive {
 
     public mutating func insert(_ record: TranscriptRecord) throws {
         guard !record.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        entries.removeAll { $0.id == record.id }
-        entries.insert(record, at: 0)
+        var updated = entries.filter { $0.id != record.id }
+        updated.insert(record, at: 0)
         // Recognition completes out of order during continuous dictation.
         // History is ordered by recording time, not provider response timing.
-        entries.sort { $0.recordedAt > $1.recordedAt }
-        if entries.count > Self.maximumRecords { entries.removeLast(entries.count - Self.maximumRecords) }
-        try persist(entries)
+        updated.sort { $0.recordedAt > $1.recordedAt }
+        try saveUpdate(updated, retaining: record.id)
     }
 
     public mutating func updateDelivery(id: UUID, to delivery: TranscriptRecord.Delivery, detail: String? = nil) throws {
@@ -149,31 +148,32 @@ public struct RecentTranscriptArchive {
         updated[index].deliveryDetail = detail
         // Delivery has already happened. A disk error must not leave the
         // running app showing "pending" and invite an accidental second input.
-        entries = updated
-        try persist(updated)
+        try saveUpdate(updated, retaining: id)
     }
 
     public mutating func updateAudio(id: UUID, asset: TranscriptRecord.AudioAsset?, reason: String?) throws {
         guard let i = entries.firstIndex(where: { $0.id == id }) else { return }
-        entries[i].audioAsset = asset
-        entries[i].audioUnavailableReason = reason
-        try persist(entries)
+        var updated = entries
+        updated[i].audioAsset = asset
+        updated[i].audioUnavailableReason = reason
+        try saveUpdate(updated, retaining: id)
     }
 
     public mutating func appendRetranscription(id: UUID, result: TranscriptRecord.Retranscription) throws {
         guard let i = entries.firstIndex(where: { $0.id == id }) else { return }
-        entries[i].retranscriptions.append(result)
-        try persist(entries)
+        var updated = entries
+        updated[i].retranscriptions.append(result)
+        try saveUpdate(updated, retaining: id)
     }
 
     public mutating func delete(id: UUID) throws {
         let updated = entries.filter { $0.id != id }
-        try persist(updated)
+        try write(encode(updated))
         entries = updated
     }
 
     public mutating func deleteAll() throws {
-        try persist([])
+        try write(encode([]))
         entries = []
     }
 
@@ -182,17 +182,52 @@ public struct RecentTranscriptArchive {
         public var errorDescription: String? { "履歴のサイズが安全上限を超えています。既存ファイルは保持しました" }
     }
 
-    private func persist(_ contents: [TranscriptRecord]) throws {
+    private func encode(_ contents: [TranscriptRecord]) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try encoder.encode(contents)
+    }
+
+    private mutating func saveUpdate(_ proposed: [TranscriptRecord], retaining id: UUID) throws {
+        var candidate = Array(proposed.prefix(Self.maximumRecords))
+        guard candidate.contains(where: { $0.id == id }) else { throw ArchiveError.tooLarge }
+        var data = try encode(candidate)
+        if data.count > Self.maximumFileBytes {
+            // Preserve the edited row, evicting the oldest other rows first.
+            // Measure actual JSON bytes, including escaped strings and formatting.
+            guard let index = candidate.firstIndex(where: { $0.id == id }) else { throw ArchiveError.tooLarge }
+            let changed = candidate.remove(at: index)
+            func keeping(_ others: Int) -> [TranscriptRecord] {
+                var result = Array(candidate.prefix(others))
+                result.insert(changed, at: min(index, result.count))
+                return result
+            }
+            var low = 0
+            var high = candidate.count
+            while low < high {
+                let mid = (low + high + 1) / 2
+                if try encode(keeping(mid)).count <= Self.maximumFileBytes {
+                    low = mid
+                } else { high = mid - 1 }
+            }
+            candidate = keeping(low)
+            data = try encode(candidate)
+            guard data.count <= Self.maximumFileBytes else { throw ArchiveError.tooLarge }
+        }
+        // Size rejection leaves the old working set intact. Only size-checked
+        // changes are eligible for a later retry after a filesystem error.
+        entries = candidate
+        try write(data)
+    }
+
+    private func write(_ data: Data) throws {
+        guard data.count <= Self.maximumFileBytes else { throw ArchiveError.tooLarge }
         let manager = FileManager.default
         let directory = fileURL.deletingLastPathComponent()
         try manager.createDirectory(at: directory, withIntermediateDirectories: true,
                                     attributes: [.posixPermissions: NSNumber(value: 0o700)])
         try manager.setAttributes([.posixPermissions: NSNumber(value: 0o700)],
                                   ofItemAtPath: directory.path)
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let data = try encoder.encode(contents)
-        guard data.count <= Self.maximumFileBytes else { throw ArchiveError.tooLarge }
         try data.write(to: fileURL, options: .atomic)
         try manager.setAttributes([.posixPermissions: NSNumber(value: 0o600)],
                                   ofItemAtPath: fileURL.path)
