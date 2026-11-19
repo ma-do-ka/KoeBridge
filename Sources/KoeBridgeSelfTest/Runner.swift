@@ -61,6 +61,10 @@ struct KoeBridgeSelfTest {
             do { try await action() }
             catch { TestRecorder.assertion(false, file: #fileID, line: #line, message: "test threw: \(error)") }
         }
+        let spacing = JapaneseDictationSpacingTests()
+        await run("JapaneseDictationSpacingTests.boundaries", { spacing.boundaries() })
+        await run("JapaneseDictationSpacingTests.bytePreservation", { spacing.bytePreservation() })
+        await run("JapaneseDictationSpacingTests.adoptedStageOutputAndSnippets", { try spacing.adoptedStageOutputAndSnippets() })
         await run("UserFacingErrorMessageTests.allSparkleCodesHaveJapaneseMessages", { UserFacingErrorMessageTests().allSparkleCodesHaveJapaneseMessages() })
         await run("UserFacingErrorMessageTests.networkCodesHaveJapaneseMessages", { UserFacingErrorMessageTests().networkCodesHaveJapaneseMessages() })
         await run("UserFacingErrorMessageTests.keychainCodesHaveJapaneseMessages", { UserFacingErrorMessageTests().keychainCodesHaveJapaneseMessages() })

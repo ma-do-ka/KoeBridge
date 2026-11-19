@@ -24,6 +24,14 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
     var appBundleIdentifier: String?
     var appProfileName: String?
     var usedMode: String
+    let normalizeJapaneseSpacing: Bool
+    let snippets: [SnippetRule]
+
+    func adoptFinalText(_ text: String) -> String {
+        guard commandCandidate == nil, transformSelection == nil, !isFixLastInput else { return text }
+        return JapaneseDictationSpacing.adopt(text, enabled: normalizeJapaneseSpacing, protectedTerms: snippets.map(\.trigger) + vocabulary)
+    }
+
     var postProcessEnabled = false
     var postProcessMode: PostProcessingMode = .tidy
     var postProcessOriginal: String?
@@ -80,7 +88,10 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
     var resolvedAtUptime: TimeInterval?
 
     init(preferred: RecognitionMode, style: TranscriptionStyle, japaneseHint: Bool,
-         vocabulary: [String], shouldPaste: Bool, options: TranscriptionOptions) {
+         vocabulary: [String], shouldPaste: Bool, options: TranscriptionOptions,
+         normalizeJapaneseSpacing: Bool = true, snippets: [SnippetRule] = []) {
+        self.normalizeJapaneseSpacing = normalizeJapaneseSpacing
+        self.snippets = snippets
         self.preferred = preferred
         self.style = style
         self.japaneseHint = japaneseHint
