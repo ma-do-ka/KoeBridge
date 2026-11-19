@@ -85,6 +85,7 @@ struct KoeBridgeSelfTest {
         await run("DeliveryPacingPolicyTests.cumulativePacingNeverExceedsThreeHundredMilliseconds", { DeliveryPacingPolicyTests().cumulativePacingNeverExceedsThreeHundredMilliseconds() })
         await run("OverlayFeedbackTests.unconfirmedSubmissionHasDistinctVisibleFeedback", { OverlayFeedbackTests().unconfirmedSubmissionHasDistinctVisibleFeedback() })
         await run("OverlayFeedbackTests.feedbackDoesNotClaimDestinationAcceptedText", { OverlayFeedbackTests().feedbackDoesNotClaimDestinationAcceptedText() })
+        await run("OverlayFeedbackTests.blockedHeldAndFailedKeepTheirMessages", { OverlayFeedbackTests().blockedHeldAndFailedKeepTheirMessages() })
         await run("OverlayFeedbackTests.accidentalTapIsNeutralAndNotAnError", { OverlayFeedbackTests().accidentalTapIsNeutralAndNotAnError() })
         await run("OverlayFeedbackTests.olderFinalizationCannotOverwriteNewRecording", { OverlayFeedbackTests().olderFinalizationCannotOverwriteNewRecording() })
         await run("StartupPreviewPolicyTests.replacedGitHubNeverPublishes", { StartupPreviewPolicyTests().replacedGitHubNeverPublishes() })

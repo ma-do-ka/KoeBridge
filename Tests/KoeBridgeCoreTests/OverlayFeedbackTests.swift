@@ -6,7 +6,7 @@ struct OverlayFeedbackTests {
     @Test func unconfirmedSubmissionHasDistinctVisibleFeedback() {
         #expect(OverlayFeedback.sentUnconfirmed != .sent)
         #expect(OverlayFeedback.sentUnconfirmed.message != OverlayFeedback.sent.message)
-        #expect(OverlayFeedback.sentUnconfirmed.message.contains("未確認"))
+        #expect(OverlayFeedback.sentUnconfirmed.message == "入力完了")
     }
 
     @Test func feedbackDoesNotClaimDestinationAcceptedText() {
