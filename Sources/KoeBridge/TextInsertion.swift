@@ -248,12 +248,34 @@ import KoeBridgeCore
         }
         var current = initial
         var recovered: (DeliveryRecovery, DeliveryRecovery.Host)?
-        if case .rejected(let denied, "current_target_not_text_input") = sample, denied.eligible {
+        let recoveryCandidate: (retry: DeliveryRecovery, baselineTarget: InsertionTarget)?
+        switch sample {
+        case .rejected(let denied, "current_target_not_text_input") where denied.eligible:
+            recoveryCandidate = (DeliveryRecovery(rejection: denied, ax: transport.ax), denied.target)
+        case .unavailable(.focusedTextElementUnavailable, let pid?, _, _):
+            let app = AXUIElementCreateApplication(pid)
+            let now = transport.ax.now()
+            let windowRead = try? transport.ax.read(app, kAXFocusedWindowAttribute, until: now + 0.080)
+            let window = (windowRead?.status == .success && windowRead?.value.map { CFGetTypeID($0) == AXUIElementGetTypeID() } == true)
+                ? windowRead?.value : takeStart.flatMap { $0.pid == pid ? $0.window : nil }
+            if let window {
+                let placeholder = InsertionTarget(
+                    bundleIdentifier: takeStart?.pid == pid ? takeStart?.bundleIdentifier : NSRunningApplication(processIdentifier: pid)?.bundleIdentifier,
+                    localizedName: takeStart?.pid == pid ? takeStart?.localizedName : NSRunningApplication(processIdentifier: pid)?.localizedName,
+                    pid: pid, focused: app, window: window, selectionAttribute: nil,
+                    selection: nil, textSnapshot: nil, capturedAt: now, blockedReason: nil)
+                recoveryCandidate = (DeliveryRecovery(unavailableTarget: placeholder, rejectedAt: now, ax: transport.ax), placeholder)
+            } else {
+                recoveryCandidate = nil
+            }
+        default:
+            recoveryCandidate = nil
+        }
+        if let (retry, baselineTarget) = recoveryCandidate {
             let (trusted, mayPost) = transport.permissions()
             guard trusted else { return failed("accessibility_not_granted") }
             guard mayPost else { return failed("post_event_permission_missing") }
-            let retry = DeliveryRecovery(rejection: denied, ax: transport.ax)
-            let result = await retry.acquire(diagnostics: diagnostics) { stopReason(denied.target) }
+            let result = await retry.acquire(diagnostics: diagnostics) { stopReason(baselineTarget) }
             guard let host = result.host else { return failed(result.reason) }
             if let stop = stopReason(host.target) { return failed(stop) }
             do {

@@ -516,5 +516,125 @@ import KoeBridgeCore
             }
         }
     }
+
+    @Test func unavailableInitialFocusRecoversSameWindowPositiveEditorAndRejectsLackOfEvidenceOrWindowChange() async {
+        // 1. Positive case: initial capture returns .unavailable(.focusedTextElementUnavailable),
+        // then slot 1 (+30ms) exposes a positive editor element in the same window (AXTextArea with numeric selection
+        // or AXGroup with AXEditable == true and marker selection).
+        for useEditableGroup in [false, true] {
+            let f = Fixture()
+            f.bundle = "com.google.Chrome"
+            f.currentField = nil
+            var t = f.transport()
+            t.capture = { _ in
+                f.captures += 1
+                return .unavailable(.focusedTextElementUnavailable, pid: f.pid, focused: nil, ownerStatus: nil)
+            }
+            f.onWait = {
+                f.currentField = f.field
+                if useEditableGroup {
+                    f.role = "AXGroup"
+                    f.editable = Read(value: kCFBooleanTrue, status: .success)
+                    f.marker = f.liveMarker()
+                } else {
+                    f.role = "AXTextArea"
+                    f.selection = f.range(0, 0)
+                }
+            }
+            let sent = await TextInsertion.deliver("x", to: nil, transport: t) { f.allowed }
+            #expect(sent.outcome == .inserted && f.posts == 1 && f.slots == [0.030])
+        }
+
+        // 2. Slot 1 still unavailable (nil), slot 2 (+60ms) exposes positive editor in the same window -> recovers.
+        let slot2 = Fixture()
+        slot2.bundle = "com.google.Chrome"
+        slot2.currentField = nil
+        var t2 = slot2.transport()
+        t2.capture = { _ in
+            slot2.captures += 1
+            return .unavailable(.focusedTextElementUnavailable, pid: slot2.pid, focused: nil, ownerStatus: nil)
+        }
+        slot2.onWait = {
+            if slot2.slots.count == 2 {
+                slot2.currentField = slot2.field
+                slot2.role = "AXTextField"
+                slot2.selection = slot2.range(0, 0)
+            }
+        }
+        let sent2 = await TextInsertion.deliver("x", to: nil, transport: t2) { slot2.allowed }
+        #expect(sent2.outcome == .inserted && slot2.posts == 1 && slot2.slots == [0.030, 0.060])
+
+        // 3. Both slots remain unavailable -> fails closed with target_unavailable_at_delivery (0 posts).
+        let unrecovered = Fixture()
+        unrecovered.bundle = "com.google.Chrome"
+        unrecovered.currentField = nil
+        var tUnrec = unrecovered.transport()
+        tUnrec.capture = { _ in
+            unrecovered.captures += 1
+            return .unavailable(.focusedTextElementUnavailable, pid: unrecovered.pid, focused: nil, ownerStatus: nil)
+        }
+        let blockedUnrec = await TextInsertion.deliver("x", to: nil, transport: tUnrec) { unrecovered.allowed }
+        #expect(blockedUnrec.outcome == .focusChanged && blockedUnrec.reason == "target_unavailable_at_delivery")
+        #expect(unrecovered.posts == 0 && unrecovered.slots == [0.030, 0.060])
+
+        // 4. Condition 2 (i): Different-window or different-app element is NEVER adopted (0 posts).
+        let crossHostCases: [(Fixture) -> Void] = [
+            { $0.front += 1 },                     // frontmost app changed
+            { $0.owner = 99999 },                  // element owned by different process
+            { $0.currentWindow = $0.other },       // app focused window changed
+            { $0.elementWindow = $0.other }        // element's kAXWindowAttribute is a different window
+        ]
+        for mutate in crossHostCases {
+            let f = Fixture()
+            f.bundle = "com.google.Chrome"
+            f.currentField = nil
+            var t = f.transport()
+            t.capture = { _ in
+                f.captures += 1
+                return .unavailable(.focusedTextElementUnavailable, pid: f.pid, focused: nil, ownerStatus: nil)
+            }
+            f.onWait = {
+                f.currentField = f.field
+                f.role = "AXTextArea"
+                f.selection = f.range(0, 0)
+                mutate(f)
+            }
+            let result = await TextInsertion.deliver("x", to: nil, transport: t) { f.allowed }
+            #expect(result.outcome == .focusChanged && f.posts == 0 && f.slots.count == 1)
+        }
+
+        // 5. Condition 2 (ii): Same-window element WITHOUT positive editor evidence is NEVER adopted (0 posts).
+        let noEvidenceCases: [(Fixture) -> Void] = [
+            // Non-text control role without selection/editable
+            { $0.role = "AXButton"; $0.selection = Read(value: nil, status: .noValue) },
+            // Non-text control role even with selection
+            { $0.role = "AXButton"; $0.selection = $0.range(0, 0) },
+            // Generic container role (AXGroup) with no selection and no AXEditable == true
+            { $0.role = "AXGroup"; $0.selection = Read(value: nil, status: .noValue); $0.editable = Read(value: nil, status: .noValue) },
+            // Generic container role (AXGroup) with selection but AXEditable != true
+            { $0.role = "AXGroup"; $0.selection = $0.range(0, 0); $0.editable = Read(value: kCFBooleanFalse, status: .success) },
+            // Positive text role (AXTextArea) but lacking both numeric and marker selection
+            { $0.role = "AXTextArea"; $0.selection = Read(value: nil, status: .noValue); $0.marker = Read(value: nil, status: .noValue) },
+            // Secure text field role or subrole
+            { $0.role = "AXSecureTextField"; $0.selection = $0.range(0, 0) },
+            { $0.role = "AXTextField"; $0.subrole = Read(value: "AXSecureTextField" as CFString, status: .success); $0.selection = $0.range(0, 0) }
+        ]
+        for configure in noEvidenceCases {
+            let f = Fixture()
+            f.bundle = "com.google.Chrome"
+            f.currentField = nil
+            var t = f.transport()
+            t.capture = { _ in
+                f.captures += 1
+                return .unavailable(.focusedTextElementUnavailable, pid: f.pid, focused: nil, ownerStatus: nil)
+            }
+            f.onWait = {
+                f.currentField = f.field
+                configure(f)
+            }
+            let result = await TextInsertion.deliver("x", to: nil, transport: t) { f.allowed }
+            #expect(result.outcome == .focusChanged && f.posts == 0 && f.slots.count == 1)
+        }
+    }
 }
 #endif

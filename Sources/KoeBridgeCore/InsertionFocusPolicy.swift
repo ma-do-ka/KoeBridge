@@ -56,4 +56,61 @@ public enum DeliveryTargetPolicy {
         guard sameApp else { return .differentApp }
         return sameElement ? .sameElement : .differentElement
     }
+
+    public enum RecoveryAction: Equatable, Sendable {
+        case waitOnButton
+        case acceptEditor
+        case reject
+    }
+
+    private static let positiveTextRoles: Set<String> = [
+        "AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"
+    ]
+
+    /// Evaluate a candidate element observed during bounded pre-send recovery.
+    /// - Case A (`isSameElement == true`): matches Build 73 Endo AXButton recovery
+    ///   (`AXButton` waits when selection/editable are absent; `AXTextField`/`AXTextArea`
+    ///   with live selection accepts).
+    /// - Case B (`isSameElement == false`, allowed only when `requireSameElement == false`):
+    ///   requires same process, same owner, same focused window, same element window,
+    ///   non-secure role/subrole, and positive editor evidence (either a positive text role
+    ///   with valid typed selection, or a non-denylisted role with `editable == true` and
+    ///   valid typed selection).
+    public static func recoveryCandidateAction(requireSameElement: Bool,
+                                               sameProcess: Bool,
+                                               sameOwner: Bool,
+                                               sameFocusedWindow: Bool,
+                                               sameElementWindow: Bool,
+                                               isSameElement: Bool,
+                                               role: String?,
+                                               subrole: String?,
+                                               subroleReadable: Bool,
+                                               hasValidNumericSelection: Bool,
+                                               hasValidMarkerSelection: Bool,
+                                               rangeAbsent: Bool,
+                                               markerAbsent: Bool,
+                                               editable: Bool?,
+                                               editableAbsent: Bool) -> RecoveryAction {
+        guard sameProcess, sameOwner, sameFocusedWindow else { return .reject }
+        guard isSameElement || !requireSameElement else { return .reject }
+        guard let role, subroleReadable,
+              role != "AXSecureTextField", subrole != "AXSecureTextField" else { return .reject }
+        if isSameElement && role == "AXButton" {
+            guard rangeAbsent, markerAbsent, editableAbsent else { return .reject }
+            return .waitOnButton
+        }
+        guard sameElementWindow else { return .reject }
+        let hasSelection = hasValidNumericSelection || hasValidMarkerSelection
+        guard hasSelection else { return .reject }
+        if isSameElement {
+            guard ["AXTextField", "AXTextArea"].contains(role) else { return .reject }
+            return .acceptEditor
+        }
+        // Case B: Different element in the same window/process.
+        guard !isDenylisted(role: role) else { return .reject }
+        if positiveTextRoles.contains(role) {
+            return .acceptEditor
+        }
+        return editable == true ? .acceptEditor : .reject
+    }
 }

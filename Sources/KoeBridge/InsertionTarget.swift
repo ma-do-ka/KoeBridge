@@ -141,16 +141,13 @@ import KoeBridgeCore
         let diagnostics = diagnostics?.isCollecting == true ? diagnostics : nil
         let app = AXUIElementCreateApplication(pid)
         let system = AXUIElementCreateSystemWide()
-        for (root, scope) in [(app, Token.application), (system, Token.system)] {
-            let read = copyAX(root, name: kAXFocusedUIElementAttribute as CFString,
-                              operation: .focusedElement, scope: scope, timeout: timeout,
-                              diagnostics: diagnostics, stage: stage)
-            guard let candidate = read.value else { continue }
+        func validated(_ read: AttributeRead, scope: Token) -> (value: CFTypeRef, system: Bool)? {
+            guard let candidate = read.value else { return nil }
             guard CFGetTypeID(candidate) == AXUIElementGetTypeID() else {
                 diagnostics?.record(.target, stage: stage, [
                     .scope: .token(scope), .element: .token(.invalidType)
                 ])
-                continue
+                return nil
             }
             let element = unsafeBitCast(candidate, to: AXUIElement.self)
             let owner = Self.owner(of: element, diagnostics: diagnostics, stage: stage)
@@ -158,11 +155,36 @@ import KoeBridgeCore
                 .scope: .token(scope),
                 .owner: .token(owner.status == .success ? (owner.pid == pid ? .same : .different) : .unavailable)
             ])
-            if owner.status == .success && owner.pid == pid {
-                return (candidate, scope == .system)
-            }
+            guard owner.status == .success, owner.pid == pid else { return nil }
+            return (candidate, scope == .system)
         }
-        return nil
+        var timedOut = false
+        for (root, scope) in [(app, Token.application), (system, Token.system)] {
+            let read = copyAX(root, name: kAXFocusedUIElementAttribute as CFString,
+                              operation: .focusedElement, scope: scope, timeout: timeout,
+                              diagnostics: diagnostics, stage: stage)
+            if read.status == .cannotComplete { timedOut = true }
+            if let resolved = validated(read, scope: scope) { return resolved }
+        }
+        // In Chromium/Electron apps, querying kAXFocusedWindowAttribute awakens
+        // lazy renderer accessibility trees when kAXFocusedUIElementAttribute
+        // initially returns .noValue on the application and system roots.
+        guard !timedOut else { return nil }
+        let windowRead = copyAX(app, name: kAXFocusedWindowAttribute as CFString,
+                                operation: .focusedWindow, scope: .application, timeout: timeout,
+                                diagnostics: diagnostics, stage: stage)
+        guard windowRead.status == .success, let windowCandidate = windowRead.value,
+              CFGetTypeID(windowCandidate) == AXUIElementGetTypeID() else { return nil }
+        let windowElement = unsafeBitCast(windowCandidate, to: AXUIElement.self)
+        let windowFocus = copyAX(windowElement, name: kAXFocusedUIElementAttribute as CFString,
+                                 operation: .focusedElement, scope: .focusedWindow, timeout: timeout,
+                                 diagnostics: diagnostics, stage: stage)
+        if let resolved = validated(windowFocus, scope: .focusedWindow) { return resolved }
+        guard windowFocus.status != .cannotComplete else { return nil }
+        let reawakenedApp = copyAX(app, name: kAXFocusedUIElementAttribute as CFString,
+                                   operation: .focusedElement, scope: .application, timeout: timeout,
+                                   diagnostics: diagnostics, stage: stage)
+        return validated(reawakenedApp, scope: .application)
     }
 
     /// Distinguish a legitimate absent subrole from a failed or mistyped read.
