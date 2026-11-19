@@ -2,6 +2,17 @@
 import Foundation
 import KoeBridgeCore
 
+// Inject the wire transport so setup, receive, and adoption can be exercised offline.
+protocol GeminiSocket: Sendable {
+    var state: URLSessionTask.State { get }
+    func resume()
+    func receive() async throws -> URLSessionWebSocketTask.Message
+    func send(_ message: URLSessionWebSocketTask.Message) async throws
+    func sendPing(pongReceiveHandler: @escaping @Sendable (Error?) -> Void)
+    func cancel(with closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?)
+}
+extension URLSessionWebSocketTask: GeminiSocket {}
+
 private final class GeminiPingCompletion: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Void, Error>?
@@ -28,12 +39,20 @@ private final class GeminiPingCompletion: @unchecked Sendable {
 /// Start, admitted PCM, and end markers all share the same ordered send queue.
 @MainActor final class GeminiLiveConnection {
     var onEvent: ((TranscribeEvent) -> Void)?
-    private var socket: URLSessionWebSocketTask?
+    private var socket: (any GeminiSocket)?
     private var receiver: Task<Void, Never>?
     private var heartbeat: Task<Void, Never>?
     private var sendTail: Task<Void, Error>?
     private var endTask: Task<Void, Error>?
-    private(set) var assembler = TranscriptAssembler()
+    private(set) var assembler: TranscriptAssembler
+    private var receivedGoAway = false
+    private let makeSocket: (URL) -> any GeminiSocket
+
+    init(finalBudget: TranscriptAssembler.FinalBudget? = .dictation,
+         makeSocket: @escaping (URL) -> any GeminiSocket = { URLSession.shared.webSocketTask(with: $0) }) {
+        assembler = TranscriptAssembler(budget: finalBudget)
+        self.makeSocket = makeSocket
+    }
     private var lastFinalAt: Date?
     private var endpointState = ManualEndpointState()
     private var failure: String?
@@ -54,7 +73,7 @@ private final class GeminiPingCompletion: @unchecked Sendable {
     private var receivedFrames = 0
     private var unrecognizedFrames = 0
 
-    var isUsableForPrewarm: Bool { ready && !closedByClient && failure == nil && socket?.state == .running }
+    var isUsableForPrewarm: Bool { ready && !receivedGoAway && !closedByClient && failure == nil && socket?.state == .running }
 
     func connect(apiKey: String, vocabulary: [String], style: TranscriptionStyle, japaneseHint: Bool) async throws {
         guard !started, !closedByClient else { throw ConnectionError.disconnected }
@@ -64,7 +83,7 @@ private final class GeminiPingCompletion: @unchecked Sendable {
         components.queryItems = [URLQueryItem(name: "key", value: apiKey)]
         guard let url = components.url else { throw ConnectionError.badURL }
         let connectionBeganAt = Date()
-        let ws = URLSession.shared.webSocketTask(with: url)
+        let ws = makeSocket(url)
         socket = ws
         ws.resume()
         let watchdog = Task { [weak self] in
@@ -81,6 +100,7 @@ private final class GeminiPingCompletion: @unchecked Sendable {
                 while !setupComplete {
                     try Task.checkCancellation()
                     let frame = try Self.decode(try await ws.receive())
+                    if frame.announcesGoAway { receivedGoAway = true }
                     captureUsage(frame.tokenUsage)
                     for event in frame.events {
                         if case .providerError(let failure) = event { throw failure }
@@ -129,6 +149,7 @@ private final class GeminiPingCompletion: @unchecked Sendable {
                 guard !closedByClient, !Task.isCancelled else { return }
                 receivedFrames += 1
                 let frame = try Self.decode(msg)
+                if frame.announcesGoAway { receivedGoAway = true }
                 let gotUsage = captureUsage(frame.tokenUsage)
                 if frame.events.isEmpty && !gotUsage {
                     unrecognizedFrames += 1
@@ -209,6 +230,11 @@ private final class GeminiPingCompletion: @unchecked Sendable {
         let now = Date()
         let committedBefore = assembler.finalCount
         assembler.apply(event, segmentIdentity: segmentIdentity)
+        if assembler.exceededFinalBudget {
+            onEvent?(.error(ConnectionError.finalBudgetExceeded.localizedDescription))
+            cancel()
+            return
+        }
         if case .final = event {
             finalEvents += 1
             if assembler.finalCount > committedBefore { lastFinalAt = now }
@@ -223,6 +249,7 @@ private final class GeminiPingCompletion: @unchecked Sendable {
     }
     private func checkOpen() throws {
         try Task.checkCancellation()
+        if assembler.exceededFinalBudget { throw ConnectionError.finalBudgetExceeded }
         guard socket != nil, !closedByClient else { throw ConnectionError.disconnected }
         if let failure { throw ConnectionError.setup(failure) }
     }
@@ -338,9 +365,10 @@ private final class GeminiPingCompletion: @unchecked Sendable {
         }
     }
     enum ConnectionError: Error, LocalizedError {
-        case badURL, setup(String), disconnected, noFinal, stalled, finalizationTimeout
+        case badURL, setup(String), disconnected, noFinal, stalled, finalizationTimeout, finalBudgetExceeded
         var errorDescription: String? {
             switch self {
+            case .finalBudgetExceeded: return "認識結果の上限に達したため中断しました。取得済みの文字は途中結果として確認できます"
             case .badURL: return "Gemini接続先URLが不正です"
             case .setup(let reason): return "Gemini API: \(reason)"
             case .disconnected: return "Gemini接続がありません"

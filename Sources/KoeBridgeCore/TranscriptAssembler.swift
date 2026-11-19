@@ -17,7 +17,22 @@ public struct TranscriptAssembler {
         acceptedSegments.removeAll(keepingCapacity: true)
         interim = ""
     }
-    public init() {}
+    // One Live dictation can last eight minutes. Charge the output, separators,
+    // and every retained dedup key/value before mutating either collection.
+    public struct FinalBudget: Sendable {
+        public let bytes: Int
+        public let identities: Int
+        public static let dictation = Self(bytes: 256 * 1024, identities: 2048)
+        public init(bytes: Int, identities: Int) {
+            precondition(bytes > 0 && identities > 0)
+            self.bytes = bytes
+            self.identities = identities
+        }
+    }
+    private let budget: FinalBudget?
+    private var chargedBytes = 0
+    public private(set) var exceededFinalBudget = false
+    public init(budget: FinalBudget? = nil) { self.budget = budget }
 
     public var displayText: String {
         if interim.isEmpty { return finalized }
@@ -26,6 +41,7 @@ public struct TranscriptAssembler {
     }
 
     public mutating func apply(_ event: TranscribeEvent, segmentIdentity: String? = nil) {
+        guard !exceededFinalBudget else { return }
         switch event {
         case .interim(let text):
             let candidate = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -37,14 +53,31 @@ public struct TranscriptAssembler {
             guard !segment.isEmpty else { return }
             // Only a provider identity can establish a retransmission. Do not
             // clear a newer pending hypothesis when a prior final is replayed.
-            if let segmentIdentity {
-                if let previous = acceptedSegments[segmentIdentity] {
-                    if previous.contains(segment) { return }
-                    // Optional timing fields identify a time range, not a
-                    // guaranteed unique server ID. Preserve conflicting text
-                    // for recovery and disallow an automatic final result.
-                    hasConflictingFinals = true
+            let previous = segmentIdentity.flatMap { acceptedSegments[$0] }
+            if previous?.contains(segment) == true { return }
+            if let budget {
+                let size = segment.utf8.count
+                let identityBytes = previous == nil ? segmentIdentity?.utf8.count ?? 0 : 0
+                let cost = size + (needsSpace(finalized, segment) ? 1 : 0)
+                    + (segmentIdentity == nil ? 0 : size) + identityBytes
+                guard cost <= budget.bytes - chargedBytes,
+                      segmentIdentity == nil || previous != nil || acceptedSegments.count < budget.identities else {
+                    // Even an oversized first final leaves a bounded, manual-only prefix.
+                    if finalized.isEmpty && interim.isEmpty {
+                        var remaining = budget.bytes - chargedBytes
+                        for scalar in segment.unicodeScalars {
+                            guard scalar.utf8.count <= remaining else { break }
+                            interim.unicodeScalars.append(scalar)
+                            remaining -= scalar.utf8.count
+                        }
+                    }
+                    exceededFinalBudget = true
+                    return
                 }
+                chargedBytes += cost
+            }
+            if let segmentIdentity {
+                if previous != nil { hasConflictingFinals = true }
                 acceptedSegments[segmentIdentity, default: []].insert(segment)
             }
             finalized = join(finalized, segment)
@@ -60,7 +93,7 @@ public struct TranscriptAssembler {
                            volatileTail: String(displayText.dropFirst(finalized.count)))
     }
 
-    public var committedText: String { finalized }
+    public var committedText: String { exceededFinalBudget ? "" : finalized }
 
     /// Failed recognition is saved as *partial* history, never auto-inserted.
     /// Preserve the pending suffix too; the previous implementation silently
@@ -70,8 +103,11 @@ public struct TranscriptAssembler {
     private func join(_ a: String, _ b: String) -> String {
         guard !a.isEmpty else { return b }
         guard !b.isEmpty else { return a }
-        guard let left = a.last, let right = b.first else { return a + b }
-        let shouldSpace = left.isASCII && right.isASCII && (left.isLetter || left.isNumber) && (right.isLetter || right.isNumber)
-        return a + (shouldSpace ? " " : "") + b
+        return a + (needsSpace(a, b) ? " " : "") + b
+    }
+
+    private func needsSpace(_ a: String, _ b: String) -> Bool {
+        guard let left = a.last, let right = b.first else { return false }
+        return left.isASCII && right.isASCII && (left.isLetter || left.isNumber) && (right.isLetter || right.isNumber)
     }
 }

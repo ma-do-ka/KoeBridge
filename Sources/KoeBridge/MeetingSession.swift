@@ -207,7 +207,7 @@ private final class MeetingAudioCount: @unchecked Sendable {
             try await local.start()
         } else {
             guard let apiKey else { throw VoiceController.AppError.noKey }
-            let cloud = GeminiLiveConnection(); chunk.cloud = cloud
+            let cloud = GeminiLiveConnection(finalBudget: nil); chunk.cloud = cloud
             try await cloud.connect(apiKey: apiKey, vocabulary: vocabulary, style: style, japaneseHint: japaneseHint)
         }
         guard !stopping, !chunk.stopRequested else { return }
