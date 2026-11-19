@@ -29,7 +29,7 @@ final class MicrophoneCapture: @unchecked Sendable {
     private var attemptDeadline: TimeInterval = 0
     private var startupBufferEpoch: UInt64 = 1 // processingQueue only
     private let stopLatch = MicrophoneStopLatch()
-    private var tapInstalled = false // lifecycleQueue only
+    private let tap = MicrophoneTapInstallation() // lifecycleQueue only
     private var tapPlan: MicrophoneTapFormatPlan? // lifecycleQueue only
     private var teardownStarted = false // lifecycleQueue only
     private var startupBuffers: [AVAudioPCMBuffer] = [] // processingQueue only
@@ -113,13 +113,13 @@ final class MicrophoneCapture: @unchecked Sendable {
     }
 
     @MainActor
-    func start(timeout: TimeInterval = 2.5,
+    func start(deadline requestedDeadline: TimeInterval? = nil,
                onAudio: @escaping (Data) -> Void,
                onDeviceChanged: @escaping () -> Void = {}) async throws {
         guard !startRequested else { throw CaptureError.alreadyStarted }
         startRequested = true
         let beganAt = ProcessInfo.processInfo.systemUptime
-        let deadline = beganAt + max(0, timeout)
+        let deadline = requestedDeadline ?? (beganAt + MicrophoneStartupRetryPolicy().attemptTimeout)
         attemptDeadline = deadline
         startupDiagnostics = DiagnosticLog.microphoneTrace(captureID: diagnosticID,
                                                            explicitSelection: !selectedInputUID.isEmpty)
@@ -144,7 +144,8 @@ final class MicrophoneCapture: @unchecked Sendable {
         do {
             try await withTaskCancellationHandler {
                 try Task.checkCancellation()
-                guard timeout.isFinite, timeout > 0, !startupGate.isStopped else {
+                guard deadline.isFinite, beganAt < deadline else { throw CaptureError.notReady(.unstableBuffers) }
+                guard !startupGate.isStopped else {
                     throw CancellationError()
                 }
                 try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
@@ -152,7 +153,15 @@ final class MicrophoneCapture: @unchecked Sendable {
                         do {
                             try startBlocking(onAudio: onAudio, onDeviceChanged: onDeviceChanged)
                             continuation.resume(returning: ())
-                        } catch { continuation.resume(throwing: error) }
+                        } catch {
+                            startupGate.stop(at: ProcessInfo.processInfo.systemUptime)
+                            stopBlocking(flushPendingAudio: false)
+                            if let failure = error as? MicrophoneStartupGate.Failure {
+                                continuation.resume(throwing: CaptureError.notReady(failure))
+                            } else {
+                                continuation.resume(throwing: error)
+                            }
+                        }
                     }
                 }
                 while true {
@@ -255,6 +264,7 @@ final class MicrophoneCapture: @unchecked Sendable {
                     if !committed {
                         decision = startupGate.decision(at: ProcessInfo.processInfo.systemUptime,
                                                          deadline: deadline, engineRunning: running)
+                        if decision == .ready { decision = .waiting }
                     }
                 }
                 continuation.resume(returning: decision)
@@ -368,7 +378,7 @@ final class MicrophoneCapture: @unchecked Sendable {
         let running = engine?.isRunning == true
         let input = MicrophoneRevalidationInput(
             hasEngineAndTarget: engineLease != nil && selectedTarget != nil,
-            deviceStillSelected: selected, engineRunning: running, tapInstalled: tapInstalled,
+            deviceStillSelected: selected, engineRunning: running, tapInstalled: tap.isInstalled,
             outputConnectionsEmpty: node.map { engine?.outputConnectionPoints(for: $0, outputBus: 0).isEmpty == true } ?? false,
             hardwareFormatValid: hardware.map { MicrophoneTapFormatPlan(hardwareSampleRate: $0.sampleRate, hardwareChannels: $0.channelCount) != nil } ?? false,
             hardwareMatchesPlan: hardware.map { tapPlan?.matches(sampleRate: $0.sampleRate, channels: $0.channelCount) == true } ?? false,
@@ -416,6 +426,7 @@ final class MicrophoneCapture: @unchecked Sendable {
     private func startBlocking(onAudio: @escaping (Data) -> Void,
                                onDeviceChanged: @escaping () -> Void) throws {
         guard !startupGate.isStopped, !teardownStarted else { throw CancellationError() }
+        guard ProcessInfo.processInfo.systemUptime < attemptDeadline else { throw CaptureError.notReady(.unstableBuffers) }
         guard engine == nil else { throw CaptureError.alreadyStarted }
         let beganAt = Date()
         startupDiagnostics?.end(.lifecycle)
@@ -431,7 +442,10 @@ final class MicrophoneCapture: @unchecked Sendable {
         routeSnapshot = MicrophoneRouteSnapshot.current(inputDeviceID: target.deviceID)
         startupDiagnostics?.end(.routeSnapshot)
         startupDiagnostics?.begin(.engineLease)
-        guard let lease = Self.engineLifetime.acquire() else { throw CaptureError.engineInUse }
+        guard let lease = Self.engineLifetime.acquire() else {
+            if Self.engineLifetime.isQuarantined { throw MicrophoneGraphError.quarantined }
+            throw CaptureError.engineInUse
+        }
         engineLease = lease
         let engine = lease.resource
         startupDiagnostics?.end(.engineLease)
@@ -446,51 +460,24 @@ final class MicrophoneCapture: @unchecked Sendable {
         ) { [weak self] _ in
             self?.invalidateStartup(.configurationChanged, onDeviceChanged: onDeviceChanged)
         }
-        startupDiagnostics?.begin(.formats)
-        let hardware = node.inputFormat(forBus: 0)
-        let previousClientFormat = node.outputFormat(forBus: 0)
-        formatSnapshot = InputFormatSnapshot(hardwareRate: hardware.sampleRate,
-                                            hardwareChannels: hardware.channelCount,
-                                            nodeRate: previousClientFormat.sampleRate,
-                                            nodeChannels: previousClientFormat.channelCount)
-        // A retained engine keeps the OLD client format after a device change.
-        // Build 36 reproduced hardware 16 kHz/mono versus client 44.1 kHz/stereo.
-        // A nil tap format leaves that mismatch intact; retries cannot repair it.
-        guard let plan = MicrophoneTapFormatPlan(hardwareSampleRate: hardware.sampleRate,
-                                                hardwareChannels: hardware.channelCount),
-              let input = AVAudioFormat(commonFormat: .pcmFormatFloat32,
-                                        sampleRate: plan.sampleRate, channels: plan.channelCount,
-                                        interleaved: false) else { throw CaptureError.noInput }
-        startupDiagnostics?.format(sampleRate: input.sampleRate, channels: input.channelCount)
-        startupDiagnostics?.end(.formats)
-        startupDiagnostics?.begin(.converter)
-        guard let converter = AVAudioConverter(from: input, to: output) else {
-            throw CaptureError.noInput
+        let graph = LeasedMicrophoneTapGraph(lifetime: Self.engineLifetime, lease: lease, node: node) {
+            MicrophoneDevices.isStillSelected(target, node: node)
         }
-        formatSnapshot?.tapRate = input.sampleRate
-        formatSnapshot?.tapChannels = input.channelCount
-        startupDiagnostics?.end(.converter)
-        guard !startupGate.isStopped else { throw CancellationError() }
-        processingQueue.sync {
-            self.onAudio = onAudio; self.converter = converter; self.alive = true
-        }
-        // This engine is exclusively leased and owns a tap-only input graph.
-        // A non-nil format is valid only on an unconnected output bus. Refuse
-        // an unexpected graph rather than modifying another connection.
-        guard !engine.isRunning,
-              engine.outputConnectionPoints(for: node, outputBus: 0).isEmpty else {
-            throw CaptureError.notReady(.formatChanged)
-        }
-        let beforeTap = node.inputFormat(forBus: 0)
-        guard plan.matches(sampleRate: beforeTap.sampleRate, channels: beforeTap.channelCount) else {
-            throw CaptureError.notReady(.formatChanged)
-        }
-        guard !startupGate.isStopped else { throw CancellationError() }
-        // Explicitly reconfigure the input node output to CURRENT hardware.
-        // The tap and AVAudioConverter must use this SAME format.
-        startupDiagnostics?.begin(.tapInstall)
         let tapGeneration = startupGate.currentTapGeneration
-        node.installTap(onBus: 0, bufferSize: 1024, format: input) { [weak self] buffer, _ in
+        let sink = MicrophoneTapInstallation.Sink.capture(output: output, configure: { converter, hardware, client in
+            let input = converter.inputFormat
+            self.formatSnapshot = InputFormatSnapshot(hardwareRate: hardware.sampleRate,
+                hardwareChannels: hardware.channelCount, nodeRate: client.sampleRate,
+                nodeChannels: client.channelCount, tapRate: input.sampleRate, tapChannels: input.channelCount)
+            self.processingQueue.sync {
+                self.onAudio = onAudio
+                self.converter = converter
+                self.alive = true
+            }
+        }, readback: { applied in
+            self.formatSnapshot?.appliedRate = applied.sampleRate
+            self.formatSnapshot?.appliedChannels = applied.channelCount
+        }, receive: { [weak self] buffer, _ in
             guard let self, buffer.frameLength > 0,
                   let token = self.startupGate.captureTokenForTap(tapGeneration: tapGeneration) else { return }
             // Timestamp arrival, not eventual conversion. Queued old buffers
@@ -513,17 +500,13 @@ final class MicrophoneCapture: @unchecked Sendable {
                 defer { slots.signal() }
                 self?.convert(copy, arrivedAt: arrivedAt, token: token, onDeviceChanged: onDeviceChanged)
             }
-        }
-        tapInstalled = true
+        })
+        let plan = try tap.installAndPrepare(graph: graph, gate: startupGate, deadline: attemptDeadline,
+                                             diagnostics: startupDiagnostics, sink: sink)
         tapPlan = plan
-        startupDiagnostics?.end(.tapInstall)
         do {
-            try verifyTapFormat(node, plan: plan)
-            startupDiagnostics?.begin(.enginePrepare)
-            engine.prepare()
-            startupDiagnostics?.end(.enginePrepare)
-            try verifyTapFormat(node, plan: plan)
             guard !startupGate.isStopped else { throw CancellationError() }
+            guard ProcessInfo.processInfo.systemUptime < attemptDeadline else { throw CaptureError.notReady(.unstableBuffers) }
             let startAt = Date()
             startupDiagnostics?.begin(.engineStart)
             try engine.start()
@@ -551,10 +534,9 @@ final class MicrophoneCapture: @unchecked Sendable {
             startTimings = StartTimings(microphonePreparation: startAt.timeIntervalSince(beganAt),
                                        engineStart: completedAt.timeIntervalSince(startAt),
                                        total: completedAt.timeIntervalSince(beganAt),
-                                       sampleRate: input.sampleRate, channels: input.channelCount)
+                                       sampleRate: plan.sampleRate, channels: plan.channelCount)
         } catch {
             startupDiagnostics?.note(.startFailed, code: (error as NSError).code)
-            stopBlocking(flushPendingAudio: false)
             throw error
         }
     }
@@ -718,17 +700,16 @@ final class MicrophoneCapture: @unchecked Sendable {
             self.configurationObserver = nil
         }
         startupDiagnostics?.end(.stopGate)
-        if let engine {
+        if let engine, !Self.engineLifetime.isQuarantined {
             startupDiagnostics?.begin(.engineStop)
             engine.stop()
             startupDiagnostics?.end(.engineStop)
-            if tapInstalled {
+            if tap.isInstalled {
                 startupDiagnostics?.begin(.tapRemove)
-                engine.inputNode.removeTap(onBus: 0)
+                tap.removeIfOwned()
                 startupDiagnostics?.end(.tapRemove)
             }
         }
-        tapInstalled = false
         tapPlan = nil
         // Do not drop the process-wide engine owner here. Removing our
         // NotificationCenter observer does not drain AVFAudio's private queue.

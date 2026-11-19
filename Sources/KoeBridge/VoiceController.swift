@@ -895,7 +895,8 @@ import KoeBridgeCore
             while readyCapture == nil {
                 try Task.checkCancellation()
                 guard active === take, phase == .preparing, !take.finished else { throw CancellationError() }
-                let elapsed = ProcessInfo.processInfo.systemUptime - preparationBegan
+                let attemptBegan = ProcessInfo.processInfo.systemUptime
+                let elapsed = attemptBegan - preparationBegan
                 let timeout = retryPolicy.timeoutForNextAttempt(elapsed: elapsed)
                 guard timeout > 0 else { throw MicrophoneCapture.CaptureError.notReady(.noBuffers) }
                 attempts += 1
@@ -906,7 +907,8 @@ import KoeBridgeCore
                 DiagnosticLog.recordMicrophoneEvidence("mic_prepare_attempt take=\(take.id.uuidString) attempt=\(attempts)")
                 do {
                     microphoneWarmKeeper.suspend(reason: "take")
-                    try await candidate.start(timeout: timeout, onAudio: { [weak self, weak take] data in
+                    let deadline = min(attemptBegan + timeout, preparationBegan + retryPolicy.totalTimeout)
+                    try await candidate.start(deadline: deadline, onAudio: { [weak self, weak take] data in
                         let delivery = continuation.yield(data)
                         if case .dropped = delivery {
                             integrity.markDropped()
@@ -932,7 +934,7 @@ import KoeBridgeCore
                     if error is CancellationError { throw error }
                     // A missing explicit choice must never become another mic.
                     if error is MicrophoneSelectionError { throw error }
-                    let category = (error as? MicrophoneCapture.CaptureError)?.diagnosticCategory ?? "engine_start_failed"
+                    let category = (error as? MicrophoneCapture.CaptureError)?.diagnosticCategory ?? (error as? MicrophoneGraphError)?.rawValue ?? "engine_start_failed"
                     let elapsed = ProcessInfo.processInfo.systemUptime - preparationBegan
                     if let route = candidate.routeSnapshot {
                         DiagnosticLog.recordMicrophoneEvidence("mic_prepare_route take=\(take.id.uuidString) attempt=\(attempts) \(route.diagnosticFields)")
@@ -948,6 +950,7 @@ import KoeBridgeCore
                     } else {
                         failure = nil
                     }
+                    if error is MicrophoneGraphError { throw error }
                     guard let delay = retryPolicy.retryDelay(after: attempts, elapsed: elapsed, failure: failure) else { throw error }
                     status = "マイクの接続準備を待っています…（\(attempts + 1)/\(retryPolicy.maximumAttempts)）"
                     try await Task.sleep(for: .seconds(delay))

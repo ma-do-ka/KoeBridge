@@ -185,6 +185,21 @@ public final class MicrophoneStartupGate: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         return phaseLocked
     }
+    package var configuringWithoutChurn: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return configuring && !stopped && failure == nil && pendingSince == nil
+    }
+
+    /// Linearize a warm start against cancellation and configuration callbacks.
+    /// A warmer has no audio admission or recording commit.
+    package func finishWarmStart(deadline: TimeInterval) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard configuring, !stopped, failure == nil, pendingSince == nil,
+              ProcessInfo.processInfo.systemUptime < deadline else { return false }
+        configuring = false
+        return true
+    }
+
     public var currentTapGeneration: UInt64 { tapGeneration }
     public var currentEpoch: UInt64 {
         lock.lock(); defer { lock.unlock() }
@@ -457,6 +472,24 @@ public final class MicrophoneEngineLifetime<Resource: AnyObject>: @unchecked Sen
     private let makeResource: () -> Resource
     private var resource: Resource?
     private var activeToken: UUID?
+    private var quarantined = false
+
+    public var isQuarantined: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return quarantined
+    }
+
+    public func isCurrent(token: UUID) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return !quarantined && activeToken == token
+    }
+
+    /// AVFAudio cannot prove rollback after a partial tap installation.
+    /// Retain the one engine for process lifetime, denying both kinds of lease.
+    public func quarantine(token: UUID) {
+        lock.lock(); defer { lock.unlock() }
+        if activeToken == token { quarantined = true }
+    }
 
     public init(makeResource: @escaping () -> Resource) {
         self.makeResource = makeResource
@@ -467,7 +500,7 @@ public final class MicrophoneEngineLifetime<Resource: AnyObject>: @unchecked Sen
     /// an engine still owned by another attempt. Creation is lazy and exactly once.
     public func acquire() -> Lease? {
         lock.lock(); defer { lock.unlock() }
-        guard activeToken == nil else { return nil }
+        guard !quarantined, activeToken == nil else { return nil }
         let retained: Resource
         if let resource { retained = resource }
         else {
