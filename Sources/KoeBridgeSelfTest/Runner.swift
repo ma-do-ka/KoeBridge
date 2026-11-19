@@ -163,6 +163,7 @@ struct KoeBridgeSelfTest {
         await run("DiagnosticLogPolicyTests.threeGenerationsRotateAndDeleteAll", { try DiagnosticLogPolicyTests().threeGenerationsRotateAndDeleteAll() })
         await run("DiagnosticLogPolicyTests.oversizedOlderGenerationIsRemovedAndPermissionsAreEnforced", { try DiagnosticLogPolicyTests().oversizedOlderGenerationIsRemovedAndPermissionsAreEnforced() })
         await run("DiagnosticLogPolicyTests.defaultStoreLimitsAndRetentionPresets", { try DiagnosticLogPolicyTests().defaultStoreLimitsAndRetentionPresets() })
+        await run("DiagnosticLogPolicyTests.eightGenerationsRotateAndDeleteAll", { try DiagnosticLogPolicyTests().eightGenerationsRotateAndDeleteAll() })
         await run("InputDiagnosticTests.unknownReasonsAndInvalidApplicationValuesCannotLeakContent", { InputDiagnosticTests().unknownReasonsAndInvalidApplicationValuesCannotLeakContent() })
         await run("InputDiagnosticTests.largeEventsSplitWithoutLosingFieldsOrCorrelation", { InputDiagnosticTests().largeEventsSplitWithoutLosingFieldsOrCorrelation() })
         await run("InputDiagnosticTests.longTraceKeepsInitialCaptureTailAndLatestResult", { InputDiagnosticTests().longTraceKeepsInitialCaptureTailAndLatestResult() })

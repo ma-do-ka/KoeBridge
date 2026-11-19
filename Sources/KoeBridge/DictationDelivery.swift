@@ -13,7 +13,7 @@ import KoeBridgeCore
         var submitted: Bool { delivery == .verifiedInserted || delivery == .attemptedUnconfirmed }
 
         func updateSavedRecord(_ id: UUID, in history: inout TranscriptHistoryStore) {
-            history.updateDelivery(id, to: delivery, detail: detail)
+            history.updateDelivery(id, to: delivery, detail: historyInsertionDetail)
         }
 
         var deferredFeedback: OverlayFeedback? {
@@ -35,7 +35,7 @@ import KoeBridgeCore
         }
 
         var historyInsertionDetail: String {
-            guard let report, !report.eventsPosted, report.outcome != .verifiedInserted else { return detail }
+            guard let report, report.outcome != .verifiedInserted else { return detail }
             switch report.reason {
             case "recovery_deadline_expired": return "制限時間内に入力先を確認できませんでした。"
             case "recovery_host_changed": return "入力欄・選択範囲の安全確認に失敗しました。"

@@ -492,6 +492,29 @@ import KoeBridgeCore
             }
         }
         #expect(try RecentTranscriptArchive(fileURL: file).entries == store.entries)
+        for (result, delivery, reason, expectedToken) in [
+            (TextInsertion.Result.inserted, TranscriptRecord.Delivery.attemptedUnconfirmed, "posted_receipt_timeout", true),
+            (.inserted, .attemptedUnconfirmed, "posted_without_observable_edit", true),
+            (.partiallySubmitted, .partiallyDirect, "posted_then_active_app_changed", true),
+            (.inserted, .attemptedUnconfirmed, "PRIVATE_USER_TEXT_MUST_NEVER_APPEAR", false),
+            (.verifiedInserted, .verifiedInserted, "verified_value_and_selection", false)
+        ] {
+            let report = TextInsertion.Report(outcome: result, reason: reason, receipt: nil,
+                eventsPosted: true, target: nil, diagnostics: nil, resultUptimeMS: 0)
+            let classified = DictationDelivery.classify(report)
+            #expect(classified.delivery == delivery)
+            if expectedToken {
+                #expect(classified.historyInsertionDetail.contains("（\(reason)）"))
+            } else {
+                #expect(!classified.historyInsertionDetail.contains(reason))
+            }
+            if let pending = store.remember("detail-\(reason)", isPartial: false, delivery: .pending, engine: "test") {
+                classified.updateSavedRecord(pending, in: &store)
+                let saved = try #require(store.entries.first { $0.id == pending })
+                #expect(saved.deliveryDetail == classified.historyInsertionDetail)
+                #expect(!((saved.deliveryDetail ?? "").contains("PRIVATE_USER_TEXT")))
+            }
+        }
     }
 }
 #endif

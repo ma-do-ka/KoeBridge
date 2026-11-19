@@ -202,10 +202,36 @@ struct DiagnosticLogPolicyTests {
         }
         let main = DiagnosticLogPolicy.main
         let microphone = DiagnosticLogPolicy.microphone
-        check(main.maximumFileBytes == 256 * 1024 && main.maximumGenerations == 3)
+        check(main.maximumFileBytes == 256 * 1024 && main.maximumGenerations == 8)
         check(microphone.maximumFileBytes == 256 * 1024 && microphone.maximumGenerations == 8)
-        check(microphone.maximumFileBytes * microphone.maximumGenerations > main.maximumFileBytes * main.maximumGenerations)
+        check(microphone.maximumFileBytes * microphone.maximumGenerations == main.maximumFileBytes * main.maximumGenerations)
         check(DiagnosticLogPolicy.needsRotation(existingBytes: 60, incomingBytes: 5, maximumFileBytes: 64))
         check(!DiagnosticLogPolicy.needsRotation(existingBytes: 60, incomingBytes: 4, maximumFileBytes: 64))
+    }
+
+    func eightGenerationsRotateAndDeleteAll() throws {
+        let fm = FileManager.default
+        let directory = fm.temporaryDirectory.appendingPathComponent("koebridge-diag-eight-\(UUID())")
+        defer { try? fm.removeItem(at: directory) }
+        let store = DiagnosticFileStore(fileURL: directory.appendingPathComponent("KoeBridge.log"),
+                                        maximumFileBytes: 64,
+                                        maximumGenerations: DiagnosticLogPolicy.main.maximumGenerations)
+        let events = (0..<10).map { "event=generation-\($0)" }
+        try store.appendBatch(events, at: Date(timeIntervalSince1970: 0))
+        check(fm.fileExists(atPath: store.fileURL.path))
+        let latest = try String(contentsOf: store.fileURL, encoding: .utf8)
+        check(latest.contains("event=generation-9"))
+        for generation in 1...7 {
+            let rotated = store.fileURL.appendingPathExtension("\(generation)")
+            check(fm.fileExists(atPath: rotated.path))
+            check(store.fileSize(rotated) <= 64)
+            let contents = try String(contentsOf: rotated, encoding: .utf8)
+            check(contents.contains("event=generation-\(9 - generation)"))
+            check(!contents.contains("event=generation-0"))
+            check(!contents.contains("event=generation-1"))
+        }
+        check(!fm.fileExists(atPath: store.fileURL.appendingPathExtension("8").path))
+        try store.deleteAll()
+        try check(fm.contentsOfDirectory(atPath: directory.path).isEmpty)
     }
 }
