@@ -53,8 +53,8 @@ private final class GeminiPingCompletion: @unchecked Sendable {
         assembler = TranscriptAssembler(budget: finalBudget)
         self.makeSocket = makeSocket
     }
-    private var lastFinalAt: Date?
-    private var endpointState = ManualEndpointState()
+    private var lastFinalAt: ContinuousClock.Instant?
+    private var endpointState = TimedManualEndpointState<ContinuousClock.Instant>()
     private var failure: String?
     private var ready = false
     private var started = false
@@ -63,7 +63,7 @@ private final class GeminiPingCompletion: @unchecked Sendable {
     private var inputEnded = false
     private var endSendBeganInstant: ContinuousClock.Instant?
     private var completedText: String?
-    private var lastTranscriptionAt: Date?
+    private var lastTranscriptionAt: ContinuousClock.Instant?
     private var sentAudioChunks = 0
     private(set) var sentAudioBytes = 0
     private(set) var tokenSamples: [GeminiTokenSample] = []
@@ -227,7 +227,7 @@ private final class GeminiPingCompletion: @unchecked Sendable {
             if case .error(let message) = event { failure = message; onEvent?(event) }
             return
         }
-        let now = Date()
+        let now = ContinuousClock.now
         let committedBefore = assembler.finalCount
         assembler.apply(event, segmentIdentity: segmentIdentity)
         if assembler.exceededFinalBudget {
@@ -277,7 +277,7 @@ private final class GeminiPingCompletion: @unchecked Sendable {
             do {
                 try await ws.send(.string(raw))
                 try self.checkOpen()
-                if ending { self.endpointState.endWriteSucceeded(at: Date()) }
+                if ending { self.endpointState.endWriteSucceeded(at: .now) }
             } catch {
                 if ending { self.endpointState.endWriteFailed() }
                 throw error
@@ -333,19 +333,19 @@ private final class GeminiPingCompletion: @unchecked Sendable {
             try checkOpen()
             if !assembler.hasConflictingFinals,
                FinalizationPolicy.canFinish(endedAt: endedAt, lastFinalAt: lastFinalAt,
-                                            endAcknowledgedAt: endpointState.acknowledgedEndAt, now: Date(),
+                                            endAcknowledgedAt: endpointState.acknowledgedEndAt, now: .now,
                                             hasPendingInterim: !assembler.interim.isEmpty,
                                             lastTranscriptionAt: lastTranscriptionAt) {
                 let text = assembler.committedText
                 guard !text.isEmpty else { throw ConnectionError.noFinal }
                 completedText = text
-                DiagnosticLog.record("gemini finalized; waitSeconds=\(String(format: "%.3f", Date().timeIntervalSince(endedAt))) finalEvents=\(finalEvents)")
+                DiagnosticLog.record("gemini finalized; waitSeconds=\(endedAt.duration(to: .now)) finalEvents=\(finalEvents)")
                 cancel()
                 return text
             }
             try await Task.sleep(for: .milliseconds(25))
         }
-        let lastFinalAge = lastFinalAt.map { String(format: "%.2f", endedAt.timeIntervalSince($0)) } ?? "none"
+        let lastFinalAge = lastFinalAt.map { $0.duration(to: endedAt).description } ?? "none"
         DiagnosticLog.record("gemini finalization timeout; finalEvents=\(finalEvents) interimEvents=\(interimEvents) pendingInterim=\(!assembler.interim.isEmpty) lastFinalAgeAtStop=\(lastFinalAge) sentChunks=\(sentAudioChunks)")
         cancel()
         throw ConnectionError.finalizationTimeout

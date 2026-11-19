@@ -360,7 +360,7 @@ import KoeBridgeCore
     func fixLastInput() {
         guard !postingGate.isHeld else { status = DictationDelivery.postingBusyDetail; return }
         guard !hasPendingWork else { return }
-        guard let anchor = postingGate.lastDeliveryAnchor, Date().timeIntervalSince(anchor.deliveredAt) < 600 else {
+        guard let anchor = postingGate.lastDeliveryAnchor, anchor.isFresh() else {
             postingGate.lastDeliveryAnchor = nil
             status = "修正できる直前の入力がありません"
             return

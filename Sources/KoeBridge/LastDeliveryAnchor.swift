@@ -8,7 +8,11 @@ import KoeBridgeCore
     let after: InsertionReceiptPolicy.Snapshot
     let submittedText: String
     let sourceRecordID: UUID?
-    let deliveredAt: Date
+    let deliveredAt: ContinuousClock.Instant
+
+    func isFresh(at now: ContinuousClock.Instant = .now) -> Bool {
+        now < deliveredAt.advanced(by: .seconds(600))
+    }
 
     init(receipt: TextInsertion.Receipt, sourceRecordID: UUID?) {
         target = receipt.target
@@ -16,7 +20,7 @@ import KoeBridgeCore
         after = receipt.proof.after
         submittedText = receipt.proof.inserted
         self.sourceRecordID = sourceRecordID
-        deliveredAt = Date()
+        deliveredAt = .now
     }
 }
 #endif

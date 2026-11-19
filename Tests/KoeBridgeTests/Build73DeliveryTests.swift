@@ -1267,6 +1267,26 @@ import KoeBridgeCore
         #expect(report.settledUnconfirmedPredecessor == nil && report.unverifiedTarget?.hasHardPredecessorBlock == true)
     }
 
+    @Test func monotonicExpiryAndQuietTimeIgnoreWallClockSteps() async throws {
+        let gate = TextInsertion.PostingGate { _, _ in }
+        let sender = Sender(ticket: try #require(gate.historyTicket))
+        let result = await gate.post(.dictation("B"), from: sender.source(.take), transport: sender.transport()) { true }
+        let anchor = LastDeliveryAnchor(receipt: try #require(result.receipt), sourceRecordID: nil)
+        let origin = anchor.deliveredAt
+        var simulated = (wall: Date(), monotonic: origin)
+        for jump in [3600.0, -7200.0] {
+            simulated.wall.addTimeInterval(jump)
+            #expect(anchor.isFresh(at: simulated.monotonic))
+            #expect(!FinalizationPolicy.canFinish(endedAt: origin, lastFinalAt: origin,
+                                                 endAcknowledgedAt: origin, now: simulated.monotonic))
+        }
+        simulated.monotonic = origin.advanced(by: .milliseconds(400))
+        #expect(FinalizationPolicy.canFinish(endedAt: origin, lastFinalAt: origin,
+                                            endAcknowledgedAt: origin, now: simulated.monotonic))
+        #expect(anchor.isFresh(at: origin.advanced(by: .seconds(599))))
+        #expect(!anchor.isFresh(at: origin.advanced(by: .seconds(600))))
+    }
+
     @Test func competingProducersPostZeroUntilReceiptAndReconciliationFinish() async {
         let pairs: [(Producer, Producer)] = [
             (.translation, .take), (.preset, .take), (.take, .translation), (.take, .preset),
