@@ -368,7 +368,7 @@ struct RecoveryAX {
                  onAdoptUnavailable: (@escaping () -> AXError) -> Void = { _ = $0() },
                  stopReason: () -> String?)
         async -> (host: Host?, reason: String) {
-        var restoreAtExit = requireSameElement ? nil : ax.restoreSystemTimeout
+        var restoreAtExit = systemFocus ? ax.restoreSystemTimeout : nil
         defer { _ = restoreAtExit?() }
         var result = defaultFailureReason
         var attempts = 0

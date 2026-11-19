@@ -83,7 +83,7 @@ import KoeBridgeCore
             }
         }
 
-        func transport() -> TextInsertion.Transport {
+        func transport(systemFocus: Bool = false) -> TextInsertion.Transport {
             var t = TextInsertion.Transport()
             t.ax.now = { self.now }
             t.ax.sleep = { delay in
@@ -112,7 +112,8 @@ import KoeBridgeCore
                     capturedAt: self.now, blockedReason: nil)
                 let gate = InsertionTarget.DeliveryGateRead(role: self.role, subrole: self.subrole,
                     selectedRange: self.selection, selectedMarker: self.marker, editable: self.editable)
-                let rejection = DeliveryRejection(target: target, gate: gate, rejectedAt: self.now, ownerPID: self.owner ?? 0)
+                let rejection = DeliveryRejection(target: target, gate: gate, rejectedAt: self.now,
+                                                  ownerPID: self.owner ?? 0, systemFocus: systemFocus)
                 if let reason = gate.rejection(hasTextSelection: name != nil, diagnostics: trace, stage: .preflight,
                                                began: nil, retryCandidate: rejection.eligible) {
                     return .rejected(rejection, reason)
@@ -529,6 +530,66 @@ import KoeBridgeCore
                 let saved = try #require(store.entries.first { $0.id == pending })
                 #expect(saved.deliveryDetail == classified.historyInsertionDetail)
                 #expect(!((saved.deliveryDetail ?? "").contains("PRIVATE_USER_TEXT")))
+            }
+        }
+    }
+
+    @Test(arguments: [true, false])
+    func rejectedTargetRestoresTimeoutOnlyForSystemFocus(systemFocus: Bool) async {
+        enum Exit: CaseIterable { case adopted, partial, rejected, expired, interrupted }
+        for exit in Exit.allCases {
+            let f = Fixture()
+            var t = f.transport(systemFocus: systemFocus)
+            let system = AXUIElementCreateSystemWide()
+            var reads = 0
+            var systemReads = 0
+            var readsAtRestore: [Int] = []
+            t.ax.restoreSystemTimeout = {
+                readsAtRestore.append(reads)
+                return .cannotComplete
+            }
+            t.ax.attribute = { element, name in
+                reads += 1
+                if name as String == kAXFocusedUIElementAttribute {
+                    if CFEqual(element, system) {
+                        systemReads += 1
+                    } else if systemFocus {
+                        return Read(value: nil, status: .noValue)
+                    }
+                    if exit == .expired { f.now = 0.100 }
+                }
+                return f.attribute(name as String)
+            }
+            if exit == .interrupted {
+                let sleep = t.ax.sleep
+                t.ax.sleep = { delay in
+                    if !f.slots.isEmpty { throw CancellationError() }
+                    try await sleep(delay)
+                }
+            } else {
+                f.onWait = {
+                    f.recover()
+                    if exit == .rejected { f.currentField = f.other }
+                }
+            }
+            if exit == .partial { f.onPost = { f.currentField = f.other } }
+            f.onCheck = { stage in
+                if stage == .receipt { #expect(readsAtRestore == (systemFocus ? [reads] : [])) }
+            }
+            let result = await TextInsertion.deliver(String(repeating: "a", count: 29), to: nil, transport: t)
+            #expect((systemReads > 0) == systemFocus)
+            #expect(readsAtRestore == (systemFocus ? [reads] : []))
+            switch exit {
+            case .adopted:
+                #expect(result.outcome == .inserted && f.posts == 2 && f.checkpoints.contains(.receipt))
+            case .partial:
+                #expect(result.outcome == .partiallySubmitted && result.reason == "recovery_host_changed" && f.posts == 1)
+            case .rejected:
+                #expect(result.reason == "recovery_host_changed" && f.posts == 0)
+            case .expired:
+                #expect(result.reason == "recovery_deadline_expired" && f.posts == 0)
+            case .interrupted:
+                #expect(result.reason == "delivery_cancelled_before_post" && f.posts == 0)
             }
         }
     }
