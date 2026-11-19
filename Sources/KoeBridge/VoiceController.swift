@@ -281,12 +281,10 @@ import KoeBridgeCore
                 // The selected source is fixed; the destination is the current
                 // caret/selection when the completed transform is delivered.
                 self.lastDeliveryAnchor = nil
-                let report = await TextInsertion.deliver(working, to: target,
-                    unverifiedPredecessors: self.textOperationUnverifiedTargets,
-                    livePriorBlock: { candidate in self.textOperationUnverifiedTargets.contains { candidate.sameElement(as: $0) } }) {
+                let report = await self.postingGate.post(.dictation(working), from: .selection(target),
+                    selectionPredecessors: self.textOperationUnverifiedTargets) {
                     self.textOperationID == id && !Task.isCancelled
                 }
-                self.reconcileDelivery(report)
                 self.saveGeneratedResult(working, kind: kind, report: report)
                 guard self.textOperationID == id, !Task.isCancelled else { return }
                 let verified = report.outcome == .verifiedInserted
@@ -369,6 +367,7 @@ import KoeBridgeCore
     }
 
     func fixLastInput() {
+        guard !postingGate.isHeld else { status = DictationDelivery.postingBusyDetail; return }
         guard !hasPendingWork else { return }
         guard let anchor = lastDeliveryAnchor, Date().timeIntervalSince(anchor.deliveredAt) < 600 else {
             lastDeliveryAnchor = nil
@@ -376,9 +375,14 @@ import KoeBridgeCore
             return
         }
         guard KeychainStore.load() != nil else { status = AppError.noKey.localizedDescription; return }
-        guard let current = InsertionTarget.capture().target,
-              current.sameField(as: anchor.target), current.textSnapshot == anchor.after,
-              let target = current.selectDeliveredSpan(before: anchor.before, after: anchor.after, submitted: anchor.submittedText) else {
+        var selectedTarget: InsertionTarget?
+        let admitted = postingGate.withSelectionWrite {
+            guard let current = InsertionTarget.capture().target,
+                  current.sameField(as: anchor.target), current.textSnapshot == anchor.after else { return }
+            selectedTarget = current.selectDeliveredSpan(before: anchor.before, after: anchor.after, submitted: anchor.submittedText)
+        }
+        guard admitted else { status = DictationDelivery.postingBusyDetail; return }
+        guard let target = selectedTarget else {
             status = "入力後に変更されているため修正できません"
             return
         }
@@ -618,6 +622,9 @@ import KoeBridgeCore
     private let prewarmer = GeminiLivePrewarmer()
     private var warmScheduleTask: Task<Void, Never>?
     private var active: DictationTake?
+    private lazy var postingGate = TextInsertion.PostingGate { [unowned self] report, sourceID in
+        reconcileDelivery(report, sourceTakeID: sourceID)
+    }
     private var inFlight: [UUID: DictationTake] = [:]
     private var finished = OrderedResultBuffer<Completion>(maximumPending: 8)
     /// Presentation only: report a live fallback accurately; idle text names the OS default.
@@ -734,8 +741,17 @@ import KoeBridgeCore
 
     var hasKey: Bool { KeychainStore.load() != nil }
     var busy: Bool { active != nil }
+    var historyInsertionTicket: UUID? { postingGate.historyTicket }
+
+    func insertHistory(_ text: String, to target: InsertionTarget?, ticket: UUID) async -> DictationDelivery.Outcome {
+        let report = await postingGate.post(.dictation(text), from: .history(target, requestedAt: ticket)) {
+            !self.meetingRunning && self.replayRecordID == nil
+        }
+        return DictationDelivery.classify(report)
+    }
+
     // Updating must not terminate background recognition or pending delivery.
-    var hasPendingWork: Bool { active != nil || !inFlight.isEmpty || deliveryWorker != nil || textOperationRunning || meetingRunning || replayRecordID != nil }
+    var hasPendingWork: Bool { postingGate.isHeld || active != nil || !inFlight.isEmpty || deliveryWorker != nil || textOperationRunning || meetingRunning || replayRecordID != nil }
 
     func shortcutPressBegan() {
         if phase == .idle { beginRecording() }
@@ -1574,26 +1590,16 @@ import KoeBridgeCore
             ])
         } else {
             deliveringTakeID = id
-            let settledPredecessors = (take.commandCandidate == nil && take.transformSelection == nil && !take.isFixLastInput)
-                ? take.settledUnconfirmedInputTargets : []
-            outcome = await DictationDelivery.send(text, to: take.target,
-                                                  diagnostics: take.inputDiagnostics,
-                                                  unverifiedPredecessors: take.unverifiedInputTargets,
-                                                  settledUnconfirmedPredecessors: settledPredecessors,
-                livePriorBlock: { take.hasPriorBlock(for: $0) }) { [weak self, weak take] in
-                guard let self, let take else { return false }
-                return !take.automaticDeliverySuppressed && self.inFlight[take.id] === take
+            let report = await postingGate.post(.dictation(text), from: .take(take), finalize: { report in
+                if let receipt = report.receipt {
+                    self.lastDeliveryAnchor = LastDeliveryAnchor(receipt: receipt, sourceRecordID: recordID)
+                }
+            }) {
+                !take.automaticDeliverySuppressed && self.inFlight[id] === take
             }
             deliveringTakeID = nil
-            // Reconcile before the next sender. Event submission alone cannot
-            // authorize a new caret; an unknown receipt blocks concurrent targets.
-            if let report = outcome.report {
-                if report.outcome == .verifiedInserted, let receipt = report.receipt {
-                    lastDeliveryAnchor = LastDeliveryAnchor(receipt: receipt, sourceRecordID: recordID)
-                }
-                reconcileDelivery(report, sourceTakeID: id)
-                DiagnosticLog.record("delivery resolved; id=\(id.uuidString.prefix(8)); outcome=\(outcome.delivery.rawValue); reason=\(report.reason)")
-            }
+            outcome = DictationDelivery.classify(report)
+            DiagnosticLog.record("delivery resolved; id=\(id.uuidString.prefix(8)); outcome=\(outcome.delivery.rawValue); reason=\(report.reason)")
         }
         if let recordID { outcome.updateSavedRecord(recordID, in: &historyStore) }
         if outcome.submitted, let stoppedAt = take.stoppingAt {
@@ -1691,17 +1697,15 @@ import KoeBridgeCore
         }
         lastDeliveryAnchor = nil
         deliveringTakeID = take.id
-        let report = await TextInsertion.deliverCommandText(command, to: take.target, diagnostics: take.inputDiagnostics,
-                                                            unverifiedPredecessors: take.unverifiedInputTargets,
-                livePriorBlock: { take.hasPriorBlock(for: $0) }) { [weak self, weak take] in
-            guard let self, let take else { return false }
-            return !take.automaticDeliverySuppressed && self.inFlight[take.id] === take
+        let report = await postingGate.post(.command(command), from: .take(take)) {
+            !take.automaticDeliverySuppressed && self.inFlight[take.id] === take
         }
         deliveringTakeID = nil
-        reconcileDelivery(report, sourceTakeID: take.id)
         DiagnosticLog.record("voice_command take=\(take.id) command=\(command.rawValue) gate=\(report.reason) outcome=\(report.outcome.diagnosticOutcome.rawValue) events_posted=\(report.eventsPosted)")
         if report.outcome == .verifiedInserted {
             feedback(command == .newline ? .commandNewline : .commandParagraph, command.completionMessage)
+        } else if report.reason == "posting_busy" {
+            feedback(.commandBlocked, DictationDelivery.postingBusyDetail)
         } else {
             feedback(.commandFailed, "コマンドの入力を確認できませんでした" + Self.commandReasonSuffix(report.reason)
                      + "。入力先を確認してください。")
@@ -1794,16 +1798,14 @@ import KoeBridgeCore
             let sourceRecordID = lastDeliveryAnchor?.sourceRecordID
             lastDeliveryAnchor = nil
             deliveringTakeID = take.id
-            let report = await TextInsertion.deliver(output.text, to: take.target, diagnostics: take.inputDiagnostics,
-                                                     unverifiedPredecessors: take.unverifiedInputTargets,
-                livePriorBlock: { take.hasPriorBlock(for: $0) }) {
+            let report = await postingGate.post(.dictation(output.text), from: .take(take), finalize: { report in
+                if take.isFixLastInput, let receipt = report.receipt {
+                    self.lastDeliveryAnchor = LastDeliveryAnchor(receipt: receipt, sourceRecordID: sourceRecordID)
+                }
+            }) {
                 !take.automaticDeliverySuppressed && self.inFlight[take.id] === take
             }
             deliveringTakeID = nil
-            if take.isFixLastInput, report.outcome == .verifiedInserted, let receipt = report.receipt {
-                lastDeliveryAnchor = LastDeliveryAnchor(receipt: receipt, sourceRecordID: sourceRecordID)
-            }
-            reconcileDelivery(report, sourceTakeID: take.id)
             saveGeneratedResult(output.text, kind: kind, report: report)
             let verified = report.outcome == .verifiedInserted
             let copied = !verified && TextInsertion.copy(output.text)
@@ -1906,6 +1908,7 @@ import KoeBridgeCore
 
     /// Never paste delayed transcripts after sleep, user switch or shutdown.
     func interruptForSystemEvent(_ reason: String) {
+        postingGate.interrupt()
         meetingSession?.interrupt(reason)
         cancelReplay()
         cancelTextOperation()

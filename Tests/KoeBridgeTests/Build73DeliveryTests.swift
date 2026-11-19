@@ -1072,6 +1072,189 @@ import KoeBridgeCore
         }
     }
 }
+@MainActor struct Build78PostingTests {
+    private typealias Fixture = Build73DeliveryTests.Fixture
+
+    enum Producer { case translation, preset, take, voiceTransform, fixLast, command, history }
+
+    /// Both selection producers call the same post-generation entry. Each request
+    /// has its own take/selection identity, capture counter, and event receiver.
+    @MainActor private final class Sender {
+        let f = Fixture()
+        let take = DictationTake(preferred: .local, style: .verbatim, japaneseHint: false,
+                                 vocabulary: [], shouldPaste: true, options: .init())
+        let start: InsertionTarget
+        let ticket: UUID
+        var observed = InsertionReceiptPolicy.Snapshot(text: "ab", selection: .init(location: 0, length: 1))
+
+        init(ticket: UUID) {
+            self.ticket = ticket
+            f.recover()
+            f.before = observed
+            f.initialSnapshot = observed
+            f.selection = f.range(0, 1)
+            // A synthetic source capture, separate from the delivery-time recapture.
+            start = f.transport().capture(nil).resolution.target!
+            take.target = start
+            f.captures = 0
+        }
+
+        func source(_ producer: Producer) -> TextInsertion.PostingGate.Source {
+            switch producer {
+            case .take: return .take(take)
+            case .voiceTransform, .fixLast:
+                take.transformSelection = "x"
+                take.isFixLastInput = producer == .fixLast
+                return .take(take)
+            case .command:
+                take.commandCandidate = .newline
+                return .take(take)
+            case .history: return .history(start, requestedAt: ticket)
+            case .translation, .preset: return .selection(start)
+            }
+        }
+
+        func transport() -> TextInsertion.Transport {
+            var t = f.transport()
+            var prepared = ""
+            t.events = { part, source in
+                prepared = part
+                return TextInsertion.makeUnicodeEvents(part, source: source)
+            }
+            t.post = { _, _ in
+                self.f.posts += 1
+                self.observed = InsertionReceiptPolicy.expectedAfter(before: self.observed, inserted: prepared)!
+                self.f.selection = self.f.range(self.observed.selection.location)
+                self.f.onPost?()
+            }
+            let check = t.checkFocus
+            t.receiptFocus = { target, _, trace, ordinal in check(target, false, trace, .receipt, ordinal) }
+            t.receiptSnapshot = { _, _, _ in self.observed }
+            return t
+        }
+    }
+
+    @Test func competingProducersPostZeroUntilReceiptAndReconciliationFinish() async {
+        let pairs: [(Producer, Producer)] = [
+            (.translation, .take), (.preset, .take), (.take, .translation), (.take, .preset),
+            (.history, .history), (.history, .take), (.history, .translation),
+            (.translation, .preset), (.preset, .translation), (.take, .history),
+            (.voiceTransform, .translation), (.fixLast, .preset), (.command, .translation),
+            (.translation, .voiceTransform), (.preset, .fixLast), (.preset, .command)
+        ]
+        for (first, second) in pairs {
+            // Exercise each suspension boundary without depending on scheduler timing.
+            for phase in [InputDiagnosticEvent.Stage.preflight, .posting, .receipt] {
+                // A voice command is exactly one event pair, so its last boundary is its receipt.
+                if first == .command && phase == .posting { continue }
+                let gate = TextInsertion.PostingGate(reconcile: { _, _ in })
+                let holder = Sender(ticket: gate.historyTicket!)
+                let contender = Sender(ticket: gate.historyTicket!)
+                var attempts = 0
+                var finalized = 0
+                func compete() async {
+                    attempts += 1
+                    #expect(gate.isHeld && gate.historyTicket == nil)
+                    let secondReport = await gate.post(second == .command ? .command(.newline) : .dictation("B"), from: contender.source(second),
+                        transport: contender.transport(), finalize: { _ in Issue.record("busy request reconciled") }) { true }
+                    #expect(secondReport.reason == "posting_busy" && !secondReport.eventsPosted && secondReport.receipt == nil)
+                    #expect(contender.f.posts == 0 && contender.f.captures == 0)
+                    #expect(!gate.withSelectionWrite { Issue.record("busy fix changed AX selection") })
+                }
+                var t = holder.transport()
+                let check = t.checkFocus
+                t.checkFocus = { target, original, trace, stage, ordinal in
+                    if attempts == 0 && stage == phase && (stage == .preflight || (stage == .posting && ordinal == 5)) {
+                        return (false, "focused_element_unavailable_on_recheck")
+                    }
+                    return check(target, original, trace, stage, ordinal)
+                }
+                t.ax.sleep = { delay in
+                    #expect(delay == 0.025)
+                    await compete()
+                }
+                t.waitForReceiptPoll = { if phase == .receipt { await compete() } }
+                let text = String(repeating: "a", count: 96)
+                let payload: TextInsertion.Payload = first == .command ? .command(.newline) : .dictation(text)
+                let report = await gate.post(payload, from: holder.source(first), transport: t,
+                    finalize: { _ in
+                        finalized += 1
+                        #expect(gate.isHeld && gate.historyTicket == nil)
+                        #expect(!gate.withSelectionWrite { Issue.record("released before reconciliation") })
+                    }) { true }
+                #expect(report.outcome == .verifiedInserted && report.receipt?.proof.inserted == (first == .command ? "\n" : text))
+                #expect(attempts == 1 && finalized == 1 && holder.f.posts == (first == .command ? 1 : 6) && holder.f.captures == 1)
+                let wrote = gate.withSelectionWrite { #expect(gate.isHeld) }
+                #expect(wrote)
+                let third = Sender(ticket: gate.historyTicket!)
+                let next = await gate.post(.dictation("C"), from: third.source(.history),
+                                           transport: third.transport(), finalize: { _ in }) { true }
+                #expect(next.outcome == .verifiedInserted && third.f.posts == 1)
+            }
+        }
+    }
+
+    @Test func cancelledOrPartialOwnerFinalizesBeforeReleaseAndNeverResends() async {
+        enum Stop: CaseIterable { case partialFocus, supersededSelection, cancelledTask, systemInterrupt, cancelledDuringReceipt }
+        for stop in Stop.allCases {
+            var pendingTake: DictationTake?
+            let gate = TextInsertion.PostingGate { report, source in
+                if let pendingTake { VoiceController.reconcileDelivery(report, sourceTakeID: source, into: pendingTake) }
+            }
+            let holder = Sender(ticket: gate.historyTicket!)
+            let pending = Sender(ticket: gate.historyTicket!)
+            pendingTake = pending.take
+            let operation = UUID()
+            var currentID = operation
+            var finalized = 0
+            let task = Task { @MainActor in
+                var t = holder.transport()
+                holder.f.onPost = {
+                    guard holder.f.posts == 1 else { return }
+                    switch stop {
+                    case .partialFocus: holder.f.currentField = holder.f.other
+                    case .supersededSelection: currentID = UUID()
+                    case .cancelledTask: withUnsafeCurrentTask { $0?.cancel() }
+                    case .systemInterrupt: gate.interrupt()
+                    case .cancelledDuringReceipt: break
+                    }
+                }
+                t.waitForReceiptPoll = { withUnsafeCurrentTask { $0?.cancel() } }
+                let source = holder.source(stop == .supersededSelection ? .translation : .history)
+                return await gate.post(.dictation(String(repeating: "z", count: 96)), from: source, transport: t,
+                    finalize: { report in
+                        #expect(gate.isHeld)
+                        finalized += 1
+                    }) { currentID == operation }
+            }
+            let result = await task.value
+            holder.f.onPost = nil
+            #expect(finalized == 1 && !gate.isHeld && result.receipt == nil)
+            #expect(result.outcome == (stop == .cancelledDuringReceipt ? .inserted : .partiallySubmitted))
+            #expect(holder.f.posts == (stop == .cancelledDuringReceipt ? 6 : 1))
+            let blocked = await gate.post(.dictation("B"), from: pending.source(.take),
+                transport: pending.transport(), finalize: { _ in }) { true }
+            #expect(blocked.reason == "prior_input_unverified" && pending.f.posts == 0)
+            let independent = Sender(ticket: gate.historyTicket!)
+            let third = await gate.post(.dictation("C"), from: independent.source(.take),
+                                         transport: independent.transport(), finalize: { _ in }) { true }
+            #expect(third.outcome == .verifiedInserted && independent.f.posts == 1)
+        }
+    }
+
+    @Test func historyTicketDetectsCompletedDeliveryDuringPopoverDelay() async {
+        let gate = TextInsertion.PostingGate(reconcile: { _, _ in })
+        let delayed = Sender(ticket: gate.historyTicket!)
+        let first = Sender(ticket: gate.historyTicket!)
+        let report = await gate.post(.dictation("A"), from: first.source(.take),
+            transport: first.transport(), finalize: { _ in }) { true }
+        #expect(report.outcome == .verifiedInserted && !gate.isHeld)
+        let busy = await gate.post(.dictation("B"), from: delayed.source(.history),
+            transport: delayed.transport(), finalize: { _ in }) { true }
+        #expect(busy.reason == "posting_busy" && delayed.f.posts == 0 && delayed.f.captures == 0)
+    }
+}
+
 @MainActor struct Build78FocusTests {
     private typealias Fixture = Build73DeliveryTests.Fixture
     private typealias Read = InsertionTarget.AttributeRead
@@ -1218,4 +1401,54 @@ import KoeBridgeCore
     }
 }
 
+// Isolate single-delivery transport fixtures from each other while exercising the production gate.
+extension TextInsertion {
+    /// Clipboard-free, serial delivery. Read-back is bounded and runs while a
+    /// following recording may continue. No outcome ever resubmits posted keys.
+    static func deliver(_ text: String, to takeStart: InsertionTarget?,
+                        diagnostics: InputDiagnosticTrace? = nil,
+                        unverifiedPredecessors: [InsertionTarget] = [],
+                        settledUnconfirmedPredecessors: [SettledUnconfirmedPredecessor] = [],
+                        livePriorBlock: (InsertionTarget) -> Bool = { _ in false },
+                        capture: TargetCapture? = nil, transport: Transport = Transport(),
+                        shouldContinue: @MainActor () -> Bool = { true }) async -> Report {
+        await PostingGate(reconcile: { _, _ in }).submit(.dictation(text), takeStart: takeStart, diagnostics: diagnostics,
+                             unverifiedPredecessors: unverifiedPredecessors,
+                             settledUnconfirmedPredecessors: settledUnconfirmedPredecessors,
+                             capture: capture, transport: transport, livePriorBlock: livePriorBlock,
+                             shouldContinue: shouldContinue)
+    }
+
+    /// Only a fixed command ID can authorize newline controls; never accepts arbitrary text.
+    static func deliverCommandText(_ command: VoiceCommandID, to takeStart: InsertionTarget?,
+                                   diagnostics: InputDiagnosticTrace? = nil,
+                                   unverifiedPredecessors: [InsertionTarget] = [],
+                                   livePriorBlock: (InsertionTarget) -> Bool = { _ in false },
+                                   capture: TargetCapture? = nil, transport: Transport = Transport(),
+                                   shouldContinue: @MainActor () -> Bool) async -> Report {
+        await PostingGate(reconcile: { _, _ in }).submit(.command(command), takeStart: takeStart, diagnostics: diagnostics,
+                             unverifiedPredecessors: unverifiedPredecessors,
+                             settledUnconfirmedPredecessors: [],
+                             capture: capture, transport: transport, livePriorBlock: livePriorBlock,
+                             shouldContinue: shouldContinue)
+    }
+}
+
+extension DictationDelivery {
+    static func send(_ text: String, to target: InsertionTarget?,
+                     diagnostics: InputDiagnosticTrace? = nil,
+                     unverifiedPredecessors: [InsertionTarget] = [],
+                     settledUnconfirmedPredecessors: [TextInsertion.SettledUnconfirmedPredecessor] = [],
+                     livePriorBlock: (InsertionTarget) -> Bool = { _ in false },
+                     capture: TextInsertion.TargetCapture? = nil, transport: TextInsertion.Transport = .init(),
+                     shouldContinue: @MainActor () -> Bool) async -> Outcome {
+        let report = await TextInsertion.deliver(text, to: target, diagnostics: diagnostics,
+                                                 unverifiedPredecessors: unverifiedPredecessors,
+                                                 settledUnconfirmedPredecessors: settledUnconfirmedPredecessors,
+                                                 livePriorBlock: livePriorBlock,
+                                                 capture: capture, transport: transport,
+                                                 shouldContinue: shouldContinue)
+        return classify(report)
+    }
+}
 #endif

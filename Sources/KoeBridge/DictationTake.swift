@@ -45,17 +45,20 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
     var target: InsertionTarget?
     // Only reports received while this take is pending participate. A newly
     // started take does not inherit an earlier take's unconfirmed submission.
+    private var allowsSettledDictation: Bool { commandCandidate == nil && transformSelection == nil && !isFixLastInput }
+    var applicableSettledPredecessors: [TextInsertion.SettledUnconfirmedPredecessor] {
+        allowsSettledDictation ? settledUnconfirmedInputTargets : []
+    }
+
     func hasPriorBlock(for candidate: InsertionTarget) -> Bool {
-        let allowSettledDictation = commandCandidate == nil && transformSelection == nil && !isFixLastInput
-        let effectiveSettled = allowSettledDictation ? settledUnconfirmedInputTargets : []
         let adjudicated = TextInsertion.adjudicatePredecessors(
             for: candidate, takeStart: target,
             unverifiedPredecessors: unverifiedInputTargets,
-            settledUnconfirmedPredecessors: effectiveSettled)
+            settledUnconfirmedPredecessors: applicableSettledPredecessors)
         if adjudicated.startBlocks || adjudicated.hasHardUnverified {
             return true
         }
-        if !allowSettledDictation,
+        if !allowsSettledDictation,
            settledUnconfirmedInputTargets.contains(where: { candidate.sameElement(as: $0.target) }) {
             return true
         }

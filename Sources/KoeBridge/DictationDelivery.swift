@@ -5,6 +5,8 @@ import KoeBridgeCore
 /// Delivery decisions and descriptions. Queue order, history, and receipt
 /// reconciliation stay with the controller that owns all in-flight takes.
 @MainActor enum DictationDelivery {
+    static let postingBusyDetail = "入力処理中のため未送信です。"
+
     struct Outcome {
         let delivery: TranscriptRecord.Delivery
         let detail: String
@@ -41,6 +43,7 @@ import KoeBridgeCore
                 return "制限時間内に入力先を確認できませんでした。"
             case "recovery_host_changed" where report.outcome != .partiallySubmitted:
                 return "入力欄・選択範囲の安全確認に失敗しました。"
+            case "posting_busy": return detail
             case "delivery_cancelled_before_post":
                 return "処理が中断されたため、入力前に停止しました。"
             default:
@@ -108,22 +111,6 @@ import KoeBridgeCore
         return nil
     }
 
-    static func send(_ text: String, to target: InsertionTarget?,
-                     diagnostics: InputDiagnosticTrace? = nil,
-                     unverifiedPredecessors: [InsertionTarget] = [],
-                     settledUnconfirmedPredecessors: [TextInsertion.SettledUnconfirmedPredecessor] = [],
-                     livePriorBlock: (InsertionTarget) -> Bool = { _ in false },
-                     capture: TextInsertion.TargetCapture? = nil, transport: TextInsertion.Transport = .init(),
-                     shouldContinue: @MainActor () -> Bool) async -> Outcome {
-        let report = await TextInsertion.deliver(text, to: target, diagnostics: diagnostics,
-                                                 unverifiedPredecessors: unverifiedPredecessors,
-                                                 settledUnconfirmedPredecessors: settledUnconfirmedPredecessors,
-                                                 livePriorBlock: livePriorBlock,
-                                                 capture: capture, transport: transport,
-                                                 shouldContinue: shouldContinue)
-        return classify(report)
-    }
-
     static func classify(_ report: TextInsertion.Report) -> Outcome {
         let delivery: TranscriptRecord.Delivery
         switch report.outcome {
@@ -150,6 +137,7 @@ import KoeBridgeCore
         default: break
         }
         switch reason {
+        case "posting_busy": return postingBusyDetail
         case "marker_selection_changed", "caret_or_selection_changed": return "入力準備中にカーソルまたは選択範囲が変わったため、入力せず履歴に保存しました。"
         case "target_unavailable_at_delivery": return "現在の入力欄を取得できないため、入力せず履歴に保存しました。"
         case "secure_text_field": return "現在の入力先がパスワード欄のため、入力せず履歴に保存しました。"

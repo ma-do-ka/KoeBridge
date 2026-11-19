@@ -199,6 +199,7 @@ public struct InputDiagnosticEvent: Equatable, Sendable {
         case firstChunkMarkerSelectionChanged = "first_chunk_marker_selection_changed"
         case firstChunkFocusVerificationFailed = "first_chunk_focus_verification_failed"
         case focusVerificationFailed = "focus_verification_failed"
+        case postingBusy = "posting_busy"
         case deliveryCancelledBeforePost = "delivery_cancelled_before_post"
         case emptyTypingPayload = "empty_typing_payload"
         case postEventPermissionMissing = "post_event_permission_missing"

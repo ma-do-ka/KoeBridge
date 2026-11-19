@@ -452,16 +452,22 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
     }
 
     /// Close first so insertion-target capture sees the user's original editor.
-    private func afterClosingPopover(_ action: @escaping (KoeBridgeAppDelegate) -> Void) {
+    private func afterClosingPopover(_ action: @escaping @MainActor (KoeBridgeAppDelegate) async -> Void) {
         statusPopover.performClose(nil)
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(100))
             guard let self else { return }
-            action(self)
+            await action(self)
         }
     }
 
     private func insertRecentHistory(_ record: TranscriptRecord) {
+        guard let ticket = controller.historyInsertionTicket else {
+            statusPopover.performClose(nil)
+            windows.showHistoryFeedback(title: "未送信", detail: DictationDelivery.postingBusyDetail,
+                                        success: false, statusButton: item.button)
+            return
+        }
         // Capture the original editor while the non-activating UI is still shown.
         let target = InsertionTarget.capture().target
         afterClosingPopover { delegate in
@@ -472,12 +478,9 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
                 delegate.windows.showHistoryFeedback(title: "未送信", detail: reason.rawValue,
                     success: false, statusButton: delegate.item.button)
             case .success(let current):
-                Task { @MainActor in
-                    let outcome = await DictationDelivery.send(current.text, to: target,
-                        shouldContinue: { !delegate.controller.hasPendingWork })
-                    delegate.windows.showHistoryFeedback(title: outcome.historyInsertionTitle, detail: outcome.historyInsertionDetail,
-                        success: outcome.delivery == .verifiedInserted, statusButton: delegate.item.button)
-                }
+                let outcome = await delegate.controller.insertHistory(current.text, to: target, ticket: ticket)
+                delegate.windows.showHistoryFeedback(title: outcome.historyInsertionTitle, detail: outcome.historyInsertionDetail,
+                    success: outcome.delivery == .verifiedInserted, statusButton: delegate.item.button)
             }
         }
     }
