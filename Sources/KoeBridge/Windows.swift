@@ -113,7 +113,7 @@ import KoeBridgeCore
     /// Transient, non-activating status feedback. Do not steal focus from
     /// the editor or interfere with the separate dictation preview panel.
     func showClipboardFeedback(success: Bool, statusButton: NSStatusBarButton?) {
-        showHistoryFeedback(title: success ? "コピーしました" : "コピーできませんでした",
+        showHistoryFeedback(title: success ? "コピーされました" : "コピーできませんでした",
                             detail: success ? "⌘Vで貼り付けできます" : "クリップボードの状態をご確認ください",
                             success: success, statusButton: statusButton)
     }

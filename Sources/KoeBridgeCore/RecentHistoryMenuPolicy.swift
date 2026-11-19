@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 
 /// Presentation-only snapshot of the local transcript archive. The menu
 /// previews are deliberately bounded; the original full text is never altered.
@@ -10,7 +11,31 @@ public struct RecentHistoryMenuEntry: Equatable, Sendable {
     public let copyHelp: String
 }
 
+@Observable public final class RecentHistoryMenuState {
+    public enum Row: Equatable {
+        case header
+        case record(UUID)
+    }
+
+    public var isExpanded = true
+    public var hovered: Row?
+    public init() {}
+
+    public func prepareForOpening() {
+        isExpanded = true
+        hovered = nil
+    }
+}
+
 public enum RecentHistoryMenuPolicy {
+    public static func select(_ id: UUID, from history: [TranscriptRecord],
+                              copy: (TranscriptRecord) -> Bool, close: () -> Void,
+                              showFeedback: (Bool) -> Void) {
+        let copied = history.first { $0.id == id }.map(copy) ?? false
+        close()
+        showFeedback(copied)
+    }
+
     public static let maximumPreviewCharacters = 44
     /// Presentation bound for menus/popovers. Storage keeps up to
     /// RecentTranscriptArchive.maximumRecords; quick-glance surfaces show only

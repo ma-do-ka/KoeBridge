@@ -2,6 +2,44 @@ import Foundation
 import KoeBridgeCore
 
 struct RecentHistoryMenuSelfTests {
+    func expandedOnFirstOpenAndReopen() {
+        let menu = RecentHistoryMenuState()
+        check(menu.isExpanded)
+        menu.isExpanded = false
+        menu.hovered = .header
+        menu.prepareForOpening()
+        check(menu.isExpanded)
+        check(menu.hovered == nil)
+    }
+
+    func selectionCopiesFullRecordThenClosesAndReportsResult() {
+        let text = String(repeating: "あ", count: 80) + "\n二行目"
+        let selected = TranscriptRecord(engine: "Apple", text: text, isPartial: false, delivery: .pending)
+        let other = TranscriptRecord(engine: "Apple", text: "別の項目", isPartial: false, delivery: .pending)
+        for success in [true, false] {
+            var actions: [String] = []
+            RecentHistoryMenuPolicy.select(selected.id, from: [other, selected], copy: { record in
+                check(record.text == text)
+                actions.append("copy")
+                return success
+            }, close: { actions.append("close") }, showFeedback: { result in
+                check(result == success)
+                actions.append("feedback")
+            })
+            check(actions == ["copy", "close", "feedback"])
+        }
+
+        var actions: [String] = []
+        RecentHistoryMenuPolicy.select(selected.id, from: [other], copy: { _ in
+            recordFailure("Missing row must not copy another record")
+            return true
+        }, close: { actions.append("close") }, showFeedback: { result in
+            check(!result)
+            actions.append("feedback")
+        })
+        check(actions == ["close", "feedback"])
+    }
+
     func newestTenAndStableIds() {
         let records = (0..<12).reversed().map { i in
             TranscriptRecord(engine: "Apple", text: "履歴\(i)", isPartial: false, delivery: .pending)

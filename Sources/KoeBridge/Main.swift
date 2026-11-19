@@ -154,6 +154,7 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
     private var windowKeyMonitor: Any?
     private var updateCheckTimer: Timer?
     private let statusPopover = NSPopover()
+    private let historyMenu = RecentHistoryMenuState()
     private let historyHoverPanel = HistoryHoverPanelController()
     private var recordingObservation: AnyCancellable?
     private var popoverMonitors: [Any] = []
@@ -174,7 +175,7 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
         statusPopover.delegate = self
         statusPopover.animates = true
         let content = StatusPopoverView(
-            controller: controller, guide: PermissionGuide.shared,
+            controller: controller, guide: PermissionGuide.shared, historyMenu: historyMenu,
             onOpenSettings: { [weak self] in self?.showSettings() },
             onOpenHistory: { [weak self] in self?.showHistory() },
             onOpenPermissions: { [weak self] in self?.showSettingsDestination("accessibility") },
@@ -184,12 +185,12 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
             onToggleRecording: { [weak self] in self?.afterClosingPopover { $0.controller.toggle() } },
             onToggleMeeting: { [weak self] in self?.afterClosingPopover { $0.controller.toggleMeeting() } },
             onDiscard: { [weak self] in self?.afterClosingPopover { $0.controller.discard() } },
-            onCopyRecord: { [weak self] record in self?.copyRecentHistory(record) },
+            onCopyRecord: { [weak self] id in self?.copyRecentHistory(id) },
             onHoverRecord: { [weak self] record, rect, window in
                 guard let self, self.statusPopover.isShown else { return }
                 self.historyHoverPanel.show(record, anchor: rect, parent: window,
                     onInsert: { [weak self] in self?.insertRecentHistory(record) },
-                    onCopy: { [weak self] in self?.copyRecentHistory(record) })
+                    onCopy: { [weak self] in self?.copyRecentHistory(record.id) })
             },
             onLeaveRecord: { [weak self] id in self?.historyHoverPanel.leave(id) },
             onHideHistoryPreview: { [weak self] in self?.historyHoverPanel.hide() },
@@ -379,6 +380,7 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
             // mouseUp action runs; without this guard, the click that closed it
             // would immediately reopen it instead of toggling it shut.
             if let closedAt = lastPopoverClosedAt, Date().timeIntervalSince(closedAt) < 0.2 { return }
+            historyMenu.prepareForOpening()
             PermissionGuide.shared.refresh()
             if let hosting = statusPopover.contentViewController {
                 statusPopover.contentSize = hosting.view.fittingSize
@@ -480,12 +482,10 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
         }
     }
 
-    private func copyRecentHistory(_ record: TranscriptRecord) {
-        afterClosingPopover { delegate in
-            let current = delegate.controller.history.first { $0.id == record.id }
-            let copied = current.map { delegate.controller.copyRecord($0) } ?? false
-            delegate.windows.showClipboardFeedback(success: copied, statusButton: delegate.item.button)
-        }
+    private func copyRecentHistory(_ id: UUID) {
+        RecentHistoryMenuPolicy.select(id, from: controller.history, copy: controller.copyRecord,
+            close: { statusPopover.performClose(nil) },
+            showFeedback: { windows.showClipboardFeedback(success: $0, statusButton: item.button) })
     }
 
     private func add(_ menu: NSMenu, _ title: String, _ selector: Selector) {

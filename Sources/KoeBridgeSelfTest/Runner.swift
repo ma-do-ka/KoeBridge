@@ -193,6 +193,8 @@ struct KoeBridgeSelfTest {
         await run("HistorySearchTests.noMatchReturnsEmpty", { HistorySearchTests().noMatchReturnsEmpty() })
         await run("HistorySearchTests.orderPreserved", { HistorySearchTests().orderPreserved() })
         await run("HistorySearchTests.matchesTextContentOnly", { HistorySearchTests().matchesTextContentOnly() })
+        await run("RecentHistoryMenuSelfTests.expandedOnFirstOpenAndReopen", { RecentHistoryMenuSelfTests().expandedOnFirstOpenAndReopen() })
+        await run("RecentHistoryMenuSelfTests.selectionCopiesFullRecordThenClosesAndReportsResult", { RecentHistoryMenuSelfTests().selectionCopiesFullRecordThenClosesAndReportsResult() })
         await run("RecentHistoryMenuSelfTests.newestTenAndStableIds", { RecentHistoryMenuSelfTests().newestTenAndStableIds() })
         await run("RecentHistoryMenuSelfTests.multilinePartialAndEmojiAreSafe", { RecentHistoryMenuSelfTests().multilinePartialAndEmojiAreSafe() })
         await run("RecentHistoryMenuSelfTests.reviewAndInterruptedEntriesAreVisible", { RecentHistoryMenuSelfTests().reviewAndInterruptedEntriesAreVisible() })
