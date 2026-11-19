@@ -98,6 +98,11 @@ public struct InputDiagnosticEvent: Equatable, Sendable {
         case pending, unchanged
         case textMismatch = "text_mismatch"
         case selectionMismatch = "selection_mismatch"
+        case prefixMatches = "prefix_matches"
+        case insertedMatches = "inserted_matches"
+        case suffixMatches = "suffix_matches"
+        case observedSuffixUTF16 = "observed_suffix_utf16"
+        case receiptMode = "receipt_mode"
         case unavailable
         case deadlineExceeded = "deadline_exceeded"
         case budgetInsufficient = "budget_insufficient"
@@ -257,6 +262,10 @@ public struct InputDiagnosticEvent: Equatable, Sendable {
         case postedThenSelectionValueInvalidOnRecheck = "posted_then_selection_value_invalid_on_recheck"
         // These are the fixed raw values of InputReceiptObservation.
         case invalidSnapshot, notComparable, matches, selectionMismatch, textMismatch
+        // Fixed raw values of InsertionReceiptPolicy.VerificationMode.
+        case strictValueAndSelection = "strict_value_and_selection"
+        case trailingNewlineNormalized = "trailing_newline_normalized"
+        case blockScopedPrefixAndSelection = "block_scoped_prefix_and_selection"
     }
 
     public enum Value: Equatable, Sendable {

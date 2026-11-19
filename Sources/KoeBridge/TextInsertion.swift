@@ -322,6 +322,7 @@ import KoeBridgeCore
         var phase: InputDiagnosticEvent.Token = .preflight
         var target: InsertionTarget?
         var pacingProfile: DeliveryPacingPolicy.Profile?
+        var lastSpanComparison: InputReceiptObservation.SpanComparison?
         func report(_ outcome: Result, _ reason: String, diagnosticReason: String? = nil, receipt: Receipt? = nil) -> Report {
             diagnostics?.record(.eligibility, stage: .result, [
                 .selectionKind: .token(target?.selectionKind ?? .unknown),
@@ -345,7 +346,7 @@ import KoeBridgeCore
                 diagnostics?.record(.progress, stage: .posting, fields)
             }
             if let receiptStartedAt {
-                diagnostics?.record(.receipt, stage: .receipt, [
+                var summaryFields: [InputDiagnosticEvent.Field: InputDiagnosticEvent.Value] = [
                     .polls: .integer(polls), .unchanged: .integer(unchanged),
                     .textMismatch: .integer(textMismatches), .selectionMismatch: .integer(selectionMismatches),
                     .unavailable: .integer(unavailable),
@@ -353,14 +354,30 @@ import KoeBridgeCore
                         || ProcessInfo.processInfo.systemUptime > receiptStartedAt + 0.6),
                     .budgetInsufficient: .flag(budgetInsufficient),
                     .elapsedMS: .integer(InputDiagnosticTrace.milliseconds(since: receiptStartedAt))
-                ])
+                ]
+                if let spans = lastSpanComparison {
+                    summaryFields[.prefixMatches] = .flag(spans.prefixMatches)
+                    summaryFields[.insertedMatches] = .flag(spans.insertedMatches)
+                    summaryFields[.suffixMatches] = .flag(spans.suffixMatches)
+                    summaryFields[.observedSuffixUTF16] = .integer(spans.observedSuffixUTF16)
+                }
+                diagnostics?.record(.receipt, stage: .receipt, summaryFields)
             }
-            let resultUptimeMS = diagnostics?.record(.result, stage: .result, [
+            var resultFields: [InputDiagnosticEvent.Field: InputDiagnosticEvent.Value] = [
                 .outcome: .token(outcome.diagnosticOutcome), .reason: .reason(diagnosticReason ?? reason),
                 .plannedChunks: .integer(planned), .sentChunks: .integer(sent),
                 .eventsPosted: .flag(sent > 0), .receiptAvailable: .flag(receipt != nil),
+                .receiptMode: receipt.map { .reason($0.proof.mode.rawValue) } ?? .token(.none),
                 .totalMS: .integer(InputDiagnosticTrace.milliseconds(since: beganAt))
-            ]) ?? InputDiagnosticTrace.uptimeMilliseconds(ProcessInfo.processInfo.systemUptime)
+            ]
+            if let spans = lastSpanComparison {
+                resultFields[.prefixMatches] = .flag(spans.prefixMatches)
+                resultFields[.insertedMatches] = .flag(spans.insertedMatches)
+                resultFields[.suffixMatches] = .flag(spans.suffixMatches)
+                resultFields[.observedSuffixUTF16] = .integer(spans.observedSuffixUTF16)
+            }
+            let resultUptimeMS = diagnostics?.record(.result, stage: .result, resultFields)
+                ?? InputDiagnosticTrace.uptimeMilliseconds(ProcessInfo.processInfo.systemUptime)
             return Report(outcome: outcome, reason: reason, receipt: receipt,
                           eventsPosted: sent > 0, target: target, diagnostics: diagnostics,
                           resultUptimeMS: resultUptimeMS)
@@ -615,6 +632,8 @@ import KoeBridgeCore
                                           diagnostics: diagnostics, stage: .receipt, chunkOrdinal: sent)
             guard focus.allowed else { return report(.inserted, "posted_then_" + focus.reason) }
             let observed = target.observedSnapshot(timeout: timeout, diagnostics: diagnostics, stage: .receipt)?.snapshot
+            let spans = InputReceiptObservation.compareSpans(before: before, inserted: safeText, after: observed)
+            if let spans { lastSpanComparison = spans }
             // Diagnostic classification never grants input/rebase permission.
             // The exact, existing receipt verification below remains the gate.
             if diagnostics?.isCollecting == true {
@@ -626,7 +645,16 @@ import KoeBridgeCore
                 case .textMismatch: textMismatches += 1
                 case .matches: break
                 }
-                diagnostics?.record(.receipt, stage: .receipt, [.polls: .integer(polls), .reason: .reason(observation.rawValue)])
+                var pollFields: [InputDiagnosticEvent.Field: InputDiagnosticEvent.Value] = [
+                    .polls: .integer(polls), .reason: .reason(observation.rawValue)
+                ]
+                if let spans {
+                    pollFields[.prefixMatches] = .flag(spans.prefixMatches)
+                    pollFields[.insertedMatches] = .flag(spans.insertedMatches)
+                    pollFields[.suffixMatches] = .flag(spans.suffixMatches)
+                    pollFields[.observedSuffixUTF16] = .integer(spans.observedSuffixUTF16)
+                }
+                diagnostics?.record(.receipt, stage: .receipt, pollFields)
             }
             guard let after = observed else { continue }
             guard let proof = InsertionReceiptPolicy.verify(before: before, inserted: safeText,

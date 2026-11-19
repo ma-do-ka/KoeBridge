@@ -29,20 +29,30 @@ public enum InsertionReceiptPolicy {
         }
     }
 
+    public enum VerificationMode: String, Equatable, Sendable {
+        case strict = "strict_value_and_selection"
+        case trailingNewlineNormalized = "trailing_newline_normalized"
+        case blockScoped = "block_scoped_prefix_and_selection"
+    }
+
     public struct Receipt: Equatable, Sendable {
         public let before: Snapshot
         public let after: Snapshot
         public let inserted: String
+        public let mode: VerificationMode
 
-        fileprivate init(before: Snapshot, after: Snapshot, inserted: String) {
+        fileprivate init(before: Snapshot, after: Snapshot, inserted: String,
+                         mode: VerificationMode = .strict) {
             self.before = before
             self.after = after
             self.inserted = inserted
+            self.mode = mode
         }
 
         public static func == (lhs: Self, rhs: Self) -> Bool {
             lhs.before == rhs.before && lhs.after == rhs.after
                 && InsertionReceiptPolicy.sameText(lhs.inserted, rhs.inserted)
+                && lhs.mode == rhs.mode
         }
     }
 
@@ -79,13 +89,55 @@ public enum InsertionReceiptPolicy {
     public static func verify(before: Snapshot, inserted: String, after: Snapshot?,
                               sameTarget: Bool, cancelled: Bool = false) -> Receipt? {
         guard sameTarget, !cancelled,
-              let after, let expected = expectedAfter(before: before, inserted: inserted),
-              expected == after,
+              let after, isValid(after),
+              let expected = expectedAfter(before: before, inserted: inserted),
               // Replacing selected text with the identical text has no visible
               // text edit to attribute to us. A collapsed selection alone is
               // insufficient evidence that the receiving app accepted input.
               !sameText(before.text, after.text) else { return nil }
-        return Receipt(before: before, after: after, inserted: inserted)
+        if expected == after {
+            return Receipt(before: before, after: after, inserted: inserted, mode: .strict)
+        }
+        // Only collapsed-caret insertions qualify for trailing-newline normalization
+        // or block-scoped AX read-back acceptance. Selection replacements remain strict.
+        guard before.selection.length == 0,
+              expected.selection == after.selection else { return nil }
+        let beforeUnits = Array(before.text.utf16)
+        let insertedUnits = Array(inserted.utf16)
+        let afterUnits = Array(after.text.utf16)
+        let prefixCount = before.selection.location
+        let confirmedCount = prefixCount + insertedUnits.count
+        guard afterUnits.count >= confirmedCount,
+              Array(afterUnits.prefix(prefixCount)) == Array(beforeUnits.prefix(prefixCount)),
+              Array(afterUnits[prefixCount..<confirmedCount]) == insertedUnits else { return nil }
+        let beforeSuffix = Array(beforeUnits.suffix(from: prefixCount))
+        guard !beforeSuffix.isEmpty else { return nil }
+        let afterSuffix = Array(afterUnits.suffix(from: confirmedCount))
+        // Branch (b): Block-scoped AX read-back where the active paragraph node
+        // following the insertion contains only prefix + inserted and trailing
+        // paragraphs live in sibling AX nodes omitted from the active node's AXValue.
+        if afterSuffix.isEmpty {
+            return Receipt(before: before, after: after, inserted: inserted, mode: .blockScoped)
+        }
+        // Branch (a): Trailing-newline normalization where the editor strips or
+        // collapses up to 2 trailing newline code units (\n or \r) at the end of
+        // a non-empty suffix while preserving every non-newline suffix unit.
+        if stripTrailingNewlines(beforeSuffix, maxUnits: 2) == stripTrailingNewlines(afterSuffix, maxUnits: 2) {
+            return Receipt(before: before, after: after, inserted: inserted, mode: .trailingNewlineNormalized)
+        }
+        return nil
+    }
+
+    private static func stripTrailingNewlines(_ units: [UInt16], maxUnits: Int) -> [UInt16] {
+        var end = units.count
+        var stripped = 0
+        while end > 0, stripped < maxUnits {
+            let unit = units[end - 1]
+            guard unit == 0x000A || unit == 0x000D else { break }
+            end -= 1
+            stripped += 1
+        }
+        return Array(units.prefix(end))
     }
 
     /// Reconcile only a concurrent recording for the exact same target. A
@@ -103,6 +155,11 @@ public enum InsertionReceiptPolicy {
         guard !cancelled, let receipt, let candidate, isValid(candidate) else { return .blocked }
         if candidate == receipt.before || candidate == receipt.after {
             return .rebased(receipt.after)
+        }
+        if receipt.mode != .strict,
+           let expectedFullAfter = expectedAfter(before: receipt.before, inserted: receipt.inserted),
+           candidate == expectedFullAfter {
+            return .rebased(candidate)
         }
         // A new take can start while the editor is consuming an earlier
         // batch of Unicode events. Accept only the exact prefix edit, and

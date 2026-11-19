@@ -93,4 +93,58 @@ struct InputReceiptObservationTests {
         check(Policy.verify(before: before, inserted: "本文", after: after,
                             sameTarget: true, cancelled: true) == nil)
     }
+
+    func spanComparisonRemainsContentFreeAndDistinguishesMismatches() {
+        let before = state("前置きSECRET後続段落", 3)
+        // Exact match
+        let exact = Observation.compareSpans(before: before, inserted: "挿入",
+                                             after: state("前置き挿入SECRET後続段落", 5))
+        check(exact == .init(prefixMatches: true, insertedMatches: true,
+                             suffixMatches: true, observedSuffixUTF16: 10))
+        // Block-scoped read-back (0 suffix units returned)
+        let blockScoped = Observation.compareSpans(before: before, inserted: "挿入",
+                                                   after: state("前置き挿入", 5))
+        check(blockScoped == .init(prefixMatches: true, insertedMatches: true,
+                                   suffixMatches: false, observedSuffixUTF16: 0))
+        // Trailing newline stripped
+        let beforeNL = state("前置き後続\n", 3)
+        let nlStripped = Observation.compareSpans(before: beforeNL, inserted: "挿入",
+                                                  after: state("前置き挿入後続", 5))
+        check(nlStripped == .init(prefixMatches: true, insertedMatches: true,
+                                  suffixMatches: false, observedSuffixUTF16: 2))
+        // Prefix or inserted mismatch
+        let badPrefix = Observation.compareSpans(before: before, inserted: "挿入",
+                                                 after: state("別置き挿入SECRET後続段落", 5))
+        check(badPrefix == .init(prefixMatches: false, insertedMatches: true,
+                                 suffixMatches: true, observedSuffixUTF16: 10))
+        let badInserted = Observation.compareSpans(before: before, inserted: "挿入",
+                                                   after: state("前置き別文SECRET後続段落", 5))
+        check(badInserted == .init(prefixMatches: true, insertedMatches: false,
+                                   suffixMatches: true, observedSuffixUTF16: 10))
+        // Invalid or empty inputs return nil
+        check(Observation.compareSpans(before: nil, inserted: "挿入", after: state("挿入", 2)) == nil)
+        check(Observation.compareSpans(before: before, inserted: "", after: before) == nil)
+        check(Observation.compareSpans(before: before, inserted: "挿入", after: state("😀", 1)) == nil)
+
+        // Verify diagnostic event fields render content-free flags, integer counts, and receipt_mode tokens
+        for mode in [Policy.VerificationMode.strict, .trailingNewlineNormalized, .blockScoped] {
+            let event = InputDiagnosticEvent(kind: .result, stage: .result, fields: [
+                .outcome: .token(.verified),
+                .reason: .reason("verified_value_and_selection"),
+                .receiptMode: .reason(mode.rawValue),
+                .prefixMatches: .flag(true),
+                .insertedMatches: .flag(true),
+                .suffixMatches: .flag(mode == .strict),
+                .observedSuffixUTF16: .integer(mode == .blockScoped ? 0 : 9)
+            ])
+            check(event.fields[.receiptMode] != .token(.unknown))
+            var buffer = InputDiagnosticBuffer(takeID: .init())
+            buffer.append(event, elapsedMS: 120)
+            let rendered = buffer.renderedLines().joined(separator: "\n")
+            check(rendered.contains("receipt_mode=\(mode.rawValue)"))
+            check(rendered.contains("prefix_matches=1"))
+            check(rendered.contains("inserted_matches=1"))
+            check(!rendered.contains("SECRET"))
+        }
+    }
 }
