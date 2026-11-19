@@ -4,16 +4,18 @@ import Foundation
 /// Begin only after all preceding PCM writes have completed. A terminal event
 /// received during the end write belongs to that activity, but is not usable
 /// until the write succeeds. This avoids relying on task-resumption order.
-public struct ManualEndpointState: Sendable {
+public typealias ManualEndpointState = TimedManualEndpointState<Date>
+
+public struct TimedManualEndpointState<Instant: Sendable>: Sendable {
     public enum Phase: Equatable, Sendable {
         case recording, writingEnd, endWritten, failed, cancelled
     }
 
     public private(set) var phase: Phase = .recording
-    public private(set) var writeCompletedAt: Date?
+    public private(set) var writeCompletedAt: Instant?
     /// Time at which BOTH the end write and its server acknowledgement are
     /// known. This is not the raw arrival time of a possibly early reply.
-    public private(set) var acknowledgedEndAt: Date?
+    public private(set) var acknowledgedEndAt: Instant?
     private var hasPendingEndAcknowledgement = false
 
     public init() {}
@@ -23,17 +25,17 @@ public struct ManualEndpointState: Sendable {
         phase = .writingEnd
     }
 
-    public mutating func receiveTurnComplete(at now: Date) {
+    public mutating func receiveTurnComplete(at now: Instant) {
         receiveEndAcknowledgement(at: now)
     }
 
     /// Gemini Transcribe's manual flush acknowledges the activity with a
     /// root-level voiceActivity ACTIVITY_END. It uses the same write gate.
-    public mutating func receiveActivityEnd(at now: Date) {
+    public mutating func receiveActivityEnd(at now: Instant) {
         receiveEndAcknowledgement(at: now)
     }
 
-    private mutating func receiveEndAcknowledgement(at now: Date) {
+    private mutating func receiveEndAcknowledgement(at now: Instant) {
         switch phase {
         case .writingEnd:
             hasPendingEndAcknowledgement = true
@@ -44,7 +46,7 @@ public struct ManualEndpointState: Sendable {
         }
     }
 
-    public mutating func endWriteSucceeded(at now: Date) {
+    public mutating func endWriteSucceeded(at now: Instant) {
         guard phase == .writingEnd else { return }
         phase = .endWritten
         writeCompletedAt = now
@@ -95,14 +97,23 @@ public enum FinalizationPolicy {
                                  endAcknowledgedAt: Date?, now: Date,
                                  hasPendingInterim: Bool = false,
                                  lastTranscriptionAt: Date? = nil) -> Bool {
-        guard let lastFinalAt, now >= endedAt, !hasPendingInterim else { return false }
-        let sinceStop = now.timeIntervalSince(endedAt)
-        let sinceFinal = now.timeIntervalSince(lastFinalAt)
-        let sinceUpdate = now.timeIntervalSince(lastTranscriptionAt ?? lastFinalAt)
-        guard sinceFinal >= 0, sinceUpdate >= 0 else { return false }
+        canFinish(endedAt: endedAt, lastFinalAt: lastFinalAt, acknowledgedAt: endAcknowledgedAt,
+                  now: now, pending: hasPendingInterim, lastUpdate: lastTranscriptionAt,
+                  advanced: { $0.addingTimeInterval($1) })
+    }
 
-        guard let completion = endAcknowledgedAt, completion >= endedAt else { return false }
-        return sinceStop >= 0.40 && sinceFinal >= 0.25
-            && now.timeIntervalSince(completion) >= 0.25 && sinceUpdate >= 0.25
+    public static func canFinish(endedAt: ContinuousClock.Instant, lastFinalAt: ContinuousClock.Instant?,
+                                 endAcknowledgedAt: ContinuousClock.Instant?, now: ContinuousClock.Instant,
+                                 hasPendingInterim: Bool = false, lastTranscriptionAt: ContinuousClock.Instant? = nil) -> Bool {
+        canFinish(endedAt: endedAt, lastFinalAt: lastFinalAt, acknowledgedAt: endAcknowledgedAt,
+                  now: now, pending: hasPendingInterim, lastUpdate: lastTranscriptionAt,
+                  advanced: { $0.advanced(by: .seconds($1)) })
+    }
+
+    private static func canFinish<T: Comparable>(endedAt: T, lastFinalAt: T?, acknowledgedAt: T?,
+                                                  now: T, pending: Bool, lastUpdate: T?,
+                                                  advanced: (T, Double) -> T) -> Bool {
+        guard !pending, let final = lastFinalAt, let ack = acknowledgedAt, ack >= endedAt else { return false }
+        return now >= advanced(endedAt, 0.40) && now >= advanced(max(final, ack, lastUpdate ?? final), 0.25)
     }
 }

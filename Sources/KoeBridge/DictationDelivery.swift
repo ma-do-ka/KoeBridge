@@ -12,7 +12,7 @@ import KoeBridgeCore
         let detail: String
         let report: TextInsertion.Report?
 
-        var submitted: Bool { delivery == .verifiedInserted || delivery == .attemptedUnconfirmed }
+        var submitted: Bool { delivery == .verifiedInserted || delivery == .attemptedUnconfirmed || delivery == .interruptedDelivery }
 
         func updateSavedRecord(_ id: UUID, in history: inout TranscriptHistoryStore) {
             history.updateDelivery(id, to: delivery, detail: historyInsertionDetail)
@@ -21,7 +21,7 @@ import KoeBridgeCore
         var deferredFeedback: OverlayFeedback? {
             switch delivery {
             case .verifiedInserted, .automaticPasteDisabled, .pending: return nil
-            case .attemptedUnconfirmed: return .deferredUnconfirmed
+            case .attemptedUnconfirmed, .interruptedDelivery: return .deferredUnconfirmed
             case .partiallyDirect: return .deferredPartial
             default: return .deferredUnsent
             }
@@ -30,7 +30,7 @@ import KoeBridgeCore
         var historyInsertionTitle: String {
             switch delivery {
             case .verifiedInserted: return "入力先への反映を確認しました"
-            case .attemptedUnconfirmed: return "受理未確認"
+            case .attemptedUnconfirmed, .interruptedDelivery: return "受理未確認"
             case .partiallyDirect: return "部分送信"
             default: return "未送信"
             }
@@ -55,25 +55,35 @@ import KoeBridgeCore
         var submissionFeedback: OverlayFeedback? {
             switch delivery {
             case .verifiedInserted: return .sent
-            case .attemptedUnconfirmed: return .sentUnconfirmed
+            case .attemptedUnconfirmed, .interruptedDelivery: return .sentUnconfirmed
             default: return nil
             }
         }
     }
 
     struct DeferredFeedback {
-        private var waiting: [(UUID, OverlayFeedback)] = []
+        private var waiting: [OverlayFeedback: Int] = [:]
+        private var latestID: UUID?
+        var kindCount: Int { waiting.count }
 
         mutating func enqueueIfSuppressed(_ outcome: Outcome, id: UUID, owner: UUID?, recording: Bool) -> Bool {
             guard !OverlayFeedback.mayUpdate(owner: owner, resolved: id, newRecordingActive: recording),
                   let feedback = outcome.deferredFeedback else { return false }
-            waiting.append((id, feedback))
+            waiting[feedback, default: 0] += 1
+            latestID = id
             return true
         }
 
-        mutating func next(owner: UUID?, recording: Bool, pendingTakes: Bool) -> (UUID, OverlayFeedback)? {
-            guard owner == nil, !recording, !pendingTakes, !waiting.isEmpty else { return nil }
-            return waiting.removeFirst()
+        mutating func next(owner: UUID?, recording: Bool, pendingTakes: Bool) -> (UUID, OverlayFeedback, String)? {
+            guard owner == nil, !recording, !pendingTakes, let id = latestID else { return nil }
+            let kinds: [(OverlayFeedback, String)] = [
+                (.deferredPartial, "部分送信"), (.deferredUnconfirmed, "受理未確認"), (.deferredUnsent, "未送信")
+            ]
+            let counts = kinds.compactMap { kind, label in waiting[kind].map { (kind, "\(label) \($0)件") } }
+            guard let first = counts.first else { return nil }
+            waiting.removeAll()
+            latestID = nil
+            return (id, first.0, counts.map(\.1).joined(separator: "・") + "。履歴と入力先を確認してください。")
         }
     }
 
@@ -96,7 +106,7 @@ import KoeBridgeCore
     static func skipped(suppressed: Bool, requiresReview: Bool,
                         acousticReviewRequired: Bool = false, shouldPaste: Bool) -> Outcome? {
         if suppressed {
-            return Outcome(delivery: .blockedFocus, detail: "システム中断により自動入力しませんでした。", report: nil)
+            return Outcome(delivery: .cancelledDelivery, detail: "システム中断により自動入力しませんでした。", report: nil)
         }
         if requiresReview {
             return Outcome(delivery: .reviewRequired,
@@ -115,8 +125,10 @@ import KoeBridgeCore
         let delivery: TranscriptRecord.Delivery
         switch report.outcome {
         case .verifiedInserted: delivery = .verifiedInserted
+        case .inserted where report.reason == "delivery_cancelled_after_post": delivery = .interruptedDelivery
         case .inserted: delivery = .attemptedUnconfirmed
-        case .focusChanged, .cancelled: delivery = .blockedFocus
+        case .focusChanged: delivery = .blockedFocus
+        case .cancelled: delivery = report.reason == "posting_busy" ? .blockedFocus : .cancelledDelivery
         case .notPermitted, .eventPermissionMissing: delivery = .missingPermission
         case .partiallySubmitted: delivery = .partiallyDirect
         case .eventUnavailable: delivery = .insertionUnavailable
@@ -130,6 +142,8 @@ import KoeBridgeCore
         switch delivery {
         case .verifiedInserted: return "入力先への反映を確認しました。履歴に保存済みです。"
         case .attemptedUnconfirmed: return "入力イベントを送信しました（受理は未確認）。再送の前に入力先を確認してください。"
+        case .cancelledDelivery: return "入力をキャンセルしました。"
+        case .interruptedDelivery: return "入力イベント送信後に確認を中断しました。再送の前に入力先を確認してください。"
         case .missingPermission where reason != "accessibility_not_granted":
             return "入力に必要な権限がありません。認識結果は履歴に保存しました。"
         case .partiallyDirect: return "入力が途中で中断しました。履歴を使う前に、入力先に入った範囲を確認してください。"

@@ -106,7 +106,9 @@ struct RecoveryAX {
                   target.selectionAttribute == other.target.selectionAttribute else { return false }
             guard requireOriginalSelection else { return true }
             guard let a = target.selection, let b = other.target.selection else { return false }
-            return CFEqual(a, b)
+            guard let captured = InsertionTarget.decodeSelection(a, kind: target.selectionKind),
+                  let observed = InsertionTarget.decodeSelection(b, kind: other.target.selectionKind) else { return false }
+            return captured == observed
         }
     }
 
@@ -253,12 +255,8 @@ struct RecoveryAX {
             let selection: CFTypeRef
             if let value = range.value {
                 let decoded = InsertionTarget.numericSelection(value)
-                guard let numeric = decoded.range else {
+                guard decoded.range != nil else {
                     fields[.selectedRangeState] = .token(decoded.outcome)
-                    return .rejected
-                }
-                guard !numeric.location.addingReportingOverflow(numeric.length).overflow else {
-                    fields[.selectedRangeState] = .token(.invalidRange)
                     return .rejected
                 }
                 guard range.status == .success,
@@ -289,7 +287,7 @@ struct RecoveryAX {
                     return action == .waitOnButton && ax.now() < limit ? .button : .rejected
                 }
                 guard marker.status == .success, let value = marker.value else { return .rejected }
-                guard CFGetTypeID(value) == AXTextMarkerRangeGetTypeID() else {
+                guard InsertionTarget.decodeSelection(value, kind: .textMarker) != nil else {
                     fields[.selectedMarkerState] = .token(.invalidType)
                     return .rejected
                 }

@@ -57,7 +57,8 @@ import KoeBridgeCore
         } else if numeric {
             selection = AXValueCreate(.cfRange, &range)
         } else {
-            selection = "opaque-marker" as CFString
+            var start: UInt8 = 1, end: UInt8 = 2
+            selection = AXTextMarkerRangeCreateWithBytes(nil, &start, 1, &end, 1)
         }
         return InsertionTarget(bundleIdentifier: "com.example.Editor", localizedName: "Editor", pid: pid,
             focused: element ?? AXUIElementCreateApplication(pid), window: window,
@@ -491,7 +492,7 @@ import KoeBridgeCore
         }) { false }
         #expect(!captured && !report.eventsPosted)
         #expect(report.outcome == .cancelled && report.reason == "delivery_cancelled_before_post")
-        #expect(DictationDelivery.skipped(suppressed: true, requiresReview: false, shouldPaste: true)?.delivery == .blockedFocus)
+        #expect(DictationDelivery.skipped(suppressed: true, requiresReview: false, shouldPaste: true)?.delivery == .cancelledDelivery)
     }
 
     @Test func settledUnconfirmedPredecessorAndTargetScopedLatchTransportBehavior() async throws {

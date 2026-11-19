@@ -513,6 +513,66 @@ import KoeBridgeCore
         }
     }
 
+    @Test func boundedValueObservationAndTypedSelections() throws {
+        let f = Fixture()
+        f.recover()
+        let target = try #require(f.transport().capture(nil).resolution.target)
+        for persistent in [false, true] {
+            var attempts = 0
+            var reads = InsertionTarget.FocusReads()
+            reads.attribute = { _, name, _, _, _, _, _ in
+                if name as String == kAXValueAttribute {
+                    attempts += 1
+                    return persistent || attempts == 1 ? Read(value: nil, status: .cannotComplete)
+                        : Read(value: "a" as CFString, status: .success)
+                }
+                return f.attribute(name as String)
+            }
+            let (snapshot, reason) = target.deliveryBaseline(diagnostics: nil, reads: reads)
+            #expect(attempts == 2)
+            #expect(snapshot?.text == (persistent ? nil : "a"))
+            #expect(reason == (persistent ? .valueUnavailable : .snapshotAvailable))
+        }
+        let overflow = try #require(f.range(Int.max, 1).value)
+        let valid = try #require(f.range(2, 3).value)
+        let marker = try #require(f.liveMarker().value)
+        #expect(InsertionTarget.decodeSelection(overflow, kind: .numericRange) == nil)
+        #expect(InsertionTarget.decodeSelection(valid, kind: .numericRange) == .numeric(.init(location: 2, length: 3)))
+        #expect(InsertionTarget.decodeSelection(marker, kind: .textMarker) == .marker(marker))
+        #expect(InsertionTarget.decodeSelection(valid, kind: .textMarker) == nil)
+        #expect(InsertionTarget.decodeSelection(marker, kind: .numericRange) == nil)
+        var readCount = 0
+        let result = InsertionTarget.copyAX(f.field, name: kAXValueAttribute as CFString, operation: .value,
+            setTimeout: { _, _ in .failure }, read: { _, _, _ in readCount += 1; return .success },
+            diagnostics: nil, stage: .preflight)
+        #expect(result.value == nil && result.status != .success && readCount == 0)
+        var failedSetup = InsertionTarget.FocusReads()
+        failedSetup.attribute = { element, name, operation, scope, timeout, trace, stage in
+            InsertionTarget.copyAX(element, name: name, operation: operation, scope: scope, timeout: timeout,
+                setTimeout: { _, _ in .failure }, read: { _, _, _ in readCount += 1; return .success },
+                diagnostics: trace, stage: stage)
+        }
+        #expect(target.observedSnapshot(timeout: 0.04, reads: failedSetup) == nil)
+        #expect(readCount == 0)
+    }
+
+    @Test func deferredSummaryIncludesEveryKindOnceWithCounts() throws {
+        var queue = DictationDelivery.DeferredFeedback()
+        let deliveries: [TranscriptRecord.Delivery] = [.partiallyDirect, .attemptedUnconfirmed, .blockedFocus]
+        for _ in 0..<100 {
+            for value in deliveries {
+                let queued = queue.enqueueIfSuppressed(.init(delivery: value, detail: "", report: nil),
+                                                       id: UUID(), owner: nil, recording: true)
+                #expect(queued)
+            }
+        }
+        #expect(queue.kindCount == 3)
+        let next = queue.next(owner: nil, recording: false, pendingTakes: false)
+        let summary = try #require(next)
+        for label in ["部分送信", "受理未確認", "未送信"] { #expect(summary.2.contains("\(label) 100件")) }
+        #expect(queue.kindCount == 0)
+    }
+
     @Test func historyAndDeferredFeedbackRespectOwnership() {
         let old = UUID(), newer = UUID()
         for (delivery, title, feedback) in [
@@ -557,7 +617,7 @@ import KoeBridgeCore
         let file = directory.appendingPathComponent("history.json")
         var store = TranscriptHistoryStore(fileURL: file)
         let classifications: [(TextInsertion.Result?, TranscriptRecord.Delivery?)] = [
-            (nil, .blockedFocus), (.cancelled, .blockedFocus), (.focusChanged, .blockedFocus),
+            (nil, .blockedFocus), (.cancelled, .cancelledDelivery), (.focusChanged, .blockedFocus),
             (.eventUnavailable, .insertionUnavailable), (.notPermitted, .missingPermission),
             (.eventPermissionMissing, .missingPermission), (.partiallySubmitted, .partiallyDirect),
             (.inserted, .attemptedUnconfirmed), (.verifiedInserted, nil)
@@ -1211,6 +1271,141 @@ import KoeBridgeCore
             t.receiptSnapshot = { _, _, _ in self.observed }
             return t
         }
+    }
+
+    @Test func valueFailureKeepsPredecessorHardBlocked() async throws {
+        let gate = TextInsertion.PostingGate { _, _ in }
+        let sender = Sender(ticket: try #require(gate.historyTicket))
+        sender.f.initialSnapshot = nil
+        var transport = sender.transport()
+        transport.snapshot = { _, _ in (nil, .valueUnavailable) }
+        let report = await gate.post(.dictation("B"), from: sender.source(.take), transport: transport) { true }
+        #expect(report.eventsPosted && report.postSendFocusVerified)
+        #expect(report.settledUnconfirmedPredecessor == nil && report.unverifiedTarget?.hasHardPredecessorBlock == true)
+    }
+
+    @Test func monotonicExpiryAndQuietTimeIgnoreWallClockSteps() async throws {
+        let gate = TextInsertion.PostingGate { _, _ in }
+        let sender = Sender(ticket: try #require(gate.historyTicket))
+        let result = await gate.post(.dictation("B"), from: sender.source(.take), transport: sender.transport()) { true }
+        let anchor = LastDeliveryAnchor(receipt: try #require(result.receipt), sourceRecordID: nil)
+        let origin = anchor.deliveredAt
+        var simulated = (wall: Date(), monotonic: origin)
+        for jump in [3600.0, -7200.0] {
+            simulated.wall.addTimeInterval(jump)
+            #expect(anchor.isFresh(at: simulated.monotonic))
+            #expect(!FinalizationPolicy.canFinish(endedAt: origin, lastFinalAt: origin,
+                                                 endAcknowledgedAt: origin, now: simulated.monotonic))
+        }
+        simulated.monotonic = origin.advanced(by: .milliseconds(400))
+        #expect(FinalizationPolicy.canFinish(endedAt: origin, lastFinalAt: origin,
+                                            endAcknowledgedAt: origin, now: simulated.monotonic))
+        #expect(anchor.isFresh(at: origin.advanced(by: .seconds(599))))
+        #expect(!anchor.isFresh(at: origin.advanced(by: .seconds(600))))
+    }
+
+    @Test func historyIntentCoversWaitAndReleasesOnEveryExit() async throws {
+        enum Exit: CaseIterable { case completed, refused, expired, interrupted, waitCancelled }
+        for exit in Exit.allCases {
+            let gate = TextInsertion.PostingGate { _, _ in }
+            let ticket = try #require(gate.reserveHistory())
+            let sender = Sender(ticket: ticket)
+            var performed = false
+            var updateStarts = 0
+            func checkUpdate() {
+                KoeBridgeInAppUpdater.checkForUpdatesFromMenu(isUpdateCycleActive: false, hasPendingWork: gate.hasPendingWork,
+                    configured: true, explanation: "", setStatus: { _ in }, presentInformationalAlert: { _, _, _, _ in nil },
+                    showUpdateInFocus: {}, showUpdatePage: {}, check: { updateStarts += 1 })
+            }
+            let deadline = ContinuousClock.now.advanced(by: .seconds(exit == .expired ? -1 : 5))
+            await gate.performHistoryIntent(ticket, deadline: deadline, wait: {
+                checkUpdate()
+                #expect(updateStarts == 0 && !gate.isHeld)
+                if exit == .interrupted { gate.interrupt() }
+                if exit == .waitCancelled { throw CancellationError() }
+            }) {
+                performed = true
+                if exit == .refused {
+                    // Another admission during the wait invalidates this ticket.
+                    #expect(gate.withSelectionWrite {})
+                }
+                sender.f.onPost = { checkUpdate(); #expect(updateStarts == 0) }
+                let result = await gate.post(.dictation("B"), from: sender.source(.history), transport: sender.transport()) { true }
+                if exit == .refused { #expect(result.reason == "posting_busy") }
+            }
+            #expect(performed == (exit == .completed || exit == .refused))
+            if exit == .interrupted {
+                _ = await gate.post(.dictation("B"), from: sender.source(.history), transport: sender.transport()) { true }
+            }
+            #expect(sender.f.posts == (exit == .completed ? 1 : 0))
+            checkUpdate()
+            #expect(updateStarts == 1 && !gate.hasPendingWork)
+        }
+    }
+
+    @Test func explicitHistoryPinsFieldWhileOrdinaryRecaptureUsesCurrentField() async throws {
+        for producer in [Producer.history, .take] {
+            for movedField in [false, true] {
+                let gate = TextInsertion.PostingGate { _, _ in }
+                let sender = Sender(ticket: try #require(gate.historyTicket))
+                var transport = sender.transport()
+                if movedField {
+                    let old = sender.start
+                    sender.f.currentField = sender.f.other
+                    let fresh = InsertionTarget(bundleIdentifier: old.bundleIdentifier, localizedName: nil,
+                        pid: old.pid, focused: sender.f.other, window: old.window, selectionAttribute: old.selectionAttribute,
+                        selection: old.selection, textSnapshot: old.textSnapshot, capturedAt: old.capturedAt, blockedReason: nil)
+                    transport.capture = { _ in .accepted(fresh) }
+                } else { sender.f.currentWindow = sender.f.other }
+                let report = await gate.post(.dictation("B"), from: sender.source(producer), transport: transport) { true }
+                #expect(report.outcome == (producer == .history ? .focusChanged : .verifiedInserted))
+                #expect(sender.f.posts == (producer == .history ? 0 : 1))
+            }
+        }
+    }
+
+    @Test func predecessorIsReconciledUnderOwnershipAfterFinalize() async throws {
+        var sequence: [String] = []
+        let pending = Sender(ticket: UUID())
+        var gate: TextInsertion.PostingGate!
+        gate = TextInsertion.PostingGate { report, sourceID in
+            #expect(gate.isHeld && gate.historyTicket == nil)
+            VoiceController.reconcileDelivery(report, sourceTakeID: sourceID, into: pending.take)
+            sequence.append("reconcile")
+        }
+        let sender = Sender(ticket: try #require(gate.historyTicket))
+        sender.f.onPost = { gate.interrupt() }
+        _ = await gate.post(.dictation(String(repeating: "z", count: 96)), from: sender.source(.take),
+                            transport: sender.transport(), finalize: { _ in
+            #expect(gate.isHeld && gate.historyTicket == nil)
+            sequence.append("finalize")
+        }) { true }
+        #expect(sequence == ["finalize", "reconcile"] && !gate.isHeld)
+        let next = await gate.post(.dictation("x"), from: pending.source(.take), transport: pending.transport()) { true }
+        #expect(next.reason == "prior_input_unverified" && pending.f.posts == 0)
+    }
+
+    @Test func cancellationDuringPreflightIsRecordedSeparately() async throws {
+        let gate = TextInsertion.PostingGate { _, _ in }
+        let sender = Sender(ticket: try #require(gate.historyTicket))
+        var t = sender.transport()
+        t.checkFocus = { _, _, _, _, _ in (false, "focused_element_unavailable_on_recheck") }
+        t.ax.sleep = { _ in await MainActor.run { gate.interrupt() } }
+        let report = await gate.post(.dictation("A"), from: sender.source(.take), transport: t) { true }
+        #expect(sender.f.posts == 0 && report.outcome.diagnosticOutcome == .cancelled)
+        #expect(DictationDelivery.classify(report).delivery == .cancelledDelivery)
+    }
+
+    @Test func cancellationAfterSubmissionRetainsUnconfirmedDeliveryStatus() async throws {
+        let gate = TextInsertion.PostingGate { _, _ in }
+        let sender = Sender(ticket: try #require(gate.historyTicket))
+        var transport = sender.transport()
+        transport.waitForReceiptPoll = { await MainActor.run { gate.interrupt() } }
+        let result = await gate.post(.dictation("x"), from: sender.source(.take), transport: transport) { true }
+        let saved = DictationDelivery.classify(result)
+        #expect(sender.f.posts == 1 && result.receipt == nil)
+        #expect(saved.submitted && saved.delivery == .interruptedDelivery)
+        #expect(saved.deferredFeedback == .deferredUnconfirmed)
     }
 
     @Test func competingProducersPostZeroUntilReceiptAndReconciliationFinish() async {

@@ -13,6 +13,7 @@ public struct TranscriptRecord: Codable, Equatable, Identifiable, Sendable {
         case automaticPasteDisabled
         case recognitionInterrupted
         case reviewRequired
+        case cancelledDelivery
         case interruptedDelivery
 
         public var label: String {
@@ -27,6 +28,7 @@ public struct TranscriptRecord: Codable, Equatable, Identifiable, Sendable {
             case .automaticPasteDisabled: return "自動入力OFFのため保存のみ"
             case .recognitionInterrupted: return "認識失敗（途中結果を保存）"
             case .reviewRequired: return "認識内容を要確認（未入力）"
+            case .cancelledDelivery: return "入力をキャンセルしました"
             case .interruptedDelivery: return "入力状況を要確認（処理が中断）"
             }
         }

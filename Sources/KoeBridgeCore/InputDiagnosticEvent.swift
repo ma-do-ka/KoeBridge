@@ -160,6 +160,7 @@ public struct InputDiagnosticEvent: Equatable, Sendable {
         case markerNotNumeric = "marker_not_numeric"
         case selectionMissing = "selection_missing"
         case selectionUnavailable = "selection_unavailable"
+        case valueUnsupported = "value_unsupported"
         case valueUnavailable = "value_unavailable"
         case snapshotInvalid = "snapshot_invalid"
         case noObservableDelta = "no_observable_delta"

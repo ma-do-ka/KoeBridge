@@ -360,7 +360,7 @@ import KoeBridgeCore
     func fixLastInput() {
         guard !postingGate.isHeld else { status = DictationDelivery.postingBusyDetail; return }
         guard !hasPendingWork else { return }
-        guard let anchor = postingGate.lastDeliveryAnchor, Date().timeIntervalSince(anchor.deliveredAt) < 600 else {
+        guard let anchor = postingGate.lastDeliveryAnchor, anchor.isFresh() else {
             postingGate.lastDeliveryAnchor = nil
             status = "修正できる直前の入力がありません"
             return
@@ -473,6 +473,9 @@ import KoeBridgeCore
         meetingSession = session
         meetingStatus = session.liveStatus
         session.onStatus = { [weak self] in self?.meetingStatus = $0 }
+        session.onUsage = { [weak self] event, tokens in
+            self?.usageStore.append(engineEvents: [event], tokenEvents: tokens)
+        }
         session.onFinished = { [weak self, weak session] text, partial in
             guard let self, let session, meetingSession === session else { return }
             let recordID = session.save(text, partial: partial, to: &historyStore)
@@ -642,6 +645,7 @@ import KoeBridgeCore
     }
 
     private var localRecoveryBusy = false
+    private(set) var deferredSummary: String?
     private var deferredFeedback = DictationDelivery.DeferredFeedback()
     private var overlayOwner: UUID?
     private var overlayDismissal: Task<Void, Never>?
@@ -741,7 +745,10 @@ import KoeBridgeCore
 
     var hasKey: Bool { KeychainStore.load() != nil }
     var busy: Bool { active != nil }
-    var historyInsertionTicket: UUID? { postingGate.historyTicket }
+    func reserveHistoryInsertion() -> UUID? { postingGate.reserveHistory() }
+    func performHistoryIntent(_ ticket: UUID, deadline: ContinuousClock.Instant, perform: () async -> Void) async {
+        await postingGate.performHistoryIntent(ticket, deadline: deadline, perform: perform)
+    }
 
     func insertHistory(_ text: String, to target: InsertionTarget?, ticket: UUID) async -> DictationDelivery.Outcome {
         let report = await postingGate.post(.dictation(text), from: .history(target, requestedAt: ticket)) {
@@ -751,7 +758,9 @@ import KoeBridgeCore
     }
 
     // Updating must not terminate background recognition or pending delivery.
-    var hasPendingWork: Bool { postingGate.isHeld || active != nil || !inFlight.isEmpty || deliveryWorker != nil || textOperationRunning || meetingRunning || replayRecordID != nil }
+    var hasPendingWork: Bool { postingGate.hasPendingWork || otherDeliveryWorkPending }
+    var historyAdmissionBusy: Bool { postingGate.isHeld || otherDeliveryWorkPending }
+    private var otherDeliveryWorkPending: Bool { active != nil || !inFlight.isEmpty || deliveryWorker != nil || textOperationRunning || meetingRunning || replayRecordID != nil }
 
     func shortcutPressBegan() {
         if phase == .idle { beginRecording() }
@@ -1395,6 +1404,7 @@ import KoeBridgeCore
         }
         // Freeze the exact deliverable before both ordered completion and history.
         // Save-only, suppressed, review-held, stale and no-input takes never expand.
+        let usage = take.usageSamples(recognizedText: text, cancelled: noInput || take.automaticDeliverySuppressed || reason == "録音をキャンセルしました")
         if isCommand { text = nil }
         if take.transformSelection == nil, !noInput, finished.pending.contains(take.id), let original = text, !original.isEmpty,
            DictationDelivery.skipped(suppressed: take.automaticDeliverySuppressed,
@@ -1453,8 +1463,7 @@ import KoeBridgeCore
         // Usage telemetry is secondary and must not delay those key events.
         deliverOrderedResults()
         if noInput && active == nil && overlayOwner == take.id { status = "音声入力なし" }
-        recordUsage(take, succeeded: text?.isEmpty == false,
-                    cancelled: noInput || reason == "録音をキャンセルしました")
+        usageStore.append(engineEvents: usage.engines, tokenEvents: usage.tokens)
         if retainAudioEnabled, take.retainAudioGeneration == retentionGeneration,
            let id = take.historyRecordID, let record = historyStore.entries.first(where: { $0.id == id }) {
             retainedAudio.write(pcm: take.audioBackup, record: record, history: &historyStore)
@@ -1468,13 +1477,6 @@ import KoeBridgeCore
             }
         } else { resumeMicrophoneWarm() }
         scheduleWarmGemini()
-    }
-
-    /// Called exactly once per take, including failures and fallback.
-    /// No transcript, audio, credentials, or platform error messages are stored.
-    private func recordUsage(_ take: DictationTake, succeeded: Bool, cancelled: Bool) {
-        let samples = take.usageSamples(succeeded: succeeded, cancelled: cancelled)
-        usageStore.append(engineEvents: samples.engines, tokenEvents: samples.tokens)
     }
 
     private func deliverOrderedResults() {
@@ -1522,15 +1524,18 @@ import KoeBridgeCore
         case .text: break
         }
         if result.noInput {
+            let cancelled = result.reason == "録音をキャンセルしました"
             take.inputDiagnostics?.record(.result, stage: .result, [
-                .outcome: .token(.skipped), .reason: .reason("no_input"), .eventsPosted: .flag(false)
+                .outcome: .token(cancelled ? .cancelled : .skipped),
+                .reason: .reason(cancelled ? "delivery_cancelled_before_post" : "no_input"), .eventsPosted: .flag(false)
             ])
             DiagnosticLog.record("empty rapid recording discarded; id=\(id.uuidString.prefix(8))")
             return
         }
         guard let text = result.text, !text.isEmpty else {
             take.inputDiagnostics?.record(.result, stage: .result, [
-                .outcome: .token(.skipped), .reason: .reason("recognition_failed"), .eventsPosted: .flag(false)
+                .outcome: .token(take.automaticDeliverySuppressed ? .cancelled : .skipped),
+                .reason: .reason(take.automaticDeliverySuppressed ? "system_suppressed" : "recognition_failed"), .eventsPosted: .flag(false)
             ])
             let recovered = result.partial.trimmingCharacters(in: .whitespacesAndNewlines)
             if !recovered.isEmpty, take.historyRecordID == nil {
@@ -1559,7 +1564,7 @@ import KoeBridgeCore
                 DiagnosticLog.recordMicrophoneEvidence("held_text_rescued take=\(id.uuidString.prefix(8)) chars=\(text.count) \(rescue.diagnostic)")
             }
             take.inputDiagnostics?.record(.result, stage: .result, [
-                .outcome: .token(.skipped),
+                .outcome: .token(take.automaticDeliverySuppressed ? .cancelled : .skipped),
                 .reason: .reason(take.automaticDeliverySuppressed ? "system_suppressed"
                     : (take.acousticReviewRequired ? "acoustic_review_required"
                         : (take.review?.status == .needsReview ? "review_required" : "automatic_input_disabled"))),
@@ -1855,9 +1860,10 @@ import KoeBridgeCore
     }
 
     private func presentDeferredFeedbackIfIdle() {
-        guard let (id, feedback) = deferredFeedback.next(owner: overlayOwner, recording: active != nil,
+        guard let (id, feedback, summary) = deferredFeedback.next(owner: overlayOwner, recording: active != nil,
                                                          pendingTakes: !inFlight.isEmpty) else { return }
         overlayOwner = id
+        deferredSummary = summary
         showCompletionFeedback(feedback, for: id)
         onShowPreview?()
     }
@@ -1867,6 +1873,7 @@ import KoeBridgeCore
         overlayDismissal = nil
         overlayOwner = nil
         overlayFeedback = .hidden
+        deferredSummary = nil
         onHidePreview?()
         // Let any synchronous transition install its new owner before draining.
         Task { @MainActor [weak self] in self?.presentDeferredFeedbackIfIdle() }
@@ -1880,7 +1887,7 @@ import KoeBridgeCore
     func discard() {
         guard let take = active else { return }
         DiagnosticLog.record("session discarded by user")
-        resolve(take, text: nil, reason: "音声入力なし", noInput: true)
+        resolve(take, text: nil, reason: "録音をキャンセルしました", noInput: true)
     }
 
     /// Never paste delayed transcripts after sleep, user switch or shutdown.
@@ -1896,7 +1903,7 @@ import KoeBridgeCore
             take.automaticDeliverySuppressed = true
             if take.finished, let recordID = take.historyRecordID {
                 updateRemembered(recordID,
-                                 delivery: take.id == deliveringTakeID ? .interruptedDelivery : .blockedFocus,
+                                 delivery: take.id == deliveringTakeID ? .interruptedDelivery : .cancelledDelivery,
                                  detail: take.id == deliveringTakeID
                                     ? "システム中断が発生しました。再送の前に入力先を確認してください。"
                                     : "システム中断により、待機中の自動入力を中止しました。")

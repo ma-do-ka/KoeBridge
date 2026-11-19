@@ -58,6 +58,7 @@ import KoeBridgeCore
         let target: InsertionTarget?
         let diagnostics: InputDiagnosticTrace?
         let resultUptimeMS: Int
+        var valueUnsupported = false
         var exactBaselineAvailable: Bool = false
         var postSendFocusVerified: Bool = false
         var completedAtUptime: TimeInterval = ProcessInfo.processInfo.systemUptime
@@ -78,6 +79,9 @@ import KoeBridgeCore
                   postSendFocusVerified,
                   reason == "posted_without_observable_edit",
                   let target,
+                  let selection = target.selection,
+                  InsertionTarget.decodeSelection(selection, kind: target.selectionKind) != nil,
+                  target.selectionKind == .textMarker || valueUnsupported,
                   let window = target.window,
                   CFGetTypeID(window) == AXUIElementGetTypeID() else { return nil }
             return SettledUnconfirmedPredecessor(target: target, completedAt: completedAtUptime)
@@ -208,10 +212,7 @@ import KoeBridgeCore
             $0.focusCheck(requireOriginalSelection: $1, diagnostics: $2, stage: $3, chunkOrdinal: $4)
         }
         var snapshot: @MainActor (InsertionTarget, InputDiagnosticTrace?) -> (InsertionReceiptPolicy.Snapshot?, ReceiptEligibilityReason) = { target, trace in
-            var eligibility = ReceiptEligibilityReason.notAttempted
-            let snapshot = target.observedSnapshot(timeout: 0.04, diagnostics: trace, stage: .preflight,
-                                                   eligibility: { eligibility = $0 })?.snapshot
-            return (snapshot, eligibility)
+            target.deliveryBaseline(diagnostics: trace)
         }
         var waitForReceiptPoll: () async throws -> Void = { try await Task.sleep(for: .milliseconds(35)) }
         var receiptFocus: @MainActor (InsertionTarget, Float, InputDiagnosticTrace?, Int) -> (allowed: Bool, reason: String) = {
@@ -313,30 +314,11 @@ import KoeBridgeCore
                                                   shouldContinue: @MainActor () -> Bool) async -> Bool {
         func readSelectionEqual(_ left: InsertionTarget.AttributeRead, _ right: InsertionTarget.AttributeRead,
                                 kind: InputDiagnosticEvent.Token) -> Bool {
-            switch kind {
-            case .numericRange:
-                guard left.status == .success, right.status == .success,
-                      let lv = left.value, let rv = right.value,
-                      CFGetTypeID(lv) == AXValueGetTypeID(), CFGetTypeID(rv) == AXValueGetTypeID(),
-                      AXValueGetType(lv as! AXValue) == .cfRange, AXValueGetType(rv as! AXValue) == .cfRange else {
-                    return false
-                }
-                var lr = CFRange()
-                var rr = CFRange()
-                guard AXValueGetValue(lv as! AXValue, .cfRange, &lr),
-                      AXValueGetValue(rv as! AXValue, .cfRange, &rr) else { return false }
-                return lr.location == rr.location && lr.length == rr.length
-            case .textMarker:
-                guard left.status == .success, right.status == .success,
-                      let lv = left.value, let rv = right.value,
-                      CFGetTypeID(lv) == AXTextMarkerRangeGetTypeID(),
-                      CFGetTypeID(rv) == AXTextMarkerRangeGetTypeID() else {
-                    return false
-                }
-                return CFEqual(lv, rv)
-            default:
-                return false
-            }
+            guard left.status == .success, right.status == .success,
+                  let lv = left.value, let rv = right.value,
+                  let first = InsertionTarget.decodeSelection(lv, kind: kind),
+                  let second = InsertionTarget.decodeSelection(rv, kind: kind) else { return false }
+            return first == second
         }
 
         // Window identity must be positively established (both non-nil AXUIElement and CFEqual).
@@ -478,6 +460,7 @@ import KoeBridgeCore
                 let verified = await verifySettledPredecessors(adjudicated.matchingSettled, for: fresh, takeStart: takeStart,
                     unverifiedPredecessors: unverifiedPredecessors, diagnostics: diagnostics,
                     transport: transport, shouldContinue: shouldContinue)
+                if Task.isCancelled || !shouldContinue() { return (fresh, "delivery_cancelled_before_post", nil) }
                 if !verified {
                     diagnostics?.record(.target, stage: .preflight, [
                         .reason: .token(.priorInputUnverified),
@@ -514,7 +497,29 @@ import KoeBridgeCore
         private var generation = UUID()
         var historyTicket: UUID? { isHeld ? nil : generation }
 
-        func interrupt() { generation = UUID() }
+        private var pendingHistoryIntent: UUID?
+        var hasPendingWork: Bool { isHeld || pendingHistoryIntent != nil }
+
+        func reserveHistory() -> UUID? {
+            guard !hasPendingWork else { return nil }
+            generation = UUID()
+            pendingHistoryIntent = generation
+            return generation
+        }
+
+        func performHistoryIntent(_ ticket: UUID, deadline: ContinuousClock.Instant,
+                                  wait: () async throws -> Void = { try await Task.sleep(for: .milliseconds(100)) },
+                                  perform: () async -> Void) async {
+            defer { if pendingHistoryIntent == ticket { pendingHistoryIntent = nil } }
+            do { try await wait() } catch { return }
+            guard !Task.isCancelled, ContinuousClock.now < deadline, pendingHistoryIntent == ticket else { return }
+            await perform()
+        }
+
+        func interrupt() {
+            generation = UUID()
+            pendingHistoryIntent = nil
+        }
 
         private func acquire() -> UUID? {
             guard !isHeld else { return nil }
@@ -571,10 +576,12 @@ import KoeBridgeCore
             case .take, .selection: lastDeliveryAnchor = nil
             case .history, nil: break
             }
+            let pinHistoryTarget: Bool
+            if case .history = source { pinHistoryTarget = true } else { pinHistoryTarget = false }
             let report = await deliverPayload(payload, takeStart: takeStart(), diagnostics: diagnostics,
                 unverifiedPredecessors: unverifiedPredecessors(), settledUnconfirmedPredecessors: settledUnconfirmedPredecessors(),
                 capture: capture, transport: transport, livePriorBlock: livePriorBlock,
-                shouldContinue: { self.generation == owner && shouldContinue() })
+                pinHistoryTarget: pinHistoryTarget, shouldContinue: { self.generation == owner && shouldContinue() })
             finalize(report)
             reconcile(report, sourceTakeID)
             return report
@@ -596,7 +603,7 @@ import KoeBridgeCore
                                        settledUnconfirmedPredecessors: [SettledUnconfirmedPredecessor],
                                        capture: TargetCapture?, transport: Transport,
                                        livePriorBlock: (InsertionTarget) -> Bool,
-                                       shouldContinue: @MainActor () -> Bool) async -> Report {
+                                       pinHistoryTarget: Bool, shouldContinue: @MainActor () -> Bool) async -> Report {
         let beganAt = ProcessInfo.processInfo.systemUptime
         var sent = 0
         var planned = 0
@@ -658,7 +665,8 @@ import KoeBridgeCore
                 diagnostics?.record(.receipt, stage: .receipt, summaryFields)
             }
             var resultFields: [InputDiagnosticEvent.Field: InputDiagnosticEvent.Value] = [
-                .outcome: .token(outcome.diagnosticOutcome), .reason: .reason(diagnosticReason ?? reason),
+                .outcome: .token(reason == "delivery_cancelled_after_post" ? .cancelled : outcome.diagnosticOutcome),
+                .reason: .reason(diagnosticReason ?? reason),
                 .plannedChunks: .integer(planned), .sentChunks: .integer(sent),
                 .eventsPosted: .flag(sent > 0), .receiptAvailable: .flag(receipt != nil),
                 .receiptMode: receipt.map { .reason($0.proof.mode.rawValue) } ?? .token(.none),
@@ -674,7 +682,8 @@ import KoeBridgeCore
                 ?? InputDiagnosticTrace.uptimeMilliseconds(ProcessInfo.processInfo.systemUptime)
             return Report(outcome: outcome, reason: reason, receipt: receipt,
                           eventsPosted: sent > 0, target: target, diagnostics: diagnostics,
-                          resultUptimeMS: resultUptimeMS, exactBaselineAvailable: exactBaselineAvailable,
+                          resultUptimeMS: resultUptimeMS, valueUnsupported: receiptEligibility == .valueUnsupported,
+                          exactBaselineAvailable: exactBaselineAvailable,
                           postSendFocusVerified: postSendFocusVerified,
                           completedAtUptime: transport.ax.now())
         }
@@ -717,6 +726,11 @@ import KoeBridgeCore
             default: outcome = .focusChanged
             }
             return report(outcome, recaptured.reason)
+        }
+        if pinHistoryTarget {
+            guard let takeStart, let target, target.sameField(as: takeStart) else {
+                return report(.focusChanged, "focused_field_changed")
+            }
         }
         let safeText: String
         let parts: [String]
@@ -775,7 +789,8 @@ import KoeBridgeCore
                    sameProcess: transport.ax.frontPID() == target.pid,
                    alreadyRecheckedAtCheckpoint: false) {
                 try? await transport.ax.sleep(0.025)
-                if !Task.isCancelled, shouldContinue(), transport.ax.frontPID() == target.pid {
+                guard !Task.isCancelled, shouldContinue() else { return report(.cancelled, "delivery_cancelled_before_post") }
+                if transport.ax.frontPID() == target.pid {
                     initialFocus = transport.checkFocus(target, true, diagnostics, .preflight, 0)
                 }
             }
