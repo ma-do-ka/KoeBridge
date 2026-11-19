@@ -99,6 +99,7 @@ import KoeBridgeCore
                 if self.posts == 0 { #expect(Double(duration) <= 0.100 - self.now) }
                 return self.timeoutOK ? .success : .failure
             }
+            t.ax.restoreSystemTimeout = { .success }
             t.ax.owner = { _ in self.owner }
             t.ax.attribute = { _, name in self.attribute(name as String) }
             t.capture = { trace in
@@ -532,6 +533,62 @@ import KoeBridgeCore
         }
     }
 
+    @Test func unavailableRecoveryRestoresSystemTimeoutOnceAfterItsFinalRead() async {
+        enum Exit: CaseIterable { case adopted, rejected, expired, interrupted }
+        for exit in Exit.allCases {
+            let f = Fixture()
+            f.recover()
+            var t = f.transport()
+            t.capture = { _ in
+                .unavailable(.focusedTextElementUnavailable, pid: f.pid, focused: nil, ownerStatus: nil)
+            }
+            let system = AXUIElementCreateSystemWide()
+            var reads = 0
+            var systemReads = 0
+            var readsAtRestore: [Int] = []
+            t.ax.restoreSystemTimeout = {
+                readsAtRestore.append(reads)
+                return .cannotComplete
+            }
+            t.ax.attribute = { element, name in
+                reads += 1
+                if name as String == kAXFocusedUIElementAttribute {
+                    if CFEqual(element, system) {
+                        systemReads += 1
+                        if exit == .expired { f.now = 0.100 }
+                        if f.slots.count == 2 { return Read(value: f.field, status: .success) }
+                    }
+                    return Read(value: nil, status: .noValue)
+                }
+                return f.attribute(name as String)
+            }
+            if exit == .rejected { f.owner = 99999 }
+            if exit == .interrupted {
+                let sleep = t.ax.sleep
+                t.ax.sleep = { delay in
+                    if !f.slots.isEmpty { throw CancellationError() }
+                    try await sleep(delay)
+                }
+            }
+            f.onCheck = { stage in
+                if stage == .receipt { #expect(readsAtRestore == [reads]) }
+            }
+            let result = await TextInsertion.deliver("x", to: nil, transport: t)
+            #expect(systemReads > 0)
+            #expect(readsAtRestore == [reads])
+            switch exit {
+            case .adopted:
+                #expect(result.outcome == .inserted && f.posts == 1)
+            case .rejected:
+                #expect(result.reason == "recovery_host_changed" && f.posts == 0)
+            case .expired:
+                #expect(result.reason == "recovery_deadline_expired" && f.posts == 0)
+            case .interrupted:
+                #expect(result.reason == "delivery_cancelled_before_post" && f.posts == 0)
+            }
+        }
+    }
+
     @Test func unavailableInitialFocusRecoversSameWindowPositiveEditorAndRejectsLackOfEvidenceOrWindowChange() async {
         // 1. Positive case: initial capture returns .unavailable(.focusedTextElementUnavailable),
         // then slot 1 (+30ms) exposes a positive editor element in the same window (AXTextArea with numeric selection
@@ -900,7 +957,7 @@ import KoeBridgeCore
         }
 
         // I11: Unavailable-target recovery consults the system-wide AX root when app/window focus is nil,
-        //      without resetting system timeout to 0, and enforces same-PID / same-window / positive-editor evidence.
+        //      using bounded reads, and enforces same-PID / same-window / positive-editor evidence.
         do {
             func runSystemOnlyProbe(mutateOnWait: ((Fixture) -> Void)? = nil) async -> (report: TextInsertion.Report, fixture: Fixture, systemReads: Int) {
                 let f = Fixture()

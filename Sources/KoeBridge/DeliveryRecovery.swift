@@ -29,6 +29,9 @@ struct RecoveryAX {
     var now = { ProcessInfo.processInfo.systemUptime }
     var sleep: (TimeInterval) async throws -> Void = { try await Task.sleep(for: .seconds($0)) }
     var frontPID: @MainActor () -> pid_t? = { NSWorkspace.shared.frontmostApplication?.processIdentifier }
+    var restoreSystemTimeout: () -> AXError = {
+        AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 0)
+    }
     var setTimeout = AXUIElementSetMessagingTimeout
     var attribute: (AXUIElement, CFString) -> Read = { element, name in
         var value: CFTypeRef?
@@ -361,8 +364,12 @@ struct RecoveryAX {
         return snapshot
     }
 
-    func acquire(diagnostics: InputDiagnosticTrace?, stopReason: () -> String?)
+    func acquire(diagnostics: InputDiagnosticTrace?,
+                 onAdoptUnavailable: (@escaping () -> AXError) -> Void = { _ = $0() },
+                 stopReason: () -> String?)
         async -> (host: Host?, reason: String) {
+        var restoreAtExit = requireSameElement ? nil : ax.restoreSystemTimeout
+        defer { _ = restoreAtExit?() }
         var result = defaultFailureReason
         var attempts = 0
         defer {
@@ -387,6 +394,11 @@ struct RecoveryAX {
             case .button: continue
             case .editor(let host):
                 guard ax.now() < deadline else { result = "recovery_deadline_expired"; return (nil, result) }
+                // An adopted host can require further bounded reads right up to posting.
+                if let restore = restoreAtExit {
+                    onAdoptUnavailable(restore)
+                    restoreAtExit = nil
+                }
                 result = "ok"
                 return (host, result)
             case .rejected:

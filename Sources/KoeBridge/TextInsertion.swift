@@ -378,6 +378,7 @@ import KoeBridgeCore
                                               operation: InsertionReceiptPolicy.SettledUnconfirmedOperation,
                                               diagnostics: InputDiagnosticTrace?, capture: TargetCapture?,
                                               transport: Transport,
+                                              onAdoptUnavailable: (@escaping () -> AXError) -> Void,
                                               shouldContinue: @MainActor () -> Bool,
                                               stopReason: (InsertionTarget) -> String?) async
         -> (target: InsertionTarget?, reason: String, recovered: (DeliveryRecovery, DeliveryRecovery.Host)?) {
@@ -442,7 +443,9 @@ import KoeBridgeCore
             let (trusted, mayPost) = transport.permissions()
             guard trusted else { return failed("accessibility_not_granted") }
             guard mayPost else { return failed("post_event_permission_missing") }
-            let result = await retry.acquire(diagnostics: diagnostics) { stopReason(baselineTarget) }
+            let result = await retry.acquire(diagnostics: diagnostics, onAdoptUnavailable: onAdoptUnavailable) {
+                stopReason(baselineTarget)
+            }
             guard let host = result.host else { return failed(result.reason) }
             if let stop = stopReason(host.target) { return failed(stop) }
             do {
@@ -621,9 +624,14 @@ import KoeBridgeCore
             }
             return nil
         }
+        // Recovery owns the system timeout through the last pre-post host check.
+        // Early returns unwind here; successful posting releases it before receipt reads.
+        var restoreSystemTimeout: (() -> AXError)?
+        defer { _ = restoreSystemTimeout?() }
         let recaptured = await acquireDeliveryTarget(takeStart: takeStart, unverifiedPredecessors: unverifiedPredecessors,
             settledUnconfirmedPredecessors: effectiveSettled, operation: operation,
             diagnostics: diagnostics, capture: capture, transport: transport,
+            onAdoptUnavailable: { restoreSystemTimeout = $0 },
             shouldContinue: shouldContinue, stopReason: stopReason)
         target = recaptured.target
         pacingProfile = target.map { DeliveryPacingPolicy.profile(selectionKind: $0.selectionKind) }
@@ -815,6 +823,8 @@ import KoeBridgeCore
                                 beganNanoseconds: postBegan, endedNanoseconds: postEnded)
             }
         }
+        _ = restoreSystemTimeout?()
+        restoreSystemTimeout = nil
         diagnostics?.record(.payload, stage: .posting, [
             .sentChunks: .integer(sent), .eventsPosted: .flag(sent > 0), .outcome: .token(.unconfirmed)
         ])
