@@ -119,7 +119,7 @@ import KoeBridgeCore
                 record(.unchanged, "no_events_posted")
                 return candidate
             }
-            let isHardBlock = settledUnconfirmedPredecessor == nil
+            let isHardBlock = receipt == nil && settledUnconfirmedPredecessor == nil
             if candidate.isBlocked {
                 record(.blocked, "already_blocked")
                 if isHardBlock, candidate.sameElement(as: target), !candidate.hasHardPredecessorBlock {
@@ -162,7 +162,7 @@ import KoeBridgeCore
                     why = "invalid_candidate_snapshot"
                 } else { why = "candidate_edit_unmatched" }
                 record(.blocked, why)
-                return candidate.blockedByPriorInput(hard: isHardBlock)
+                return candidate.blockedByPriorInput(hard: receipt == nil ? isHardBlock : true)
             }
         }
     }

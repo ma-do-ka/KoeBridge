@@ -82,7 +82,7 @@ struct RecoveryAX {
 
     init(unavailableTarget: InsertionTarget, rejectedAt: TimeInterval, ax: RecoveryAX) {
         original = unavailableTarget
-        systemFocus = false
+        systemFocus = true
         self.rejectedAt = rejectedAt
         self.ax = ax
         defaultFailureReason = "target_unavailable_at_delivery"
@@ -145,11 +145,8 @@ struct RecoveryAX {
             guard first.status == .noValue || first.status == .attributeUnsupported || first.status == .success
             else { return first }
             if systemFocus {
-                // System-wide timeout changes the process default. Restore it even on late IPC.
                 let system = AXUIElementCreateSystemWide()
-                let result = Result { try ax.read(system, kAXFocusedUIElementAttribute, until: limit) }
-                guard ax.setTimeout(system, 0) == .success else { throw RecoveryAX.Failure.unavailable }
-                let sysRead = try result.get()
+                let sysRead = try ax.read(system, kAXFocusedUIElementAttribute, until: limit)
                 if sysRead.value != nil { return sysRead }
             }
             if let windowElement, !requireSameElement {

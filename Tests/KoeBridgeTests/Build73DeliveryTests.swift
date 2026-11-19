@@ -898,6 +898,60 @@ import KoeBridgeCore
             #expect(result.outcome == .focusChanged && result.reason == "focused_window_changed")
             #expect(f.posts == 0 && f.slots.isEmpty)
         }
+
+        // I11: Unavailable-target recovery consults the system-wide AX root when app/window focus is nil,
+        //      without resetting system timeout to 0, and enforces same-PID / same-window / positive-editor evidence.
+        do {
+            func runSystemOnlyProbe(mutateOnWait: ((Fixture) -> Void)? = nil) async -> (report: TextInsertion.Report, fixture: Fixture, systemReads: Int) {
+                let f = Fixture()
+                f.bundle = "com.google.Chrome"
+                f.currentField = nil
+                var systemFocusAvailable = false
+                var systemReads = 0
+                let appElement = AXUIElementCreateApplication(f.pid)
+                let systemElement = AXUIElementCreateSystemWide()
+                var t = f.transport()
+                t.capture = { _ in
+                    f.captures += 1
+                    return .unavailable(.focusedTextElementUnavailable, pid: f.pid, focused: nil, ownerStatus: nil)
+                }
+                t.ax.attribute = { element, name in
+                    if name as String == kAXFocusedUIElementAttribute {
+                        if CFEqual(element, systemElement) {
+                            systemReads += 1
+                            return Read(value: systemFocusAvailable ? f.field : nil,
+                                        status: systemFocusAvailable ? .success : .noValue)
+                        }
+                        if CFEqual(element, appElement) || CFEqual(element, f.window) {
+                            return Read(value: nil, status: .noValue)
+                        }
+                    }
+                    return f.attribute(name as String)
+                }
+                f.onWait = {
+                    systemFocusAvailable = true
+                    f.role = "AXTextArea"
+                    f.selection = f.range(0, 0)
+                    mutateOnWait?(f)
+                }
+                let report = await TextInsertion.deliver("x", to: nil, transport: t) { f.allowed }
+                return (report, f, systemReads)
+            }
+
+            // 1. Editor reachable ONLY via system-wide root with same PID/window and valid evidence -> posts once.
+            let ok = await runSystemOnlyProbe()
+            #expect(ok.report.outcome == .inserted && ok.fixture.posts == 1 && ok.fixture.slots == [0.030] && ok.systemReads >= 2)
+
+            // 2. Same system-only shape with mismatched window or owner -> 0 posts.
+            for mismatch in [
+                { (f: Fixture) in f.owner = 99999 },
+                { (f: Fixture) in f.currentWindow = f.other },
+                { (f: Fixture) in f.elementWindow = f.other }
+            ] {
+                let bad = await runSystemOnlyProbe(mutateOnWait: mismatch)
+                #expect(bad.report.outcome == .focusChanged && bad.fixture.posts == 0 && bad.fixture.slots == [0.030] && bad.systemReads >= 1)
+            }
+        }
     }
 }
 #endif
