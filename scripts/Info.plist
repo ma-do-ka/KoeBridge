@@ -19,11 +19,11 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.1.23</string>
+	<string>1.1.24</string>
 	<key>CFBundleVersion</key>
-	<string>78</string>
+	<string>79</string>
 	<key>KoeBridgeReleaseLabel</key>
-	<string>1.1.23</string>
+	<string>1.1.24</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>15.0</string>
 	<key>LSUIElement</key>
