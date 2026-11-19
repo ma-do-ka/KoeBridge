@@ -3,6 +3,32 @@ import Foundation
 import AVFoundation
 import KoeBridgeCore
 
+/// End-of-stream conversion is only valid after a clean stop. Deliver each
+/// independent buffer through the source's ordinary meter and admission path.
+enum CaptureEnd {
+    case normal, interrupted, cancelled
+
+    func drain(_ converter: AVAudioConverter?, consume: (AVAudioPCMBuffer) throws -> Void) throws {
+        guard self == .normal, let converter else { return }
+        while true {
+            guard let output = AVAudioPCMBuffer(pcmFormat: converter.outputFormat, frameCapacity: 1024) else {
+                throw DrainError.conversion
+            }
+            var error: NSError?
+            let status = converter.convert(to: output, error: &error) { _, state in
+                state.pointee = .endOfStream
+                return nil
+            }
+            if let error { throw error }
+            guard status != .error else { throw DrainError.conversion }
+            if output.frameLength > 0 { try consume(output) }
+            if status == .endOfStream { return }
+            guard output.frameLength > 0 else { throw DrainError.conversion }
+        }
+    }
+    private enum DrainError: Error { case conversion }
+}
+
 /// Engine lifecycle, conversion and inference have separate serial lanes.
 /// The real-time tap only copies; health counters use healthLock.
 final class MicrophoneCapture: @unchecked Sendable {
@@ -202,7 +228,7 @@ final class MicrophoneCapture: @unchecked Sendable {
             } onCancel: { [self] in
                 // Immediate flag prevents a queued engine start from resurrecting
                 // a cancelled take. Teardown itself stays on the lifecycle lane.
-                stop { _ in }
+                stop(.cancelled) { _ in }
             }
         } catch {
             startupDiagnostics?.note(.startFailed, code: (error as NSError).code)
@@ -695,14 +721,14 @@ final class MicrophoneCapture: @unchecked Sendable {
         }
     }
 
-    func stop(completion: @escaping (Int) -> Void) {
+    func stop(_ end: CaptureEnd, completion: @escaping (Int) -> Void) {
         startupDiagnostics?.note(.stopRequested)
         startupGate.stop(at: ProcessInfo.processInfo.systemUptime)
         Self.lifecycleQueue.async { [self] in
-            stopBlocking(flushPendingAudio: startupGate.didCommit, completion: completion)
+            stopBlocking(flushPendingAudio: startupGate.didCommit, end: end, completion: completion)
         }
     }
-    private func stopBlocking(flushPendingAudio: Bool = true, completion: ((Int) -> Void)? = nil) {
+    private func stopBlocking(flushPendingAudio: Bool, end: CaptureEnd = .cancelled, completion: ((Int) -> Void)? = nil) {
         guard stopLatch.begin(completion: completion) else { return }
         startupDiagnostics?.begin(.stopGate)
         teardownStarted = true
@@ -739,6 +765,10 @@ final class MicrophoneCapture: @unchecked Sendable {
             }
             startupBuffers.removeAll(keepingCapacity: false)
             startupFrames = 0
+            if flushPendingAudio && lostBufferCount == 0 {
+                do { try end.drain(converter, consume: consume) }
+                catch { noteBufferLoss(conversionError: true) }
+            }
             if flushPendingAudio && !carry.isEmpty { admit(carry) }
             carry.removeAll(keepingCapacity: true)
             converter = nil

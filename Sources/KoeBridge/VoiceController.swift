@@ -1180,7 +1180,7 @@ import KoeBridgeCore
         let capture = take.mic
         take.mic = nil
         if let capture {
-            capture.stop { [weak self, weak take] losses in
+            capture.stop(.normal) { [weak self, weak take] losses in
                 Task { @MainActor [weak self, weak take] in
                     self?.resumeMicrophoneWarm()
                     guard let self, let take, !take.finished else { return }
@@ -1473,7 +1473,7 @@ import KoeBridgeCore
         let stoppingCapture = take.mic
         take.releaseResources()
         if let stoppingCapture {
-            stoppingCapture.stop { [weak self] _ in
+            stoppingCapture.stop(.cancelled) { [weak self] _ in
                 Task { @MainActor [weak self] in self?.resumeMicrophoneWarm() }
             }
         } else { resumeMicrophoneWarm() }

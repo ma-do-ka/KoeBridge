@@ -36,9 +36,13 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     var releasedFrom: TimeInterval {
         lock.lock(); defer { lock.unlock() }; return admissionOffset
     }
-    func start(onAudio: @escaping (Data) -> Void, onFailure: @escaping () -> Void) async throws {
+    init(onAudio: @escaping (Data) -> Void, onFailure: @escaping () -> Void) {
+        self.onAudio = onAudio
+        self.onFailure = onFailure
+    }
+
+    func start() async throws {
         try checkStartup()
-        self.onAudio = onAudio; self.onFailure = onFailure
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         try checkStartup()
         guard let display = content.displays.first else { throw CaptureError.noDisplay }
@@ -100,40 +104,51 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             input.frameLength = AVAudioFrameCount(frames)
             guard CMSampleBufferCopyPCMDataIntoAudioBufferList(sampleBuffer, at: 0, frameCount: Int32(frames),
                 into: input.mutableAudioBufferList) == noErr else { throw CaptureError.invalidAudio }
-            if inputFormat != format {
-                inputFormat = format; converter = AVAudioConverter(from: format, to: outputFormat)
-            }
-            guard let converter,
-                  let output = AVAudioPCMBuffer(pcmFormat: outputFormat,
-                    frameCapacity: AVAudioFrameCount(ceil(Double(frames) * 16_000 / format.sampleRate)) + 32) else {
-                throw CaptureError.invalidAudio
-            }
-            var supplied = false
-            var error: NSError?
-            let status = converter.convert(to: output, error: &error) { _, state in
-                if supplied { state.pointee = .noDataNow; return nil }
-                supplied = true; state.pointee = .haveData; return input
-            }
-            guard error == nil, status != .error else { throw CaptureError.invalidAudio }
-            guard let samples = output.floatChannelData?[0], output.frameLength > 0 else { return }
-            let count = Int(output.frameLength)
-            meter.observe(UnsafeBufferPointer(start: samples, count: count))
-            var pcm = Data(capacity: count * 2)
-            for i in 0..<count {
-                let value = samples[i].isFinite ? max(-1, min(1, samples[i])) : 0
-                samples[i] = value
-                let integer = Int16((value * 32767).rounded())
-                pcm.append(UInt8(truncatingIfNeeded: integer))
-                pcm.append(UInt8(truncatingIfNeeded: integer >> 8))
-            }
-            lock.lock()
-            if firstSampleAt == nil { firstSampleAt = ProcessInfo.processInfo.systemUptime - Double(count) / 16_000 }
-            cachedActivity = meter.evidence
-            lock.unlock()
-            detector.append(output)
-            if let data = admission.append(pcm, proof: detector.evidence) { emit(data) }
-            if admission.overflowed { throw CaptureError.invalidAudio }
+            try convert(input)
         } catch { fail() }
+    }
+
+    /// Called serially on the sample handler queue, before the stop barrier.
+    func convert(_ input: AVAudioPCMBuffer) throws {
+        let format = input.format
+        let frames = input.frameLength
+        if inputFormat != format {
+            inputFormat = format; converter = AVAudioConverter(from: format, to: outputFormat)
+        }
+        guard let converter,
+              let output = AVAudioPCMBuffer(pcmFormat: outputFormat,
+                frameCapacity: AVAudioFrameCount(ceil(Double(frames) * 16_000 / format.sampleRate)) + 32) else {
+            throw CaptureError.invalidAudio
+        }
+        var supplied = false
+        var error: NSError?
+        let status = converter.convert(to: output, error: &error) { _, state in
+            if supplied { state.pointee = .noDataNow; return nil }
+            supplied = true; state.pointee = .haveData; return input
+        }
+        guard error == nil, status != .error else { throw CaptureError.invalidAudio }
+        try consume(output)
+    }
+
+    private func consume(_ output: AVAudioPCMBuffer) throws {
+        guard let samples = output.floatChannelData?[0], output.frameLength > 0 else { return }
+        let count = Int(output.frameLength)
+        meter.observe(UnsafeBufferPointer(start: samples, count: count))
+        var pcm = Data(capacity: count * 2)
+        for i in 0..<count {
+            let value = samples[i].isFinite ? max(-1, min(1, samples[i])) : 0
+            samples[i] = value
+            let integer = Int16((value * 32767).rounded())
+            pcm.append(UInt8(truncatingIfNeeded: integer))
+            pcm.append(UInt8(truncatingIfNeeded: integer >> 8))
+        }
+        lock.lock()
+        if firstSampleAt == nil { firstSampleAt = ProcessInfo.processInfo.systemUptime - Double(count) / 16_000 }
+        cachedActivity = meter.evidence
+        lock.unlock()
+        detector.append(output)
+        if let data = admission.append(pcm, proof: detector.evidence) { emit(data) }
+        if admission.overflowed { throw CaptureError.invalidAudio }
     }
     private func emit(_ data: Data) {
         lock.lock(); admissionOffset = admission.openGeometry?.releasedFrom ?? 0; lock.unlock()
@@ -147,10 +162,22 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     }
     func stream(_ stream: SCStream, didStopWithError error: Error) { queue.async { self.fail() } }
 
-    func stop() async {
-        if let stream = closeStream() { try? await stream.stopCapture() }
-        await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+    func stop(_ reason: CaptureEnd) async -> Bool {
+        var end = reason
+        if let stream = closeStream() {
+            do { try await stream.stopCapture() }
+            catch { end = .interrupted }
+        }
+        let captureEnd = end
+        return await withCheckedContinuation { done in
             queue.async { [self] in
+                let drainSucceeded: Bool
+                do {
+                    if !stopped { try captureEnd.drain(converter, consume: consume) }
+                    drainSucceeded = true
+                } catch {
+                    drainSucceeded = false
+                }
                 stopped = true
                 detector.finish { [self] proof in
                     queue.async { [self] in
@@ -158,7 +185,7 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate, @unc
                             emit(tail)
                         }
                         onAudio = nil; onFailure = nil; converter = nil
-                        done.resume()
+                        done.resume(returning: drainSucceeded)
                     }
                 }
             }
