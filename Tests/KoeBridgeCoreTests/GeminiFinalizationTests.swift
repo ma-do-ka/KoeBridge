@@ -3,6 +3,19 @@ import Testing
 @testable import KoeBridgeCore
 
 struct GeminiFinalizationTests {
+    @Test func interimBoundaryKeepsEveryScalarInPreview() {
+        for (prefix, tail) in [("か", "\u{3099}く"), ("👩", "\u{200D}💻")] {
+            var assembler = TranscriptAssembler(budget: .dictation)
+            assembler.apply(.final(prefix))
+            assembler.apply(.interim(tail))
+            #expect(assembler.preview.volatileTail.utf8.elementsEqual(tail.utf8))
+            #expect(assembler.preview.text.utf8.elementsEqual((prefix + tail).utf8))
+            #expect(assembler.committedText.utf8.elementsEqual(prefix.utf8))
+            assembler.apply(.final(tail))
+            #expect(assembler.committedText.utf8.elementsEqual((prefix + tail).utf8))
+        }
+    }
+
     @Test func interimReplacementAndLongLegitimateFinalsRemainExact() {
         var limited = TranscriptAssembler(budget: .dictation)
         var control = TranscriptAssembler()
