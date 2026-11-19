@@ -136,6 +136,18 @@ struct MicrophoneTapInstallationTests {
                 check(failure == nil)
                 check(graph.node.requested == graph.bluetooth)
                 check(warm || converterFormat == graph.node.requested)
+                let rate = graph.bluetooth.sampleRate
+                let channels = graph.bluetooth.channelCount
+                for (format, accepted) in [
+                    (graph.bluetooth, true),
+                    (AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: channels)!, false),
+                    (AVAudioFormat(standardFormatWithSampleRate: rate, channels: 2)!, false),
+                    (AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: rate, channels: channels, interleaved: false)!, false),
+                    (AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate, channels: channels, interleaved: true)!, false)
+                ] {
+                    check(tap.hardwareMatches(format) == accepted)
+                    check(tap.appliedMatches(format) == accepted)
+                }
             case .switched:
                 check(graph.node.currentDeviceID == 173 && graph.hardware == graph.aggregate)
                 check(failure as? MicrophoneGraphError == .formatException)

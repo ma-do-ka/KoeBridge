@@ -475,13 +475,13 @@ import KoeBridgeCore
         session.onStatus = { [weak self] in self?.meetingStatus = $0 }
         session.onFinished = { [weak self, weak session] text, partial in
             guard let self, let session, meetingSession === session else { return }
-            // Saved-only is the existing non-failure status; no target or delivery queue.
-            let recordID = historyStore.remember(text, isPartial: partial, delivery: .automaticPasteDisabled,
-                engine: session.engine.label, recordedAt: session.recordedAt, kind: "meeting")
+            let recordID = session.save(text, partial: partial, to: &historyStore)
             refreshRetainedAudio()
             meetingSession = nil; meetingRunning = false
             meetingStatusTask?.cancel(); meetingStatusTask = nil
-            status = text.isEmpty ? "会議モードを終了しました（文字起こしなし）" : (historyStore.isSaved(recordID) ? "会議の文字起こしを履歴に保存しました" : "会議の文字起こしは未保存です")
+            if text.isEmpty { status = "会議モードを終了しました（文字起こしなし）" }
+            else if !historyStore.isSaved(recordID) { status = "会議の文字起こしは未保存です" }
+            else { status = partial ? "会議の途中結果を履歴に保存しました" : "会議の文字起こしを履歴に保存しました" }
             meetingStatus = status
             resumeMicrophoneWarm(); scheduleWarmGemini()
         }
@@ -965,15 +965,8 @@ import KoeBridgeCore
                         DiagnosticLog.recordMicrophoneEvidence("mic_prepare_format take=\(take.id.uuidString) attempt=\(attempts) \(format.diagnosticFields)")
                     }
                     DiagnosticLog.recordMicrophoneEvidence("mic_prepare_failed take=\(take.id.uuidString) attempt=\(attempts) category=\(category) code=\((error as NSError).code) elapsed_ms=\(Int(elapsed * 1_000))")
-                    let failure: MicrophoneStartupGate.Failure?
-                    if let captureError = error as? MicrophoneCapture.CaptureError,
-                       case .notReady(let reason) = captureError {
-                        failure = reason
-                    } else {
-                        failure = nil
-                    }
-                    if error is MicrophoneGraphError { throw error }
-                    guard let delay = retryPolicy.retryDelay(after: attempts, elapsed: elapsed, failure: failure) else { throw error }
+                    guard let delay = MicrophoneCapture.retryDelay(for: error, policy: retryPolicy,
+                        attempts: attempts, elapsed: elapsed) else { throw error }
                     status = "マイクの接続準備を待っています…（\(attempts + 1)/\(retryPolicy.maximumAttempts)）"
                     try await Task.sleep(for: .seconds(delay))
                 }
@@ -2030,6 +2023,7 @@ import KoeBridgeCore
         case let error as AppError: description = error.errorDescription
         case let error as AppleLocalTranscriber.LocalError: description = error.errorDescription
         case let error as GeminiLiveConnection.ConnectionError: description = error.errorDescription
+        case let error as MicrophoneDevices.DeviceError: description = error.errorDescription
         case let error as MicrophoneCapture.CaptureError: description = error.errorDescription
         case let error as RetainedAudioStore.ReplayError: description = error.errorDescription
         default: description = nil

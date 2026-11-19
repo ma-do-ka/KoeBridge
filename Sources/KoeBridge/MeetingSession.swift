@@ -31,7 +31,7 @@ private final class MeetingAudioCount: @unchecked Sendable {
     var onStatus: ((String) -> Void)?
     var onFinished: ((String, Bool) -> Void)?
 
-    @MainActor private final class Chunk {
+    @MainActor final class Chunk {
         var mic: MicrophoneCapture?
         var system: SystemAudioCapture?
         var local: LocalTranscribing?
@@ -42,11 +42,14 @@ private final class MeetingAudioCount: @unchecked Sendable {
         var failed = false
         var startedAt = ProcessInfo.processInfo.systemUptime
         var admittedBytes = 0
-        let emittedAudio = MeetingAudioCount()
+        fileprivate let emittedAudio = MeetingAudioCount()
         var timer: Task<Void, Never>?
         var continuation: AsyncStream<Data>.Continuation?
         var worker: Task<String, Error>?
         let integrity = AudioIntegrityState()
+        func microphoneStopped(losses: Int) {
+            if losses > 0 { integrity.markDropped() }
+        }
         var finalText: String?
         var partial: String { finalText ?? local?.transcript ?? cloud?.assembler.recoveryText ?? "" }
     }
@@ -58,9 +61,13 @@ private final class MeetingAudioCount: @unchecked Sendable {
     }
 
     func start() {
+        start(runChunk: runChunk)
+    }
+
+    func start(runChunk: @escaping (Chunk, MeetingTranscript.Source) async throws -> Void) {
         guard tasks.isEmpty, !completed else { return }
         if stopping { finishMeeting(); return }
-        tasks = [Task { await self.run(.microphone) }, Task { await self.run(.system) }]
+        tasks = [Task { await self.run(.microphone, runChunk: runChunk) }, Task { await self.run(.system, runChunk: runChunk) }]
         Task { [self] in
             for task in tasks { await task.value }
             finishMeeting()
@@ -83,6 +90,12 @@ private final class MeetingAudioCount: @unchecked Sendable {
         finish(text, partial: micFailed || systemFailed || !recognitionProblems.isEmpty)
     }
 
+    func save(_ text: String, partial: Bool, to history: inout TranscriptHistoryStore) -> UUID? {
+        history.remember(text, isPartial: partial,
+                         delivery: partial ? .recognitionInterrupted : .automaticPasteDisabled,
+                         engine: engine.label, recordedAt: recordedAt, kind: "meeting")
+    }
+
     func stop() {
         guard !stopping else { return }
         stopping = true
@@ -90,7 +103,7 @@ private final class MeetingAudioCount: @unchecked Sendable {
             chunk.stopRequested = true
             // Stop during model download/connection setup must not wait for
             // preparation to finish. Active captures still drain normally.
-            if chunk.mic == nil && chunk.system == nil {
+            if chunk.worker == nil {
                 chunk.local?.cancel(); chunk.cloud?.cancel()
                 let index = source == .microphone ? 0 : 1
                 if tasks.indices.contains(index) { tasks[index].cancel() }
@@ -148,15 +161,18 @@ private final class MeetingAudioCount: @unchecked Sendable {
             activity(.microphone), systemFailed ? "停止" : activity(.system))
     }
 
-    private func run(_ source: MeetingTranscript.Source) async {
+    private func run(_ source: MeetingTranscript.Source, runChunk: (Chunk, MeetingTranscript.Source) async throws -> Void) async {
         while !stopping && !(source == .system && systemFailed) {
             let chunk = Chunk()
             chunks[source] = chunk
-            do { try await runChunk(chunk, source: source) }
+            do { try await runChunk(chunk, source) }
             catch {
-                chunk.failed = true
+                // Stop explicitly cancels a source still preparing its recognizer.
+                // A capture or finalization error after that stage is a real failure.
+                if !(stopping && Task.isCancelled && chunk.worker == nil) {
+                    chunk.failed = true
+                }
                 if !stopping {
-                    recognitionProblems.append("\(source.label)：認識が中断しました（途中結果を保存）")
                     // End this source rather than silently skipping a failed chunk.
                     if source == .microphone { micFailed = true; stop() }
                     else { systemFailed = true }
@@ -164,12 +180,25 @@ private final class MeetingAudioCount: @unchecked Sendable {
             }
             chunk.timer?.cancel()
             await endCapture(chunk)
-            if chunk.finalText == nil, let worker = chunk.worker { chunk.finalText = try? await worker.value }
-            transcript.append(source: source, offset: segmentOffset(chunk, source: source), text: chunk.partial)
+            if chunk.finalText == nil, let worker = chunk.worker {
+                do { chunk.finalText = try await worker.value }
+                catch { chunk.failed = true }
+            }
+            recordChunk(source: source, offset: segmentOffset(chunk, source: source), text: chunk.partial,
+                        recognitionFailed: chunk.failed, dropped: chunk.integrity.droppedChunks)
             chunk.cloud?.cancel(); chunk.local?.cancel()
             chunks[source] = nil
             if chunk.failed { break }
         }
+    }
+
+    private func recordChunk(source: MeetingTranscript.Source, offset: TimeInterval, text: String,
+                             recognitionFailed: Bool, dropped: Int) {
+        if dropped > 0 || recognitionFailed {
+            let problem = dropped > 0 ? "音声が欠落しました" : "認識が中断しました"
+            recognitionProblems.append("\(source.label)：\(problem)（途中結果を保存）")
+        }
+        transcript.append(source: source, offset: offset, text: text)
     }
 
     private func runChunk(_ chunk: Chunk, source: MeetingTranscript.Source) async throws {
@@ -205,8 +234,8 @@ private final class MeetingAudioCount: @unchecked Sendable {
                     if let cloud = chunk.cloud { try await cloud.sendAudio(data) }
                     else { try chunk.local?.appendPCM16(data) }
                 }
-                guard chunk.admittedBytes > 0 else { return "" }
                 guard integrity.droppedChunks == 0 else { throw VoiceController.AppError.audioDropped }
+                guard chunk.admittedBytes > 0 else { return "" }
                 if let cloud = chunk.cloud { try await cloud.endAudio(); return try await cloud.awaitFinal() }
                 return try await chunk.local?.endAudioAndAwaitFinal() ?? ""
             } catch {
@@ -248,7 +277,7 @@ private final class MeetingAudioCount: @unchecked Sendable {
         let drain = Task { @MainActor in
             if let mic = chunk.mic {
                 let losses = await withCheckedContinuation { done in mic.stop { done.resume(returning: $0) } }
-                if losses > 0 { chunk.integrity.markDropped() }
+                chunk.microphoneStopped(losses: losses)
             }
             if let system = chunk.system { await system.stop() }
             chunk.continuation?.finish(); chunk.continuation = nil

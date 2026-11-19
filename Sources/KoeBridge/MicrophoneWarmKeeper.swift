@@ -41,7 +41,6 @@ import KoeBridgeCore
         private var target: MicrophoneSelectionTarget?
         private let tap = MicrophoneTapInstallation()
         private var activeGate: MicrophoneStartupGate?
-        private var tapPlan: MicrophoneTapFormatPlan?
         private var observer: NSObjectProtocol?
 
         func resume(enabled: Bool, uid: String, takeActive: Bool, reason: String,
@@ -51,8 +50,8 @@ import KoeBridgeCore
                 stop(reason: "policy")
                 return
             }
-            let snapshot = MicrophoneDevices.snapshot()
-            guard let selected = try? MicrophoneSelectionPolicy.resolve(uid: uid,
+            guard let snapshot = try? MicrophoneDevices.snapshot(),
+                  let selected = try? MicrophoneSelectionPolicy.resolve(uid: uid,
                 devices: snapshot.devices, systemDefaultID: snapshot.defaultID) else {
                 stop(reason: "missing")
                 log("mic warm stop reason=missing")
@@ -62,13 +61,11 @@ import KoeBridgeCore
                 selectedDeviceIsBluetooth: MicrophoneDevices.isBluetooth(deviceID: selected.deviceID),
                 takeActive: takeActive) else { stop(reason: "policy"); return }
             if let lease, target == selected, lease.resource.isRunning,
-               MicrophoneDevices.isStillSelected(selected, node: lease.resource.inputNode),
-               let tapPlan {
+               MicrophoneDevices.isStillSelected(selected, node: lease.resource.inputNode) {
                 let hardware = lease.resource.inputNode.inputFormat(forBus: 0)
                 let applied = lease.resource.inputNode.outputFormat(forBus: 0)
-                if tapPlan.matches(sampleRate: hardware.sampleRate, channels: hardware.channelCount),
-                   tapPlan.matches(sampleRate: applied.sampleRate, channels: applied.channelCount),
-                   applied.commonFormat == .pcmFormatFloat32, !applied.isInterleaved { return }
+                if tap.hardwareMatches(hardware),
+                   tap.appliedMatches(applied) { return }
             }
             stop(reason: "route")
             guard let acquired = MicrophoneCapture.warmEngineLifetime.acquire() else {
@@ -90,7 +87,7 @@ import KoeBridgeCore
                                                      lease: acquired, node: node) {
                     MicrophoneDevices.isStillSelected(selected, node: node)
                 }
-                tapPlan = try tap.installAndPrepare(graph: graph, gate: gate, deadline: deadline,
+                _ = try tap.installAndPrepare(graph: graph, gate: gate, deadline: deadline,
                                                     sink: .warm)
                 try engine.start()
                 guard !gate.isStopped, ProcessInfo.processInfo.systemUptime < deadline,
@@ -117,7 +114,6 @@ import KoeBridgeCore
                 engine.stop()
                 tap.removeIfOwned()
             }
-            tapPlan = nil
             target = nil
             self.lease = nil
             MicrophoneCapture.warmEngineLifetime.release(token: lease.token)

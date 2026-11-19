@@ -64,8 +64,20 @@ package struct LeasedMicrophoneTapGraph: MicrophoneTapGraph {
 /// exactly this node and lease, including when a later readback fails.
 package final class MicrophoneTapInstallation {
     private var owned: (any MicrophoneTapGraph)?
+    private var hardwareFormat: AVAudioFormat?
+    private var appliedFormat: AVAudioFormat?
     package var isInstalled: Bool { owned != nil }
     package init() {}
+
+    // AVAudioFormat.isEqual treats mono interleaved and planar formats as equal.
+    package static func sameFormat(_ current: AVAudioFormat, _ expected: AVAudioFormat) -> Bool {
+        current.isInterleaved == expected.isInterleaved && current.commonFormat == expected.commonFormat
+            && current.channelCount == expected.channelCount && current.sampleRate == expected.sampleRate
+            && current.isEqual(expected)
+    }
+
+    package func hardwareMatches(_ current: AVAudioFormat) -> Bool { hardwareFormat.map { Self.sameFormat(current, $0) } ?? false }
+    package func appliedMatches(_ current: AVAudioFormat) -> Bool { appliedFormat.map { Self.sameFormat(current, $0) } ?? false }
 
     package enum Sink {
         case capture(output: AVAudioFormat,
@@ -135,7 +147,7 @@ package final class MicrophoneTapInstallation {
             try checkGraph()
             let current = graph.hardware
             _ = graph.client // A stale client is repairable by the explicit-format install.
-            guard plan.matches(sampleRate: current.sampleRate, channels: current.channelCount) else {
+            guard Self.sameFormat(current, hardware) else {
                 throw MicrophoneStartupGate.Failure.formatChanged
             }
             diagnostics?.begin(.tapInstall)
@@ -151,8 +163,8 @@ package final class MicrophoneTapInstallation {
                 let hw = graph.hardware
                 let applied = graph.client
                 if case let .capture(_, _, readback, _) = sink { readback(applied) }
-                guard plan.matches(sampleRate: hw.sampleRate, channels: hw.channelCount),
-                      applied.isEqual(input) else { throw MicrophoneStartupGate.Failure.formatChanged }
+                guard Self.sameFormat(hw, hardware),
+                      Self.sameFormat(applied, input) else { throw MicrophoneStartupGate.Failure.formatChanged }
                 try checkGeneration()
             }
             try verifyApplied()
@@ -160,6 +172,8 @@ package final class MicrophoneTapInstallation {
             graph.prepare()
             diagnostics?.end(.enginePrepare)
             try verifyApplied()
+            hardwareFormat = hardware
+            appliedFormat = input
             return plan
         } catch {
             gate.stop(at: now())
@@ -171,6 +185,8 @@ package final class MicrophoneTapInstallation {
     package func removeIfOwned() {
         if let owned, owned.leaseIsCurrent { owned.removeOwnedTap() }
         owned = nil
+        hardwareFormat = nil
+        appliedFormat = nil
     }
 }
 #endif

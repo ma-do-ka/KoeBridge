@@ -14,22 +14,30 @@ enum MicrophoneDevices {
         var defaultID: UInt32?
     }
 
-    static func snapshot() -> Snapshot {
+    static func enumerate(readSize: (inout UInt32) -> OSStatus,
+                          readData: (inout UInt32, UnsafeMutableRawPointer) -> OSStatus) throws -> [AudioObjectID] {
+        var size: UInt32 = 0
+        let stride = MemoryLayout<AudioObjectID>.stride
+        guard readSize(&size) == noErr, size <= 65_536, Int(size).isMultiple(of: stride) else {
+            throw DeviceError.enumerationFailed
+        }
+        guard size > 0 else { return [] }
+        var ids = [AudioObjectID](repeating: 0, count: Int(size) / stride)
+        let status = ids.withUnsafeMutableBytes { readData(&size, $0.baseAddress!) }
+        guard status == noErr, Int(size).isMultiple(of: stride), Int(size) / stride <= ids.count else {
+            throw DeviceError.enumerationFailed
+        }
+        return Array(ids.prefix(Int(size) / stride))
+    }
+
+    static func snapshot() throws -> Snapshot {
         var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDevices,
                                                 mScope: kAudioObjectPropertyScopeGlobal,
                                                 mElement: kAudioObjectPropertyElementMain)
-        var size: UInt32 = 0
         let system = AudioObjectID(kAudioObjectSystemObject)
-        guard AudioObjectGetPropertyDataSize(system, &address, 0, nil, &size) == noErr,
-              size > 0, size <= 65_536, size % 4 == 0 else {
-            return Snapshot(devices: [], defaultID: nil)
-        }
-        var ids = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
-        let result = ids.withUnsafeMutableBytes {
-            AudioObjectGetPropertyData(system, &address, 0, nil, &size, $0.baseAddress!)
-        }
-        guard result == noErr else { return Snapshot(devices: [], defaultID: nil) }
-        let devices = ids.prefix(Int(size) / MemoryLayout<AudioObjectID>.size).compactMap { id -> MicrophoneDeviceOption? in
+        let ids = try enumerate(readSize: { AudioObjectGetPropertyDataSize(system, &address, 0, nil, &$0) },
+                                readData: { AudioObjectGetPropertyData(system, &address, 0, nil, &$0, $1) })
+        let devices = ids.compactMap { id -> MicrophoneDeviceOption? in
             guard uint32(id, kAudioDevicePropertyDeviceIsAlive) == 1,
                   hasInputStream(id),
                   let uid = string(id, kAudioDevicePropertyDeviceUID), !uid.isEmpty else { return nil }
@@ -117,9 +125,10 @@ enum MicrophoneDevices {
         return value as String
     }
     enum DeviceError: LocalizedError {
-        case noAudioUnit, selectionFailed(OSStatus), selectionNotApplied
+        case enumerationFailed, noAudioUnit, selectionFailed(OSStatus), selectionNotApplied
         var errorDescription: String? {
             switch self {
+            case .enumerationFailed: return "マイクの一覧を取得できませんでした"
             case .noAudioUnit: return "マイクの入力装置を初期化できませんでした"
             case .selectionFailed: return "選択したマイクを開けませんでした"
             case .selectionNotApplied: return "選択したマイクへの切り替えを確認できませんでした"
@@ -158,8 +167,8 @@ enum MicrophoneDevices {
         guard !refreshing else { return }
         refreshing = true
         defer { refreshing = false }
-        let snapshot = await Task.detached(priority: .utility) { MicrophoneDevices.snapshot() }.value
-        guard !Task.isCancelled else { return }
+        let snapshot = await Task.detached(priority: .utility) { try? MicrophoneDevices.snapshot() }.value
+        guard let snapshot, !Task.isCancelled else { return }
         devices = snapshot.devices; defaultID = snapshot.defaultID; loaded = true
     }
 }
