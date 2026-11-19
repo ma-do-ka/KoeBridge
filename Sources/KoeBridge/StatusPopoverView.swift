@@ -17,9 +17,26 @@ extension Notification.Name {
     static var pending: String?
 }
 
+private struct HistoryMenuButtonStyle: ButtonStyle {
+    let highlighted: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        let selected = highlighted || configuration.isPressed
+        configuration.label
+            .padding(.horizontal, 6)
+            .padding(.vertical, 4)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .foregroundStyle(selected ? Color(nsColor: .selectedMenuItemTextColor) : .primary)
+            .background(selected ? Color(nsColor: .selectedContentBackgroundColor) : .clear,
+                        in: RoundedRectangle(cornerRadius: 4))
+            .contentShape(Rectangle())
+    }
+}
+
 @MainActor struct StatusPopoverView: View {
     @ObservedObject var controller: VoiceController
     @ObservedObject var guide: PermissionGuide
+    let historyMenu: RecentHistoryMenuState
     let onOpenSettings: () -> Void
     let onOpenHistory: () -> Void
     let onOpenPermissions: () -> Void
@@ -29,12 +46,11 @@ extension Notification.Name {
     let onToggleRecording: () -> Void
     let onToggleMeeting: () -> Void
     let onDiscard: () -> Void
-    let onCopyRecord: (TranscriptRecord) -> Void
+    let onCopyRecord: (UUID) -> Void
     let onHoverRecord: (TranscriptRecord, NSRect, NSWindow) -> Void
     let onLeaveRecord: (UUID) -> Void
     let onHideHistoryPreview: () -> Void
     let onContentSizeChange: (CGSize) -> Void
-    @State private var historyExpanded = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -83,41 +99,49 @@ extension Notification.Name {
             }.buttonStyle(PopoverButtonStyle())
             Divider()
             Button {
-                historyExpanded.toggle()
-                if !historyExpanded { onHideHistoryPreview() }
+                historyMenu.isExpanded.toggle()
+                if !historyMenu.isExpanded { onHideHistoryPreview() }
             } label: {
                 HStack {
                     Text("認識履歴（直近\(RecentHistoryMenuPolicy.maximumDisplayedRecords)件）")
                     Spacer()
-                    Image(systemName: historyExpanded ? "chevron.down" : "chevron.right")
+                    Image(systemName: historyMenu.isExpanded ? "chevron.down" : "chevron.right")
                 }
-            }.buttonStyle(PopoverButtonStyle())
-            if historyExpanded {
+            }.buttonStyle(HistoryMenuButtonStyle(highlighted: historyMenu.hovered == .header))
+                .onHover { inside in
+                    if inside { historyMenu.hovered = .header }
+                    else if historyMenu.hovered == .header { historyMenu.hovered = nil }
+                }
+            if historyMenu.isExpanded {
                 let entries = RecentHistoryMenuPolicy.entries(from: controller.history)
                 if entries.isEmpty {
                     Text(controller.historyProblem.isEmpty ? "保存された認識履歴はありません" : "履歴を読み込めません")
                         .font(.caption).foregroundStyle(.secondary).disabled(true)
                 } else {
                     ScrollView {
-                        VStack(alignment: .leading, spacing: 8) {
+                        VStack(alignment: .leading, spacing: 0) {
                             ForEach(entries, id: \.recordID) { entry in
+                                let row = RecentHistoryMenuState.Row.record(entry.recordID)
                                 Button {
-                                    if let record = controller.history.first(where: { $0.id == entry.recordID }) {
-                                        onCopyRecord(record)
-                                    }
+                                    onCopyRecord(entry.recordID)
                                 } label: {
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(entry.recordedAt.formatted(date: .abbreviated, time: .shortened))
-                                            .font(.caption2).foregroundStyle(.secondary)
+                                            .font(.caption2)
+                                            .foregroundStyle(historyMenu.hovered == row ? Color(nsColor: .selectedMenuItemTextColor) : .secondary)
                                         Text(entry.preview).font(.caption).lineLimit(1)
                                     }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-                                }.buttonStyle(PopoverButtonStyle()).help(entry.copyHelp)
+                                }.buttonStyle(HistoryMenuButtonStyle(highlighted: historyMenu.hovered == row)).help(entry.copyHelp)
                                     .background(HistoryHoverAnchor(
                                         onEnter: { rect, window in
                                             if let record = controller.history.first(where: { $0.id == entry.recordID }) {
+                                                historyMenu.hovered = row
                                                 onHoverRecord(record, rect, window)
                                             }
-                                        }, onExit: { onLeaveRecord(entry.recordID) }))
+                                        }, onExit: {
+                                            if historyMenu.hovered == row { historyMenu.hovered = nil }
+                                            onLeaveRecord(entry.recordID)
+                                        }))
                             }
                         }
                     }.frame(height: min(CGFloat(entries.count) * 46, 230))

@@ -1591,7 +1591,8 @@ import KoeBridgeCore
             showCompletionFeedback(outcome.submissionFeedback ?? completionFeedback, for: id)
         }
         if active == nil {
-            status = outcome.detail + (take.review?.status == .incomplete ? " 追加チェックは未完了です。" : "")
+            let message = outcome.delivery == .attemptedUnconfirmed ? OverlayFeedback.sentUnconfirmed.message : outcome.detail
+            status = message + (take.review?.status == .incomplete ? " 追加チェックは未完了です。" : "")
         }
     }
 
