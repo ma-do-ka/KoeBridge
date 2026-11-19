@@ -1411,11 +1411,11 @@ import KoeBridgeCore
            DictationDelivery.skipped(suppressed: take.automaticDeliverySuppressed,
                requiresReview: take.review?.status == .needsReview,
                acousticReviewRequired: take.acousticReviewRequired, shouldPaste: take.shouldPaste) == nil {
-            let date = Date()
-            let clipboard = SnippetExpander.needsClipboard(original, rules: take.snippets, date: date)
-                ? NSPasteboard.general.string(forType: .string) : nil
-            text = SnippetExpander.expand(original, rules: take.snippets,
-                context: SnippetContext(date: date, clipboardText: clipboard))
+            let expansion = SnippetExpander.expansion(original, rules: take.snippets, date: Date()) {
+                NSPasteboard.general.string(forType: .string)
+            }
+            text = expansion.text
+            if expansion.budgetExhausted { DiagnosticLog.record("snippet expansion stopped reason=byte_budget") }
         }
         let partial = take.recoverableText
         let actualEngine: InputDiagnosticEvent.Token = take.successfulEngine == .gemini ? .gemini
