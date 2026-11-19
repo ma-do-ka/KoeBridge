@@ -1325,9 +1325,13 @@ import KoeBridgeCore
                 if exit == .waitCancelled { throw CancellationError() }
             }) {
                 performed = true
-                if exit == .refused { return }
+                if exit == .refused {
+                    // Another admission during the wait invalidates this ticket.
+                    #expect(gate.withSelectionWrite {})
+                }
                 sender.f.onPost = { checkUpdate(); #expect(updateStarts == 0) }
-                _ = await gate.post(.dictation("B"), from: sender.source(.history), transport: sender.transport()) { true }
+                let result = await gate.post(.dictation("B"), from: sender.source(.history), transport: sender.transport()) { true }
+                if exit == .refused { #expect(result.reason == "posting_busy") }
             }
             #expect(performed == (exit == .completed || exit == .refused))
             if exit == .interrupted {
@@ -1341,12 +1345,22 @@ import KoeBridgeCore
 
     @Test func explicitHistoryPinsFieldWhileOrdinaryRecaptureUsesCurrentField() async throws {
         for producer in [Producer.history, .take] {
-            let gate = TextInsertion.PostingGate { _, _ in }
-            let sender = Sender(ticket: try #require(gate.historyTicket))
-            sender.f.currentWindow = sender.f.other
-            let report = await gate.post(.dictation("B"), from: sender.source(producer), transport: sender.transport()) { true }
-            #expect(report.outcome == (producer == .history ? .focusChanged : .verifiedInserted))
-            #expect(sender.f.posts == (producer == .history ? 0 : 1))
+            for movedField in [false, true] {
+                let gate = TextInsertion.PostingGate { _, _ in }
+                let sender = Sender(ticket: try #require(gate.historyTicket))
+                var transport = sender.transport()
+                if movedField {
+                    let old = sender.start
+                    sender.f.currentField = sender.f.other
+                    let fresh = InsertionTarget(bundleIdentifier: old.bundleIdentifier, localizedName: nil,
+                        pid: old.pid, focused: sender.f.other, window: old.window, selectionAttribute: old.selectionAttribute,
+                        selection: old.selection, textSnapshot: old.textSnapshot, capturedAt: old.capturedAt, blockedReason: nil)
+                    transport.capture = { _ in .accepted(fresh) }
+                } else { sender.f.currentWindow = sender.f.other }
+                let report = await gate.post(.dictation("B"), from: sender.source(producer), transport: transport) { true }
+                #expect(report.outcome == (producer == .history ? .focusChanged : .verifiedInserted))
+                #expect(sender.f.posts == (producer == .history ? 0 : 1))
+            }
         }
     }
 
