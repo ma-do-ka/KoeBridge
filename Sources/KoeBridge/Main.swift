@@ -479,7 +479,9 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
                     success: false, statusButton: delegate.item.button)
             case .success(let current):
                 let outcome = await delegate.controller.insertHistory(current.text, to: target, ticket: ticket)
-                delegate.windows.showHistoryFeedback(title: outcome.historyInsertionTitle, detail: outcome.historyInsertionDetail,
+                let detail = delegate.controller.isHistorySaved(current.id)
+                    ? outcome.historyInsertionDetail : "文字起こしは未保存です。再送する前に入力先を確認してください。"
+                delegate.windows.showHistoryFeedback(title: outcome.historyInsertionTitle, detail: detail,
                     success: outcome.delivery == .verifiedInserted, statusButton: delegate.item.button)
             }
         }

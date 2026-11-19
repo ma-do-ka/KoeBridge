@@ -60,3 +60,45 @@ struct SettingsPersistenceTests {
         #expect(defaults.bool(forKey: "smart")) // Compatibility mirror is not a new control.
     }
 }
+
+struct SettingsArrayTests {
+    @Test func appProfiles() throws {
+        try verify("appProfiles", row: AppProfile(bundleIdentifier: "fixture.app", displayName: "test"))
+    }
+
+    @Test func transformPresets() throws {
+        try verify("transformPresets", row: TransformPreset(name: "test", steps: ["one"]))
+    }
+
+    @Test func learnedTerms() throws {
+        try verify("learnedTerms", row: LearnedTerm(term: "test", originalFragment: "term"))
+    }
+
+    @Test func snippets() throws {
+        try verify("snippets", row: SnippetRule(trigger: "test", template: "fixture"))
+    }
+
+    private func verify<Row: Codable & Equatable>(_ key: String, row: Row) throws {
+        let suite = UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var collection = SettingsArray<Row>(key, defaults: defaults)
+        #expect(collection.state == .unset)
+        let initialSave = collection.save([row])
+        #expect(initialSave)
+        let encoded = try JSONEncoder().encode(row)
+        let valid = try #require(String(data: encoded, encoding: .utf8))
+        let damaged = Data("[ \(valid), { \"id\": \"bad\" } ]".utf8)
+        defaults.set(damaged, forKey: key)
+        collection = SettingsArray(key, defaults: defaults)
+        #expect(collection.state == .corrupt)
+        let added = collection.save(collection.rows + [row])
+        #expect(!added)
+        #expect(defaults.data(forKey: key) == damaged)
+        collection.resetCorruptValue()
+        #expect(collection.state == .unset)
+        let afterReset = collection.save([row])
+        #expect(afterReset)
+        #expect(SettingsArray<Row>(key, defaults: defaults).rows == [row])
+    }
+}

@@ -86,7 +86,7 @@ struct SettingsView: View {
             }
             Button("キャンセル", role: .cancel) {}
         } message: {
-            Text("対象：KoeBridge.log と古いログ1件のみ。履歴・利用統計・保存音声・設定は変更しません。削除は取り消せません。")
+            Text("対象：KoeBridge.log と KoeBridge-mic.log、および両方の番号付き世代ファイル。履歴・利用統計・保存音声・設定は変更しません。削除は取り消せません。")
         }
         .alert("Gemini APIキーを削除しますか？", isPresented: $confirmDeleteKey) {
             Button("削除", role: .destructive) {
@@ -345,7 +345,7 @@ struct SettingsView: View {
             }
         case .history:
             SettingsPrivacyPage(
-                controller: controller, historyCount: controller.history.count, diagnosticsEnabled: $diagnosticsEnabled,
+                controller: controller, historyCount: controller.savedHistoryCount, diagnosticsEnabled: $diagnosticsEnabled,
                 logNotice: logNotice, focusRequest: navigation.focusRequest,
                 showHistory: { controller.onShowHistory?() },
                 requestLogDeletion: { confirmDeleteLog = true }
@@ -357,6 +357,23 @@ struct SettingsView: View {
             )
         case .about:
             SettingsAboutPage(updater: updater, focusRequest: navigation.focusRequest, shortcutLabel: controller.shortcutChoice.label, navigate: go)
+        }
+    }
+}
+struct CorruptSettingsNotice: View {
+    let reset: () -> Void
+    @State private var confirming = false
+
+    var body: some View {
+        VStack(alignment: .leading) {
+            Text("この一覧を読み込めません。元のデータを保持し、編集を停止しています。")
+            Button("この一覧を初期化…", role: .destructive) { confirming = true }
+        }
+        .alert("この一覧を初期化しますか？", isPresented: $confirming) {
+            Button("初期化", role: .destructive, action: reset)
+            Button("キャンセル", role: .cancel) {}
+        } message: {
+            Text("この一覧に保存されているすべての項目を削除します。取り消せません。")
         }
     }
 }

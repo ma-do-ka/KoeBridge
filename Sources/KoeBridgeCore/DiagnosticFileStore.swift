@@ -62,7 +62,7 @@ public struct DiagnosticFileStore {
             // Apply the advertised limit to every generation, including an
             // oversized old file left by another version or external edits.
             if fileSize(url) > cap {
-                try fm.removeItem(at: url)
+                try removeGeneration(url)
             } else {
                 try fm.setAttributes([.posixPermissions: NSNumber(value: 0o600)],
                                      ofItemAtPath: url.path)
@@ -79,7 +79,7 @@ public struct DiagnosticFileStore {
                 try writer?.close()
                 writer = nil
                 let oldest = generationURL(maximumGenerations - 1)
-                if fm.fileExists(atPath: oldest.path) { try fm.removeItem(at: oldest) }
+                if fm.fileExists(atPath: oldest.path) { try removeGeneration(oldest) }
                 if maximumGenerations > 1 {
                     for generation in stride(from: maximumGenerations - 2, through: 0, by: -1) {
                         let source = generationURL(generation)
@@ -106,11 +106,32 @@ public struct DiagnosticFileStore {
     }
 
     public func deleteAll() throws {
-        let fm = FileManager.default
         for url in try allGenerationURLs() {
-            if fm.fileExists(atPath: url.path) || (try? isSymbolicLink(url)) == true {
-                try fm.removeItem(at: url)
-            }
+            try removeGeneration(url)
+        }
+    }
+
+    private func removeGeneration(_ url: URL) throws {
+        let directory = fileURL.deletingLastPathComponent()
+        guard url.deletingLastPathComponent().standardizedFileURL == directory.standardizedFileURL else {
+            throw StoreError.invalidFile
+        }
+        let descriptor = open(directory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else {
+            if errno == ENOENT { return }
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+        defer { close(descriptor) }
+        var info = stat()
+        let name = url.lastPathComponent
+        guard fstatat(descriptor, name, &info, AT_SYMLINK_NOFOLLOW) == 0 else {
+            if errno == ENOENT { return }
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+        guard info.st_mode & S_IFMT == S_IFREG else { throw StoreError.invalidFile }
+        // A replacement directory can never be recursively removed by unlinkat.
+        if unlinkat(descriptor, name, 0) != 0 && errno != ENOENT {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
         }
     }
 

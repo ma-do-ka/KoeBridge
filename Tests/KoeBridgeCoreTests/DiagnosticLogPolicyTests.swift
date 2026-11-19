@@ -3,6 +3,31 @@ import Testing
 @testable import KoeBridgeCore
 
 struct DiagnosticLogPolicyTests {
+    @Test func deletionChecksGenerationTypeAndKeepsEscapingTargets() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? fm.removeItem(at: root) }
+        let directory = root.appendingPathComponent("logs")
+        let store = DiagnosticFileStore(fileURL: directory.appendingPathComponent("main.log"))
+        let target = store.rotatedURL
+        try fm.createDirectory(at: target, withIntermediateDirectories: true)
+        let child = target.appendingPathComponent("keep")
+        try Data([1]).write(to: child)
+        #expect(throws: DiagnosticFileStore.StoreError.invalidFile) { try store.deleteAll() }
+        #expect(try Data(contentsOf: child) == Data([1]))
+        let outside = root.appendingPathComponent("outside")
+        try fm.moveItem(at: target, to: outside)
+        let outsideFile = outside.appendingPathComponent("keep")
+        try fm.createSymbolicLink(at: target, withDestinationURL: outsideFile)
+        #expect(throws: DiagnosticFileStore.StoreError.invalidFile) { try store.deleteAll() }
+        #expect(try fm.destinationOfSymbolicLink(atPath: target.path) == outsideFile.path)
+        #expect(try Data(contentsOf: outsideFile) == Data([1]))
+        try fm.removeItem(at: target)
+        try Data([2]).write(to: target)
+        try store.deleteAll()
+        #expect(!fm.fileExists(atPath: target.path))
+    }
+
     @Test func explicitlyOptedInOnly() {
         #expect(!DiagnosticLogPolicy.isEnabled(storedValue: nil))
         #expect(!DiagnosticLogPolicy.isEnabled(storedValue: false))

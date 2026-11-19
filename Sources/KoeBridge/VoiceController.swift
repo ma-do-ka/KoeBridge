@@ -137,14 +137,12 @@ import KoeBridgeCore
     @Published var selectedTransformPresetID = UserDefaults.standard.string(forKey: "selectedTransformPresetID").flatMap(UUID.init(uuidString:)) {
         didSet { UserDefaults.standard.set(selectedTransformPresetID?.uuidString, forKey: "selectedTransformPresetID") }
     }
-    @Published var transformPresets: [TransformPreset] = UserDefaults.standard.data(forKey: "transformPresets")
-        .flatMap { try? JSONDecoder().decode([TransformPreset].self, from: $0) } ?? [] {
-        didSet {
-            if let data = try? JSONEncoder().encode(transformPresets) {
-                UserDefaults.standard.set(data, forKey: "transformPresets")
-            }
-        }
+    @Published private(set) var transformPresetsStore = SettingsArray<TransformPreset>("transformPresets")
+    var transformPresets: [TransformPreset] {
+        get { transformPresetsStore.rows }
+        set { transformPresetsStore.save(newValue) }
     }
+    func resetTransformPresets() { transformPresetsStore.resetCorruptValue() }
     @Published private(set) var lastTextOperationOutput: String?
     @Published private(set) var textOperationRunning = false
     private var textOperationID: UUID?
@@ -326,27 +324,25 @@ import KoeBridgeCore
         guard KeychainStore.load() != nil else { status = AppError.noKey.localizedDescription; return }
         beginRecording(transformTarget: target, selection: selected)
     }
-    @Published var appProfiles: [AppProfile] {
-        didSet {
-            if let data = try? JSONEncoder().encode(appProfiles) {
-                UserDefaults.standard.set(data, forKey: "appProfiles")
-            }
-        }
+    @Published private(set) var appProfilesStore = SettingsArray<AppProfile>("appProfiles")
+    var appProfiles: [AppProfile] {
+        get { appProfilesStore.rows }
+        set { appProfilesStore.save(newValue) }
     }
-    @Published var learnedTerms: [LearnedTerm] = UserDefaults.standard.data(forKey: "learnedTerms")
-        .flatMap { try? JSONDecoder().decode([LearnedTerm].self, from: $0) } ?? [] {
-        didSet {
-            if let data = try? JSONEncoder().encode(learnedTerms) {
-                UserDefaults.standard.set(data, forKey: "learnedTerms")
-            }
-            scheduleWarmGemini()
-        }
+    func resetAppProfiles() { appProfilesStore.resetCorruptValue() }
+    @Published private(set) var learnedTermsStore = SettingsArray<LearnedTerm>("learnedTerms")
+    var learnedTerms: [LearnedTerm] {
+        get { learnedTermsStore.rows }
+        set { if learnedTermsStore.save(newValue) { scheduleWarmGemini() } }
     }
+    func resetLearnedTerms() { learnedTermsStore.resetCorruptValue() }
 
     func learn(fragment: String, term: String, from record: TranscriptRecord) -> Bool {
         guard LearnedTermPolicy.validationHint(fragment: fragment, term: term, recordText: record.text) == nil else { return false }
-        learnedTerms = LearnedTermPolicy.saving(
+        let updated = LearnedTermPolicy.saving(
             LearnedTerm(term: term, originalFragment: fragment, sourceRecordID: record.id), in: learnedTerms)
+        guard learnedTermsStore.save(updated) else { return false }
+        scheduleWarmGemini()
         return true
     }
 
@@ -384,13 +380,12 @@ import KoeBridgeCore
         beginRecording(transformTarget: target, selection: anchor.submittedText, fixingLastInput: true)
     }
 
-    @Published var snippets: [SnippetRule] {
-        didSet {
-            if let data = try? JSONEncoder().encode(snippets) {
-                UserDefaults.standard.set(data, forKey: "snippets")
-            }
-        }
+    @Published private(set) var snippetsStore = SettingsArray<SnippetRule>("snippets")
+    var snippets: [SnippetRule] {
+        get { snippetsStore.rows }
+        set { snippetsStore.save(newValue) }
     }
+    func resetSnippets() { snippetsStore.resetCorruptValue() }
     @Published var shortcutActivationMode: ShortcutActivationMode {
         didSet {
             UserDefaults.standard.set(shortcutActivationMode.rawValue, forKey: "shortcutActivationMode")
@@ -481,12 +476,12 @@ import KoeBridgeCore
         session.onFinished = { [weak self, weak session] text, partial in
             guard let self, let session, meetingSession === session else { return }
             // Saved-only is the existing non-failure status; no target or delivery queue.
-            _ = historyStore.remember(text, isPartial: partial, delivery: .automaticPasteDisabled,
+            let recordID = historyStore.remember(text, isPartial: partial, delivery: .automaticPasteDisabled,
                 engine: session.engine.label, recordedAt: session.recordedAt, kind: "meeting")
             refreshRetainedAudio()
             meetingSession = nil; meetingRunning = false
             meetingStatusTask?.cancel(); meetingStatusTask = nil
-            status = text.isEmpty ? "会議モードを終了しました（文字起こしなし）" : "会議の文字起こしを履歴に保存しました"
+            status = text.isEmpty ? "会議モードを終了しました（文字起こしなし）" : (historyStore.isSaved(recordID) ? "会議の文字起こしを履歴に保存しました" : "会議の文字起こしは未保存です")
             meetingStatus = status
             resumeMicrophoneWarm(); scheduleWarmGemini()
         }
@@ -526,12 +521,19 @@ import KoeBridgeCore
         retentionGeneration = UUID()
         cancelReplay()
         retainedAudio.clear(history: &historyStore)
-        refreshRetainedAudio()
+        updateRetentionStatus()
     }
     private func refreshRetainedAudio() {
         retainedAudio.sweep(history: &historyStore)
+        updateRetentionStatus()
+    }
+    private func updateRetentionStatus() {
         if let id = replayRecordID, !historyStore.entries.contains(where: { $0.id == id && $0.audioAsset != nil }) {
             cancelReplay()
+        }
+        if historyStore.loadOutcome == .failed {
+            retentionStatus = "履歴の参照を読み込めないため、保存音声の自動整理を保留しています。"
+            return
         }
         retentionStatus = "\(retainedAudio.bytesUsed) / 250,000,000 bytes・\(retainedAudio.fileCount)ファイル・7日間"
     }
@@ -577,8 +579,8 @@ import KoeBridgeCore
                 }
                 try Task.checkCancellation()
                 guard replayJob == job, historyStore.entries.contains(where: { $0.id == record.id }) else { return }
-                historyStore.appendRetranscription(record.id, result: .init(engine: engine.label, text: text))
-                replayStatus = "再文字起こし結果を履歴に追加しました"
+                let saved = historyStore.appendRetranscription(record.id, result: .init(engine: engine.label, text: text))
+                replayStatus = saved ? "再文字起こし結果を履歴に追加しました" : "再文字起こし結果は未保存です"
             } catch {
                 DiagnosticLog.record("audio replay recognition failed; category=\(Self.failureCategory(error))")
                 if replayJob == job, !Task.isCancelled {
@@ -592,6 +594,10 @@ import KoeBridgeCore
         AgentVocabulary.terms(user: vocabulary.components(separatedBy: .newlines), learned: learnedTerms.map(\.term),
             registeredEnabled: registeredVocabularyEnabled, topicEnabled: topicVocabularyEnabled)
     }
+
+    var rejectedHistoryText: String? { historyStore.rejectedResult?.text }
+    func isHistorySaved(_ id: UUID) -> Bool { historyStore.isSaved(id) }
+    var savedHistoryCount: Int { history.count - historyStore.unsavedIDs.count }
 
     private var historyStore: TranscriptHistoryStore {
         didSet {
@@ -667,8 +673,6 @@ import KoeBridgeCore
     private init() {
         let d = UserDefaults.standard
         bluetoothMicWarmEnabled = d.bool(forKey: "bluetoothMicWarm")
-        appProfiles = d.data(forKey: "appProfiles").flatMap { try? JSONDecoder().decode([AppProfile].self, from: $0) } ?? []
-        snippets = d.data(forKey: "snippets").flatMap { try? JSONDecoder().decode([SnippetRule].self, from: $0) } ?? []
         shortcutActivationMode = ShortcutActivationMode(rawValue: d.string(forKey: "shortcutActivationMode") ?? "") ?? .toggle
         mouseTriggerButton = MouseTriggerButton(rawValue: d.string(forKey: "mouseTriggerButton") ?? "") ?? .none
         requestedMode = RecognitionMode(rawValue: d.string(forKey: "engine") ?? "gemini") ?? .gemini
@@ -697,7 +701,8 @@ import KoeBridgeCore
         monitorEvents = usageStore.engineEvents
         monitorTokens = usageStore.tokenEvents
         monitorProblem = usageStore.problem
-        if retainAudioEnabled { refreshRetainedAudio() } else { clearRetainedAudio() }
+        retainedAudio.reconcileAtLaunch(history: &historyStore, retentionEnabled: retainAudioEnabled)
+        updateRetentionStatus()
         scheduleWarmGemini()
         microphoneWarmKeeper.onConfigurationChange = { [weak self] in
             self?.resumeMicrophoneWarm(reason: "configuration")
@@ -1595,6 +1600,8 @@ import KoeBridgeCore
             DiagnosticLog.record("delivery resolved; id=\(id.uuidString.prefix(8)); outcome=\(outcome.delivery.rawValue); reason=\(report.reason)")
         }
         if let recordID { outcome.updateSavedRecord(recordID, in: &historyStore) }
+        let saved = historyStore.isSaved(recordID)
+        if !saved && completionFeedback == .saved { completionFeedback = .notSaved }
         if outcome.submitted, let stoppedAt = take.stoppingAt {
             lastStopToInputSeconds = Date().timeIntervalSince(stoppedAt)
         }
@@ -1603,7 +1610,7 @@ import KoeBridgeCore
         }
         if active == nil {
             let message = outcome.delivery == .attemptedUnconfirmed ? OverlayFeedback.sentUnconfirmed.message : outcome.detail
-            status = message + (take.review?.status == .incomplete ? " 追加チェックは未完了です。" : "")
+            status = (saved ? message : outcome.historyInsertionTitle + "。文字起こしは未保存です。") + (take.review?.status == .incomplete ? " 追加チェックは未完了です。" : "")
         }
     }
 
@@ -1857,7 +1864,7 @@ import KoeBridgeCore
         overlayDismissal = Task { [weak self] in
             let hold: Int
             switch feedback {
-            case .heldForReview, .transformCopied, .sentUnconfirmed, .deferredUnsent, .deferredPartial, .deferredUnconfirmed: hold = 3_000
+            case .notSaved, .heldForReview, .transformCopied, .sentUnconfirmed, .deferredUnsent, .deferredPartial, .deferredUnconfirmed: hold = 3_000
             case .noInput: hold = 330
             case .failed, .transformFailed, .commandBlocked, .commandFailed: hold = 1_000
             default: hold = 520
@@ -1997,7 +2004,7 @@ import KoeBridgeCore
         if replayRecordID == id { cancelReplay() }
         historyStore.delete(id); refreshRetainedAudio()
     }
-    func clearHistory() { cancelReplay(); historyStore.deleteAll(); refreshRetainedAudio() }
+    func clearHistory() { cancelReplay(); historyStore.deleteAll() }
     func clearUsageMonitor() { usageStore.deleteAll() }
 
     func saveKey(_ key: String) throws {

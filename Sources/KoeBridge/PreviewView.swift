@@ -55,7 +55,7 @@ struct PreviewView: View {
         case .deferredPartial, .deferredUnsent: return "exclamationmark.circle"
         case .saved: return "clock.arrow.circlepath"
         case .heldForReview, .transformCopied: return "doc.on.clipboard"
-        case .failed, .transformFailed: return "exclamationmark.triangle.fill"
+        case .notSaved, .failed, .transformFailed: return "exclamationmark.triangle.fill"
         }
     }
 

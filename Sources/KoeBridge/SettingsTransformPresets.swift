@@ -88,7 +88,9 @@ struct SettingsTransformPresets: View {
                     }
                 }
                 .settingsControlFocus("selected-preset").settingsTarget("selected-preset")
-                if controller.transformPresets.isEmpty {
+                if controller.transformPresetsStore.state == .corrupt {
+                    CorruptSettingsNotice(reset: controller.resetTransformPresets)
+                } else if controller.transformPresets.isEmpty {
                     Text("プリセットはありません。追加して、順番に実行する指示を入力してください。")
                         .foregroundStyle(.secondary)
                 }
@@ -163,6 +165,7 @@ struct SettingsTransformPresets: View {
                     stepsByPreset[preset.id] = [step]
                     editedPreset = preset.id; editedStep = step.id
                 } label: { Label("プリセットを追加", systemImage: "plus") }
+                .disabled(controller.transformPresetsStore.state == .corrupt)
                 Text("最後に編集したステップへ挿入（未編集なら選択中のプリセットへ追加）")
                     .font(.caption).foregroundStyle(.secondary)
                 HStack {

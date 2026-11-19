@@ -3,19 +3,41 @@ import Foundation
 /// Owns the running app's recovery history, including disk-error recovery.
 /// A corrupt archive is never overwritten; new results remain usable in memory.
 public struct TranscriptHistoryStore {
+    public enum LoadOutcome { case loaded, empty, failed }
+    public let loadOutcome: LoadOutcome
     public private(set) var entries: [TranscriptRecord] = []
     public private(set) var problem = ""
+    /// Latest size-rejected result is copyable for this session, outside the archive budget.
+    public private(set) var rejectedResult: (recordID: UUID, text: String)?
+    public private(set) var unsavedIDs: Set<UUID> = []
+    private var unsavedDeliveries: [UUID: (state: TranscriptRecord.Delivery, detail: String?)] = [:]
+    public var referencedAudioIDs: Set<UUID> {
+        // On a failed write the working copy may already have evicted a
+        // record that still owns a WAV in the on-disk archive.
+        let durable = persisted.lazy.filter { $0.audioAsset != nil }.map(\.id)
+        return Set(durable).union(entries.lazy.filter { $0.audioAsset != nil }.map(\.id))
+    }
+
+    private var persisted: [TranscriptRecord] = []
+    public func isSaved(_ id: UUID?) -> Bool {
+        guard let id else { return false }
+        return !unsavedIDs.contains(id) && entries.contains { $0.id == id }
+    }
+
     private var archive: RecentTranscriptArchive?
 
     public init(fileURL: URL = RecentTranscriptArchive.defaultFileURL) {
         do {
             archive = try RecentTranscriptArchive(fileURL: fileURL)
             entries = archive?.entries ?? []
+            persisted = entries
+            loadOutcome = entries.isEmpty ? .empty : .loaded
             for record in entries where record.delivery == .pending {
                 updateDelivery(record.id, to: .interruptedDelivery,
                                detail: "前回の入力処理が完了する前に終了しました。再送の前に入力先を確認してください。")
             }
         } catch {
+            loadOutcome = .failed
             problem = "履歴を読み込めません（元のファイルは保持しています）：\(Self.errorMessage(for: error))"
         }
     }
@@ -34,10 +56,14 @@ public struct TranscriptHistoryStore {
             entries.insert(record, at: 0)
             entries.sort { $0.recordedAt > $1.recordedAt }
             entries = Array(entries.prefix(RecentTranscriptArchive.maximumRecords))
+            unsavedIDs = Set(entries.map(\.id))
             return record.id
         }
         changeArchive(failure: "履歴をディスクへ保存できません（起動中のみ保持）") {
             try $0.insert(record)
+        }
+        if !entries.contains(where: { $0.id == record.id }) {
+            rejectedResult = (record.id, record.text)
         }
         return record.id
     }
@@ -52,8 +78,19 @@ public struct TranscriptHistoryStore {
             }
             return
         }
+        unsavedDeliveries.removeValue(forKey: id)
         changeArchive(failure: "履歴の状態更新に失敗しました") {
             try $0.updateDelivery(id: id, to: delivery, detail: detail)
+        }
+        // A text that fitted exactly can exceed the limit once its delivery
+        // detail is known. Keep the actual outcome visible without retrying
+        // that oversized edit as part of every subsequent archive write.
+        if let i = entries.firstIndex(where: { $0.id == id }),
+           entries[i].delivery != delivery || entries[i].deliveryDetail != detail {
+            unsavedDeliveries[id] = (delivery, detail)
+            entries[i].delivery = delivery
+            entries[i].deliveryDetail = detail
+            unsavedIDs.insert(id)
         }
     }
 
@@ -68,23 +105,30 @@ public struct TranscriptHistoryStore {
         }
     }
 
-    public mutating func appendRetranscription(_ id: UUID, result: TranscriptRecord.Retranscription) {
-        guard let i = entries.firstIndex(where: { $0.id == id }) else { return }
-        if archive == nil { entries[i].retranscriptions.append(result) }
-        else {
-            changeArchive(failure: "再文字起こし結果の保存に失敗しました") {
-                try $0.appendRetranscription(id: id, result: result)
-            }
+    @discardableResult public mutating func appendRetranscription(
+        _ id: UUID, result: TranscriptRecord.Retranscription
+    ) -> Bool {
+        guard let i = entries.firstIndex(where: { $0.id == id }) else { return false }
+        if archive == nil { entries[i].retranscriptions.append(result); return false }
+        let saved = changeArchive(failure: "再文字起こし結果の保存に失敗しました") {
+            try $0.appendRetranscription(id: id, result: result)
         }
+        if !saved && entries.first(where: { $0.id == id })?.retranscriptions.last != result {
+            rejectedResult = (id, result.text)
+        }
+        return saved
     }
 
     public mutating func delete(_ id: UUID) {
+        if rejectedResult?.recordID == id { rejectedResult = nil }
+        unsavedIDs.remove(id)
         guard archive != nil else { entries.removeAll { $0.id == id }; return }
         changeArchive(failure: "履歴の削除に失敗しました") { try $0.delete(id: id) }
     }
 
     public mutating func deleteAll() {
-        guard archive != nil else { entries = []; return }
+        rejectedResult = nil
+        guard archive != nil else { entries = []; unsavedIDs = []; return }
         changeArchive(failure: "履歴の全削除に失敗しました") { try $0.deleteAll() }
     }
 
@@ -93,19 +137,35 @@ public struct TranscriptHistoryStore {
             ?? UserFacingErrorMessage.message(for: error, operation: "履歴")
     }
 
-    private mutating func changeArchive(
+    @discardableResult private mutating func changeArchive(
         failure: String, _ operation: (inout RecentTranscriptArchive) throws -> Void
-    ) {
-        guard var store = archive else { return }
+    ) -> Bool {
+        guard var store = archive else { return false }
         do {
             try operation(&store)
+            persisted = store.entries
+            unsavedIDs.removeAll()
             problem = ""
         } catch {
+            let saved = Dictionary(persisted.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            unsavedIDs = Set(store.entries.filter { saved[$0.id] != $0 }.map(\.id))
             problem = "\(failure)：\(Self.errorMessage(for: error))"
         }
         // Inserts and delivery outcomes survive failed writes in the archive's
         // working copy. A later successful write persists those same records.
         archive = store
         entries = store.entries
+        if !unsavedDeliveries.isEmpty {
+            let live = Set(entries.map(\.id))
+            unsavedDeliveries = unsavedDeliveries.filter { live.contains($0.key) }
+            for i in entries.indices {
+                if let pending = unsavedDeliveries[entries[i].id] {
+                    entries[i].delivery = pending.state
+                    entries[i].deliveryDetail = pending.detail
+                    unsavedIDs.insert(entries[i].id)
+                }
+            }
+        }
+        return problem.isEmpty
     }
 }

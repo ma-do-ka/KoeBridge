@@ -130,6 +130,47 @@ struct PersistenceRecoveryTests {
         #expect(try RecentTranscriptArchive(fileURL: url).entries == store.entries)
     }
 
+    @Test func byteBudgetEvictsOldestAndRejectedResultsDoNotPoisonLaterSaves() throws {
+        let directory = root()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("history.json")
+        var history = TranscriptHistoryStore(fileURL: url)
+        let budget = RecentTranscriptArchive.maximumFileBytes
+        // Measure a fixed-date record's JSON overhead to fill the archive to its exact byte cap.
+        let date = Date(timeIntervalSinceReferenceDate: 10)
+        history.remember("a", isPartial: false, delivery: .blockedFocus, engine: "test", recordedAt: date)
+        let overhead = try Data(contentsOf: url).count - 1
+        history.deleteAll()
+        let large = String(repeating: "a", count: budget - overhead)
+        let first = history.remember(large, isPartial: false, delivery: .blockedFocus, engine: "test", recordedAt: date)
+        #expect(history.isSaved(first))
+        #expect(try Data(contentsOf: url).count == budget)
+        let fullID = try #require(first)
+        history.updateDelivery(fullID, to: .verifiedInserted, detail: "delivery grew past the byte cap")
+        #expect(!history.isSaved(fullID))
+        #expect(history.entries.first?.delivery == .verifiedInserted)
+        #expect(try RecentTranscriptArchive(fileURL: url).entries.first?.delivery == .blockedFocus)
+        let remembered = history.remember("normal", isPartial: false, delivery: .blockedFocus, engine: "test")
+        let second = try #require(remembered)
+        #expect(history.isSaved(second))
+        #expect(!history.isSaved(first))
+        let oversized = String(repeating: "x", count: budget + 1)
+        let before = try Data(contentsOf: url)
+        let rejected = history.remember(oversized, isPartial: false, delivery: .blockedFocus, engine: "test")
+        #expect(!history.isSaved(rejected))
+        #expect(history.rejectedResult?.recordID == rejected)
+        let appended = history.appendRetranscription(second, result: .init(engine: "test", text: oversized))
+        #expect(!appended)
+        #expect(history.rejectedResult?.text.count == oversized.count)
+        #expect(try Data(contentsOf: url) == before)
+        let next = history.remember("next", isPartial: false, delivery: .blockedFocus, engine: "test")
+        #expect(history.isSaved(next))
+        #expect(try RecentTranscriptArchive(fileURL: url).entries.map(\.id) == [next, second])
+        let retried = history.appendRetranscription(second, result: .init(engine: "test", text: "short"))
+        #expect(retried)
+        #expect(try RecentTranscriptArchive(fileURL: url).entries.last?.retranscriptions.last?.text == "short")
+    }
+
     @Test func historyWriteFailureRetainsTextAndActualDeliveryUntilNextSave() throws {
         let directory = root()
         defer { try? FileManager.default.removeItem(at: directory) }
