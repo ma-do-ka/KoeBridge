@@ -526,10 +526,13 @@ import KoeBridgeCore
         retentionGeneration = UUID()
         cancelReplay()
         retainedAudio.clear(history: &historyStore)
-        refreshRetainedAudio()
+        updateRetentionStatus()
     }
     private func refreshRetainedAudio() {
         retainedAudio.sweep(history: &historyStore)
+        updateRetentionStatus()
+    }
+    private func updateRetentionStatus() {
         if let id = replayRecordID, !historyStore.entries.contains(where: { $0.id == id && $0.audioAsset != nil }) {
             cancelReplay()
         }
@@ -697,7 +700,8 @@ import KoeBridgeCore
         monitorEvents = usageStore.engineEvents
         monitorTokens = usageStore.tokenEvents
         monitorProblem = usageStore.problem
-        if retainAudioEnabled { refreshRetainedAudio() } else { clearRetainedAudio() }
+        retainedAudio.reconcileAtLaunch(history: &historyStore, retentionEnabled: retainAudioEnabled)
+        updateRetentionStatus()
         scheduleWarmGemini()
         microphoneWarmKeeper.onConfigurationChange = { [weak self] in
             self?.resumeMicrophoneWarm(reason: "configuration")
@@ -1997,7 +2001,7 @@ import KoeBridgeCore
         if replayRecordID == id { cancelReplay() }
         historyStore.delete(id); refreshRetainedAudio()
     }
-    func clearHistory() { cancelReplay(); historyStore.deleteAll(); refreshRetainedAudio() }
+    func clearHistory() { cancelReplay(); historyStore.deleteAll() }
     func clearUsageMonitor() { usageStore.deleteAll() }
 
     func saveKey(_ key: String) throws {

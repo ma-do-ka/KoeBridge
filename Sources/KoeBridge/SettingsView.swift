@@ -86,7 +86,7 @@ struct SettingsView: View {
             }
             Button("キャンセル", role: .cancel) {}
         } message: {
-            Text("対象：KoeBridge.log と古いログ1件のみ。履歴・利用統計・保存音声・設定は変更しません。削除は取り消せません。")
+            Text("対象：KoeBridge.log と KoeBridge-mic.log、および両方の番号付き世代ファイル。履歴・利用統計・保存音声・設定は変更しません。削除は取り消せません。")
         }
         .alert("Gemini APIキーを削除しますか？", isPresented: $confirmDeleteKey) {
             Button("削除", role: .destructive) {

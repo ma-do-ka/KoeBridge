@@ -5,6 +5,61 @@ import KoeBridgeCore
 @testable import KoeBridge
 
 @MainActor struct RetainedAudioStoreTests {
+    @Test func launchAndLaterSweepsWaitForReadableHistory() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = RetainedAudioStore(directory: root.appendingPathComponent("audio"))
+        try FileManager.default.createDirectory(at: store.directory, withIntermediateDirectories: true)
+        let file = store.directory.appendingPathComponent(UUID().uuidString + ".wav")
+        let wav = try PCM16WAV.encode(Data([1, 0]))
+        try wav.write(to: file)
+        let url = root.appendingPathComponent("history.json")
+        let damaged = Data("{".utf8)
+        try damaged.write(to: url)
+        var history = TranscriptHistoryStore(fileURL: url)
+        #expect(history.loadOutcome == .failed)
+        for enabled in [true, false] {
+            store.reconcileAtLaunch(history: &history, retentionEnabled: enabled)
+            #expect(try Data(contentsOf: file) == wav)
+        }
+        history.remember("new", isPartial: false, delivery: .blockedFocus, engine: "test")
+        store.sweep(history: &history)
+        #expect(try Data(contentsOf: url) == damaged)
+        #expect(try Data(contentsOf: file) == wav)
+        try Data("[]".utf8).write(to: url)
+        history = TranscriptHistoryStore(fileURL: url)
+        #expect(history.loadOutcome == .empty)
+        store.reconcileAtLaunch(history: &history, retentionEnabled: true)
+        #expect(!FileManager.default.fileExists(atPath: file.path))
+    }
+
+    @Test func retryableReplayAndExplicitDeletionScope() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("history.json")
+        var history = TranscriptHistoryStore(fileURL: url)
+        #expect(history.loadOutcome == .empty)
+        let directory = root.appendingPathComponent("audio")
+        let store = RetainedAudioStore(directory: directory, readData: { _ in throw CocoaError(.fileReadNoPermission) })
+        history.remember("text", isPartial: false, delivery: .reviewRequired, engine: "test")
+        let record = try #require(history.entries.first)
+        store.write(pcm: Data([1, 0]), record: record, history: &history)
+        let file = directory.appendingPathComponent(record.id.uuidString + ".wav")
+        let original = try Data(contentsOf: file)
+        #expect(throws: RetainedAudioStore.ReplayError.retryableRead) { try store.read(record.id, history: &history) }
+        #expect(try Data(contentsOf: file) == original)
+        #expect(history.entries.first?.audioAsset != nil)
+        #expect(TranscriptHistoryStore(fileURL: url).loadOutcome == .loaded)
+        let other = directory.appendingPathComponent("keep.json")
+        try Data([7]).write(to: other)
+        store.clear(history: &history)
+        #expect(try Data(contentsOf: other) == Data([7]))
+        #expect(!FileManager.default.fileExists(atPath: file.path))
+        #expect(history.entries.first?.audioAsset == nil)
+        #expect(history.entries.first?.audioUnavailableReason != nil)
+        #expect(history.entries.first?.text == record.text)
+    }
+
     @Test func privateFilesExpiryEvictionAndReconciliation() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

@@ -3,6 +3,8 @@ import Foundation
 /// Owns the running app's recovery history, including disk-error recovery.
 /// A corrupt archive is never overwritten; new results remain usable in memory.
 public struct TranscriptHistoryStore {
+    public enum LoadOutcome { case loaded, empty, failed }
+    public let loadOutcome: LoadOutcome
     public private(set) var entries: [TranscriptRecord] = []
     public private(set) var problem = ""
     private var archive: RecentTranscriptArchive?
@@ -11,11 +13,13 @@ public struct TranscriptHistoryStore {
         do {
             archive = try RecentTranscriptArchive(fileURL: fileURL)
             entries = archive?.entries ?? []
+            loadOutcome = entries.isEmpty ? .empty : .loaded
             for record in entries where record.delivery == .pending {
                 updateDelivery(record.id, to: .interruptedDelivery,
                                detail: "前回の入力処理が完了する前に終了しました。再送の前に入力先を確認してください。")
             }
         } catch {
+            loadOutcome = .failed
             problem = "履歴を読み込めません（元のファイルは保持しています）：\(Self.errorMessage(for: error))"
         }
     }

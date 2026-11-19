@@ -8,12 +8,15 @@ import KoeBridgeCore
     static let maximumBytes = 250_000_000
     static let lifetime: TimeInterval = 7 * 24 * 60 * 60
     let directory: URL
+    private let readData: (URL) throws -> Data
     private let capacity: Int
     private(set) var bytesUsed = 0
     private(set) var fileCount = 0
 
     init(directory: URL = RecentTranscriptArchive.defaultFileURL.deletingLastPathComponent()
-        .appendingPathComponent("RetainedAudio", isDirectory: true), capacity: Int = 250_000_000) {
+        .appendingPathComponent("RetainedAudio", isDirectory: true), capacity: Int = 250_000_000,
+        readData: @escaping (URL) throws -> Data = { try Data(contentsOf: $0) }) {
+        self.readData = readData
         self.directory = directory; self.capacity = capacity
     }
 
@@ -22,7 +25,7 @@ import KoeBridgeCore
     }
 
     func write(pcm: Data, record: TranscriptRecord, history: inout TranscriptHistoryStore) {
-        guard record.kind != "meeting", history.entries.contains(where: { $0.id == record.id }),
+        guard history.loadOutcome != .failed, record.kind != "meeting", history.entries.contains(where: { $0.id == record.id }),
               !pcm.isEmpty, pcm.count <= GeminiRecheckWire.maximumPCMBytes else { return }
         do {
             let manager = FileManager.default
@@ -36,39 +39,67 @@ import KoeBridgeCore
                 pcmByteCount: pcm.count, recordedAt: record.recordedAt,
                 expiresAt: record.recordedAt.addingTimeInterval(Self.lifetime)))
         } catch {
-            try? FileManager.default.removeItem(at: url(for: record))
+            remove(url(for: record))
             DiagnosticLog.record("retained audio write failed")
         }
         sweep(history: &history)
     }
 
+    func reconcileAtLaunch(history: inout TranscriptHistoryStore, retentionEnabled: Bool) {
+        guard canSweep(history) else { return }
+        if retentionEnabled { sweep(history: &history) } else { clear(history: &history) }
+    }
+
+    private func canSweep(_ history: TranscriptHistoryStore) -> Bool {
+        guard history.loadOutcome != .failed else {
+            DiagnosticLog.record("retained_audio_sweep_held reason=history_load_failed")
+            return false
+        }
+        return true
+    }
+
+    private func wavFiles() -> [URL] {
+        let files = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
+        return files.filter { $0.pathExtension.lowercased() == "wav" }
+    }
+
     /// Called at launch, after writes, after archive mutations, and before replay.
     /// Canonical UUID paths only: archive metadata never controls a filesystem path.
     func sweep(history: inout TranscriptHistoryStore, now: Date = Date()) {
+        guard canSweep(history) else { return }
         let manager = FileManager.default
         let records = history.entries
         let liveNames = Set(records.filter { $0.audioAsset != nil }.map { $0.id.uuidString + ".wav" })
-        for file in (try? manager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? [] {
+        for file in wavFiles() {
             if !liveNames.contains(file.lastPathComponent) { remove(file) }
         }
         var live: [(TranscriptRecord, Int)] = []
         for record in records {
             guard let asset = record.audioAsset else { continue }
             let file = url(for: record)
-            let attrs = try? manager.attributesOfItem(atPath: file.path)
-            let size = (attrs?[.size] as? NSNumber)?.intValue
+            let attrs: [FileAttributeKey: Any]
+            do {
+                attrs = try manager.attributesOfItem(atPath: file.path)
+            } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+                history.updateAudio(record.id, asset: nil, reason: "保存音声が見つかりません")
+                continue
+            } catch {
+                DiagnosticLog.record("retained_audio_stat_retryable")
+                continue
+            }
+            guard let size = (attrs[.size] as? NSNumber)?.intValue else { continue }
             let reason: String?
             if asset.expiresAt <= now || record.recordedAt.addingTimeInterval(Self.lifetime) <= now {
                 reason = "保存期間（7日）を過ぎたため音声を削除しました"
             } else if asset.pcmByteCount <= 0 || asset.pcmByteCount > GeminiRecheckWire.maximumPCMBytes
                         || !asset.pcmByteCount.isMultiple(of: 2)
                         || asset.relativeFileName != file.lastPathComponent || size != asset.pcmByteCount + 44
-                        || attrs?[.type] as? FileAttributeType != .typeRegular {
+                        || attrs[.type] as? FileAttributeType != .typeRegular {
                 reason = "保存音声が見つからないか破損しています"
             } else { reason = nil }
             if let reason {
                 remove(file); history.updateAudio(record.id, asset: nil, reason: reason)
-            } else { live.append((record, size!)) }
+            } else { live.append((record, size)) }
         }
         var total = live.reduce(0) { $0 + $1.1 }
         let oldestFirst = live.sorted(by: { $0.0.recordedAt < $1.0.recordedAt })
@@ -79,8 +110,12 @@ import KoeBridgeCore
             history.updateAudio(record.id, asset: nil, reason: "保存容量（250 MB）の上限により音声を削除しました")
             index += 1
         }
+        refreshCounts()
+    }
+
+    private func refreshCounts() {
         // Count actual files, including any deletion failure, rather than claiming space was freed.
-        let files = (try? manager.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.fileSizeKey])) ?? []
+        let files = wavFiles().filter { (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true }
         fileCount = files.count
         bytesUsed = files.reduce(0) { $0 + ((try? $1.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) }
     }
@@ -89,10 +124,10 @@ import KoeBridgeCore
         for record in history.entries where record.audioAsset != nil {
             history.updateAudio(record.id, asset: nil, reason: "保存音声を削除しました")
         }
-        for file in (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? [] {
+        for file in wavFiles() {
             remove(file)
         }
-        sweep(history: &history)
+        refreshCounts()
     }
 
     func read(_ id: UUID, history: inout TranscriptHistoryStore) throws -> Data {
@@ -100,8 +135,14 @@ import KoeBridgeCore
         guard let record = history.entries.first(where: { $0.id == id }), record.audioAsset != nil else {
             throw ReplayError.unavailable
         }
+        let data: Data
         do {
-            let pcm = try PCM16WAV.extractPCM(Data(contentsOf: url(for: record)))
+            data = try readData(url(for: record))
+        } catch {
+            throw ReplayError.retryableRead
+        }
+        do {
+            let pcm = try PCM16WAV.extractPCM(data)
             guard pcm.count == record.audioAsset?.pcmByteCount else { throw ReplayError.unavailable }
             return pcm
         } catch {
@@ -112,16 +153,21 @@ import KoeBridgeCore
     }
 
     private func remove(_ url: URL) {
-        do { try FileManager.default.removeItem(at: url) }
+        do {
+            let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+            guard attributes[.type] as? FileAttributeType == .typeRegular else { return }
+            if unlink(url.path) != 0 && errno != ENOENT { DiagnosticLog.record("retained audio deletion failed") }
+        }
         catch let error as NSError where error.domain == NSCocoaErrorDomain && error.code == NSFileNoSuchFileError {
             // An already-missing file needs no deletion diagnostic.
         }
         catch { DiagnosticLog.record("retained audio deletion failed") }
     }
     enum ReplayError: Error, LocalizedError {
-        case unavailable, localLimit
+        case unavailable, localLimit, retryableRead
         var errorDescription: String? {
             switch self {
+            case .retryableRead: return "保存音声を読み込めません。時間をおいて再試行してください"
             case .unavailable: return "保存音声がありません（期限切れ・削除・未保存）"
             case .localLimit: return "Appleの再文字起こしは50秒以内の保存音声に限ります"
             }

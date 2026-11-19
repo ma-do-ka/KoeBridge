@@ -116,17 +116,19 @@ public struct RecentTranscriptArchive {
 
     public init(fileURL: URL = RecentTranscriptArchive.defaultFileURL) throws {
         self.fileURL = fileURL
-        if FileManager.default.fileExists(atPath: fileURL.path) {
-            let info = try FileManager.default.attributesOfItem(atPath: fileURL.path)
-            if let size = (info[.size] as? NSNumber)?.intValue, size > Self.maximumFileBytes {
-                throw ArchiveError.tooLarge
-            }
-            let data = try Data(contentsOf: fileURL)
-            let decoder = JSONDecoder()
-            entries = Array(try decoder.decode([TranscriptRecord].self, from: data).prefix(Self.maximumRecords))
-        } else {
+        let info: [FileAttributeKey: Any]
+        do {
+            info = try FileManager.default.attributesOfItem(atPath: fileURL.path)
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
             entries = []
+            return
         }
+        if let size = (info[.size] as? NSNumber)?.intValue, size > Self.maximumFileBytes {
+            throw ArchiveError.tooLarge
+        }
+        let data = try Data(contentsOf: fileURL)
+        let decoder = JSONDecoder()
+        entries = Array(try decoder.decode([TranscriptRecord].self, from: data).prefix(Self.maximumRecords))
     }
 
     public mutating func insert(_ record: TranscriptRecord) throws {

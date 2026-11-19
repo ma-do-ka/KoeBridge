@@ -190,7 +190,7 @@ struct HistoryView: View {
             Button("削除", role: .destructive) { controller.clearHistory(); selectedID = nil }
             Button("キャンセル", role: .cancel) {}
         } message: {
-            Text("対象：文字起こし履歴のみ。保存音声・利用統計・診断ログ・設定は変更しません。削除は取り消せません。")
+            Text("文字起こし履歴を削除します。保存音声は今回の削除では残り、次回の音声整理時に削除されます。削除は取り消せません。")
         }
     }
 }
