@@ -11,6 +11,12 @@ import KoeBridgeCore
     private let attributes: (URL) throws -> [FileAttributeKey: Any]
     private let readData: (URL) throws -> Data
     private let capacity: Int
+    // Valid only for the caller's current synchronous reconciliation. Keep the
+    // original retry path for holds, repairs, unknown stats and capacity evictions.
+    private var validatedIDs = Set<UUID>()
+    private var validUntil = Date.distantPast
+    var sweepIsReusable: Bool { Date() < validUntil }
+
     private(set) var bytesUsed = 0
     private(set) var fileCount = 0
 
@@ -27,9 +33,12 @@ import KoeBridgeCore
         directory.appendingPathComponent(record.id.uuidString + ".wav")
     }
 
-    func write(pcm: Data, record: TranscriptRecord, history: inout TranscriptHistoryStore) {
+    @discardableResult
+    func write(pcm: Data, record: TranscriptRecord, history: inout TranscriptHistoryStore,
+               followingSweep: Bool = false) -> Bool {
         guard history.isSaved(record.id), record.kind != "meeting",
-              !pcm.isEmpty, pcm.count <= GeminiRecheckWire.maximumPCMBytes else { return }
+              !pcm.isEmpty, pcm.count <= GeminiRecheckWire.maximumPCMBytes else { return followingSweep && sweepIsReusable }
+        var observedAttributes: Result<[FileAttributeKey: Any], Error>?
         do {
             let manager = FileManager.default
             try manager.createDirectory(at: directory, withIntermediateDirectories: true,
@@ -41,11 +50,29 @@ import KoeBridgeCore
             history.updateAudio(record.id, asset: .init(relativeFileName: file.lastPathComponent,
                 pcmByteCount: pcm.count, recordedAt: record.recordedAt,
                 expiresAt: record.recordedAt.addingTimeInterval(Self.lifetime)))
+            let expiry = record.recordedAt.addingTimeInterval(Self.lifetime)
+            if followingSweep, sweepIsReusable, history.isSaved(record.id),
+               !validatedIDs.contains(record.id), expiry > Date(),
+               history.referencedAudioIDs == validatedIDs.union([record.id]),
+               pcm.count + 44 <= capacity - bytesUsed {
+                let observed = Result { try attributes(file) }
+                observedAttributes = observed
+                if case let .success(attrs) = observed,
+                   attrs[.type] as? FileAttributeType == .typeRegular,
+                   let size = (attrs[.size] as? NSNumber)?.intValue, size == pcm.count + 44 {
+                    validatedIDs.insert(record.id)
+                    fileCount += 1
+                    bytesUsed += size
+                    validUntil = min(validUntil, expiry)
+                    return true
+                }
+            }
         } catch {
             remove(url(for: record))
             DiagnosticLog.record("retained audio write failed")
         }
-        sweep(history: &history)
+        sweep(history: &history, observedID: record.id, observedAttributes: observedAttributes)
+        return sweepIsReusable
     }
 
     func reconcileAtLaunch(history: inout TranscriptHistoryStore, retentionEnabled: Bool) {
@@ -69,12 +96,15 @@ import KoeBridgeCore
     /// Called at launch, after writes, after archive mutations, and before replay.
     /// Canonical UUID paths only: archive metadata never controls a filesystem path.
     @discardableResult
-    func sweep(history: inout TranscriptHistoryStore, now: Date = Date()) -> Set<UUID> {
+    func sweep(history: inout TranscriptHistoryStore, now: Date = Date(), observedID: UUID? = nil,
+               observedAttributes: Result<[FileAttributeKey: Any], Error>? = nil) -> Set<UUID> {
+        validUntil = .distantPast
         guard canSweep(history) else { return [] }
         var retryable: Set<UUID> = []
         let records = history.entries
         let liveNames = Set(history.referencedAudioIDs.map { $0.uuidString + ".wav" })
-        for file in wavFiles() {
+        let files = wavFiles()
+        for file in files {
             if !liveNames.contains(file.lastPathComponent) { remove(file) }
         }
         var live: [(TranscriptRecord, Int)] = []
@@ -83,7 +113,8 @@ import KoeBridgeCore
             let file = url(for: record)
             let attrs: [FileAttributeKey: Any]
             do {
-                attrs = try attributes(file)
+                if record.id == observedID, let observedAttributes { attrs = try observedAttributes.get() }
+                else { attrs = try attributes(file) }
             } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
                 history.updateAudio(record.id, asset: nil, reason: "保存音声が見つかりません")
                 continue
@@ -118,21 +149,29 @@ import KoeBridgeCore
             history.updateAudio(record.id, asset: nil, reason: "保存容量（250 MB）の上限により音声を削除しました")
             index += 1
         }
-        refreshCounts()
+        refreshCounts(files)
+        if retryable.isEmpty, index == 0, live.count == files.count, live.count == liveNames.count,
+           fileCount == live.count, bytesUsed == total {
+            validatedIDs = Set(live.map { $0.0.id })
+            validUntil = live.reduce(.distantFuture) { limit, item in
+                min(limit, item.0.audioAsset!.expiresAt, item.0.recordedAt.addingTimeInterval(Self.lifetime))
+            }
+        }
         return retryable
     }
 
-    private func refreshCounts() {
+    private func refreshCounts(_ listed: [URL]? = nil) {
         // Count actual files, including any deletion failure, rather than claiming space was freed.
-        let files = wavFiles().filter { (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true }
+        // Directory URLs can carry cached resource values from before unlink.
+        let files = (listed ?? wavFiles()).map { URL(fileURLWithPath: $0.path) }.filter {
+            (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+        }
         fileCount = files.count
         bytesUsed = files.reduce(0) { $0 + ((try? $1.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) }
     }
 
     func clear(history: inout TranscriptHistoryStore) {
-        for record in history.entries where record.audioAsset != nil {
-            history.updateAudio(record.id, asset: nil, reason: "保存音声を削除しました")
-        }
+        history.clearAudioReferences(reason: "保存音声を削除しました")
         for file in wavFiles() {
             remove(file)
         }

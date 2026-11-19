@@ -577,7 +577,7 @@ import KoeBridgeCore
             }
             do {
                 let pcm = try retainedAudio.read(record.id, history: &historyStore)
-                refreshRetainedAudio()
+                if retainedAudio.sweepIsReusable { updateRetentionStatus() } else { refreshRetainedAudio() }
                 let text: String
                 if engine == .local {
                     guard pcm.count <= 50 * 32_000 else { throw RetainedAudioStore.ReplayError.localLimit }
@@ -1475,15 +1475,18 @@ import KoeBridgeCore
             disposition: disposition, text: text, reason: reason, partial: isCommand ? "" : partial, noInput: noInput))
         // Persist now, even if an older delivery is awaiting its receipt. An
         // app exit must not discard a completed result waiting in the sender.
+        var sweptAfterRemember = false
         if accepted, !isCommand, !noInput, take.transformSelection == nil {
             if let text, !text.isEmpty {
                 take.historyRecordID = remember(text, isPartial: false, delivery: .pending,
                                                 engine: take.usedMode, review: take.review,
                                                 recordedAt: take.requestedAt)
+                sweptAfterRemember = retainedAudio.sweepIsReusable
             } else if !partial.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 take.historyRecordID = remember(partial, isPartial: true, delivery: .recognitionInterrupted,
                                                 engine: take.usedMode, review: take.review,
                                                 recordedAt: take.requestedAt)
+                sweptAfterRemember = retainedAudio.sweepIsReusable
             }
         }
         DiagnosticLog.record("session resolved; success=\(text?.isEmpty == false) accepted=\(accepted) noInput=\(noInput) pending=\(finished.count)")
@@ -1497,9 +1500,11 @@ import KoeBridgeCore
         usageStore.append(engineEvents: usage.engines, tokenEvents: usage.tokens)
         if retainAudioEnabled, take.retainAudioGeneration == retentionGeneration,
            let id = take.historyRecordID, let record = historyStore.entries.first(where: { $0.id == id }) {
-            retainedAudio.write(pcm: take.audioBackup, record: record, history: &historyStore)
+            sweptAfterRemember = retainedAudio.write(pcm: take.audioBackup, record: record, history: &historyStore,
+                                                      followingSweep: sweptAfterRemember)
         }
-        refreshRetainedAudio()
+        if sweptAfterRemember && retainedAudio.sweepIsReusable { updateRetentionStatus() }
+        else { refreshRetainedAudio() }
         let stoppingCapture = take.mic
         take.releaseResources()
         if let stoppingCapture {
