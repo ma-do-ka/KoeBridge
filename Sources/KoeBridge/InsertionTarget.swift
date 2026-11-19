@@ -140,32 +140,48 @@ import KoeBridgeCore
     /// editors expose focus on the application's tree but not the system tree.
     private static func focusedElement(for pid: pid_t, timeout: Float = 0.08,
                                        diagnostics: InputDiagnosticTrace?, stage: Stage) -> (value: CFTypeRef, system: Bool)? {
+        guard case .found(let value, let system) = resolveFocus(for: pid, timeout: timeout, diagnostics: diagnostics,
+            stage: stage, reads: FocusReads(), stopOnOwnerMismatch: false) else { return nil }
+        return (value, system)
+    }
+
+    private enum FocusResolution {
+        case found(CFTypeRef, system: Bool)
+        case ownerChanged
+        case unavailable
+    }
+
+    private static func resolveFocus(for pid: pid_t, timeout: Float, diagnostics: InputDiagnosticTrace?,
+                                     stage: Stage, reads: FocusReads, stopOnOwnerMismatch: Bool) -> FocusResolution {
         let diagnostics = diagnostics?.isCollecting == true ? diagnostics : nil
         let app = AXUIElementCreateApplication(pid)
         let system = AXUIElementCreateSystemWide()
-        func validated(_ read: AttributeRead, scope: Token) -> (value: CFTypeRef, system: Bool)? {
-            guard let candidate = read.value else { return nil }
+        func validated(_ read: AttributeRead, scope: Token) -> FocusResolution {
+            guard let candidate = read.value else { return .unavailable }
             guard CFGetTypeID(candidate) == AXUIElementGetTypeID() else {
                 diagnostics?.record(.target, stage: stage, [
                     .scope: .token(scope), .element: .token(.invalidType)
                 ])
-                return nil
+                return .unavailable
             }
             let element = unsafeBitCast(candidate, to: AXUIElement.self)
-            let owner = Self.owner(of: element, diagnostics: diagnostics, stage: stage)
+            let owner = reads.owner(element, diagnostics, stage)
             diagnostics?.record(.target, stage: stage, [
                 .scope: .token(scope),
                 .owner: .token(owner.status == .success ? (owner.pid == pid ? .same : .different) : .unavailable)
             ])
-            guard owner.status == .success, owner.pid == pid else { return nil }
-            return (candidate, scope == .system)
+            guard owner.status == .success else { return .unavailable }
+            guard owner.pid == pid else { return stopOnOwnerMismatch ? .ownerChanged : .unavailable }
+            return .found(candidate, system: scope == .system)
         }
         var mayAwakenViaWindow = true
         for (root, scope) in [(app, Token.application), (system, Token.system)] {
-            let read = copyAX(root, name: kAXFocusedUIElementAttribute as CFString,
-                              operation: .focusedElement, scope: scope, timeout: timeout,
-                              diagnostics: diagnostics, stage: stage)
-            if let resolved = validated(read, scope: scope) { return resolved }
+            let read = reads.attribute(root, kAXFocusedUIElementAttribute as CFString, .focusedElement, scope, timeout, diagnostics, stage)
+            let resolved = validated(read, scope: scope)
+            switch resolved {
+            case .found, .ownerChanged: return resolved
+            case .unavailable: break
+            }
             if read.value != nil || (read.status != .noValue && read.status != .attributeUnsupported) {
                 mayAwakenViaWindow = false
             }
@@ -173,22 +189,20 @@ import KoeBridgeCore
         // In Chromium/Electron apps, querying kAXFocusedWindowAttribute awakens
         // lazy renderer accessibility trees when kAXFocusedUIElementAttribute
         // initially returns .noValue / .attributeUnsupported on the application and system roots.
-        guard mayAwakenViaWindow else { return nil }
-        let windowRead = copyAX(app, name: kAXFocusedWindowAttribute as CFString,
-                                operation: .focusedWindow, scope: .application, timeout: timeout,
-                                diagnostics: diagnostics, stage: stage)
+        guard mayAwakenViaWindow else { return .unavailable }
+        let windowRead = reads.attribute(app, kAXFocusedWindowAttribute as CFString, .focusedWindow, .application, timeout, diagnostics, stage)
         guard windowRead.status == .success, let windowCandidate = windowRead.value,
-              CFGetTypeID(windowCandidate) == AXUIElementGetTypeID() else { return nil }
+              CFGetTypeID(windowCandidate) == AXUIElementGetTypeID() else { return .unavailable }
         let windowElement = unsafeBitCast(windowCandidate, to: AXUIElement.self)
-        let windowFocus = copyAX(windowElement, name: kAXFocusedUIElementAttribute as CFString,
-                                 operation: .focusedElement, scope: .focusedWindow, timeout: timeout,
-                                 diagnostics: diagnostics, stage: stage)
-        if let resolved = validated(windowFocus, scope: .focusedWindow) { return resolved }
+        let windowFocus = reads.attribute(windowElement, kAXFocusedUIElementAttribute as CFString, .focusedElement, .focusedWindow, timeout, diagnostics, stage)
+        let resolved = validated(windowFocus, scope: .focusedWindow)
+        switch resolved {
+        case .found, .ownerChanged: return resolved
+        case .unavailable: break
+        }
         guard windowFocus.value == nil,
-              windowFocus.status == .noValue || windowFocus.status == .attributeUnsupported else { return nil }
-        let reawakenedApp = copyAX(app, name: kAXFocusedUIElementAttribute as CFString,
-                                   operation: .focusedElement, scope: .application, timeout: timeout,
-                                   diagnostics: diagnostics, stage: stage)
+              windowFocus.status == .noValue || windowFocus.status == .attributeUnsupported else { return .unavailable }
+        let reawakenedApp = reads.attribute(app, kAXFocusedUIElementAttribute as CFString, .focusedElement, .application, timeout, diagnostics, stage)
         return validated(reawakenedApp, scope: .application)
     }
 
@@ -578,9 +592,8 @@ import KoeBridgeCore
 
     struct FocusReads {
         var frontPID: @MainActor () -> pid_t? = { NSWorkspace.shared.frontmostApplication?.processIdentifier }
-        var focused: @MainActor (pid_t, Float, InputDiagnosticTrace?, InputDiagnosticEvent.Stage) -> CFTypeRef? = {
-            InsertionTarget.focusedElement(for: $0, timeout: $1, diagnostics: $2, stage: $3)?.value
-        }
+        // Optional already-resolved field for transport fixtures. Live reads use both AX roots.
+        var focused: (@MainActor (pid_t, Float, InputDiagnosticTrace?, InputDiagnosticEvent.Stage) -> CFTypeRef?)?
         var owner: @MainActor (AXUIElement, InputDiagnosticTrace?, InputDiagnosticEvent.Stage) -> (pid: pid_t, status: AXError) = {
             InsertionTarget.owner(of: $0, diagnostics: $1, stage: $2)
         }
@@ -625,7 +638,20 @@ import KoeBridgeCore
         guard let frontPID else { return result(false, "frontmost_application_unavailable") }
         let sameProcess = frontPID == pid
         guard sameProcess else { return result(false, "active_app_changed") }
-        guard let currentFocused = reads.focused(pid, timeout, diagnostics, stage) else {
+        let resolution: FocusResolution
+        if let focused = reads.focused {
+            resolution = focused(pid, timeout, diagnostics, stage).map { .found($0, system: false) } ?? .unavailable
+        } else {
+            resolution = Self.resolveFocus(for: pid, timeout: timeout, diagnostics: diagnostics, stage: stage,
+                                           reads: reads, stopOnOwnerMismatch: stage == .posting)
+        }
+        let currentFocused: CFTypeRef
+        switch resolution {
+        case .found(let element, _): currentFocused = element
+        case .ownerChanged:
+            evidence?[.owner] = .token(.different)
+            return result(false, "focused_element_owner_changed")
+        case .unavailable:
             evidence?[.element] = .token(.unavailable)
             return result(false, "focused_element_unavailable_on_recheck")
         }

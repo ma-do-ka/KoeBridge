@@ -768,7 +768,7 @@ import KoeBridgeCore
             }
             // Own input moves the selection. Keep field/window/owner checks
             // throughout, and the original caret check until the first post.
-            if recaptured.recovered == nil && index % 4 == 0 {
+            if recaptured.recovered == nil {
                 var check = transport.checkFocus(target, index == 0, diagnostics, .posting, index + 1)
                 if !check.allowed,
                    InsertionFocusPolicy.mayRecheckTransientFocusUnavailability(

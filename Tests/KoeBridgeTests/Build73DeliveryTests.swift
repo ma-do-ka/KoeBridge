@@ -6,10 +6,10 @@ import KoeBridgeCore
 @testable import KoeBridge
 
 @MainActor struct Build73DeliveryTests {
-    private typealias Read = InsertionTarget.AttributeRead
+    fileprivate typealias Read = InsertionTarget.AttributeRead
 
     /// Real CF identities and CF ranges, with an in-memory AX tree and no CGEvent posting.
-    @MainActor private final class Fixture {
+    @MainActor fileprivate final class Fixture {
         let pid: pid_t = 12345
         let field = AXUIElementCreateApplication(12345)
         let window = AXUIElementCreateApplication(12346)
@@ -1072,4 +1072,150 @@ import KoeBridgeCore
         }
     }
 }
+@MainActor struct Build78FocusTests {
+    private typealias Fixture = Build73DeliveryTests.Fixture
+    private typealias Read = InsertionTarget.AttributeRead
+    private typealias Stage = InputDiagnosticEvent.Stage
+
+    /// Inject below resolution. App, system and focused-window candidates all
+    /// pass through the production type checks, owner lookup, and fallback rules.
+    private func rootTransport(_ f: Fixture,
+        configure: @escaping @MainActor (inout InsertionTarget.FocusReads, Stage, Int) -> Void = { _, _, _ in }
+    ) -> TextInsertion.Transport {
+        var t = f.transport()
+        t.checkFocus = { target, original, trace, stage, ordinal in
+            var reads = InsertionTarget.FocusReads()
+            reads.frontPID = { f.front }
+            reads.owner = { _, _, _ in (f.owner ?? 0, f.owner == nil ? .failure : .success) }
+            reads.attribute = { _, name, _, _, _, _, _ in f.attribute(name as String) }
+            configure(&reads, stage, ordinal)
+            return target.focusCheck(requireOriginalSelection: original, diagnostics: trace,
+                                     stage: stage, chunkOrdinal: ordinal, reads: reads)
+        }
+        return t
+    }
+
+    @Test func siblingWindowAndOwnerSwapsStopBeforeEveryAffectedChunk() async {
+        enum Swap: String, CaseIterable {
+            case sibling = "focused_field_changed", window = "focused_window_changed", owner = "focused_element_owner_changed"
+        }
+        for n in 2...5 {
+            for index in 0..<n {
+                for swap in Swap.allCases {
+                    let f = Fixture()
+                    f.recover("AXTextField")
+                    var originalPosts = 0
+                    var wrongPosts = 0
+                    var t = rootTransport(f) { _, stage, ordinal in
+                        guard stage == .posting, ordinal == index + 1 else { return }
+                        switch swap {
+                        case .sibling: f.currentField = f.other
+                        case .window: f.currentWindow = f.other
+                        case .owner: f.owner = 9876
+                        }
+                    }
+                    t.post = { _, _ in
+                        if CFEqual(f.currentField!, f.field), CFEqual(f.currentWindow!, f.window), f.owner == f.pid {
+                            originalPosts += 1
+                        } else { wrongPosts += 1 }
+                    }
+                    let report = await TextInsertion.deliver(String(repeating: "a", count: 16 * n), to: nil, transport: t)
+                    #expect(report.reason == swap.rawValue && report.receipt == nil)
+                    #expect(report.outcome == (index == 0 ? .focusChanged : .partiallySubmitted))
+                    #expect(originalPosts == index && wrongPosts == 0 && f.captures == 1 && f.slots.isEmpty)
+                }
+            }
+        }
+    }
+
+    @Test func resolutionOwnerMismatchCannotRecoverButMissingAndFailedReadsCan() async {
+        enum Shape: CaseIterable { case foreignOwner, absent, failedGetPid, readError }
+        let checkpoints: [(Stage, Int)] = [(.preflight, 0), (.posting, 1), (.posting, 2)]
+        for (stage, ordinal) in checkpoints {
+            for shape in Shape.allCases {
+                let f = Fixture()
+                f.recover()
+                var attempts = 0
+                var reasons: [String] = []
+                var t = rootTransport(f) { reads, current, chunk in
+                    guard current == stage, chunk == ordinal else { return }
+                    attempts += 1
+                    guard attempts == 1 else { return } // Original field is available on the next check.
+                    let attribute = reads.attribute
+                    reads.attribute = { element, name, operation, scope, timeout, trace, stage in
+                        if operation == .focusedElement {
+                            if scope == .application {
+                                switch shape {
+                                case .foreignOwner, .failedGetPid: return Read(value: f.other, status: .success)
+                                case .readError: return Read(value: nil, status: .cannotComplete)
+                                case .absent: break
+                                }
+                            }
+                            return Read(value: nil, status: .noValue)
+                        }
+                        return attribute(element, name, operation, scope, timeout, trace, stage)
+                    }
+                    reads.owner = { element, _, _ in
+                        guard CFEqual(element, f.other) else { return (f.pid, .success) }
+                        return (9876, shape == .failedGetPid ? .failure : .success)
+                    }
+                }
+                let check = t.checkFocus
+                t.checkFocus = { target, original, trace, current, chunk in
+                    let result = check(target, original, trace, current, chunk)
+                    if current == stage && chunk == ordinal { reasons.append(result.reason) }
+                    return result
+                }
+                let report = await TextInsertion.deliver(String(repeating: "a", count: 32), to: nil, transport: t)
+                if stage == .posting && shape == .foreignOwner {
+                    #expect(report.reason == "focused_element_owner_changed")
+                    #expect(report.outcome == (ordinal == 1 ? .focusChanged : .partiallySubmitted))
+                    #expect(f.posts == ordinal - 1 && attempts == 1 && f.slots.isEmpty)
+                } else {
+                    #expect(reasons == ["focused_element_unavailable_on_recheck", "ok"])
+                    #expect(report.outcome == .inserted && f.posts == 2 && attempts == 2 && f.slots == [0.025])
+                }
+            }
+        }
+    }
+
+    @Test func stableShapesPostAllChunksAndCompareSelectionOnlyAtTheFirst() async {
+        enum Shape: CaseIterable { case numeric, marker, noWindow, noSelection, systemOnly, windowOnly }
+        for shape in Shape.allCases {
+            for n in (shape == .numeric ? [1, 5, 102] : [1, 5]) {
+                let f = Fixture()
+                f.recover()
+                f.selection = f.range(4, 3) // Replace a nonempty selection on the first post.
+                if shape == .noWindow { f.currentWindow = nil }
+                if shape == .marker || shape == .noSelection { f.selection = Read(value: nil, status: .noValue) }
+                if shape == .marker { f.marker = f.liveMarker() }
+                var ordinals: [Int] = []
+                var selectionReads: [Int] = []
+                let t = rootTransport(f) { reads, stage, ordinal in
+                    if stage == .posting { ordinals.append(ordinal) }
+                    let attribute = reads.attribute
+                    reads.attribute = { element, name, op, scope, timeout, trace, readStage in
+                        if stage == .posting && (op == .selectedMarker || op == .selectedRange) {
+                            selectionReads.append(ordinal)
+                        }
+                        if op == .focusedElement && ((shape == .systemOnly && scope != .system)
+                            || (shape == .windowOnly && scope != .focusedWindow)) {
+                            return Read(value: nil, status: .noValue)
+                        }
+                        return attribute(element, name, op, scope, timeout, trace, readStage)
+                    }
+                }
+                f.onPost = {
+                    if shape == .marker { f.marker = f.liveMarker(UInt8(f.posts + 5)) }
+                    else if shape != .noSelection { f.selection = f.range(4 + 16 * f.posts) }
+                }
+                let report = await TextInsertion.deliver(String(repeating: "a", count: 16 * n), to: nil, transport: t)
+                #expect(report.outcome == .inserted && f.posts == n && f.captures == 1)
+                f.onPost = nil
+                #expect(ordinals == Array(1...n) && selectionReads == (shape == .noSelection ? [] : [1]))
+            }
+        }
+    }
+}
+
 #endif
