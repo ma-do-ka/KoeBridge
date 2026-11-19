@@ -245,4 +245,43 @@ extension InsertionSafetyTests {
             subroleReadable: true, hasValidNumericSelection: true, hasValidMarkerSelection: false,
             rangeAbsent: false, markerAbsent: true, editable: true, editableAbsent: false) == .reject)
     }
+
+    func transientFocusUnavailabilityAllowsSingleRecheckOnlyWhenSameProcess() {
+        let transientReasons = [
+            "focused_element_unavailable_on_recheck",
+            "focused_window_unavailable_on_recheck",
+            "selection_unavailable_on_recheck"
+        ]
+        for reason in transientReasons {
+            check(InsertionFocusPolicy.isTransientFocusUnavailability(reason))
+            check(InsertionFocusPolicy.mayRecheckTransientFocusUnavailability(
+                reason: reason, sameProcess: true, alreadyRecheckedAtCheckpoint: false))
+            // Second failure at the same checkpoint never retries again.
+            check(!InsertionFocusPolicy.mayRecheckTransientFocusUnavailability(
+                reason: reason, sameProcess: true, alreadyRecheckedAtCheckpoint: true))
+            // Different process never retries even on transient unavailability reason.
+            check(!InsertionFocusPolicy.mayRecheckTransientFocusUnavailability(
+                reason: reason, sameProcess: false, alreadyRecheckedAtCheckpoint: false))
+        }
+
+        // Genuine contradictions and non-transient failures never retry.
+        let nonTransientReasons = [
+            "active_app_changed",
+            "focused_field_changed",
+            "focused_window_changed",
+            "focused_window_invalid_on_recheck",
+            "focused_element_owner_changed",
+            "focused_element_owner_unavailable",
+            "caret_or_selection_changed",
+            "marker_selection_changed",
+            "captured_selection_invalid",
+            "selection_value_invalid_on_recheck",
+            "focus_verification_failed"
+        ]
+        for reason in nonTransientReasons {
+            check(!InsertionFocusPolicy.isTransientFocusUnavailability(reason))
+            check(!InsertionFocusPolicy.mayRecheckTransientFocusUnavailability(
+                reason: reason, sameProcess: true, alreadyRecheckedAtCheckpoint: false))
+        }
+    }
 }

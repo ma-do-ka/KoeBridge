@@ -281,6 +281,7 @@ struct KoeBridgeSelfTest {
         await run("InsertionSafetyTests.focusedElementOwnedByDifferentProcessMustBlockPaste", { InsertionSafetyTests().focusedElementOwnedByDifferentProcessMustBlockPaste() })
         await run("InsertionSafetyTests.windowOrAppDriftAfterDeliveryCaptureMustBlockPosting", { InsertionSafetyTests().windowOrAppDriftAfterDeliveryCaptureMustBlockPosting() })
         await run("InsertionSafetyTests.recoveryCandidateRequiresSameWindowAndPositiveEditorEvidenceForDifferentElement", { InsertionSafetyTests().recoveryCandidateRequiresSameWindowAndPositiveEditorEvidenceForDifferentElement() })
+        await run("InsertionSafetyTests.transientFocusUnavailabilityAllowsSingleRecheckOnlyWhenSameProcess", { InsertionSafetyTests().transientFocusUnavailabilityAllowsSingleRecheckOnlyWhenSameProcess() })
         await run("ModifierToggleDetectorTests.rightCommandSolitaryTapTogglesOnlyOnRelease", { ModifierToggleDetectorTests().rightCommandSolitaryTapTogglesOnlyOnRelease() })
         await run("ModifierToggleDetectorTests.modifierUsedInShortcutDoesNotToggle", { ModifierToggleDetectorTests().modifierUsedInShortcutDoesNotToggle() })
         await run("ModifierToggleDetectorTests.secondModifierDuringHoldCancels", { ModifierToggleDetectorTests().secondModifierDuringHoldCancels() })

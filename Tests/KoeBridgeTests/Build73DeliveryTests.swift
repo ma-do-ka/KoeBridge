@@ -636,5 +636,50 @@ import KoeBridgeCore
             #expect(result.outcome == .focusChanged && f.posts == 0 && f.slots.count == 1)
         }
     }
+
+    @Test func transientFocusUnavailabilityRecoversOnSingle25msRecheckAndFailsClosedOtherwise() async {
+        // 1. Preflight transient unavailability recovers on single 25 ms recheck.
+        do {
+            let f = Fixture()
+            f.role = "AXTextField"
+            f.selection = f.range(0, 0)
+            var checks = 0
+            f.onCheck = { stage in
+                if stage == .preflight {
+                    checks += 1
+                    f.currentField = checks == 1 ? nil : f.field
+                }
+            }
+            let result = await f.deliver()
+            #expect(checks == 2 && f.posts == 1 && f.slots == [0.025])
+            #expect(result.outcome == .inserted)
+        }
+
+        // 2. Persistent preflight unavailability fails closed after the single 25 ms recheck.
+        do {
+            let f = Fixture()
+            f.role = "AXTextField"
+            f.selection = f.range(0, 0)
+            f.onCheck = { stage in
+                if stage == .preflight { f.currentField = nil }
+            }
+            let result = await f.deliver()
+            #expect(result.outcome == .focusChanged && result.reason == "focused_element_unavailable_on_recheck")
+            #expect(f.posts == 0 && f.slots == [0.025])
+        }
+
+        // 3. Genuine mismatch (focused_field_changed) fails closed immediately without a 25 ms recheck.
+        do {
+            let f = Fixture()
+            f.role = "AXTextField"
+            f.selection = f.range(0, 0)
+            f.onCheck = { stage in
+                if stage == .preflight { f.currentField = f.other }
+            }
+            let result = await f.deliver()
+            #expect(result.outcome == .focusChanged && result.reason == "focused_field_changed")
+            #expect(f.posts == 0 && f.slots.isEmpty)
+        }
+    }
 }
 #endif

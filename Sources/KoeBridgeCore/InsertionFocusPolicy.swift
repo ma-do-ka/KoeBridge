@@ -10,6 +10,23 @@ public enum InsertionFocusPolicy {
         // focused element can be verified. A caret move inside it is unknown.
         return true
     }
+
+    public static func isTransientFocusUnavailability(_ reason: String) -> Bool {
+        reason == "focused_element_unavailable_on_recheck"
+            || reason == "focused_window_unavailable_on_recheck"
+            || reason == "selection_unavailable_on_recheck"
+    }
+
+    /// Authorize at most one bounded 25 ms recheck per checkpoint when an AX
+    /// focus/selection read returns transient unavailability while the target
+    /// process remains frontmost. Genuine mismatches (`*_changed`, `*_invalid*`)
+    /// never qualify.
+    public static func mayRecheckTransientFocusUnavailability(reason: String,
+                                                              sameProcess: Bool,
+                                                              alreadyRecheckedAtCheckpoint: Bool) -> Bool {
+        guard sameProcess, !alreadyRecheckedAtCheckpoint else { return false }
+        return isTransientFocusUnavailability(reason)
+    }
 }
 
 /// Secure/unavailable targets fail closed. Live selection or AXEditable evidence

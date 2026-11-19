@@ -640,7 +640,17 @@ import KoeBridgeCore
             receiptEligibility = before != nil ? .snapshotAvailable
                 : (target.selectionKind == .textMarker ? .markerNotNumeric : .valueUnavailable)
         } else {
-            let initialFocus = transport.checkFocus(target, true, diagnostics, .preflight, 0)
+            var initialFocus = transport.checkFocus(target, true, diagnostics, .preflight, 0)
+            if !initialFocus.allowed,
+               InsertionFocusPolicy.mayRecheckTransientFocusUnavailability(
+                   reason: initialFocus.reason,
+                   sameProcess: transport.ax.frontPID() == target.pid,
+                   alreadyRecheckedAtCheckpoint: false) {
+                try? await transport.ax.sleep(0.025)
+                if !Task.isCancelled, shouldContinue(), transport.ax.frontPID() == target.pid {
+                    initialFocus = transport.checkFocus(target, true, diagnostics, .preflight, 0)
+                }
+            }
             guard initialFocus.allowed else { return report(.focusChanged, initialFocus.reason) }
             (before, receiptEligibility) = transport.snapshot(target, diagnostics)
         }
@@ -704,7 +714,22 @@ import KoeBridgeCore
             // Own input moves the selection. Keep field/window/owner checks
             // throughout, and the original caret check until the first post.
             if recaptured.recovered == nil && index % 4 == 0 {
-                let check = transport.checkFocus(target, index == 0, diagnostics, .posting, index + 1)
+                var check = transport.checkFocus(target, index == 0, diagnostics, .posting, index + 1)
+                if !check.allowed,
+                   sent > 0,
+                   InsertionFocusPolicy.mayRecheckTransientFocusUnavailability(
+                       reason: check.reason,
+                       sameProcess: transport.ax.frontPID() == target.pid,
+                       alreadyRecheckedAtCheckpoint: false) {
+                    try? await transport.ax.sleep(0.025)
+                    guard !Task.isCancelled, shouldContinue() else {
+                        return report(.partiallySubmitted, "delivery_cancelled_after_partial_post")
+                    }
+                    if transport.ax.frontPID() != target.pid {
+                        return report(.partiallySubmitted, "active_app_changed")
+                    }
+                    check = transport.checkFocus(target, false, diagnostics, .posting, index + 1)
+                }
                 if !check.allowed {
                     return report(sent == 0 ? .focusChanged : .partiallySubmitted, check.reason,
                                   diagnosticReason: index == 0 ? "first_chunk_" + check.reason : check.reason)
@@ -811,8 +836,19 @@ import KoeBridgeCore
             }
             polls += 1
             let timeout = Float(min(0.035, remaining / 12))
-            let focus = target.focusCheck(requireOriginalSelection: false, timeout: timeout,
+            var focus = target.focusCheck(requireOriginalSelection: false, timeout: timeout,
                                           diagnostics: diagnostics, stage: .receipt, chunkOrdinal: sent)
+            if !focus.allowed,
+               InsertionFocusPolicy.mayRecheckTransientFocusUnavailability(
+                   reason: focus.reason,
+                   sameProcess: transport.ax.frontPID() == target.pid,
+                   alreadyRecheckedAtCheckpoint: false) {
+                try? await transport.ax.sleep(0.025)
+                if !Task.isCancelled, shouldContinue(), transport.ax.frontPID() == target.pid {
+                    focus = target.focusCheck(requireOriginalSelection: false, timeout: timeout,
+                                              diagnostics: diagnostics, stage: .receipt, chunkOrdinal: sent)
+                }
+            }
             guard focus.allowed else { return report(.inserted, "posted_then_" + focus.reason) }
             let observed = target.observedSnapshot(timeout: timeout, diagnostics: diagnostics, stage: .receipt)?.snapshot
             let spans = InputReceiptObservation.compareSpans(before: before, inserted: safeText, after: observed)
@@ -844,8 +880,19 @@ import KoeBridgeCore
                                                             after: after, sameTarget: true) else { continue }
             // Focus may move while AX is answering. Recheck before accepting
             // the receipt, without imposing the already-replaced old caret.
-            let finalFocus = target.focusCheck(requireOriginalSelection: false, timeout: timeout,
+            var finalFocus = target.focusCheck(requireOriginalSelection: false, timeout: timeout,
                                                diagnostics: diagnostics, stage: .receipt, chunkOrdinal: sent)
+            if !finalFocus.allowed,
+               InsertionFocusPolicy.mayRecheckTransientFocusUnavailability(
+                   reason: finalFocus.reason,
+                   sameProcess: transport.ax.frontPID() == target.pid,
+                   alreadyRecheckedAtCheckpoint: false) {
+                try? await transport.ax.sleep(0.025)
+                if !Task.isCancelled, shouldContinue(), transport.ax.frontPID() == target.pid {
+                    finalFocus = target.focusCheck(requireOriginalSelection: false, timeout: timeout,
+                                                   diagnostics: diagnostics, stage: .receipt, chunkOrdinal: sent)
+                }
+            }
             guard finalFocus.allowed else { return report(.inserted, "posted_then_" + finalFocus.reason) }
             guard !Task.isCancelled, shouldContinue() else {
                 return report(.inserted, "delivery_cancelled_after_post")
