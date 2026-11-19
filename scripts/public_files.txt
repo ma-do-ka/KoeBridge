@@ -29,6 +29,8 @@ Sources/KoeBridge/MicrophoneCapture.swift
 Sources/KoeBridge/TextInsertion.swift
 Sources/KoeBridge/VoiceController.swift
 Sources/KoeBridge/Windows.swift
+Sources/KoeBridgeAudioTap/InputTap.m
+Sources/KoeBridgeAudioTap/include/KoeBridgeAudioTap.h
 Sources/KoeBridgeCore/AudioDurationPolicy.swift
 Sources/KoeBridgeCore/AudioIntegrityState.swift
 Sources/KoeBridgeCore/DiagnosticFileStore.swift

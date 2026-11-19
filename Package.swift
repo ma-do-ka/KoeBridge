@@ -2,9 +2,12 @@
 import PackageDescription
 
 var applicationDependencies: [Target.Dependency] = ["KoeBridgeCore", "KoeBridgePOSIX"]
+var coreDependencies: [Target.Dependency] = []
 var applicationTestDependencies: [Target.Dependency] = ["KoeBridge", "KoeBridgeCore"]
 var additionalTargets: [Target] = []
 #if os(macOS)
+coreDependencies.append("KoeBridgeAudioTap")
+additionalTargets.append(.target(name: "KoeBridgeAudioTap", publicHeadersPath: "include"))
 // Exact official release bytes, also pinned by Sparkle's 2.10.1 Package.swift.
 applicationDependencies.append("Sparkle")
 applicationTestDependencies.append("Sparkle")
@@ -18,7 +21,7 @@ let package = Package(
     platforms: [.macOS(.v15)],
     products: [.executable(name: "KoeBridge", targets: ["KoeBridge"])],
     targets: [
-        .target(name: "KoeBridgeCore"),
+        .target(name: "KoeBridgeCore", dependencies: coreDependencies),
         .target(name: "KoeBridgePOSIX", path: "Sources/KoeBridgePOSIX", publicHeadersPath: "include"),
         .executableTarget(name: "KoeBridge", dependencies: applicationDependencies,
             swiftSettings: [.swiftLanguageMode(.v5)],
