@@ -10,7 +10,7 @@ import KoeBridgeCore
     private var pending: MicrophoneStartupGate?
 
     func resume(enabled: Bool, selectedUID: String, takeActive: Bool, reason: String) {
-        pending?.stop()
+        pending?.cancelWarmPreparation()
         let gate = MicrophoneStartupGate(configuring: true)
         pending = gate
         let deadline = ProcessInfo.processInfo.systemUptime + MicrophoneStartupRetryPolicy().attemptTimeout
@@ -29,7 +29,7 @@ import KoeBridgeCore
     /// Enqueued before capture.start: FIFO on the shared lane completes the
     /// handoff before capture can acquire its lease. No warm lease spans a take.
     func suspend(reason: String = "take") {
-        pending?.stop()
+        pending?.cancelWarmPreparation()
         pending = nil
         let worker = worker
         MicrophoneCapture.warmLifecycleQueue.async { worker.stop(reason: reason) }
@@ -46,7 +46,11 @@ import KoeBridgeCore
 
         func resume(enabled: Bool, uid: String, takeActive: Bool, reason: String,
                     gate: MicrophoneStartupGate, deadline: TimeInterval, changed: @escaping @Sendable () -> Void) {
-            guard !gate.isStopped, ProcessInfo.processInfo.systemUptime < deadline else { return }
+            guard !gate.isStopped else { return }
+            guard enabled, !takeActive, ProcessInfo.processInfo.systemUptime < deadline else {
+                stop(reason: "policy")
+                return
+            }
             let snapshot = MicrophoneDevices.snapshot()
             guard let selected = try? MicrophoneSelectionPolicy.resolve(uid: uid,
                 devices: snapshot.devices, systemDefaultID: snapshot.defaultID) else {
@@ -80,8 +84,7 @@ import KoeBridgeCore
                 observer = NotificationCenter.default.addObserver(
                     forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil
                 ) { _ in
-                    gate.handleConfigurationChange(at: ProcessInfo.processInfo.systemUptime, deadline: deadline)
-                    changed()
+                    if gate.warmConfigurationChanged() { changed() }
                 }
                 let graph = LeasedMicrophoneTapGraph(lifetime: MicrophoneCapture.warmEngineLifetime,
                                                      lease: acquired, node: node) {

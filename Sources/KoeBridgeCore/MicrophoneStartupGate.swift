@@ -190,6 +190,20 @@ public final class MicrophoneStartupGate: @unchecked Sendable {
         return configuring && !stopped && failure == nil && pendingSince == nil
     }
 
+    package func cancelWarmPreparation() {
+        lock.lock(); defer { lock.unlock() }
+        if configuring { stopped = true }
+    }
+
+    /// A change during installation invalidates that single warm attempt.
+    /// Only a previously established warm route can request a fresh evaluation.
+    package func warmConfigurationChanged() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard !stopped, failure == nil else { return false }
+        if configuring { failure = .configurationChanged }
+        return !configuring
+    }
+
     /// Linearize a warm start against cancellation and configuration callbacks.
     /// A warmer has no audio admission or recording commit.
     package func finishWarmStart(deadline: TimeInterval) -> Bool {

@@ -155,6 +155,7 @@ final class MicrophoneCapture: @unchecked Sendable {
                             continuation.resume(returning: ())
                         } catch {
                             startupGate.stop(at: ProcessInfo.processInfo.systemUptime)
+                            startupDiagnostics?.note(.startFailed, code: (error as NSError).code)
                             stopBlocking(flushPendingAudio: false)
                             if let failure = error as? MicrophoneStartupGate.Failure {
                                 continuation.resume(throwing: CaptureError.notReady(failure))
@@ -463,7 +464,6 @@ final class MicrophoneCapture: @unchecked Sendable {
         let graph = LeasedMicrophoneTapGraph(lifetime: Self.engineLifetime, lease: lease, node: node) {
             MicrophoneDevices.isStillSelected(target, node: node)
         }
-        let tapGeneration = startupGate.currentTapGeneration
         let sink = MicrophoneTapInstallation.Sink.capture(output: output, configure: { converter, hardware, client in
             let input = converter.inputFormat
             self.formatSnapshot = InputFormatSnapshot(hardwareRate: hardware.sampleRate,
@@ -477,9 +477,8 @@ final class MicrophoneCapture: @unchecked Sendable {
         }, readback: { applied in
             self.formatSnapshot?.appliedRate = applied.sampleRate
             self.formatSnapshot?.appliedChannels = applied.channelCount
-        }, receive: { [weak self] buffer, _ in
-            guard let self, buffer.frameLength > 0,
-                  let token = self.startupGate.captureTokenForTap(tapGeneration: tapGeneration) else { return }
+        }, receive: { [weak self] buffer, token in
+            guard let self else { return }
             // Timestamp arrival, not eventual conversion. Queued old buffers
             // must not make a stalled microphone appear live/ready.
             let arrivedAt = ProcessInfo.processInfo.systemUptime
@@ -504,41 +503,36 @@ final class MicrophoneCapture: @unchecked Sendable {
         let plan = try tap.installAndPrepare(graph: graph, gate: startupGate, deadline: attemptDeadline,
                                              diagnostics: startupDiagnostics, sink: sink)
         tapPlan = plan
-        do {
-            guard !startupGate.isStopped else { throw CancellationError() }
-            guard ProcessInfo.processInfo.systemUptime < attemptDeadline else { throw CaptureError.notReady(.unstableBuffers) }
-            let startAt = Date()
-            startupDiagnostics?.begin(.engineStart)
-            try engine.start()
-            startupDiagnostics?.end(.engineStart)
-            let phase = startupGate.finishConfiguring(at: ProcessInfo.processInfo.systemUptime)
-            if case .revalidating = phase { scheduleRevalidation(after: 0) }
-            else { startupDiagnostics?.begin(.awaitPCM) }
-            let timer = DispatchSource.makeTimerSource(queue: Self.lifecycleQueue)
-            timer.schedule(deadline: .now() + 0.25, repeating: 0.25, leeway: .milliseconds(30))
-            timer.setEventHandler { [weak self] in
-                guard let self else { return }
-                if let failure = self.startupGate.recordingFailure(
-                    at: ProcessInfo.processInfo.systemUptime,
-                    engineRunning: self.engine?.isRunning == true) {
-                    self.invalidateStartup(failure, onDeviceChanged: onDeviceChanged)
-                } else if self.startupGate.didCommit,
-                          let engine = self.engine, let target = self.selectedTarget,
-                          !MicrophoneDevices.isStillSelected(target, node: engine.inputNode) {
-                    self.invalidateStartup(.inputRouteChanged, onDeviceChanged: onDeviceChanged)
-                }
+        guard !startupGate.isStopped else { throw CancellationError() }
+        guard ProcessInfo.processInfo.systemUptime < attemptDeadline else { throw CaptureError.notReady(.unstableBuffers) }
+        let startAt = Date()
+        startupDiagnostics?.begin(.engineStart)
+        try engine.start()
+        startupDiagnostics?.end(.engineStart)
+        let phase = startupGate.finishConfiguring(at: ProcessInfo.processInfo.systemUptime)
+        if case .revalidating = phase { scheduleRevalidation(after: 0) }
+        else { startupDiagnostics?.begin(.awaitPCM) }
+        let timer = DispatchSource.makeTimerSource(queue: Self.lifecycleQueue)
+        timer.schedule(deadline: .now() + 0.25, repeating: 0.25, leeway: .milliseconds(30))
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            if let failure = self.startupGate.recordingFailure(
+                at: ProcessInfo.processInfo.systemUptime,
+                engineRunning: self.engine?.isRunning == true) {
+                self.invalidateStartup(failure, onDeviceChanged: onDeviceChanged)
+            } else if self.startupGate.didCommit,
+                      let engine = self.engine, let target = self.selectedTarget,
+                      !MicrophoneDevices.isStillSelected(target, node: engine.inputNode) {
+                self.invalidateStartup(.inputRouteChanged, onDeviceChanged: onDeviceChanged)
             }
-            healthTimer = timer
-            timer.resume()
-            let completedAt = Date()
-            startTimings = StartTimings(microphonePreparation: startAt.timeIntervalSince(beganAt),
-                                       engineStart: completedAt.timeIntervalSince(startAt),
-                                       total: completedAt.timeIntervalSince(beganAt),
-                                       sampleRate: plan.sampleRate, channels: plan.channelCount)
-        } catch {
-            startupDiagnostics?.note(.startFailed, code: (error as NSError).code)
-            throw error
         }
+        healthTimer = timer
+        timer.resume()
+        let completedAt = Date()
+        startTimings = StartTimings(microphonePreparation: startAt.timeIntervalSince(beganAt),
+                                   engineStart: completedAt.timeIntervalSince(startAt),
+                                   total: completedAt.timeIntervalSince(beganAt),
+                                   sampleRate: plan.sampleRate, channels: plan.channelCount)
     }
 
     /// Read back both scopes; never promote a successful API call alone to a

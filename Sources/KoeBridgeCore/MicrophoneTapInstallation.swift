@@ -71,7 +71,7 @@ package final class MicrophoneTapInstallation {
         case capture(output: AVAudioFormat,
                      configure: (AVAudioConverter, AVAudioFormat, AVAudioFormat) -> Void,
                      readback: (AVAudioFormat) -> Void,
-                     receive: AVAudioNodeTapBlock)
+                     receive: (AVAudioPCMBuffer, MicrophoneStartupGate.TapCaptureToken) -> Void)
         case warm
 
         fileprivate func configure(input: AVAudioFormat, hardware: AVAudioFormat, client: AVAudioFormat) throws {
@@ -83,9 +83,14 @@ package final class MicrophoneTapInstallation {
             }
         }
 
-        fileprivate var block: AVAudioNodeTapBlock {
-            if case let .capture(_, _, _, receive) = self { return receive }
-            return { _, _ in }
+        fileprivate func block(gate: MicrophoneStartupGate) -> AVAudioNodeTapBlock {
+            guard case let .capture(_, _, _, receive) = self else { return { _, _ in } }
+            let generation = gate.currentTapGeneration
+            return { buffer, _ in
+                guard buffer.frameLength > 0,
+                      let token = gate.captureTokenForTap(tapGeneration: generation) else { return }
+                receive(buffer, token)
+            }
         }
     }
 
@@ -135,7 +140,7 @@ package final class MicrophoneTapInstallation {
             }
             diagnostics?.begin(.tapInstall)
             try checkGeneration()
-            switch graph.install(input, block: sink.block) {
+            switch graph.install(input, block: sink.block(gate: gate)) {
             case .installed: owned = graph
             case .formatMismatch: throw MicrophoneGraphError.formatException
             default: throw MicrophoneGraphError.unknownException
