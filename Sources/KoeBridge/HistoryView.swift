@@ -228,6 +228,9 @@ private struct HistoryLearningEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("修正して学習").font(.headline)
+            if controller.learnedTermsStore.state == .corrupt {
+                CorruptSettingsNotice(reset: controller.resetLearnedTerms)
+            }
             ScrollView { Text(record.text).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
                 .frame(maxHeight: 140)
             Button("文章をコピー") { controller.copyRecord(record) }
