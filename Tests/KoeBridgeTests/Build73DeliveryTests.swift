@@ -143,6 +143,79 @@ import KoeBridgeCore
         }
     }
 
+    @Test func externalTextRequiresAffirmativeSecurityAttributes() throws {
+        let f = Fixture()
+        f.recover()
+        let text = "fixture selection"
+        f.value = Read(value: text as CFString, status: .success)
+        let normal = Read(value: "AXTextField" as CFString, status: .success)
+        let standard = Read(value: "AXStandard" as CFString, status: .success)
+        let secure = Read(value: "AXSecureTextField" as CFString, status: .success)
+        let timeout = Read(value: nil, status: .cannotComplete)
+        let wrongType = Read(value: NSNumber(value: 1), status: .success)
+        let absent = Read(value: nil, status: .attributeUnsupported)
+        let target = InsertionTarget(bundleIdentifier: f.bundle, localizedName: nil, pid: f.pid,
+            focused: f.field, window: f.window, selectionAttribute: kAXSelectedTextRangeAttribute,
+            selection: f.selection.value, textSnapshot: .init(text: "cached private body",
+                selection: .init(location: 0, length: 0)), capturedAt: 0, blockedReason: nil)
+        for (role, subrole, allowed) in [(secure, standard, false), (normal, secure, false),
+            (normal, timeout, false), (normal, wrongType, false), (timeout, standard, false),
+            (wrongType, standard, false), (normal, absent, false), (normal, standard, true)] {
+            var contentReads = 0
+            var reads = InsertionTarget.FocusReads()
+            reads.attribute = { _, name, _, _, _, _, _ in
+                switch name as String {
+                case kAXRoleAttribute: return role
+                case kAXSubroleAttribute: return subrole
+                case kAXSelectedTextAttribute, kAXValueAttribute:
+                    contentReads += 1
+                    return f.value
+                default: return f.attribute(name as String)
+                }
+            }
+            let selection = InsertionTarget.captureExternalSelection(captureTarget: { _ in target }, reads: reads)?.1
+            #expect(selection == (allowed ? text : nil))
+            let context = ContextCapture.capture(target: target, app: false, selection: true,
+                                                surrounding: true, reads: reads)
+            #expect(context?.selectedText == (allowed ? text : nil))
+            #expect(context?.surroundingText == (allowed ? text : nil))
+            #expect((context?.prompt != nil) == allowed)
+            let surroundingOnly = ContextCapture.capture(target: target, app: false, selection: false,
+                                                         surrounding: true, reads: reads)
+            #expect(surroundingOnly?.surroundingText == (allowed ? text : nil))
+            #expect(contentReads == (allowed ? 4 : 0))
+
+            if allowed || subrole.status == .attributeUnsupported {
+                #expect(target.selectedContextText(externalText: nil, reads: reads) == text)
+                #expect(target.observedSnapshot(timeout: 0.04, reads: reads)?.snapshot.text == text)
+            }
+        }
+
+        // The context selection succeeds, then the body security probe times out.
+        // The earlier selection must not escape in a partially populated prompt.
+        var subroleQueries = 0
+        var reads = InsertionTarget.FocusReads()
+        reads.attribute = { _, name, _, _, _, _, _ in
+            switch name as String {
+            case kAXRoleAttribute: return normal
+            case kAXSubroleAttribute:
+                subroleQueries += 1
+                return subroleQueries == 1 ? standard : timeout
+            case kAXSelectedTextAttribute: return f.value
+            default: return f.attribute(name as String)
+            }
+        }
+        #expect(ContextCapture.capture(target: target, app: true, selection: true,
+                                       surrounding: true, reads: reads) == nil)
+
+        let refused = InsertionTarget.captureExternalSelection(captureTarget: { access in
+            _ = target.observedSnapshot(timeout: 0.04, externalText: access, reads: reads)
+            subroleQueries = 0
+            return target
+        }, reads: reads)
+        #expect(refused == nil)
+    }
+
     @Test func endoAndFirstSampleControl() async {
         let stuck = Fixture()
         let report = await stuck.deliver()

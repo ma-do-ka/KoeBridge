@@ -189,8 +189,7 @@ import KoeBridgeCore
             }
             steps = preset.steps
         } else { steps = [] }
-        guard let target = InsertionTarget.capture().target, target.selection != nil,
-              let selected = target.selectedContextText(), !selected.isEmpty else {
+        guard let (target, selected) = InsertionTarget.captureExternalSelection() else {
             status = translating ? "翻訳するテキストを選択してください" : "変換するテキストを選択してください"
             return
         }
@@ -316,9 +315,7 @@ import KoeBridgeCore
         cancelTextOperation()
         if active?.transformSelection != nil { toggle(); return }
         guard active == nil else { return }
-        let capture = InsertionTarget.capture()
-        guard let target = capture.target, target.selection != nil,
-              let selected = target.selectedContextText(), !selected.isEmpty else {
+        guard let (target, selected) = InsertionTarget.captureExternalSelection() else {
             status = "変換するテキストを選択してください"
             return
         }
