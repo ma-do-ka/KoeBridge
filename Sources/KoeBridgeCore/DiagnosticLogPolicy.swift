@@ -12,7 +12,7 @@ public enum DiagnosticLogPolicy {
         public let maximumGenerations: Int
     }
 
-    public static let main = StoreLimits(maximumFileBytes: 256 * 1024, maximumGenerations: 3)
+    public static let main = StoreLimits(maximumFileBytes: 256 * 1024, maximumGenerations: 8)
     public static let microphone = StoreLimits(maximumFileBytes: 256 * 1024, maximumGenerations: 8)
 
     public static func isEnabled(storedValue: Bool?) -> Bool { storedValue == true }

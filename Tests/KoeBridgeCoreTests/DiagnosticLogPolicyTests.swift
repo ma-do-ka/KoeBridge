@@ -191,9 +191,9 @@ struct DiagnosticLogPolicyTests {
         }
         let main = DiagnosticLogPolicy.main
         let microphone = DiagnosticLogPolicy.microphone
-        #expect(main.maximumFileBytes == 256 * 1024 && main.maximumGenerations == 3)
+        #expect(main.maximumFileBytes == 256 * 1024 && main.maximumGenerations == 8)
         #expect(microphone.maximumFileBytes == 256 * 1024 && microphone.maximumGenerations == 8)
-        #expect(microphone.maximumFileBytes * microphone.maximumGenerations > main.maximumFileBytes * main.maximumGenerations)
+        #expect(microphone.maximumFileBytes * microphone.maximumGenerations == main.maximumFileBytes * main.maximumGenerations)
         #expect(DiagnosticLogPolicy.needsRotation(existingBytes: 60, incomingBytes: 5, maximumFileBytes: 64))
         #expect(!DiagnosticLogPolicy.needsRotation(existingBytes: 60, incomingBytes: 4, maximumFileBytes: 64))
     }

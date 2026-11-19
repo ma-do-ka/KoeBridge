@@ -14,8 +14,8 @@ import KoeBridgeCore
     var systemFocus = false
 
     var eligible: Bool {
-        target.bundleIdentifier == "com.meta.endo" && ownerPID == target.pid && windowStatus == .success
-            && gate.roleStatus == .success && gate.role == "AXButton"
+        ownerPID == target.pid && windowStatus == .success
+            && gate.roleStatus == .success && DeliveryTargetPolicy.isDenylisted(role: gate.role)
             && gate.selectedRange.status == .noValue && gate.selectedMarker?.status == .noValue
             && gate.editable.status == .noValue && gate.subrole.value as? String != "AXSecureTextField"
             && InsertionTarget.secureExclusionReadable(gate.subrole.value, status: gate.subrole.status)
@@ -29,6 +29,9 @@ struct RecoveryAX {
     var now = { ProcessInfo.processInfo.systemUptime }
     var sleep: (TimeInterval) async throws -> Void = { try await Task.sleep(for: .seconds($0)) }
     var frontPID: @MainActor () -> pid_t? = { NSWorkspace.shared.frontmostApplication?.processIdentifier }
+    var restoreSystemTimeout: () -> AXError = {
+        AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 0)
+    }
     var setTimeout = AXUIElementSetMessagingTimeout
     var attribute: (AXUIElement, CFString) -> Read = { element, name in
         var value: CFTypeRef?
@@ -59,10 +62,16 @@ struct RecoveryAX {
 }
 
 @MainActor struct DeliveryRecovery {
+    private static let positiveTextRoles: Set<String> = [
+        "AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"
+    ]
+
     let original: InsertionTarget
     let systemFocus: Bool
     let rejectedAt: TimeInterval
     let ax: RecoveryAX
+    let defaultFailureReason: String
+    let requireSameElement: Bool
     var deadline: TimeInterval { rejectedAt + 0.100 }
 
     init(rejection: DeliveryRejection, ax: RecoveryAX) {
@@ -70,6 +79,17 @@ struct RecoveryAX {
         systemFocus = rejection.systemFocus
         rejectedAt = rejection.rejectedAt
         self.ax = ax
+        defaultFailureReason = "current_target_not_text_input"
+        requireSameElement = true
+    }
+
+    init(unavailableTarget: InsertionTarget, rejectedAt: TimeInterval, ax: RecoveryAX) {
+        original = unavailableTarget
+        systemFocus = true
+        self.rejectedAt = rejectedAt
+        self.ax = ax
+        defaultFailureReason = "target_unavailable_at_delivery"
+        requireSameElement = false
     }
 
     @MainActor struct Host {
@@ -77,8 +97,15 @@ struct RecoveryAX {
         let role: String
 
         func matches(_ other: Host) -> Bool {
-            guard role == other.role, target.selectionAttribute == other.target.selectionAttribute,
-                  let a = target.selection, let b = other.target.selection else { return false }
+            matchesHostIdentity(other, requireOriginalSelection: true)
+        }
+
+        func matchesHostIdentity(_ other: Host, requireOriginalSelection: Bool) -> Bool {
+            guard target.sameField(as: other.target),
+                  role == other.role,
+                  target.selectionAttribute == other.target.selectionAttribute else { return false }
+            guard requireOriginalSelection else { return true }
+            guard let a = target.selection, let b = other.target.selection else { return false }
             return CFEqual(a, b)
         }
     }
@@ -101,9 +128,7 @@ struct RecoveryAX {
                 diagnostics?.record(.retry, stage: .preflight, fields)
             }
         }
-        guard let window = original.window else { return .rejected }
         let app = AXUIElementCreateApplication(original.pid)
-        let element = unsafeBitCast(original.focused, to: AXUIElement.self)
         func matches(_ read: RecoveryAX.Read, _ expected: CFTypeRef, field: InputDiagnosticEvent.Field) -> Bool {
             guard read.status == .success, let value = read.value else {
                 fields[field] = .token(.unavailable)
@@ -117,34 +142,78 @@ struct RecoveryAX {
             fields[field] = .flag(equal)
             return equal
         }
-        func focus() throws -> RecoveryAX.Read {
+        func focus(in windowElement: AXUIElement?) throws -> RecoveryAX.Read {
             let first = try ax.read(app, kAXFocusedUIElementAttribute, until: limit)
-            guard systemFocus, first.value == nil,
-                  first.status == .noValue || first.status == .attributeUnsupported || first.status == .success
+            if first.value != nil { return first }
+            guard first.status == .noValue || first.status == .attributeUnsupported || first.status == .success
             else { return first }
-            // System-wide timeout changes the process default. Restore it even on late IPC.
-            let system = AXUIElementCreateSystemWide()
-            let result = Result { try ax.read(system, kAXFocusedUIElementAttribute, until: limit) }
-            guard ax.setTimeout(system, 0) == .success else { throw RecoveryAX.Failure.unavailable }
-            return try result.get()
+            if systemFocus {
+                let system = AXUIElementCreateSystemWide()
+                let sysRead = try ax.read(system, kAXFocusedUIElementAttribute, until: limit)
+                if sysRead.value != nil { return sysRead }
+            }
+            if let windowElement, !requireSameElement {
+                let winFocus = try ax.read(windowElement, kAXFocusedUIElementAttribute, until: limit)
+                if winFocus.value != nil { return winFocus }
+            }
+            return first
         }
-        func sameHost() throws -> Bool {
+        func resolveCandidate() throws -> (element: AXUIElement, sameElement: Bool, window: CFTypeRef)? {
             let samePID = ax.frontPID() == original.pid
             fields[.frontMatches] = .flag(samePID)
-            guard samePID else { return false }
-            guard matches(try focus(), original.focused, field: .element) else { return false }
-            try ax.configure(element, until: limit)
-            guard let owner = ax.owner(element) else {
+            guard samePID else { return nil }
+            let expectedWindow: CFTypeRef
+            if let capturedWindow = original.window {
+                expectedWindow = capturedWindow
+            } else {
+                let winRead = try ax.read(app, kAXFocusedWindowAttribute, until: limit)
+                guard winRead.status == .success, let value = winRead.value,
+                      CFGetTypeID(value) == AXUIElementGetTypeID() else {
+                    fields[.window] = .token(winRead.value == nil ? .unavailable : .invalidType)
+                    return nil
+                }
+                expectedWindow = value
+            }
+            let windowElement = unsafeBitCast(expectedWindow, to: AXUIElement.self)
+            let focusRead = try focus(in: windowElement)
+            guard focusRead.status == .success, let value = focusRead.value else {
+                fields[.element] = .token(.unavailable)
+                return nil
+            }
+            guard CFGetTypeID(value) == AXUIElementGetTypeID() else {
+                fields[.element] = .token(.invalidType)
+                return nil
+            }
+            let isSameElement = CFEqual(original.focused, value)
+            fields[.element] = .flag(isSameElement)
+            guard isSameElement || !requireSameElement else { return nil }
+            let candidate = unsafeBitCast(value, to: AXUIElement.self)
+            try ax.configure(candidate, until: limit)
+            guard let owner = ax.owner(candidate) else {
                 fields[.owner] = .token(.unavailable)
-                return false
+                return nil
             }
             let sameOwner = owner == original.pid
             fields[.owner] = .flag(sameOwner)
-            guard sameOwner else { return false }
-            return matches(try ax.read(app, kAXFocusedWindowAttribute, until: limit), window, field: .window)
+            guard sameOwner else { return nil }
+            guard matches(try ax.read(app, kAXFocusedWindowAttribute, until: limit), expectedWindow, field: .window) else {
+                return nil
+            }
+            return (candidate, isSameElement, expectedWindow)
         }
         do {
-            guard try sameHost() else { return .rejected }
+            guard let resolved = try resolveCandidate() else {
+                if defaultFailureReason == "target_unavailable_at_delivery",
+                   ax.frontPID() == original.pid,
+                   fields[.element] == .token(.unavailable),
+                   ax.now() < limit {
+                    return .button
+                }
+                return .rejected
+            }
+            let element = resolved.element
+            let isSameElement = resolved.sameElement
+            let window = resolved.window
             func read(_ name: String) throws -> RecoveryAX.Read {
                 try ax.read(element, name, until: limit)
             }
@@ -153,15 +222,33 @@ struct RecoveryAX {
             fields[.role] = .token(roleRead.diagnosticState(hasValue: role != nil))
             fields[.roleBucket] = .roleBucket(role)
             let sub = try read(kAXSubroleAttribute)
+            let subrole = sub.value as? String
+            let subroleReadable = InsertionTarget.secureExclusionReadable(sub.value, status: sub.status)
             fields[.subroleState] = .token(sub.diagnosticState(hasValue: sub.value is String))
             guard roleRead.status == .success, let role,
-                  InsertionTarget.secureExclusionReadable(sub.value, status: sub.status),
-                  sub.value as? String != "AXSecureTextField",
-                  ["AXButton", "AXTextField", "AXTextArea"].contains(role) else { return .rejected }
+                  subroleReadable,
+                  subrole != "AXSecureTextField",
+                  role != "AXSecureTextField" else { return .rejected }
+            if requireSameElement && isSameElement {
+                let allowedSameElementRole = DeliveryTargetPolicy.isDenylisted(role: role)
+                    || ["AXTextField", "AXTextArea"].contains(role)
+                    || (original.bundleIdentifier == "com.meta.endo" && !DeliveryTargetPolicy.isDenylisted(role: role))
+                guard allowedSameElementRole else { return .rejected }
+            } else {
+                guard Self.positiveTextRoles.contains(role) || !DeliveryTargetPolicy.isDenylisted(role: role) else {
+                    return .rejected
+                }
+            }
             let rangeName = kAXSelectedTextRangeAttribute as String
             let markerName = "AXSelectedTextMarkerRange"
             let range = try read(rangeName)
             fields[.selectedRangeState] = .token(range.diagnosticState(hasValue: range.value != nil))
+            var hasValidNumericSelection = false
+            var hasValidMarkerSelection = false
+            var rangeAbsent = false
+            var markerAbsent = false
+            var editableValue: Bool?
+            var editableAbsent = false
             let name: String
             let selection: CFTypeRef
             if let value = range.value {
@@ -174,29 +261,74 @@ struct RecoveryAX {
                     fields[.selectedRangeState] = .token(.invalidRange)
                     return .rejected
                 }
-                guard range.status == .success, role != "AXButton" else { return .rejected }
+                guard range.status == .success,
+                      !DeliveryTargetPolicy.isDenylisted(role: role),
+                      !requireSameElement || !isSameElement || ["AXTextField", "AXTextArea"].contains(role) else { return .rejected }
+                hasValidNumericSelection = true
                 name = rangeName
                 selection = value
             } else {
                 guard range.status == .noValue || range.status == .attributeUnsupported || range.status == .success
                 else { return .rejected }
+                rangeAbsent = range.status == .noValue
                 let marker = try read(markerName)
                 fields[.selectedMarkerState] = .token(marker.diagnosticState(hasValue: marker.value != nil))
-                if role == "AXButton" {
-                    guard range.status == .noValue, marker.status == .noValue else { return .rejected }
+                markerAbsent = marker.status == .noValue
+                if requireSameElement && isSameElement && DeliveryTargetPolicy.isDenylisted(role: role) {
+                    guard rangeAbsent, markerAbsent else { return .rejected }
                     let editable = try read("AXEditable")
                     fields[.editableState] = .token(editable.diagnosticState(hasValue: editable.value != nil))
-                    return editable.status == .noValue && ax.now() < limit ? .button : .rejected
+                    editableAbsent = editable.status == .noValue
+                    let action = DeliveryTargetPolicy.recoveryCandidateAction(
+                        requireSameElement: requireSameElement, sameProcess: true, sameOwner: true,
+                        sameFocusedWindow: true, sameElementWindow: true, isSameElement: true,
+                        bundleIdentifier: original.bundleIdentifier, role: role, subrole: subrole,
+                        subroleReadable: subroleReadable, hasValidNumericSelection: false,
+                        hasValidMarkerSelection: false, rangeAbsent: rangeAbsent,
+                        markerAbsent: markerAbsent, editable: nil, editableAbsent: editableAbsent)
+                    return action == .waitOnButton && ax.now() < limit ? .button : .rejected
                 }
                 guard marker.status == .success, let value = marker.value else { return .rejected }
                 guard CFGetTypeID(value) == AXTextMarkerRangeGetTypeID() else {
                     fields[.selectedMarkerState] = .token(.invalidType)
                     return .rejected
                 }
+                hasValidMarkerSelection = true
                 name = markerName
                 selection = value
             }
-            guard matches(try read(kAXWindowAttribute), window, field: .elementWindow), try sameHost() else { return .rejected }
+            if (!requireSameElement && !Self.positiveTextRoles.contains(role))
+                || (requireSameElement && isSameElement && !["AXTextField", "AXTextArea"].contains(role)) {
+                let editable = try read("AXEditable")
+                editableAbsent = editable.status == .noValue || editable.status == .attributeUnsupported
+                if editable.status == .success,
+                   editable.value.map({ CFGetTypeID($0) == CFBooleanGetTypeID() }) == true,
+                   let boolValue = editable.value as? Bool {
+                    editableValue = boolValue
+                    fields[.editableState] = .token(boolValue ? .trueValue : .falseValue)
+                } else {
+                    fields[.editableState] = .token(editable.diagnosticState(hasValue: false))
+                    if requireSameElement && isSameElement && editable.value != nil {
+                        editableValue = false
+                    } else if requireSameElement && isSameElement && !editableAbsent {
+                        return .rejected
+                    }
+                }
+            }
+            let sameElementWindow = matches(try read(kAXWindowAttribute), window, field: .elementWindow)
+            let action = DeliveryTargetPolicy.recoveryCandidateAction(
+                requireSameElement: requireSameElement, sameProcess: true, sameOwner: true,
+                sameFocusedWindow: true, sameElementWindow: sameElementWindow,
+                isSameElement: isSameElement, bundleIdentifier: original.bundleIdentifier,
+                role: role, subrole: subrole, subroleReadable: subroleReadable,
+                hasValidNumericSelection: hasValidNumericSelection,
+                hasValidMarkerSelection: hasValidMarkerSelection,
+                rangeAbsent: rangeAbsent, markerAbsent: markerAbsent,
+                editable: editableValue, editableAbsent: editableAbsent)
+            guard action == .acceptEditor,
+                  let rechecked = try resolveCandidate(),
+                  CFEqual(rechecked.element, element),
+                  CFEqual(rechecked.window, window) else { return .rejected }
             let finalRole = try read(kAXRoleAttribute)
             fields[.roleBucket] = .roleBucket(finalRole.value as? String)
             guard finalRole.status == .success, finalRole.value as? String == role else { return .rejected }
@@ -206,7 +338,7 @@ struct RecoveryAX {
                   finalSubrole.value as? String != "AXSecureTextField", ax.frontPID() == original.pid,
                   ax.now() < limit else { return .rejected }
             let target = InsertionTarget(bundleIdentifier: original.bundleIdentifier, localizedName: original.localizedName,
-                pid: original.pid, focused: original.focused, window: window, selectionAttribute: name,
+                pid: original.pid, focused: element, window: window, selectionAttribute: name,
                 selection: selection, textSnapshot: nil, capturedAt: ax.now(), blockedReason: nil)
             return .editor(Host(target: target, role: role))
         } catch { return .rejected }
@@ -232,9 +364,13 @@ struct RecoveryAX {
         return snapshot
     }
 
-    func acquire(diagnostics: InputDiagnosticTrace?, stopReason: () -> String?)
+    func acquire(diagnostics: InputDiagnosticTrace?,
+                 onAdoptUnavailable: (@escaping () -> AXError) -> Void = { _ = $0() },
+                 stopReason: () -> String?)
         async -> (host: Host?, reason: String) {
-        var result = "current_target_not_text_input"
+        var restoreAtExit = systemFocus ? ax.restoreSystemTimeout : nil
+        defer { _ = restoreAtExit?() }
+        var result = defaultFailureReason
         var attempts = 0
         defer {
             diagnostics?.record(.retry, stage: .result, [
@@ -258,6 +394,11 @@ struct RecoveryAX {
             case .button: continue
             case .editor(let host):
                 guard ax.now() < deadline else { result = "recovery_deadline_expired"; return (nil, result) }
+                // An adopted host can require further bounded reads right up to posting.
+                if let restore = restoreAtExit {
+                    onAdoptUnavailable(restore)
+                    restoreAtExit = nil
+                }
                 result = "ok"
                 return (host, result)
             case .rejected:

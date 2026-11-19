@@ -13,7 +13,7 @@ import KoeBridgeCore
         var submitted: Bool { delivery == .verifiedInserted || delivery == .attemptedUnconfirmed }
 
         func updateSavedRecord(_ id: UUID, in history: inout TranscriptHistoryStore) {
-            history.updateDelivery(id, to: delivery, detail: detail)
+            history.updateDelivery(id, to: delivery, detail: historyInsertionDetail)
         }
 
         var deferredFeedback: OverlayFeedback? {
@@ -35,11 +35,14 @@ import KoeBridgeCore
         }
 
         var historyInsertionDetail: String {
-            guard let report, !report.eventsPosted, report.outcome != .verifiedInserted else { return detail }
+            guard let report, report.outcome != .verifiedInserted else { return detail }
             switch report.reason {
-            case "recovery_deadline_expired": return "制限時間内に入力先を確認できませんでした。"
-            case "recovery_host_changed": return "入力欄・選択範囲の安全確認に失敗しました。"
-            case "delivery_cancelled_before_post": return "処理が中断されたため、入力前に停止しました。"
+            case "recovery_deadline_expired" where report.outcome != .partiallySubmitted:
+                return "制限時間内に入力先を確認できませんでした。"
+            case "recovery_host_changed" where report.outcome != .partiallySubmitted:
+                return "入力欄・選択範囲の安全確認に失敗しました。"
+            case "delivery_cancelled_before_post":
+                return "処理が中断されたため、入力前に停止しました。"
             default:
                 guard let reason = InputDiagnosticEvent.Token(rawValue: report.reason) else { return detail }
                 return detail + "（" + reason.rawValue + "）"
@@ -108,11 +111,14 @@ import KoeBridgeCore
     static func send(_ text: String, to target: InsertionTarget?,
                      diagnostics: InputDiagnosticTrace? = nil,
                      unverifiedPredecessors: [InsertionTarget] = [],
+                     settledUnconfirmedPredecessors: [TextInsertion.SettledUnconfirmedPredecessor] = [],
                      livePriorBlock: (InsertionTarget) -> Bool = { _ in false },
                      capture: TextInsertion.TargetCapture? = nil, transport: TextInsertion.Transport = .init(),
                      shouldContinue: @MainActor () -> Bool) async -> Outcome {
         let report = await TextInsertion.deliver(text, to: target, diagnostics: diagnostics,
-                                                 unverifiedPredecessors: unverifiedPredecessors, livePriorBlock: livePriorBlock,
+                                                 unverifiedPredecessors: unverifiedPredecessors,
+                                                 settledUnconfirmedPredecessors: settledUnconfirmedPredecessors,
+                                                 livePriorBlock: livePriorBlock,
                                                  capture: capture, transport: transport,
                                                  shouldContinue: shouldContinue)
         return classify(report)

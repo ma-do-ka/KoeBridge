@@ -46,7 +46,7 @@ import KoeBridgeCore
 
     // Synthetic AX identities only. These tests never post keyboard events or
     // depend on the user's frontmost application/accessibility permissions.
-    private func target(pid: pid_t = 10_001, element: CFTypeRef? = nil,
+    private func target(pid: pid_t = 10_001, element: CFTypeRef? = nil, window: CFTypeRef? = nil,
                         text: String = "ab", caret: Int = 1,
                         selectionAttribute: String? = kAXSelectedTextRangeAttribute as String) -> InsertionTarget {
         var range = CFRange(location: caret, length: 0)
@@ -60,7 +60,7 @@ import KoeBridgeCore
             selection = "opaque-marker" as CFString
         }
         return InsertionTarget(bundleIdentifier: "com.example.Editor", localizedName: "Editor", pid: pid,
-            focused: element ?? AXUIElementCreateApplication(pid), window: nil,
+            focused: element ?? AXUIElementCreateApplication(pid), window: window,
             selectionAttribute: selectionAttribute, selection: selection,
             textSnapshot: numeric ? .init(text: text, selection: .init(location: caret, length: 0)) : nil,
             capturedAt: 1, blockedReason: nil)
@@ -492,6 +492,209 @@ import KoeBridgeCore
         #expect(!captured && !report.eventsPosted)
         #expect(report.outcome == .cancelled && report.reason == "delivery_cancelled_before_post")
         #expect(DictationDelivery.skipped(suppressed: true, requiresReview: false, shouldPaste: true)?.delivery == .blockedFocus)
+    }
+
+    @Test func settledUnconfirmedPredecessorAndTargetScopedLatchTransportBehavior() async throws {
+        let winA = AXUIElementCreateApplication(20_001)
+        let winB = AXUIElementCreateApplication(20_002)
+        let fieldA = target(pid: 10_001, window: winA, selectionAttribute: "AXSelectedTextMarkerRange")
+        let fieldB = target(pid: 10_002, window: winB, selectionAttribute: "AXSelectedTextMarkerRange")
+        let source = TextInsertion.Report(outcome: .inserted, reason: "posted_without_observable_edit",
+                                          receipt: nil, eventsPosted: true, target: fieldA, diagnostics: nil,
+                                          resultUptimeMS: 1_100, exactBaselineAvailable: false,
+                                          postSendFocusVerified: true, completedAtUptime: 1.000)
+        #expect(source.settledUnconfirmedPredecessor != nil)
+        let candidate = DictationTake(preferred: .local, style: .verbatim, japaneseHint: false,
+                                      vocabulary: [], shouldPaste: true, options: .init())
+        candidate.target = fieldA
+        VoiceController.reconcileDelivery(source, sourceTakeID: UUID(), into: candidate)
+        #expect(candidate.target?.isBlocked == true)
+        #expect(candidate.unverifiedInputTargets.count == 1)
+        #expect(candidate.settledUnconfirmedInputTargets.count == 1)
+
+        // 1. Target-scoped latch: moving to unrelated fieldB unblocks prepareTarget.
+        let movedToB = TextInsertion.prepareTarget(takeStart: candidate.target,
+                                                   unverifiedPredecessors: candidate.unverifiedInputTargets,
+                                                   settledUnconfirmedPredecessors: candidate.settledUnconfirmedInputTargets,
+                                                   capture: { _ in (fieldB, "ok") })
+        #expect(movedToB.reason == "ok" && movedToB.target?.sameElement(as: fieldB) == true)
+
+        // 2. Voice commands keep strict rule even when settledUnconfirmedInputTargets is populated.
+        let commandBlocked = await TextInsertion.deliverCommandText(.newline, to: candidate.target,
+                                                                    unverifiedPredecessors: candidate.unverifiedInputTargets,
+                                                                    capture: { _ in (fieldA, "ok") }) { true }
+        #expect(commandBlocked.outcome == .focusChanged && commandBlocked.reason == "prior_input_unverified" && !commandBlocked.eventsPosted)
+
+        // 3. Predecessor with exactBaselineAvailable == true (posted_receipt_timeout) never creates settledUnconfirmedPredecessor.
+        let timeoutSource = TextInsertion.Report(outcome: .inserted, reason: "posted_receipt_timeout",
+                                                 receipt: nil, eventsPosted: true, target: fieldA, diagnostics: nil,
+                                                 resultUptimeMS: 1_100, exactBaselineAvailable: true,
+                                                 postSendFocusVerified: true, completedAtUptime: 1.000)
+        #expect(timeoutSource.settledUnconfirmedPredecessor == nil)
+
+        // 4. I3: Predecessor with postSendFocusVerified == false never creates settledUnconfirmedPredecessor.
+        let unverifiedFocusSource = TextInsertion.Report(outcome: .inserted, reason: "posted_without_observable_edit",
+                                                         receipt: nil, eventsPosted: true, target: fieldA, diagnostics: nil,
+                                                         resultUptimeMS: 1_100, exactBaselineAvailable: false,
+                                                         postSendFocusVerified: false, completedAtUptime: 1.000)
+        #expect(unverifiedFocusSource.settledUnconfirmedPredecessor == nil)
+
+        // 5. I4: Predecessor with target.window == nil never creates settledUnconfirmedPredecessor.
+        let windowlessField = target(pid: 10_001, window: nil, selectionAttribute: "AXSelectedTextMarkerRange")
+        let windowlessSource = TextInsertion.Report(outcome: .inserted, reason: "posted_without_observable_edit",
+                                                    receipt: nil, eventsPosted: true, target: windowlessField, diagnostics: nil,
+                                                    resultUptimeMS: 1_100, exactBaselineAvailable: false,
+                                                    postSendFocusVerified: true, completedAtUptime: 1.000)
+        #expect(windowlessSource.settledUnconfirmedPredecessor == nil)
+
+        // 6. I2: Coexistence of settled-unconfirmed predecessor + hard unverified predecessor (e.g. posted_receipt_timeout)
+        //        on the same element must keep prepareTarget, stopReason, and DictationTake.hasPriorBlock hard-blocked.
+        VoiceController.reconcileDelivery(timeoutSource, sourceTakeID: UUID(), into: candidate)
+        #expect(candidate.unverifiedInputTargets.count == 2)
+        #expect(candidate.settledUnconfirmedInputTargets.count == 1)
+        #expect(candidate.target?.hasHardPredecessorBlock == true)
+        #expect(candidate.hasPriorBlock(for: fieldA))
+        let blockedByCoexistingHard = TextInsertion.prepareTarget(
+            takeStart: candidate.target,
+            unverifiedPredecessors: candidate.unverifiedInputTargets,
+            settledUnconfirmedPredecessors: candidate.settledUnconfirmedInputTargets,
+            capture: { _ in (fieldA, "ok") })
+        #expect(blockedByCoexistingHard.target?.sameElement(as: fieldA) == true
+            && blockedByCoexistingHard.reason == "prior_input_unverified")
+
+        // 7. I4: Bracketed settled verification requires non-nil window identity and two successful AX selection reads.
+        let settledOnlyTake = DictationTake(preferred: .local, style: .verbatim, japaneseHint: false,
+                                            vocabulary: [], shouldPaste: true, options: .init())
+        settledOnlyTake.target = fieldA
+        VoiceController.reconcileDelivery(source, sourceTakeID: UUID(), into: settledOnlyTake)
+        #expect(!settledOnlyTake.hasPriorBlock(for: fieldA))
+
+        var markerByte: UInt8 = 7
+        let markerValue = try #require(AXTextMarkerRangeCreateWithBytes(nil, &markerByte, 1, &markerByte, 1))
+        let markerFieldA = InsertionTarget(bundleIdentifier: "com.meta.endo", localizedName: "Muse",
+                                           pid: 10_001, focused: fieldA.focused, window: winA,
+                                           selectionAttribute: "AXSelectedTextMarkerRange",
+                                           selection: markerValue, textSnapshot: nil,
+                                           capturedAt: 1.200, blockedReason: nil)
+        // If live AX selection read returns .noValue (nil), verifySettledPredecessors must NOT fall back to fresh.selection.
+        var failingTransport = TextInsertion.Transport()
+        failingTransport.ax.now = { 1.300 }
+        failingTransport.ax.sleep = { _ in }
+        failingTransport.ax.frontPID = { 10_001 }
+        failingTransport.ax.owner = { _ in 10_001 }
+        failingTransport.ax.attribute = { _, _ in .init(value: nil, status: .noValue) }
+        failingTransport.capture = { _ in .accepted(markerFieldA) }
+        let blockedOnNoLiveSelection = await TextInsertion.deliver(
+            "追加入力", to: settledOnlyTake.target,
+            unverifiedPredecessors: settledOnlyTake.unverifiedInputTargets,
+            settledUnconfirmedPredecessors: settledOnlyTake.settledUnconfirmedInputTargets,
+            transport: failingTransport) { true }
+        #expect(blockedOnNoLiveSelection.outcome == .focusChanged && blockedOnNoLiveSelection.reason == "prior_input_unverified")
+        #expect(!blockedOnNoLiveSelection.eventsPosted)
+
+        // 8. I10: A verified receipt reconciled after a settled unconfirmed predecessor on the same field
+        //         must NOT promote the soft block to hard (unverified stays 1, settled stays 1,
+        //         hasHardPredecessorBlock stays false, and follow-up take performs 2 bracketed selection reads and 1 post).
+        let i10Take = DictationTake(preferred: .local, style: .verbatim, japaneseHint: false,
+                                    vocabulary: [], shouldPaste: true, options: .init())
+        i10Take.target = markerFieldA
+        let settledMarkerReport = TextInsertion.Report(
+            outcome: .inserted, reason: "posted_without_observable_edit",
+            receipt: nil, eventsPosted: true, target: markerFieldA, diagnostics: nil,
+            resultUptimeMS: 1_100, exactBaselineAvailable: false,
+            postSendFocusVerified: true, completedAtUptime: 1.000)
+        VoiceController.reconcileDelivery(settledMarkerReport, sourceTakeID: UUID(), into: i10Take)
+        #expect(i10Take.unverifiedInputTargets.count == 1)
+        #expect(i10Take.settledUnconfirmedInputTargets.count == 1)
+        #expect(i10Take.target?.isBlocked == true && i10Take.target?.hasHardPredecessorBlock == false)
+
+        let numericFieldA = InsertionTarget(
+            bundleIdentifier: "com.meta.endo", localizedName: "Muse",
+            pid: 10_001, focused: fieldA.focused, window: winA,
+            selectionAttribute: kAXSelectedTextRangeAttribute as String,
+            selection: target(pid: 10_001, caret: 0).selection,
+            textSnapshot: .init(text: "A", selection: .init(location: 1, length: 0)),
+            capturedAt: 1.050, blockedReason: nil)
+        let verifiedBefore = try #require(numericFieldA.textSnapshot)
+        let verifiedAfter = try #require(InsertionReceiptPolicy.expectedAfter(before: verifiedBefore, inserted: "B"))
+        let verifiedProof = try #require(InsertionReceiptPolicy.verify(before: verifiedBefore, inserted: "B",
+                                                                       after: verifiedAfter, sameTarget: true))
+        let verifiedReport = TextInsertion.Report(
+            outcome: .verifiedInserted, reason: "verified_value_and_selection",
+            receipt: .init(target: numericFieldA, proof: verifiedProof, postedAt: 1.060, verifiedAt: 1.090),
+            eventsPosted: true, target: numericFieldA, diagnostics: nil,
+            resultUptimeMS: 1_090, exactBaselineAvailable: true,
+            postSendFocusVerified: true, completedAtUptime: 1.090)
+        VoiceController.reconcileDelivery(verifiedReport, sourceTakeID: UUID(), into: i10Take)
+        #expect(i10Take.unverifiedInputTargets.count == 1)
+        #expect(i10Take.settledUnconfirmedInputTargets.count == 1)
+        #expect(i10Take.target?.hasHardPredecessorBlock == false)
+        #expect(!i10Take.hasPriorBlock(for: markerFieldA))
+
+        var bracketedMarkerReads = 0
+        var posts = 0
+        var i10Transport = TextInsertion.Transport()
+        var currentNow = 1.300
+        i10Transport.ax.now = { currentNow }
+        i10Transport.ax.sleep = { delay in currentNow += delay }
+        i10Transport.ax.frontPID = { 10_001 }
+        i10Transport.ax.setTimeout = { _, _ in .success }
+        i10Transport.ax.owner = { _ in 10_001 }
+        i10Transport.ax.attribute = { _, name in
+            switch name as String {
+            case kAXFocusedWindowAttribute, kAXWindowAttribute:
+                return .init(value: winA, status: .success)
+            case kAXFocusedUIElementAttribute:
+                return .init(value: markerFieldA.focused, status: .success)
+            case "AXSelectedTextMarkerRange":
+                bracketedMarkerReads += 1
+                return .init(value: markerValue, status: .success)
+            default:
+                return .init(value: nil, status: .noValue)
+            }
+        }
+        i10Transport.capture = { _ in .accepted(markerFieldA) }
+        i10Transport.permissions = { (true, true) }
+        i10Transport.snapshot = { _, _ in (nil, .markerNotNumeric) }
+        i10Transport.checkFocus = { _, _, _, _, _ in (true, "ok") }
+        i10Transport.post = { _, _ in posts += 1 }
+        let i10Result = await TextInsertion.deliver(
+            "x", to: i10Take.target,
+            unverifiedPredecessors: i10Take.unverifiedInputTargets,
+            settledUnconfirmedPredecessors: i10Take.settledUnconfirmedInputTargets,
+            livePriorBlock: { i10Take.hasPriorBlock(for: $0) },
+            transport: i10Transport) { true }
+        #expect(i10Result.outcome == .inserted && bracketedMarkerReads == 2 && posts == 1)
+
+        // Control: a partial or numeric-unverified predecessor coexisting with a settled one still hard-blocks (0 reads, 0 posts).
+        for hardReport in [
+            TextInsertion.Report(outcome: .partiallySubmitted, reason: "active_app_changed",
+                                 receipt: nil, eventsPosted: true, target: markerFieldA, diagnostics: nil,
+                                 resultUptimeMS: 1_150, exactBaselineAvailable: false,
+                                 postSendFocusVerified: false, completedAtUptime: 1.150),
+            TextInsertion.Report(outcome: .inserted, reason: "posted_without_observable_edit",
+                                 receipt: nil, eventsPosted: true, target: markerFieldA, diagnostics: nil,
+                                 resultUptimeMS: 1_150, exactBaselineAvailable: true,
+                                 postSendFocusVerified: true, completedAtUptime: 1.150)
+        ] {
+            let hardTake = DictationTake(preferred: .local, style: .verbatim, japaneseHint: false,
+                                         vocabulary: [], shouldPaste: true, options: .init())
+            hardTake.target = markerFieldA
+            VoiceController.reconcileDelivery(settledMarkerReport, sourceTakeID: UUID(), into: hardTake)
+            VoiceController.reconcileDelivery(hardReport, sourceTakeID: UUID(), into: hardTake)
+            #expect(hardTake.target?.hasHardPredecessorBlock == true)
+            #expect(hardTake.hasPriorBlock(for: markerFieldA))
+            bracketedMarkerReads = 0
+            posts = 0
+            let blockedHard = await TextInsertion.deliver(
+                "x", to: hardTake.target,
+                unverifiedPredecessors: hardTake.unverifiedInputTargets,
+                settledUnconfirmedPredecessors: hardTake.settledUnconfirmedInputTargets,
+                livePriorBlock: { hardTake.hasPriorBlock(for: $0) },
+                transport: i10Transport) { true }
+            #expect(blockedHard.outcome == .focusChanged && blockedHard.reason == "prior_input_unverified")
+            #expect(bracketedMarkerReads == 0 && posts == 0)
+        }
     }
 }
 #endif

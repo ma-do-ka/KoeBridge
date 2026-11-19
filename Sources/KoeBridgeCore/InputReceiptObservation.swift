@@ -27,4 +27,48 @@ public enum InputReceiptObservation: String, Equatable, Sendable {
         guard InsertionReceiptPolicy.sameText(expected.text, after.text) else { return .textMismatch }
         return expected.selection == after.selection ? .matches : .selectionMismatch
     }
+
+    public struct SpanComparison: Equatable, Sendable {
+        public let prefixMatches: Bool
+        public let insertedMatches: Bool
+        public let suffixMatches: Bool
+        public let observedSuffixUTF16: Int
+
+        public init(prefixMatches: Bool, insertedMatches: Bool,
+                    suffixMatches: Bool, observedSuffixUTF16: Int) {
+            self.prefixMatches = prefixMatches
+            self.insertedMatches = insertedMatches
+            self.suffixMatches = suffixMatches
+            self.observedSuffixUTF16 = observedSuffixUTF16
+        }
+    }
+
+    public static func compareSpans(before: InsertionReceiptPolicy.Snapshot?,
+                                    inserted: String,
+                                    after: InsertionReceiptPolicy.Snapshot?) -> SpanComparison? {
+        guard let before, let after,
+              !inserted.isEmpty,
+              InsertionReceiptPolicy.isValid(before),
+              InsertionReceiptPolicy.isValid(after) else { return nil }
+        let beforeUnits = Array(before.text.utf16)
+        let insertedUnits = Array(inserted.utf16)
+        let afterUnits = Array(after.text.utf16)
+        let prefixCount = before.selection.location
+        let expectedPrefix = Array(beforeUnits.prefix(prefixCount))
+        let expectedSuffix = Array(beforeUnits.suffix(from: prefixCount + before.selection.length))
+        let prefixMatches = afterUnits.count >= prefixCount
+            && Array(afterUnits.prefix(prefixCount)) == expectedPrefix
+        let confirmedCount = prefixCount + insertedUnits.count
+        let insertedMatches = afterUnits.count >= confirmedCount
+            && Array(afterUnits[prefixCount..<confirmedCount]) == insertedUnits
+        let observedSuffix = afterUnits.count >= confirmedCount
+            ? Array(afterUnits.suffix(from: confirmedCount))
+            : []
+        let suffixMatches = afterUnits.count >= confirmedCount && observedSuffix == expectedSuffix
+        let observedSuffixUTF16 = max(0, afterUnits.count - confirmedCount)
+        return SpanComparison(prefixMatches: prefixMatches,
+                              insertedMatches: insertedMatches,
+                              suffixMatches: suffixMatches,
+                              observedSuffixUTF16: observedSuffixUTF16)
+    }
 }

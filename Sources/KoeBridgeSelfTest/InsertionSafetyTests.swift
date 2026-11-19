@@ -146,4 +146,191 @@ extension InsertionSafetyTests {
         check(DeliveryTargetPolicy.recapture(currentAvailable: true, sameApp: false, sameElement: true) == .differentApp)
         check(DeliveryTargetPolicy.recapture(currentAvailable: true, sameApp: false, sameElement: false) == .differentApp)
     }
+
+    func recoveryCandidateRequiresSameWindowAndPositiveEditorEvidenceForDifferentElement() {
+        // Case A (Build 73 + Fix 2 part 3): Same element transitions from any denylisted role
+        // (e.g. AXButton, AXStaticText) with all-noValue evidence -> AXTextField/AXTextArea with selection.
+        for denylisted in ["AXButton", "AXStaticText", "AXCheckBox", "AXLink"] {
+            check(DeliveryTargetPolicy.isDenylisted(role: denylisted))
+            check(DeliveryTargetPolicy.recoveryCandidateAction(
+                requireSameElement: true, sameProcess: true, sameOwner: true, sameFocusedWindow: true,
+                sameElementWindow: true, isSameElement: true, role: denylisted, subrole: nil,
+                subroleReadable: true, hasValidNumericSelection: false, hasValidMarkerSelection: false,
+                rangeAbsent: true, markerAbsent: true, editable: nil, editableAbsent: true) == .waitOnButton)
+            // Secure subrole or unreadable subrole with a denylisted role never waits or enters recovery.
+            check(DeliveryTargetPolicy.recoveryCandidateAction(
+                requireSameElement: true, sameProcess: true, sameOwner: true, sameFocusedWindow: true,
+                sameElementWindow: true, isSameElement: true, role: denylisted, subrole: "AXSecureTextField",
+                subroleReadable: true, hasValidNumericSelection: false, hasValidMarkerSelection: false,
+                rangeAbsent: true, markerAbsent: true, editable: nil, editableAbsent: true) == .reject)
+            check(DeliveryTargetPolicy.recoveryCandidateAction(
+                requireSameElement: true, sameProcess: true, sameOwner: true, sameFocusedWindow: true,
+                sameElementWindow: true, isSameElement: true, role: denylisted, subrole: nil,
+                subroleReadable: false, hasValidNumericSelection: false, hasValidMarkerSelection: false,
+                rangeAbsent: true, markerAbsent: true, editable: nil, editableAbsent: true) == .reject)
+        }
+        for role in ["AXTextField", "AXTextArea"] {
+            check(DeliveryTargetPolicy.recoveryCandidateAction(
+                requireSameElement: true, sameProcess: true, sameOwner: true, sameFocusedWindow: true,
+                sameElementWindow: true, isSameElement: true, role: role, subrole: nil,
+                subroleReadable: true, hasValidNumericSelection: true, hasValidMarkerSelection: false,
+                rangeAbsent: false, markerAbsent: true, editable: nil, editableAbsent: true) == .acceptEditor)
+        }
+        // Case A Endo marker-selection exception (I6a): com.meta.endo same element transitioning from denylisted role
+        // to non-denylisted role (e.g. AXGroup, AXWebArea, AXTextArea) with valid marker selection and editable != false.
+        for endoRole in ["AXGroup", "AXWebArea", "AXTextArea"] {
+            for editable in [nil, true] as [Bool?] {
+                check(DeliveryTargetPolicy.recoveryCandidateAction(
+                    requireSameElement: true, sameProcess: true, sameOwner: true,
+                    sameFocusedWindow: true, sameElementWindow: true, isSameElement: true,
+                    bundleIdentifier: "com.meta.endo", role: endoRole, subrole: nil,
+                    subroleReadable: true, hasValidNumericSelection: false, hasValidMarkerSelection: true,
+                    rangeAbsent: true, markerAbsent: false, editable: editable, editableAbsent: editable == nil) == .acceptEditor)
+            }
+            // editable == false on container roles (AXGroup, AXWebArea) rejects in Case A.
+            if !["AXTextField", "AXTextArea"].contains(endoRole) {
+                check(DeliveryTargetPolicy.recoveryCandidateAction(
+                    requireSameElement: true, sameProcess: true, sameOwner: true,
+                    sameFocusedWindow: true, sameElementWindow: true, isSameElement: true,
+                    bundleIdentifier: "com.meta.endo", role: endoRole, subrole: nil,
+                    subroleReadable: true, hasValidNumericSelection: false, hasValidMarkerSelection: true,
+                    rangeAbsent: true, markerAbsent: false, editable: false, editableAbsent: false) == .reject)
+            }
+        }
+        check(DeliveryTargetPolicy.recoveryCandidateAction(
+            requireSameElement: true, sameProcess: true, sameOwner: true,
+            sameFocusedWindow: true, sameElementWindow: true, isSameElement: true,
+            bundleIdentifier: "com.google.Chrome", role: "AXGroup", subrole: nil,
+            subroleReadable: true, hasValidNumericSelection: false, hasValidMarkerSelection: true,
+            rangeAbsent: true, markerAbsent: false, editable: true, editableAbsent: false) == .reject)
+        // Denylisted role with marker selection in Case A is still rejected.
+        check(DeliveryTargetPolicy.recoveryCandidateAction(
+            requireSameElement: true, sameProcess: true, sameOwner: true,
+            sameFocusedWindow: true, sameElementWindow: true, isSameElement: true,
+            bundleIdentifier: "com.meta.endo", role: "AXButton", subrole: nil,
+            subroleReadable: true, hasValidNumericSelection: false, hasValidMarkerSelection: true,
+            rangeAbsent: true, markerAbsent: false, editable: true, editableAbsent: false) == .reject)
+        // When requireSameElement is true (Endo AXButton rejection), a different element is never adopted.
+        check(DeliveryTargetPolicy.recoveryCandidateAction(
+            requireSameElement: true, sameProcess: true, sameOwner: true, sameFocusedWindow: true,
+            sameElementWindow: true, isSameElement: false, role: "AXTextArea", subrole: nil,
+            subroleReadable: true, hasValidNumericSelection: true, hasValidMarkerSelection: false,
+            rangeAbsent: false, markerAbsent: true, editable: true, editableAbsent: false) == .reject)
+
+        // Case B positive: Unavailable initial focus (requireSameElement == false) adopts a different element
+        // in the same window/process ONLY when it has positive editor evidence.
+        for role in ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"] {
+            check(DeliveryTargetPolicy.recoveryCandidateAction(
+                requireSameElement: false, sameProcess: true, sameOwner: true, sameFocusedWindow: true,
+                sameElementWindow: true, isSameElement: false, role: role, subrole: nil,
+                subroleReadable: true, hasValidNumericSelection: true, hasValidMarkerSelection: false,
+                rangeAbsent: false, markerAbsent: true, editable: nil, editableAbsent: true) == .acceptEditor)
+            check(DeliveryTargetPolicy.recoveryCandidateAction(
+                requireSameElement: false, sameProcess: true, sameOwner: true, sameFocusedWindow: true,
+                sameElementWindow: true, isSameElement: false, role: role, subrole: nil,
+                subroleReadable: true, hasValidNumericSelection: false, hasValidMarkerSelection: true,
+                rangeAbsent: true, markerAbsent: false, editable: nil, editableAbsent: true) == .acceptEditor)
+        }
+        for role in ["AXGroup", "AXWebArea"] {
+            check(DeliveryTargetPolicy.recoveryCandidateAction(
+                requireSameElement: false, sameProcess: true, sameOwner: true, sameFocusedWindow: true,
+                sameElementWindow: true, isSameElement: false, role: role, subrole: nil,
+                subroleReadable: true, hasValidNumericSelection: false, hasValidMarkerSelection: true,
+                rangeAbsent: true, markerAbsent: false, editable: true, editableAbsent: false) == .acceptEditor)
+        }
+
+        // Condition 2 (i): Different-window or different-app element is NEVER adopted.
+        for (sameProc, sameOwn, sameWin, sameElemWin) in [
+            (false, true, true, true),
+            (true, false, true, true),
+            (true, true, false, true),
+            (true, true, true, false)
+        ] {
+            check(DeliveryTargetPolicy.recoveryCandidateAction(
+                requireSameElement: false, sameProcess: sameProc, sameOwner: sameOwn,
+                sameFocusedWindow: sameWin, sameElementWindow: sameElemWin, isSameElement: false,
+                role: "AXTextArea", subrole: nil, subroleReadable: true,
+                hasValidNumericSelection: true, hasValidMarkerSelection: false,
+                rangeAbsent: false, markerAbsent: true, editable: true, editableAbsent: false) == .reject)
+        }
+
+        // Condition 2 (ii): Same-window element WITHOUT positive editor evidence is NEVER adopted.
+        // - Non-text control role (even with selection or editable)
+        for control in ["AXButton", "AXLink", "AXStaticText", "AXCheckBox"] {
+            check(DeliveryTargetPolicy.recoveryCandidateAction(
+                requireSameElement: false, sameProcess: true, sameOwner: true, sameFocusedWindow: true,
+                sameElementWindow: true, isSameElement: false, role: control, subrole: nil,
+                subroleReadable: true, hasValidNumericSelection: true, hasValidMarkerSelection: false,
+                rangeAbsent: false, markerAbsent: true, editable: true, editableAbsent: false) == .reject)
+        }
+        // - Generic container (AXGroup / AXWebArea) without AXEditable == true
+        for editable in [nil, false] as [Bool?] {
+            check(DeliveryTargetPolicy.recoveryCandidateAction(
+                requireSameElement: false, sameProcess: true, sameOwner: true, sameFocusedWindow: true,
+                sameElementWindow: true, isSameElement: false, role: "AXGroup", subrole: nil,
+                subroleReadable: true, hasValidNumericSelection: true, hasValidMarkerSelection: false,
+                rangeAbsent: false, markerAbsent: true, editable: editable, editableAbsent: editable == nil) == .reject)
+        }
+        // - Positive text role or editable container without a valid typed selection
+        check(DeliveryTargetPolicy.recoveryCandidateAction(
+            requireSameElement: false, sameProcess: true, sameOwner: true, sameFocusedWindow: true,
+            sameElementWindow: true, isSameElement: false, role: "AXTextArea", subrole: nil,
+            subroleReadable: true, hasValidNumericSelection: false, hasValidMarkerSelection: false,
+            rangeAbsent: true, markerAbsent: true, editable: true, editableAbsent: false) == .reject)
+        check(DeliveryTargetPolicy.recoveryCandidateAction(
+            requireSameElement: false, sameProcess: true, sameOwner: true, sameFocusedWindow: true,
+            sameElementWindow: true, isSameElement: false, role: "AXGroup", subrole: nil,
+            subroleReadable: true, hasValidNumericSelection: false, hasValidMarkerSelection: false,
+            rangeAbsent: true, markerAbsent: true, editable: true, editableAbsent: false) == .reject)
+        // - Secure role or subrole
+        check(DeliveryTargetPolicy.recoveryCandidateAction(
+            requireSameElement: false, sameProcess: true, sameOwner: true, sameFocusedWindow: true,
+            sameElementWindow: true, isSameElement: false, role: "AXSecureTextField", subrole: nil,
+            subroleReadable: true, hasValidNumericSelection: true, hasValidMarkerSelection: false,
+            rangeAbsent: false, markerAbsent: true, editable: true, editableAbsent: false) == .reject)
+        check(DeliveryTargetPolicy.recoveryCandidateAction(
+            requireSameElement: false, sameProcess: true, sameOwner: true, sameFocusedWindow: true,
+            sameElementWindow: true, isSameElement: false, role: "AXTextField", subrole: "AXSecureTextField",
+            subroleReadable: true, hasValidNumericSelection: true, hasValidMarkerSelection: false,
+            rangeAbsent: false, markerAbsent: true, editable: true, editableAbsent: false) == .reject)
+    }
+
+    func transientFocusUnavailabilityAllowsSingleRecheckOnlyWhenSameProcess() {
+        let transientReasons = [
+            "focused_element_unavailable_on_recheck",
+            "focused_window_unavailable_on_recheck",
+            "selection_unavailable_on_recheck"
+        ]
+        for reason in transientReasons {
+            check(InsertionFocusPolicy.isTransientFocusUnavailability(reason))
+            check(InsertionFocusPolicy.mayRecheckTransientFocusUnavailability(
+                reason: reason, sameProcess: true, alreadyRecheckedAtCheckpoint: false))
+            // Second failure at the same checkpoint never retries again.
+            check(!InsertionFocusPolicy.mayRecheckTransientFocusUnavailability(
+                reason: reason, sameProcess: true, alreadyRecheckedAtCheckpoint: true))
+            // Different process never retries even on transient unavailability reason.
+            check(!InsertionFocusPolicy.mayRecheckTransientFocusUnavailability(
+                reason: reason, sameProcess: false, alreadyRecheckedAtCheckpoint: false))
+        }
+
+        // Genuine contradictions and non-transient failures never retry.
+        let nonTransientReasons = [
+            "active_app_changed",
+            "focused_field_changed",
+            "focused_window_changed",
+            "focused_window_invalid_on_recheck",
+            "focused_element_owner_changed",
+            "focused_element_owner_unavailable",
+            "caret_or_selection_changed",
+            "marker_selection_changed",
+            "captured_selection_invalid",
+            "selection_value_invalid_on_recheck",
+            "focus_verification_failed"
+        ]
+        for reason in nonTransientReasons {
+            check(!InsertionFocusPolicy.isTransientFocusUnavailability(reason))
+            check(!InsertionFocusPolicy.mayRecheckTransientFocusUnavailability(
+                reason: reason, sameProcess: true, alreadyRecheckedAtCheckpoint: false))
+        }
+    }
 }

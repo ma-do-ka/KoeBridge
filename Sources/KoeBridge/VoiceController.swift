@@ -1574,9 +1574,12 @@ import KoeBridgeCore
             ])
         } else {
             deliveringTakeID = id
+            let settledPredecessors = (take.commandCandidate == nil && take.transformSelection == nil && !take.isFixLastInput)
+                ? take.settledUnconfirmedInputTargets : []
             outcome = await DictationDelivery.send(text, to: take.target,
                                                   diagnostics: take.inputDiagnostics,
                                                   unverifiedPredecessors: take.unverifiedInputTargets,
+                                                  settledUnconfirmedPredecessors: settledPredecessors,
                 livePriorBlock: { take.hasPriorBlock(for: $0) }) { [weak self, weak take] in
                 guard let self, let take else { return false }
                 return !take.automaticDeliverySuppressed && self.inFlight[take.id] === take
@@ -1621,6 +1624,9 @@ import KoeBridgeCore
     static func reconcileDelivery(_ report: TextInsertion.Report, sourceTakeID: UUID?, into other: DictationTake) {
         let unverifiedTarget = report.unverifiedTarget
         if let unverifiedTarget { other.unverifiedInputTargets.append(unverifiedTarget) }
+        if let settled = report.settledUnconfirmedPredecessor {
+            other.settledUnconfirmedInputTargets.append(settled)
+        }
         let candidate = other.target
         if other.transformSelection == nil, let target = candidate {
             other.target = report.reconciled(target, sourceTakeID: sourceTakeID, candidateTakeID: other.id,
