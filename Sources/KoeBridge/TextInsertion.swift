@@ -213,6 +213,13 @@ import KoeBridgeCore
                                                    eligibility: { eligibility = $0 })?.snapshot
             return (snapshot, eligibility)
         }
+        var waitForReceiptPoll: () async throws -> Void = { try await Task.sleep(for: .milliseconds(35)) }
+        var receiptFocus: @MainActor (InsertionTarget, Float, InputDiagnosticTrace?, Int) -> (allowed: Bool, reason: String) = {
+            $0.focusCheck(requireOriginalSelection: false, timeout: $1, diagnostics: $2, stage: .receipt, chunkOrdinal: $3)
+        }
+        var receiptSnapshot: @MainActor (InsertionTarget, Float, InputDiagnosticTrace?) -> InsertionReceiptPolicy.Snapshot? = {
+            $0.observedSnapshot(timeout: $1, diagnostics: $2, stage: .receipt)?.snapshot
+        }
         var source: @MainActor () -> CGEventSource? = { makePostingSource() }
         var events: @MainActor (String, CGEventSource) -> (CGEvent, CGEvent)? = { makeUnicodeEvents($0, source: $1) }
         var post: (CGEvent, CGEvent) -> Void = { down, up in
@@ -485,37 +492,103 @@ import KoeBridgeCore
         return (recaptured.target, recaptured.reason, recovered)
     }
 
-    /// Clipboard-free, serial delivery. Read-back is bounded and runs while a
-    /// following recording may continue. No outcome ever resubmits posted keys.
-    static func deliver(_ text: String, to takeStart: InsertionTarget?,
-                        diagnostics: InputDiagnosticTrace? = nil,
-                        unverifiedPredecessors: [InsertionTarget] = [],
-                        settledUnconfirmedPredecessors: [SettledUnconfirmedPredecessor] = [],
-                        livePriorBlock: (InsertionTarget) -> Bool = { _ in false },
-                        capture: TargetCapture? = nil, transport: Transport = Transport(),
-                        shouldContinue: @MainActor () -> Bool = { true }) async -> Report {
-        await deliverPayload(.dictation(text), takeStart: takeStart, diagnostics: diagnostics,
-                             unverifiedPredecessors: unverifiedPredecessors,
-                             settledUnconfirmedPredecessors: settledUnconfirmedPredecessors,
-                             capture: capture, transport: transport, livePriorBlock: livePriorBlock,
-                             shouldContinue: shouldContinue)
-    }
+    enum Payload { case dictation(String), command(VoiceCommandID) }
 
-    /// Only a fixed command ID can authorize newline controls; never accepts arbitrary text.
-    static func deliverCommandText(_ command: VoiceCommandID, to takeStart: InsertionTarget?,
-                                   diagnostics: InputDiagnosticTrace? = nil,
-                                   unverifiedPredecessors: [InsertionTarget] = [],
-                                   livePriorBlock: (InsertionTarget) -> Bool = { _ in false },
-                                   capture: TargetCapture? = nil, transport: Transport = Transport(),
-                                   shouldContinue: @MainActor () -> Bool) async -> Report {
-        await deliverPayload(.command(command), takeStart: takeStart, diagnostics: diagnostics,
-                             unverifiedPredecessors: unverifiedPredecessors,
-                             settledUnconfirmedPredecessors: [],
-                             capture: capture, transport: transport, livePriorBlock: livePriorBlock,
-                             shouldContinue: shouldContinue)
-    }
+    /// Shared by the controller's independent producers. A history ticket spans the popover delay.
+    /// Admission and system interruptions invalidate older tickets without releasing an active owner.
+    @MainActor final class PostingGate {
+        enum Source {
+            case take(DictationTake)
+            case selection(InsertionTarget)
+            case history(InsertionTarget?, requestedAt: UUID)
+        }
 
-    private enum Payload { case dictation(String), command(VoiceCommandID) }
+        private let reconcile: (Report, UUID?) -> Void
+
+        init(reconcile: @escaping (Report, UUID?) -> Void) {
+            self.reconcile = reconcile
+        }
+
+        var lastDeliveryAnchor: LastDeliveryAnchor?
+        private(set) var isHeld = false
+        private var generation = UUID()
+        var historyTicket: UUID? { isHeld ? nil : generation }
+
+        func interrupt() { generation = UUID() }
+
+        private func acquire() -> UUID? {
+            guard !isHeld else { return nil }
+            isHeld = true
+            generation = UUID()
+            return generation
+        }
+
+        /// fix-last moves the AX selection synchronously, before instruction recording.
+        func withSelectionWrite(_ write: () -> Void) -> Bool {
+            guard acquire() != nil else { return false }
+            defer { isHeld = false }
+            write()
+            return true
+        }
+
+        func post(_ payload: Payload, from source: Source,
+                  selectionPredecessors: @autoclosure () -> [InsertionTarget] = [],
+                  transport: Transport = Transport(),
+                  finalize: (Report) -> Void = { _ in },
+                  shouldContinue: @MainActor () -> Bool) async -> Report {
+            let take: DictationTake?
+            let target: InsertionTarget?
+            switch source {
+            case .take(let current):
+                take = current
+                target = nil
+            case .selection(let current):
+                take = nil
+                target = current
+            case .history(let original, _):
+                take = nil
+                target = original
+            }
+            return await submit(payload, takeStart: take?.target ?? target, diagnostics: take?.inputDiagnostics,
+                unverifiedPredecessors: take?.unverifiedInputTargets ?? selectionPredecessors(),
+                settledUnconfirmedPredecessors: take?.applicableSettledPredecessors ?? [],
+                capture: nil, transport: transport,
+                livePriorBlock: { candidate in
+                    take?.hasPriorBlock(for: candidate) ?? selectionPredecessors().contains { candidate.sameElement(as: $0) }
+                }, source: source, sourceTakeID: take?.id, finalize: finalize, shouldContinue: shouldContinue)
+        }
+
+        func submit(_ payload: Payload, takeStart: @autoclosure () -> InsertionTarget?, diagnostics: InputDiagnosticTrace?,
+                    unverifiedPredecessors: @autoclosure () -> [InsertionTarget],
+                    settledUnconfirmedPredecessors: @autoclosure () -> [SettledUnconfirmedPredecessor],
+                    capture: TargetCapture?, transport: Transport, livePriorBlock: (InsertionTarget) -> Bool,
+                    source: Source? = nil, sourceTakeID: UUID? = nil, finalize: (Report) -> Void = { _ in },
+                    shouldContinue: @MainActor () -> Bool) async -> Report {
+            if case .history(_, let ticket) = source, ticket != generation { return busyReport(diagnostics) }
+            guard let owner = acquire() else { return busyReport(diagnostics) }
+            defer { isHeld = false }
+            switch source {
+            case .take, .selection: lastDeliveryAnchor = nil
+            case .history, nil: break
+            }
+            let report = await deliverPayload(payload, takeStart: takeStart(), diagnostics: diagnostics,
+                unverifiedPredecessors: unverifiedPredecessors(), settledUnconfirmedPredecessors: settledUnconfirmedPredecessors(),
+                capture: capture, transport: transport, livePriorBlock: livePriorBlock,
+                shouldContinue: { self.generation == owner && shouldContinue() })
+            finalize(report)
+            reconcile(report, sourceTakeID)
+            return report
+        }
+
+        private func busyReport(_ diagnostics: InputDiagnosticTrace?) -> Report {
+            let timestamp = diagnostics?.record(.result, stage: .result, [
+                .outcome: .token(.blocked), .reason: .reason("posting_busy"),
+                .sentChunks: .integer(0), .eventsPosted: .flag(false), .receiptAvailable: .flag(false)
+            ]) ?? InputDiagnosticTrace.uptimeMilliseconds(ProcessInfo.processInfo.systemUptime)
+            return Report(outcome: .cancelled, reason: "posting_busy", receipt: nil, eventsPosted: false,
+                          target: nil, diagnostics: diagnostics, resultUptimeMS: timestamp)
+        }
+    }
 
     private static func deliverPayload(_ payload: Payload, takeStart: InsertionTarget?,
                                        diagnostics: InputDiagnosticTrace?,
@@ -768,7 +841,7 @@ import KoeBridgeCore
             }
             // Own input moves the selection. Keep field/window/owner checks
             // throughout, and the original caret check until the first post.
-            if recaptured.recovered == nil && index % 4 == 0 {
+            if recaptured.recovered == nil {
                 var check = transport.checkFocus(target, index == 0, diagnostics, .posting, index + 1)
                 if !check.allowed,
                    InsertionFocusPolicy.mayRecheckTransientFocusUnavailability(
@@ -877,7 +950,7 @@ import KoeBridgeCore
                 return report(.inserted, "delivery_cancelled_after_post")
             }
             let sleepStartedAt = ProcessInfo.processInfo.systemUptime
-            do { try await Task.sleep(for: .milliseconds(35)) }
+            do { try await transport.waitForReceiptPoll() }
             catch { return report(.inserted, "delivery_cancelled_after_post") }
             guard !Task.isCancelled, shouldContinue() else {
                 return report(.inserted, "delivery_cancelled_after_post")
@@ -894,10 +967,9 @@ import KoeBridgeCore
             }
             polls += 1
             let timeout = Float(min(0.035, remaining / 12))
-            let focus = target.focusCheck(requireOriginalSelection: false, timeout: timeout,
-                                          diagnostics: diagnostics, stage: .receipt, chunkOrdinal: sent)
+            let focus = transport.receiptFocus(target, timeout, diagnostics, sent)
             guard focus.allowed else { return report(.inserted, "posted_then_" + focus.reason) }
-            let observed = target.observedSnapshot(timeout: timeout, diagnostics: diagnostics, stage: .receipt)?.snapshot
+            let observed = transport.receiptSnapshot(target, timeout, diagnostics)
             let spans = InputReceiptObservation.compareSpans(before: before, inserted: safeText, after: observed)
             if let spans { lastSpanComparison = spans }
             // Diagnostic classification never grants input/rebase permission.
@@ -927,8 +999,7 @@ import KoeBridgeCore
                                                             after: after, sameTarget: true) else { continue }
             // Focus may move while AX is answering. Recheck before accepting
             // the receipt, without imposing the already-replaced old caret.
-            let finalFocus = target.focusCheck(requireOriginalSelection: false, timeout: timeout,
-                                               diagnostics: diagnostics, stage: .receipt, chunkOrdinal: sent)
+            let finalFocus = transport.receiptFocus(target, timeout, diagnostics, sent)
             guard finalFocus.allowed else { return report(.inserted, "posted_then_" + finalFocus.reason) }
             guard !Task.isCancelled, shouldContinue() else {
                 return report(.inserted, "delivery_cancelled_after_post")
