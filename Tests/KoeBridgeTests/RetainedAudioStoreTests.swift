@@ -4,6 +4,55 @@ import Testing
 import KoeBridgeCore
 @testable import KoeBridge
 
+@MainActor struct DiagnosticWriterTests {
+    @Test func orderedMirrorsAndRotationMatchSynchronousStores() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        @Sendable nonisolated func store(_ name: String) -> DiagnosticFileStore {
+            DiagnosticFileStore(fileURL: root.appendingPathComponent(name), maximumFileBytes: 512,
+                                maximumGenerations: 8)
+        }
+        let writer = DiagnosticWriter(main: store("main"), microphone: store("mic"))
+        let prefix = "mic_start v=1 capture=00000000-0000-0000-0000-000000000000 build=84 explicit=0"
+        let trace = MicrophonePreparationDiagnostics(clock: { 0 }) { entry in
+            let lines = entry.logLines(prefix: prefix)
+            let original = prefix + " " + entry.rendered
+            if DiagnosticLogPolicy.sanitizedEvent(original) != nil {
+                #expect(lines == [original])
+            } else {
+                #expect(lines.count > 1)
+                #expect(lines.allSatisfy { DiagnosticLogPolicy.sanitizedEvent($0) == $0 })
+                let fields = lines.flatMap { $0.split(separator: " ").dropFirst(7) }
+                #expect(fields == Array(entry.rendered.split(separator: " ").dropFirst()))
+            }
+            MainActor.assumeIsolated {
+                writer.append(lines, mirrored: true, at: .distantPast)
+            }
+            try! store("expected-main").appendBatch(lines, at: .distantPast)
+            try! store("expected-mic").appendBatch(lines, at: .distantPast)
+        }
+        trace.begin(.engineStart)
+        trace.noteChurn(epoch: 2)
+        for i in 0..<80 {
+            let date = Date(timeIntervalSince1970: Double(i))
+            let lines = ["event \(i)", "detail \(i)"]
+            writer.append(lines, mirrored: i.isMultiple(of: 3), at: date)
+            try store("expected-main").appendBatch(lines, at: date)
+            if i.isMultiple(of: 3) { try store("expected-mic").appendBatch(lines, at: date) }
+        }
+        writer.flush()
+        for name in ["main", "mic"] {
+            for suffix in [""] + (1...7).map({ ".\($0)" }) {
+                let actual = try? Data(contentsOf: root.appendingPathComponent(name + suffix))
+                let reference = try? Data(contentsOf: root.appendingPathComponent("expected-" + name + suffix))
+                #expect(actual == reference)
+            }
+        }
+        try writer.deleteAll()
+        #expect(!FileManager.default.fileExists(atPath: store("mic").fileURL.path))
+    }
+}
+
 @MainActor struct RetainedAudioStoreTests {
     @Test func launchAndLaterSweepsWaitForReadableHistory() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

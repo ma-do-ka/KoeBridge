@@ -1,6 +1,7 @@
 #if os(macOS)
 import Foundation
 import AVFoundation
+import Synchronization
 import KoeBridgeCore
 
 /// End-of-stream conversion is only valid after a clean stop. Deliver each
@@ -27,6 +28,39 @@ enum CaptureEnd {
         }
     }
     private enum DrainError: Error { case conversion }
+}
+
+/// One spare shared between tap and conversion. A busy spare takes the original
+/// allocation path immediately. Only the owner touches storage; release follows
+/// synchronous conversion, including stale-generation and error exits.
+final class TapCopySpare: @unchecked Sendable {
+    private let inUse = Atomic(false)
+    private var storage: AVAudioPCMBuffer?
+
+    func borrow(for input: AVAudioPCMBuffer) -> (buffer: AVAudioPCMBuffer?, owned: Bool) {
+        let owns = !inUse.exchange(true, ordering: .acquiring)
+        // A converter may retain its last input. Never overwrite storage
+        // while any other owner could still be reading it.
+        if owns, isKnownUniquelyReferenced(&storage), let storage,
+           storage.format === input.format, storage.frameCapacity == input.frameLength {
+            let src = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: input.audioBufferList))
+            let dst = UnsafeMutableAudioBufferListPointer(storage.mutableAudioBufferList)
+            // A partial plane must never expose data from the preceding callback.
+            let bytesPerPlane = UInt64(input.frameLength) * UInt64(input.format.streamDescription.pointee.mBytesPerFrame)
+            if src.count == dst.count && src.indices.allSatisfy({
+                src[$0].mData != nil && UInt64(src[$0].mDataByteSize) == bytesPerPlane
+                    && src[$0].mDataByteSize == dst[$0].mDataByteSize
+            }) { return (storage, true) }
+        }
+        let fresh = AVAudioPCMBuffer(pcmFormat: input.format, frameCapacity: input.frameLength)
+        if owns && fresh == nil { inUse.store(false, ordering: .releasing) }
+        return (fresh, owns)
+    }
+
+    func recycle(_ buffer: AVAudioPCMBuffer) {
+        storage = buffer
+        inUse.store(false, ordering: .releasing)
+    }
 }
 
 /// Engine lifecycle, conversion and inference have separate serial lanes.
@@ -67,6 +101,7 @@ final class MicrophoneCapture: @unchecked Sendable {
     private var onAudio: ((Data) -> Void)?
     private let chunkBytes = 1_600
     private var alive = false
+    private let tapSpare = TapCopySpare()
     private let workSlots = DispatchSemaphore(value: 16)
     private let healthLock = NSLock()
     private var droppedBuffers = 0
@@ -528,7 +563,8 @@ final class MicrophoneCapture: @unchecked Sendable {
             }
             self.startupDiagnostics?.observeInput(frames: Int(buffer.frameLength), at: arrivedAt)
             guard self.workSlots.wait(timeout: .now()) == .success else { self.noteBufferLoss(); return }
-            guard let copy = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: buffer.frameLength) else {
+            let (candidate, ownsSpare) = self.tapSpare.borrow(for: buffer)
+            guard let copy = candidate else {
                 self.noteBufferLoss(); self.workSlots.signal(); return
             }
             copy.frameLength = buffer.frameLength
@@ -539,8 +575,11 @@ final class MicrophoneCapture: @unchecked Sendable {
                 memcpy(to, from, Int(src[i].mDataByteSize))
                 dst[i].mDataByteSize = src[i].mDataByteSize
             }
-            self.processingQueue.async { [weak self, slots = self.workSlots] in
-                defer { slots.signal() }
+            self.processingQueue.async { [weak self, slots = self.workSlots, spare = self.tapSpare] in
+                defer {
+                    if ownsSpare { spare.recycle(copy) }
+                    slots.signal()
+                }
                 self?.convert(copy, arrivedAt: arrivedAt, token: token, onDeviceChanged: onDeviceChanged)
             }
         })

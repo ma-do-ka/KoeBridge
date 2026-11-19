@@ -7,6 +7,18 @@ enum KeychainStore {
     private static let service = "dev.koebridge.gemini-api"
     private static let account = "personal-key"
 
+    // Observe registration and search-list changes made outside KoeBridge too.
+    // Data-access events must be excluded: refreshing the cache reads the item.
+    static let observingChanges: Bool = {
+        let events: SecKeychainEventMask = [.addEventMask, .deleteEventMask, .updateEventMask,
+            .lockEventMask, .unlockEventMask, .passwordChangedEventMask, .defaultChangedEventMask,
+            .keychainListChangedMask]
+        return SecKeychainAddCallback({ _, _, _ in
+            Task { @MainActor in VoiceController.shared.invalidateKeyRegistration() }
+            return errSecSuccess
+        }, events, nil) == errSecSuccess
+    }()
+
     static func load() -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,

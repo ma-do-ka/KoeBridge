@@ -286,6 +286,7 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.controller.interruptForSystemEvent("Macのスリープにより録音を中断しました。途中結果は履歴に保存しました")
+                DiagnosticLog.flush()
             }
         })
         workspaceObservers.append(center.addObserver(
@@ -293,6 +294,7 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.controller.interruptForSystemEvent("ユーザーセッションが切り替わったため録音を中断しました")
+                DiagnosticLog.flush()
             }
         })
         workspaceObservers.append(center.addObserver(
@@ -348,6 +350,7 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
+        controller.invalidateKeyRegistration()
         PermissionGuide.shared.refresh()
     }
 
@@ -358,6 +361,7 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
         workspaceObservers.forEach { center.removeObserver($0) }
         workspaceObservers.removeAll()
         controller.interruptForSystemEvent("アプリ終了により録音を中断しました")
+        DiagnosticLog.flush()
         if let windowKeyMonitor { NSEvent.removeMonitor(windowKeyMonitor); self.windowKeyMonitor = nil }
     }
 

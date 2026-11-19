@@ -255,7 +255,12 @@ private final class GeminiPingCompletion: @unchecked Sendable {
     }
 
     /// Queue before awaiting: MainActor methods may reenter during network waits.
-    private func enqueue(_ raw: String, ending: Bool = false) throws -> Task<Void, Error> {
+    private enum OutgoingMessage {
+        case control(String)
+        case audio(Data)
+    }
+
+    private func enqueue(_ message: OutgoingMessage, ending: Bool = false) throws -> Task<Void, Error> {
         try checkOpen()
         guard let ws = socket else { throw ConnectionError.disconnected }
         let predecessor = sendTail
@@ -263,6 +268,13 @@ private final class GeminiPingCompletion: @unchecked Sendable {
             try await predecessor?.value
             guard let self else { throw ConnectionError.disconnected }
             try self.checkOpen()
+            let raw: String
+            switch message {
+            case .control(let value): raw = value
+            case .audio(let pcm):
+                raw = try await Self.audioMessage(pcm)
+                try self.checkOpen()
+            }
             let watchdog = Task { [weak self] in
                 do { try await Task.sleep(for: .seconds(10)) } catch { return }
                 guard let self, !self.closedByClient else { return }
@@ -296,15 +308,19 @@ private final class GeminiPingCompletion: @unchecked Sendable {
         }
     }
 
+    nonisolated static func audioMessage(_ data: Data) async throws -> String {
+        try GeminiWire.audio(data)
+    }
+
     func sendAudio(_ data: Data) async throws {
         try checkOpen()
         guard ready, !inputEnded else { throw ConnectionError.disconnected }
         guard !data.isEmpty else { return }
         if !activityStartQueued {
-            _ = try enqueue(GeminiWire.activityStart())
+            _ = try enqueue(.control(GeminiWire.activityStart()))
             activityStartQueued = true
         }
-        let task = try enqueue(GeminiWire.audio(data))
+        let task = try enqueue(.audio(data))
         try await awaitSend(task)
         sentAudioChunks += 1
         sentAudioBytes += data.count
@@ -315,7 +331,7 @@ private final class GeminiPingCompletion: @unchecked Sendable {
         guard ready else { throw ConnectionError.disconnected }
         guard activityStartQueued else { throw ConnectionError.noFinal }
         inputEnded = true
-        let task = try enqueue(GeminiWire.activityEnd(), ending: true)
+        let task = try enqueue(.control(GeminiWire.activityEnd()), ending: true)
         endTask = task
         try await awaitSend(task)
         DiagnosticLog.record("gemini activityEnd; audioBytes=\(sentAudioBytes) audioChunks=\(sentAudioChunks) interimEvents=\(interimEvents) finalEvents=\(finalEvents) duplicateFinals=\(duplicateFinalEvents) hasPendingInterim=\(!assembler.interim.isEmpty) receivedFrames=\(receivedFrames) unrecognizedFrames=\(unrecognizedFrames)")

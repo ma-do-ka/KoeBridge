@@ -32,9 +32,19 @@ public struct TranscriptHistoryStore {
             entries = archive?.entries ?? []
             persisted = entries
             loadOutcome = entries.isEmpty ? .empty : .loaded
-            for record in entries where record.delivery == .pending {
-                updateDelivery(record.id, to: .interruptedDelivery,
-                               detail: "前回の入力処理が完了する前に終了しました。再送の前に入力先を確認してください。")
+            let detail = "前回の入力処理が完了する前に終了しました。再送の前に入力先を確認してください。"
+            let pending = entries.indices.filter { entries[$0].delivery == .pending }
+            if !pending.isEmpty {
+                var updated = entries
+                for i in pending {
+                    updated[i].delivery = .interruptedDelivery
+                    updated[i].deliveryDetail = detail
+                }
+                if !pending.allSatisfy({ entries[$0].deliveryDetail == nil }) || !applyBatch(updated) {
+                    for record in entries where record.delivery == .pending {
+                        updateDelivery(record.id, to: .interruptedDelivery, detail: detail)
+                    }
+                }
             }
         } catch {
             loadOutcome = .failed
@@ -92,6 +102,32 @@ public struct TranscriptHistoryStore {
             entries[i].deliveryDetail = detail
             unsavedIDs.insert(id)
         }
+    }
+
+    /// Preserve per-row budget and write-failure recovery when a single
+    /// archive write cannot commit the full edit.
+    private mutating func applyBatch(_ updated: [TranscriptRecord]) -> Bool {
+        guard unsavedIDs.isEmpty, Set(entries.map(\.id)).count == entries.count,
+              var store = archive, (try? store.saveBatch(updated)) == true else { return false }
+        archive = store
+        entries = store.entries
+        persisted = entries
+        problem = ""
+        return true
+    }
+
+    public mutating func clearAudioReferences(reason: String) {
+        let rows = entries.indices.filter { entries[$0].audioAsset != nil }
+        guard !rows.isEmpty else { return }
+        var updated = entries
+        for i in rows {
+            updated[i].audioAsset = nil
+            updated[i].audioUnavailableReason = reason
+        }
+        // This fixed reason costs fewer encoded bytes than the removed asset,
+        // so an intermediate edit cannot trigger a byte-budget eviction.
+        if reason == "保存音声を削除しました", applyBatch(updated) { return }
+        for record in entries where record.audioAsset != nil { updateAudio(record.id, asset: nil, reason: reason) }
     }
 
     public mutating func updateAudio(_ id: UUID, asset: TranscriptRecord.AudioAsset?, reason: String? = nil) {

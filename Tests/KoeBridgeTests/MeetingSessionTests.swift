@@ -6,6 +6,33 @@ import KoeBridgeCore
 @testable import KoeBridge
 
 @MainActor struct MeetingSessionTests {
+    @Test func tapCopySpareReusesOnlyCompletedMatchingBuffers() throws {
+        let format = try #require(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1))
+        let input = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1024))
+        input.frameLength = 1024
+        let spare = TapCopySpare()
+        let identity: ObjectIdentifier
+        do {
+            let first = spare.borrow(for: input)
+            let held = try #require(first.buffer)
+            held.frameLength = 1024
+            identity = ObjectIdentifier(held)
+            #expect(first.owned)
+            let overlapping = spare.borrow(for: input)
+            #expect(!overlapping.owned && overlapping.buffer !== held)
+            spare.recycle(held)
+        }
+        for _ in 0..<100 {
+            let next = spare.borrow(for: input)
+            let buffer = try #require(next.buffer)
+            #expect(next.owned && ObjectIdentifier(buffer) == identity)
+            spare.recycle(buffer)
+        }
+        input.frameLength = 64
+        let resized = spare.borrow(for: input)
+        #expect(resized.buffer?.frameCapacity == 64)
+    }
+
     @Test func commandAndBothMeetingSourcesRecordSuccessfulUsage() async {
         let take = DictationTake(preferred: .local, style: .verbatim, japaneseHint: false, vocabulary: [],
                                  shouldPaste: true, options: .init())

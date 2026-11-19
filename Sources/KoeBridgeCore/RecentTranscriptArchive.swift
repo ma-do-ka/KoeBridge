@@ -143,6 +143,17 @@ public struct RecentTranscriptArchive {
         try saveUpdate(updated, retaining: record.id)
     }
 
+    /// Fast path for a group of row edits. Near the byte limit, each edited
+    /// row has its own eviction priority; let the caller replay individual edits.
+    mutating func saveBatch(_ updated: [TranscriptRecord]) throws -> Bool {
+        guard try encode(entries).count <= Self.maximumFileBytes else { return false }
+        let data = try encode(updated)
+        guard data.count <= Self.maximumFileBytes else { return false }
+        try write(data)
+        entries = updated
+        return true
+    }
+
     public mutating func updateDelivery(id: UUID, to delivery: TranscriptRecord.Delivery, detail: String? = nil) throws {
         guard let index = entries.firstIndex(where: { $0.id == id }) else { return }
         var updated = entries

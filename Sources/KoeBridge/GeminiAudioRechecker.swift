@@ -12,7 +12,7 @@ private final class RecheckSessionDelegate: NSObject, URLSessionTaskDelegate {
     }
 }
 
-@MainActor enum GeminiAudioRechecker {
+enum GeminiAudioRechecker {
     struct Result {
         let text: String
         let usage: GeminiTokenUsage?

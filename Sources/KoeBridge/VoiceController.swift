@@ -6,15 +6,29 @@ import Combine
 import SwiftUI
 import KoeBridgeCore
 
+/// Memoizes derived display values without publishing from a SwiftUI body.
+@MainActor final class DisplayCache<Key: Equatable, Value> {
+    private var entry: (Key, Value)?
+
+    func value(for key: Key, compute: () -> Value) -> Value {
+        if let entry, entry.0 == key { return entry.1 }
+        let result = compute()
+        entry = (key, result)
+        return result
+    }
+}
+
 @MainActor final class VoiceController: ObservableObject {
     static let shared = VoiceController()
     typealias Phase = VoiceSessionPhase
     @Published private(set) var phase: Phase = .idle
     @Published var status = "待機中"
-    @Published var previewFinalizedText = ""
-    @Published var previewVolatileText = ""
+    private(set) var previewRevision: UInt64 = 0
+    @Published var previewFinalizedText = "" { didSet { previewRevision &+= 1 } }
+    @Published var previewVolatileText = "" { didSet { previewRevision &+= 1 } }
     @Published var previewText = "" {
         didSet {
+            previewRevision &+= 1
             if previewText.isEmpty { previewFinalizedText = ""; previewVolatileText = "" }
         }
     }
@@ -428,10 +442,12 @@ import KoeBridgeCore
     }
     @Published private(set) var lastMetrics = ""
     @Published private(set) var usedMode = ""
-    @Published private(set) var history: [TranscriptRecord] = []
+    private(set) var historyRevision: UInt64 = 0
+    @Published private(set) var history: [TranscriptRecord] = [] { didSet { historyRevision &+= 1 } }
     @Published private(set) var historyProblem = ""
-    @Published private(set) var monitorEvents: [EngineUsageSample] = []
-    @Published private(set) var monitorTokens: [GeminiTokenSample] = []
+    private(set) var usageRevision: UInt64 = 0
+    @Published private(set) var monitorEvents: [EngineUsageSample] = [] { didSet { usageRevision &+= 1 } }
+    @Published private(set) var monitorTokens: [GeminiTokenSample] = [] { didSet { usageRevision &+= 1 } }
     @Published private(set) var monitorProblem = ""
     @Published private(set) var shortcutChoice: RecordingShortcut = .controlOptionSpace
     @Published private(set) var shortcutProblem = ""
@@ -463,7 +479,7 @@ import KoeBridgeCore
         guard phase == .idle, active == nil, inFlight.isEmpty, !textOperationRunning else {
             status = "音声入力・処理の完了後に会議モードを開始してください"; return
         }
-        if requestedMode == .gemini, !hasKey { status = AppError.noKey.localizedDescription; return }
+        if requestedMode == .gemini, KeychainStore.load() == nil { status = AppError.noKey.localizedDescription; return }
         meetingRunning = true
         microphoneWarmKeeper.suspend(reason: "meeting")
         warmScheduleTask?.cancel(); prewarmer.shutdown()
@@ -560,8 +576,19 @@ import KoeBridgeCore
                 if replayJob == job { replayRecordID = nil; replayLocal?.cancel(); replayLocal = nil; replayTask = nil }
             }
             do {
-                let pcm = try retainedAudio.read(record.id, history: &historyStore)
-                refreshRetainedAudio()
+                let source = try retainedAudio.prepareRead(record.id, history: &historyStore)
+                let revision = historyRevision
+                let pcm: Data
+                do { pcm = try await source.loadOnWorker() }
+                catch {
+                    guard replayJob == job, !Task.isCancelled else { return }
+                    retainedAudio.handleReadFailure(error, source: source, history: &historyStore)
+                    throw error
+                }
+                guard replayJob == job, !Task.isCancelled,
+                      historyStore.entries.first(where: { $0.id == record.id })?.audioAsset == source.asset else { return }
+                if historyRevision == revision && retainedAudio.sweepIsReusable { updateRetentionStatus() } else { refreshRetainedAudio() }
+                guard replayJob == job, !Task.isCancelled else { return }
                 let text: String
                 if engine == .local {
                     guard pcm.count <= 50 * 32_000 else { throw RetainedAudioStore.ReplayError.localLimit }
@@ -743,7 +770,20 @@ import KoeBridgeCore
         }
     }
 
-    var hasKey: Bool { KeychainStore.load() != nil }
+    private var cachedKeyRegistration: Bool?
+    var hasKey: Bool {
+        guard KeychainStore.observingChanges else { return KeychainStore.load() != nil }
+        if let cachedKeyRegistration { return cachedKeyRegistration }
+        let registered = KeychainStore.load() != nil
+        cachedKeyRegistration = registered
+        return registered
+    }
+
+    func invalidateKeyRegistration() {
+        guard cachedKeyRegistration != nil else { return }
+        cachedKeyRegistration = nil
+        objectWillChange.send()
+    }
     var busy: Bool { active != nil }
     func reserveHistoryInsertion() -> UUID? { postingGate.reserveHistory() }
     func performHistoryIntent(_ ticket: UUID, deadline: ContinuousClock.Instant, perform: () async -> Void) async {
@@ -1051,9 +1091,10 @@ import KoeBridgeCore
                         guard let self, let take, let candidate, take.cloud === candidate, !take.finished else { return }
                         switch event {
                         case .interim, .final:
-                            take.partialText = candidate.assembler.displayText
-                            take.previewFinalizedText = candidate.assembler.preview.finalizedPrefix
-                            take.previewVolatileText = candidate.assembler.preview.volatileTail
+                            let preview = candidate.assembler.preview
+                            take.partialText = preview.text
+                            take.previewFinalizedText = preview.finalizedPrefix
+                            take.previewVolatileText = preview.volatileTail
                             if take.firstPreviewAt == nil, !take.partialText.isEmpty {
                                 take.firstPreviewAt = Date()
                             }
@@ -1286,7 +1327,7 @@ import KoeBridgeCore
         while offset < length {
             try Task.checkCancellation()
             let end = min(offset + 3_200, length)
-            try local.appendPCM16(take.audioBackup.subdata(in: offset..<end))
+            try await local.appendRecoveryPCM(take.audioBackup, range: offset..<end)
             take.appleAudioBytes += end - offset
             offset = end
         }
@@ -1445,15 +1486,18 @@ import KoeBridgeCore
             disposition: disposition, text: text, reason: reason, partial: isCommand ? "" : partial, noInput: noInput))
         // Persist now, even if an older delivery is awaiting its receipt. An
         // app exit must not discard a completed result waiting in the sender.
+        var sweptAfterRemember = false
         if accepted, !isCommand, !noInput, take.transformSelection == nil {
             if let text, !text.isEmpty {
                 take.historyRecordID = remember(text, isPartial: false, delivery: .pending,
                                                 engine: take.usedMode, review: take.review,
                                                 recordedAt: take.requestedAt)
+                sweptAfterRemember = retainedAudio.sweepIsReusable
             } else if !partial.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 take.historyRecordID = remember(partial, isPartial: true, delivery: .recognitionInterrupted,
                                                 engine: take.usedMode, review: take.review,
                                                 recordedAt: take.requestedAt)
+                sweptAfterRemember = retainedAudio.sweepIsReusable
             }
         }
         DiagnosticLog.record("session resolved; success=\(text?.isEmpty == false) accepted=\(accepted) noInput=\(noInput) pending=\(finished.count)")
@@ -1467,9 +1511,11 @@ import KoeBridgeCore
         usageStore.append(engineEvents: usage.engines, tokenEvents: usage.tokens)
         if retainAudioEnabled, take.retainAudioGeneration == retentionGeneration,
            let id = take.historyRecordID, let record = historyStore.entries.first(where: { $0.id == id }) {
-            retainedAudio.write(pcm: take.audioBackup, record: record, history: &historyStore)
+            sweptAfterRemember = retainedAudio.write(pcm: take.audioBackup, record: record, history: &historyStore,
+                                                      followingSweep: sweptAfterRemember)
         }
-        refreshRetainedAudio()
+        if sweptAfterRemember && retainedAudio.sweepIsReusable { updateRetentionStatus() }
+        else { refreshRetainedAudio() }
         let stoppingCapture = take.mic
         take.releaseResources()
         if let stoppingCapture {
@@ -1997,6 +2043,7 @@ import KoeBridgeCore
 
     func saveKey(_ key: String) throws {
         try KeychainStore.save(key)
+        invalidateKeyRegistration()
         warmScheduleTask?.cancel()
         prewarmer.shutdown()
         scheduleWarmGemini()
@@ -2004,6 +2051,7 @@ import KoeBridgeCore
     }
     func deleteKey() throws {
         try KeychainStore.delete()
+        invalidateKeyRegistration()
         warmScheduleTask?.cancel()
         prewarmer.shutdown()
         objectWillChange.send()

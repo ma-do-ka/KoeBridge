@@ -20,11 +20,11 @@ struct PreviewView: View {
         return full.count > 180 ? "…" + String(full.suffix(180)) : full
     }
 
-    private var styledTranscript: Text {
+    private func styledTranscript(visible: String) -> Text {
         guard controller.progressivePreviewEnabled,
               controller.overlayFeedback == .recording,
               !controller.previewText.allSatisfy({ $0.isWhitespace }) else {
-            return Text(visibleTranscript)
+            return Text(visible)
         }
         // Trim and clip the combined text exactly as the single-style preview does,
         // while preserving the provider boundary within the visible suffix.
@@ -61,8 +61,25 @@ struct PreviewView: View {
         }
     }
 
+    private struct PreviewKey: Equatable {
+        let revision: UInt64
+        let stage: OverlayFeedback
+        let progressive: Bool
+        let status: String
+        let transforming: Bool
+        let deferred: String?
+    }
+    @State private var previewCache = DisplayCache<PreviewKey, (text: Text, label: String)>()
+
     var body: some View {
-        HStack(alignment: .center, spacing: 12) {
+        let key = PreviewKey(revision: controller.previewRevision, stage: controller.overlayFeedback,
+                             progressive: controller.progressivePreviewEnabled, status: controller.status,
+                             transforming: controller.textOperationRunning, deferred: controller.deferredSummary)
+        let display = previewCache.value(for: key) {
+            let label = visibleTranscript
+            return (styledTranscript(visible: label), label)
+        }
+        return HStack(alignment: .center, spacing: 12) {
             ZStack {
                 Circle()
                     .fill(controller.isRecording ? Color.red.opacity(0.15) : Color.secondary.opacity(0.12))
@@ -78,13 +95,13 @@ struct PreviewView: View {
                         .accessibilityHidden(true)
                 }
             }
-            styledTranscript
+            display.text
                 .font(.system(size: 14, weight: .medium, design: .default))
                 .foregroundStyle(.primary)
                 .lineLimit(3)
                 .truncationMode(.head)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .accessibilityLabel(visibleTranscript)
+                .accessibilityLabel(display.label)
         }
         .padding(.horizontal, 17)
         .padding(.vertical, 12)

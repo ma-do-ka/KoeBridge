@@ -20,11 +20,15 @@ public enum UnicodeTypingPlan {
     }
 
     public static func chunks(_ original: String, maximumUTF16Units: Int = 16) -> [String] {
+        chunks(sanitized: safeText(original), maximumUTF16Units: maximumUTF16Units)
+    }
+
+    public static func chunks(sanitized: String, maximumUTF16Units: Int = 16) -> [String] {
         precondition(maximumUTF16Units > 0)
         var result: [String] = []
         var current = ""
         var unitsInCurrent = 0
-        for character in safeText(original) {
+        for character in sanitized {
             let part = String(character)
             let count = part.utf16.count
             if !current.isEmpty && unitsInCurrent + count > maximumUTF16Units {

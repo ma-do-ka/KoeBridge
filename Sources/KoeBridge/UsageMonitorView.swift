@@ -58,55 +58,81 @@ struct UsageMonitorView: View {
         var id: Date { bucket }
     }
 
-    private var startOfRange: Date {
+    private struct ChartKey: Equatable {
+        let revision: UInt64
+        let scale: Scale
+        let calendar: Calendar
+        let start: Date
+    }
+    private struct ChartTotals {
+        var engines: [EngineBar] = []
+        var tokens: [TokenBar] = []
+        var outcomes: [UsageEngine: [UsageOutcome: Int]] = [:]
+        var totalTokens = 0
+    }
+    private struct RecentTotals {
+        var gemini = 0, apple = 0, fallback = 0, failed = 0
+        var validThrough = Date.distantFuture
+    }
+    private final class RecentCache {
+        var entry: (revision: UInt64, computed: Date, totals: RecentTotals)?
+    }
+    @State private var chartCache = DisplayCache<ChartKey, ChartTotals>()
+    @State private var recentCache = RecentCache()
+
+    private func recentTotals(at now: Date) -> RecentTotals {
+        if let entry = recentCache.entry, entry.revision == controller.usageRevision,
+           now >= entry.computed, now <= entry.totals.validThrough { return entry.totals }
+        var totals = RecentTotals()
+        for event in controller.monitorEvents where event.at >= now.addingTimeInterval(-86_400) {
+            if event.engine == .gemini { totals.gemini += 1 } else { totals.apple += 1 }
+            if event.fallback { totals.fallback += 1 }
+            if event.outcome == .failure { totals.failed += 1 }
+            totals.validThrough = min(totals.validThrough, event.at.addingTimeInterval(86_400))
+        }
+        recentCache.entry = (controller.usageRevision, now, totals)
+        return totals
+    }
+
+    private func chartTotals(at now: Date) -> ChartTotals {
         let calendar = Calendar.current
-        let current = calendar.dateInterval(of: scale.component, for: Date())?.start ?? Date()
-        return calendar.date(byAdding: scale.component, value: 1 - scale.slotCount,
-                             to: current) ?? current
-    }
-
-    private func bucket(_ date: Date) -> Date {
-        Calendar.current.dateInterval(of: scale.component, for: date)?.start ?? date
-    }
-
-    private var engineBars: [EngineBar] {
-        struct Key: Hashable {
-            let date: Date
-            let engine: UsageEngine
+        let current = calendar.dateInterval(of: scale.component, for: now)?.start ?? now
+        let start = calendar.date(byAdding: scale.component, value: 1 - scale.slotCount, to: current) ?? current
+        let key = ChartKey(revision: controller.usageRevision, scale: scale, calendar: calendar, start: start)
+        return chartCache.value(for: key) {
+            struct Bucket: Hashable {
+                let date: Date
+                let engine: UsageEngine
+            }
+            func bucket(_ date: Date) -> Date {
+                calendar.dateInterval(of: scale.component, for: date)?.start ?? date
+            }
+            var grouped: [Bucket: (count: Int, seconds: Double)] = [:]
+            var tokens: [Date: Int] = [:]
+            var totals = ChartTotals()
+            for event in controller.monitorEvents where event.at >= start {
+                let key = Bucket(date: bucket(event.at), engine: event.engine)
+                let previous = grouped[key] ?? (count: 0, seconds: 0)
+                grouped[key] = (previous.count + 1, previous.seconds + event.audioSeconds)
+                totals.outcomes[event.engine, default: [:]][event.outcome, default: 0] += 1
+            }
+            for sample in controller.monitorTokens where sample.at >= start {
+                tokens[bucket(sample.at), default: 0] += sample.totalTokens
+                totals.totalTokens += sample.totalTokens
+            }
+            totals.engines = grouped.map {
+                EngineBar(bucket: $0.key.date, engine: $0.key.engine, count: $0.value.count, seconds: $0.value.seconds)
+            }.sorted { $0.bucket < $1.bucket }
+            totals.tokens = tokens.map { TokenBar(bucket: $0.key, tokens: $0.value) }.sorted { $0.bucket < $1.bucket }
+            return totals
         }
-        var grouped: [Key: (count: Int, seconds: Double)] = [:]
-        for event in controller.monitorEvents where event.at >= startOfRange {
-            let key = Key(date: bucket(event.at), engine: event.engine)
-            let previous = grouped[key] ?? (count: 0, seconds: 0)
-            grouped[key] = (previous.count + 1, previous.seconds + event.audioSeconds)
-        }
-        return grouped.map {
-            EngineBar(bucket: $0.key.date, engine: $0.key.engine,
-                      count: $0.value.count, seconds: $0.value.seconds)
-        }.sorted { $0.bucket < $1.bucket }
-    }
-
-    private var tokenBars: [TokenBar] {
-        var grouped: [Date: Int] = [:]
-        for sample in controller.monitorTokens where sample.at >= startOfRange {
-            grouped[bucket(sample.at), default: 0] += sample.totalTokens
-        }
-        return grouped.map { TokenBar(bucket: $0.key, tokens: $0.value) }
-            .sorted { $0.bucket < $1.bucket }
-    }
-
-    private func outcomeCount(_ engine: UsageEngine, _ outcome: UsageOutcome) -> Int {
-        controller.monitorEvents.filter {
-            $0.at >= startOfRange && $0.engine == engine && $0.outcome == outcome
-        }.count
-    }
-
-    private var last24Hours: [EngineUsageSample] {
-        controller.monitorEvents.filter { $0.at >= Date().addingTimeInterval(-86_400) }
     }
 
     var body: some View {
-        Group {
+        let now = Date()
+        let chart = chartTotals(at: now)
+        let recent = recentTotals(at: now)
+        return Group {
                 VStack(alignment: .leading, spacing: 15) {
                 HStack {
                     Spacer()
@@ -123,16 +149,16 @@ struct UsageMonitorView: View {
                 LazyVGrid(columns: [GridItem(.flexible(), spacing: 10),
                                     GridItem(.flexible(), spacing: 10)], spacing: 10) {
                     summaryTile("Geminiの利用回数",
-                                "\(last24Hours.filter { $0.engine == .gemini }.count)回",
+                                "\(recent.gemini)回",
                                 detail: "過去24時間にGeminiで認識を試みた回数です。音声の追加チェックと失敗も含まれます。")
                     summaryTile("Appleの利用回数",
-                                "\(last24Hours.filter { $0.engine == .apple }.count)回",
+                                "\(recent.apple)回",
                                 detail: "過去24時間にAppleで認識を試みた回数です。自動切替も含まれます。")
                     summaryTile("Appleへの自動切替",
-                                "\(last24Hours.filter { $0.fallback }.count)回",
+                                "\(recent.fallback)回",
                                 detail: "Geminiを利用できない場合などにAppleで認識を試みた回数です。")
                     summaryTile("認識処理の失敗回数",
-                                "\(last24Hours.filter { $0.outcome == .failure }.count)回",
+                                "\(recent.failed)回",
                                 detail: "過去24時間のエンジン別の失敗回数です。Appleで救済できた録音も含まれます。")
                 }
 
@@ -162,10 +188,10 @@ struct UsageMonitorView: View {
                             .font(.subheadline.weight(.semibold))
                         Text("どの時間帯にどちらの音声認識を試みたかを表示します。自動切替した録音は両方に計上されます。")
                             .font(.caption).foregroundStyle(.secondary)
-                        if engineBars.isEmpty {
+                        if chart.engines.isEmpty {
                             emptyState("対象期間の利用実績はありません")
                         } else {
-                            Chart(engineBars) { item in
+                            Chart(chart.engines) { item in
                                 BarMark(x: .value("時刻", item.bucket, unit: scale.component),
                                         y: .value("試行回数", item.count))
                                     .foregroundStyle(by: .value("エンジン", item.engine.label))
@@ -177,8 +203,8 @@ struct UsageMonitorView: View {
                             .frame(height: 145)
                         }
                         HStack(spacing: 12) {
-                            Text("Gemini：\(outcomeCount(.gemini, .success))成功 / \(outcomeCount(.gemini, .failure))失敗")
-                            Text("Apple：\(outcomeCount(.apple, .success))成功 / \(outcomeCount(.apple, .failure))失敗")
+                            Text("Gemini：\(chart.outcomes[.gemini]?[.success] ?? 0)成功 / \(chart.outcomes[.gemini]?[.failure] ?? 0)失敗")
+                            Text("Apple：\(chart.outcomes[.apple]?[.success] ?? 0)成功 / \(chart.outcomes[.apple]?[.failure] ?? 0)失敗")
                         }
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -192,10 +218,10 @@ struct UsageMonitorView: View {
                             .font(.subheadline.weight(.semibold))
                         Text("各エンジンに送信・投入した音声データの秒数です。無音も含まれます。")
                             .font(.caption).foregroundStyle(.secondary)
-                        if engineBars.isEmpty {
+                        if chart.engines.isEmpty {
                             emptyState("対象期間の利用実績はありません")
                         } else {
-                            Chart(engineBars) { item in
+                            Chart(chart.engines) { item in
                                 BarMark(x: .value("時刻", item.bucket, unit: scale.component),
                                         y: .value("処理秒数", item.seconds))
                                     .foregroundStyle(by: .value("エンジン", item.engine.label))
@@ -218,13 +244,13 @@ struct UsageMonitorView: View {
 
                                 .font(.subheadline.weight(.semibold))
                             Spacer()
-                            Text("計 \(controller.monitorTokens.filter { $0.at >= startOfRange }.reduce(0) { $0 + $1.totalTokens }.formatted())")
+                            Text("計 \(chart.totalTokens.formatted())")
                                 .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                         }
-                        if tokenBars.isEmpty {
+                        if chart.tokens.isEmpty {
                             emptyState("トークン情報を取得できていません。APIが使用されていないことを意味するものではありません。")
                         } else {
-                            Chart(tokenBars) { item in
+                            Chart(chart.tokens) { item in
                                 BarMark(x: .value("受信時刻", item.bucket, unit: scale.component),
                                         y: .value("トークン数", item.tokens))
                                     .foregroundStyle(Color.blue)

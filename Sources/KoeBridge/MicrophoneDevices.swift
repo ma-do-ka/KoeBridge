@@ -139,10 +139,11 @@ enum MicrophoneDevices {
 
 @MainActor final class MicrophoneDeviceStore: ObservableObject {
     static let shared = MicrophoneDeviceStore()
-    @Published private(set) var devices: [MicrophoneDeviceOption] = []
+    @Published private var snapshot: MicrophoneDevices.Snapshot?
+    var devices: [MicrophoneDeviceOption] { snapshot?.devices ?? [] }
     @Published private(set) var selectedUID: String
-    @Published private(set) var defaultID: UInt32?
-    @Published private(set) var loaded = false
+    var defaultID: UInt32? { snapshot?.defaultID }
+    var loaded: Bool { snapshot != nil }
     private var refreshing = false
     private let defaults = UserDefaults.standard
     private init() { selectedUID = UserDefaults.standard.string(forKey: "microphoneInputUID") ?? "" }
@@ -169,7 +170,7 @@ enum MicrophoneDevices {
         defer { refreshing = false }
         let snapshot = await Task.detached(priority: .utility) { try? MicrophoneDevices.snapshot() }.value
         guard let snapshot, !Task.isCancelled else { return }
-        devices = snapshot.devices; defaultID = snapshot.defaultID; loaded = true
+        self.snapshot = snapshot
     }
 }
 #endif
