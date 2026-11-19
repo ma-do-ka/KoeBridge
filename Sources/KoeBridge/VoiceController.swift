@@ -1385,11 +1385,12 @@ import KoeBridgeCore
                     let result = try await GeminiTextTransformer.postProcess(
                         text: original, mode: take.postProcessMode, apiKey: key, timeout: budget)
                     guard !take.finished, !Task.isCancelled else { return }
-                    if PostProcessingPolicy.accepts(original: original, processed: result.text) {
-                        output = result.text
-                        DiagnosticLog.record("postprocess applied mode=\(take.postProcessMode.rawValue)")
+                    let adoption = PostProcessingPolicy.adoption(original: original, processed: result.text)
+                    output = adoption.text
+                    if let reason = adoption.rejection {
+                        DiagnosticLog.record("postprocess rejected \(reason.rawValue)")
                     } else {
-                        DiagnosticLog.record("postprocess rejected length")
+                        DiagnosticLog.record("postprocess applied mode=\(take.postProcessMode.rawValue)")
                     }
                     if let usage = result.usage {
                         DiagnosticLog.record("gemini postprocess usage; promptTokens=\(usage.promptTokens.map(String.init) ?? "unknown") responseTokens=\(usage.responseTokens.map(String.init) ?? "unknown") totalTokens=\(usage.totalTokens)")

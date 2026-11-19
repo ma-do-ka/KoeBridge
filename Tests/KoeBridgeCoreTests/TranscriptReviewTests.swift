@@ -3,6 +3,39 @@ import Testing
 @testable import KoeBridgeCore
 
 struct TranscriptReviewTests {
+    @Test func nestedAndUnclosedQuotations() {
+        for (open, close) in [("「", "」"), ("『", "』"), ("“", "”"), ("‘", "’")] {
+            let nested = open + "外 " + open + "内" + close + " 残 す。次にという。こと " + close
+            #expect(JapaneseDictationSpacing.adopt(nested + " 後 文", enabled: true, protectedTerms: []) == nested + " 後文")
+            #expect(AgentInstructionFormatting.format(nested) == nested)
+            #expect(TextContextChecking.check(nested).changes == 0)
+            let unclosed = open + "残 す\n次 行"
+            #expect(JapaneseDictationSpacing.adopt(unclosed, enabled: true, protectedTerms: []) == unclosed)
+        }
+        #expect(JapaneseDictationSpacing.adopt("'残 す\n次 行", enabled: true, protectedTerms: []) == "'残 す\n次行")
+    }
+
+    @Test func apostrophesInWordsAndQuotations() {
+        for word in ["don't", "it's", "rock'n'roll", "カ'ナ", "don’t"] {
+            let source = "項目：" + word + "。日本 語"
+            #expect(JapaneseDictationSpacing.adopt(source, enabled: true, protectedTerms: []) == "項目：" + word + "。日本語")
+            let quoted = "'日本 語 " + word + " 残 す'"
+            #expect(JapaneseDictationSpacing.adopt(quoted + " 後 文", enabled: true, protectedTerms: []) == quoted + " 後文")
+        }
+    }
+
+    @Test func localPathsAgreeOnFenceFixtures() {
+        let body = "和 文。次にという。こと"
+        let fixtures = [("```swift\n" + body + "\n```", true), ("  ~~~~sh\n" + body + "\n  ~~~~~", true),
+                        ("````\n```\n" + body + "\n````", true), ("```sh\nx=\"```\"\n" + body + "\n```", true), ("~~~\r\n" + body, true),
+                        (body, false), ("~~\n" + body + "\n~~", false), ("    ~~~\n" + body, false)]
+        for (source, protected) in fixtures {
+            #expect((JapaneseDictationSpacing.adopt(source, enabled: true, protectedTerms: []) == source) == protected)
+            #expect((AgentInstructionFormatting.format(source) == source) == protected)
+            #expect((TextContextChecking.check(source).changes == 0) == protected)
+        }
+    }
+
     @Test func localCheckJoinsOnlyKnownConnectives() {
         let result = TextContextChecking.check("設定について。はあとで考えるという。ことです。今日は終わり。明日続けます。")
         #expect(result.text == "設定についてはあとで考えるということです。今日は終わり。明日続けます。")
