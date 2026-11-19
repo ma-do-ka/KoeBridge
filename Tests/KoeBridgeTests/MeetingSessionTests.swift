@@ -100,6 +100,51 @@ import KoeBridgeCore
 }
 
 @MainActor struct MicrophoneIntegrityTests {
+    @Test func resamplerTailReachesRecognitionStreamOnlyOnNormalStop() async throws {
+        for rate in [44_100.0, 48_000.0] {
+            let inputFormat = try #require(AVAudioFormat(standardFormatWithSampleRate: rate, channels: 1))
+            let frames = AVAudioFrameCount(rate / 100)
+            let input = try #require(AVAudioPCMBuffer(pcmFormat: inputFormat, frameCapacity: frames))
+            input.frameLength = frames
+            for i in 0..<Int(frames) { input.floatChannelData![0][i] = 0.25 }
+            // Independently measure ordinary conversion on this OS, without EOS.
+            let format = try #require(AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1))
+            let reference = try #require(AVAudioConverter(from: inputFormat, to: format))
+            let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 192))
+            var ordinaryBytes = 0
+            for _ in 0..<100 {
+                var supplied = false
+                var error: NSError?
+                _ = reference.convert(to: buffer, error: &error) { _, state in
+                    if supplied { state.pointee = .noDataNow; return nil }
+                    supplied = true
+                    state.pointee = .haveData
+                    return input
+                }
+                if let error { throw error }
+                ordinaryBytes += Int(buffer.frameLength) * 2
+            }
+            #expect(ordinaryBytes > 0 && ordinaryBytes < 32_000)
+            for end in [CaptureEnd.normal, .interrupted, .cancelled] {
+                // Use the same bounded chunk stream that feeds meeting recognition.
+                let (stream, continuation) = AsyncStream<Data>.makeStream(bufferingPolicy: .bufferingOldest(480))
+                let capture = SystemAudioCapture(onAudio: { continuation.yield($0) },
+                                                 onFailure: { Issue.record("capture failed") })
+                for _ in 0..<100 { try capture.convert(input) }
+                let drained = await capture.stop(end)
+                #expect(drained)
+                continuation.finish()
+                var bytes = 0
+                for await packet in stream { bytes += packet.count }
+                if end == .normal {
+                    #expect(bytes == 32_000)
+                } else {
+                    #expect(bytes == ordinaryBytes)
+                }
+            }
+        }
+    }
+
     @Test func admittedMismatchedTailAndGapSurviveStop() throws {
         let expected = AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1)!
         for (mismatch, gap) in [(true, false), (false, true), (false, false)] {

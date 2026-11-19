@@ -38,6 +38,7 @@ private final class MeetingAudioCount: @unchecked Sendable {
         var local: LocalTranscribing?
         var cloud: GeminiLiveConnection?
         var stopRequested = false
+        var captureEnd: CaptureEnd = .normal
         var captureEnded = false
         var captureDrain: Task<Void, Never>?
         var failed = false
@@ -121,6 +122,7 @@ private final class MeetingAudioCount: @unchecked Sendable {
         stop()
         var snapshot = transcript
         for (source, chunk) in chunks {
+            chunk.captureEnd = .cancelled
             recordUsage(chunk, interrupted: true)
             snapshot.append(source: source, offset: segmentOffset(chunk, source: source), text: chunk.partial)
             chunk.timer?.cancel(); chunk.worker?.cancel()
@@ -261,6 +263,7 @@ private final class MeetingAudioCount: @unchecked Sendable {
                 if let cloud = chunk.cloud { try await cloud.endAudio(); return try await cloud.awaitFinal() }
                 return try await chunk.local?.endAudioAndAwaitFinal() ?? ""
             } catch {
+                chunk.captureEnd = .interrupted
                 chunk.stopRequested = true
                 throw error
             }
@@ -271,8 +274,9 @@ private final class MeetingAudioCount: @unchecked Sendable {
             try await mic.start(onAudio: audio, onDeviceChanged: failure)
             chunk.startedAt = ProcessInfo.processInfo.systemUptime - Double(mic.totalPCMBytes) / 32_000
         } else {
-            let system = SystemAudioCapture(); chunk.system = system
-            try await system.start(onAudio: audio, onFailure: failure)
+            let system = SystemAudioCapture(onAudio: audio, onFailure: failure)
+            chunk.system = system
+            try await system.start()
         }
         try Task.checkCancellation()
         if stopping { chunk.stopRequested = true }
@@ -297,11 +301,13 @@ private final class MeetingAudioCount: @unchecked Sendable {
         if let drain = chunk.captureDrain { await drain.value; return }
         chunk.captureEnded = true
         let drain = Task { @MainActor in
+            let end: CaptureEnd = (chunk.failed || micFailed || chunk.integrity.droppedChunks > 0)
+                ? .interrupted : chunk.captureEnd
             if let mic = chunk.mic {
-                let losses = await withCheckedContinuation { done in mic.stop { done.resume(returning: $0) } }
+                let losses = await withCheckedContinuation { done in mic.stop(end) { done.resume(returning: $0) } }
                 chunk.microphoneStopped(losses: losses)
             }
-            if let system = chunk.system { await system.stop() }
+            if let system = chunk.system, !(await system.stop(end)) { chunk.integrity.markDropped() }
             chunk.continuation?.finish(); chunk.continuation = nil
         }
         chunk.captureDrain = drain

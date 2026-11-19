@@ -3,6 +3,24 @@ import Testing
 @testable import KoeBridgeCore
 
 struct PostProcessingTests {
+    @Test func fencePreservationControlsAdoption() {
+        let first = "~~~sh\n作業\n~~~"
+        let second = "````\nが\n```\n````"
+        let original = "前\n" + first + "\n中\n" + second + "\n後"
+        for edited in [original.replacingOccurrences(of: "作業", with: "変更"),
+                       original.replacingOccurrences(of: "が", with: "か\u{3099}"),
+                       "前\n" + second + "\n" + first, first, String(repeating: "変更", count: 100)] {
+            let result = PostProcessingPolicy.adoption(original: original, processed: edited)
+            #expect(result.text.utf8.elementsEqual(original.utf8))
+            #expect(result.rejection == .fencedContent)
+        }
+        for (source, response) in [(original, original + "修正"), ("普通の文", first), ("文中の ```inline```", "自由"), ("`inline`", "自由")] {
+            let result = PostProcessingPolicy.adoption(original: source, processed: response)
+            #expect(result.text.utf8.elementsEqual(response.utf8))
+            #expect(result.rejection == nil)
+        }
+    }
+
     @Test func policyMatrix() {
         for mode in PostProcessingMode.allCases {
             for enabled in [false, true] {

@@ -3,6 +3,104 @@ import Testing
 @testable import KoeBridgeCore
 
 struct TranscriptReviewTests {
+    @Test func nestedAndUnclosedQuotations() {
+        for (open, close) in [("「", "」"), ("『", "』"), ("“", "”"), ("‘", "’")] {
+            let nested = open + "外 " + open + "内" + close + " 残 す。次にという。こと " + close
+            #expect(JapaneseDictationSpacing.adopt(nested + " 後 文", enabled: true, protectedTerms: []) == nested + " 後文")
+            #expect(AgentInstructionFormatting.format(nested) == nested)
+            #expect(TextContextChecking.check(nested).changes == 0)
+            let unclosed = open + "残 す\n次 行"
+            #expect(JapaneseDictationSpacing.adopt(unclosed, enabled: true, protectedTerms: []) == unclosed)
+        }
+        #expect(JapaneseDictationSpacing.adopt("'残 す\n次 行", enabled: true, protectedTerms: []) == "'残 す\n次行")
+    }
+
+    @Test func balancedTypographicQuotesProtectBothLines() {
+        for (open, close) in [("「", "」"), ("『", "』"), ("“", "”"), ("‘", "’")] {
+            let quoted = open + "一行 目\n二行 目" + close
+            let source = quoted + " 後 文"
+            #expect(ProtectedTextSpans(source).contents == [Data(quoted.utf8)])
+            #expect(JapaneseDictationSpacing.adopt(source, enabled: true, protectedTerms: []) == quoted + " 後文")
+        }
+    }
+
+    @Test func apostrophesInWordsAndQuotations() {
+        for word in ["don't", "it's", "rock'n'roll", "カ'ナ", "don’t"] {
+            let source = "項目：" + word + "。日本 語"
+            #expect(JapaneseDictationSpacing.adopt(source, enabled: true, protectedTerms: []) == "項目：" + word + "。日本語")
+            let quoted = "'日本 語 " + word + " 残 す'"
+            #expect(JapaneseDictationSpacing.adopt(quoted + " 後 文", enabled: true, protectedTerms: []) == quoted + " 後文")
+        }
+    }
+
+    @Test func foreignDelimitersAndTrailingApostrophesLeaveProseEditable() {
+        let examples = [
+            (#""users'""#, "。次にという。こと 後 文", "。次にという。こと後文"),
+            (#""The users' guide""#, " 日本 語。次にという。こと", " 日本語。次にという。こと"),
+            (#""foo 'bar""#, " 日本 語", " 日本語"),
+            (#"'foo "bar'"#, " 日本 語", " 日本語"),
+            ("It's users'", "。日本 語", "。日本語")
+        ]
+        for (prefix, prose, normalized) in examples {
+            let source = prefix + prose
+            let tail = NSRange(location: prefix.utf16.count, length: prose.utf16.count)
+            #expect(!ProtectedTextSpans(source).intersects(tail))
+            #expect(JapaneseDictationSpacing.adopt(source, enabled: true, protectedTerms: []) == prefix + normalized)
+            #expect(AgentInstructionFormatting.format(source) == prefix + prose.replacingOccurrences(of: "。次に", with: "。\n次に"))
+            #expect(TextContextChecking.check(source).text == prefix + prose.replacingOccurrences(of: "という。こと", with: "ということ"))
+        }
+    }
+
+    @Test func quoteCoverageMatchesMainOnUnchangedCases() {
+        // UTF-16 ranges captured from main (c9806ec). Check coverage and the
+        // boundaries between spans, including the two units of an emoji.
+        let fixtures: [(String, [Range<Int>])] = [
+            ("😀『語 文』後 文「別」", [2..<7, 10..<13]),
+            ("彼は“語 文”と‘別’", [2..<7, 8..<11]),
+            ("\"開 く\n次 行", [0..<5]),
+            ("「未 完", [0..<4]),
+            ("🍵\"和 ' 文\"次", [2..<9]),
+            ("\"甲\"\"乙\" 後", [0..<6]),
+            ("引用なし", []),
+            ("「外『内』残」後", [0..<7]),
+            ("語 '未 完", [2..<6])
+        ]
+        for (source, expected) in fixtures {
+            let spans = ProtectedTextSpans(source)
+            for offset in 0..<source.utf16.count {
+                let unit = NSRange(location: offset, length: 1)
+                #expect(spans.intersects(unit) == expected.contains { $0.contains(offset) })
+                #expect(spans.containsInterior(offset) == expected.contains { $0.lowerBound < offset && offset < $0.upperBound })
+            }
+        }
+    }
+
+    @Test func escapedClosersStayLiteralAndOnlyASCIIQuotesStopAtLineBreaks() {
+        for quoted in [#""前\" 残 す ' 後""#, #"'前\' 残 す " 後'"#] {
+            #expect(JapaneseDictationSpacing.adopt(quoted + " 後 文", enabled: true, protectedTerms: []) == quoted + " 後文")
+        }
+        for open in ["「", "『", "“", "‘", "'", "\""] {
+            for newline in ["\n", "\r", "\r\n", "\u{2028}", "\u{2029}"] {
+                let prefix = open + " 残 す" + newline
+                let source = prefix + "次 行"
+                let expected = (open == "\"" || open == "'") ? prefix + "次行" : source
+                #expect(JapaneseDictationSpacing.adopt(source, enabled: true, protectedTerms: []) == expected)
+            }
+        }
+    }
+
+    @Test func localPathsAgreeOnFenceFixtures() {
+        let body = "和 文。次にという。こと"
+        let fixtures = [("```swift\n" + body + "\n```", true), ("  ~~~~sh\n" + body + "\n  ~~~~~", true),
+                        ("````\n```\n" + body + "\n````", true), ("```sh\nx=\"```\"\n" + body + "\n```", true), ("~~~\r\n" + body, true),
+                        (body, false), ("~~\n" + body + "\n~~", false), ("    ~~~\n" + body, false)]
+        for (source, protected) in fixtures {
+            #expect((JapaneseDictationSpacing.adopt(source, enabled: true, protectedTerms: []) == source) == protected)
+            #expect((AgentInstructionFormatting.format(source) == source) == protected)
+            #expect((TextContextChecking.check(source).changes == 0) == protected)
+        }
+    }
+
     @Test func localCheckJoinsOnlyKnownConnectives() {
         let result = TextContextChecking.check("設定について。はあとで考えるという。ことです。今日は終わり。明日続けます。")
         #expect(result.text == "設定についてはあとで考えるということです。今日は終わり。明日続けます。")

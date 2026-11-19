@@ -90,7 +90,7 @@ public struct TranscriptAssembler {
     /// Preserve the assembler's existing spacing, including the tail separator.
     public var preview: RecognitionPreview {
         RecognitionPreview(finalizedPrefix: finalized,
-                           volatileTail: String(displayText.dropFirst(finalized.count)))
+                           volatileTail: (needsSpace(finalized, interim) ? " " : "") + interim)
     }
 
     public var committedText: String { exceededFinalBudget ? "" : finalized }

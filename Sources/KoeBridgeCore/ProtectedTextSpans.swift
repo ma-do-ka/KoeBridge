@@ -1,5 +1,42 @@
 import Foundation
 
+/// Match whole delimiters so shorter runs inside longer ones stay literal.
+enum CodeFences {
+    // Markdown fences start on their own line, indented by at most three spaces.
+    // Inside a fence, only a closing line with the same marker (at least as
+    // long) counts. Inline backticks and fence-like code strings are data.
+    private static let delimiterLine = try! NSRegularExpression(
+        pattern: #"(?m)^ {0,3}(\x60{3,}|~{3,})([^\r\n]*)"#)
+
+    static func ranges(in text: String) -> [NSRange] {
+        let source = text as NSString
+        let full = NSRange(location: 0, length: source.length)
+        var opening: NSRange?
+        var ranges: [NSRange] = []
+        for line in delimiterLine.matches(in: text, range: full) {
+            let run = line.range(at: 1)
+            let marker = source.character(at: run.location)
+            let suffix = source.substring(with: line.range(at: 2))
+            if let start = opening {
+                if marker == source.character(at: start.location), run.length >= start.length,
+                   suffix.allSatisfy({ $0 == " " || $0 == "\t" }) {
+                    ranges.append(NSRange(location: start.location, length: NSMaxRange(run) - start.location))
+                    opening = nil
+                }
+            } else if marker != 0x60 || !suffix.utf8.contains(0x60) {
+                opening = run
+            }
+        }
+        if let start = opening { ranges.append(NSRange(location: start.location, length: full.length - start.location)) }
+        return ranges
+    }
+
+    static func segments(in text: String) -> [Data] {
+        let source = text as NSString
+        return ranges(in: text).map { Data(source.substring(with: $0).utf8) }
+    }
+}
+
 /// One immutable UTF-16 index over the original transcript. Formatting plans
 /// all edits against this index before changing the text, so literal boundaries
 /// never move halfway through a pass. No document context is collected.
@@ -20,16 +57,65 @@ struct ProtectedTextSpans {
         return ranges.map { Data(source.substring(with: $0).utf8) }
     }
 
+    private static let inlineCode = try! NSRegularExpression(pattern:
+        #"(?<!\x60)(\x60{2,})(?!\x60)[\s\S]*?(?:(?<!\x60)\1(?!\x60)|\z)|\x60[^\x60\n]*(?:\x60|\n|\z)"#)
+
+    private static let closingQuote: [Unicode.Scalar: Unicode.Scalar] = [
+        "「": "」", "『": "』", "“": "”", "‘": "’", "'": "'", "\"": "\""
+    ]
+
+    private static func quoteRanges(in text: String) -> [NSRange] {
+        let scalars = text.unicodeScalars
+        let word = CharacterSet.alphanumerics.union(.nonBaseCharacters)
+        var ranges: [NSRange] = []
+        var active: (open: Unicode.Scalar, close: Unicode.Scalar)?
+        var start = 0, depth = 0, offset = 0
+        var previousIsWord = false, escaped = false
+
+        for index in scalars.indices {
+            let ch = scalars[index]
+            let end = offset + ch.utf16.count
+            if let pair = active {
+                // Only the outer family owns this span. An unmatched foreign
+                // quote inside it cannot start a second span beyond its end.
+                if pair.open == pair.close && CharacterSet.newlines.contains(ch) {
+                    depth = 0
+                } else if escaped {
+                    escaped = false
+                } else if pair.open == pair.close && ch == "\\" {
+                    escaped = true
+                } else if ch == pair.close {
+                    let next = scalars.index(after: index)
+                    let withinWord = (ch == "'" || ch == "’") && previousIsWord &&
+                        next < scalars.endIndex && word.contains(scalars[next])
+                    if !withinWord { depth -= 1 }
+                } else if ch == pair.open {
+                    depth += 1
+                }
+
+                if depth == 0 {
+                    ranges.append(NSRange(location: start, length: end - start))
+                    active = nil
+                    escaped = false
+                }
+            } else if let close = closingQuote[ch], !(ch == "'" && previousIsWord) {
+                // A word-internal or trailing apostrophe (don't, users') cannot open a quotation.
+                active = (ch, close)
+                start = offset
+                depth = 1
+            }
+            previousIsWord = word.contains(ch)
+            offset = end
+        }
+        if active != nil { ranges.append(NSRange(location: start, length: offset - start)) }
+        return ranges
+    }
+
     init(_ text: String, additionalPatterns: [NSRegularExpression] = []) {
         // Quote bodies include punctuation/whitespace verbatim. ASCII runs
         // protect URLs, paths, flags, decimals, signs, IDs and English tokens;
         // token boundaries also prevent "foo bar" -> "foobar" acceptance.
         var patterns = [
-            #"```[\s\S]*?(?:```|$)"#,
-            #"`[^`\n]*(?:`|\n|$)"#,
-            #"「[^」]*(?:」|$)|『[^』]*(?:』|$)"#,
-            #"“[^”]*(?:”|$)|‘[^’]*(?:’|$)"#,
-            #""[^"\n]*(?:"|\n|$)|'[^'\n]*(?:'|\n|$)"#,
             #"[\p{N}〇一二三四五六七八九十百千万億兆]+|[!-~]+"#
         ]
         // Every path/URL pattern requires a slash, backslash or period. Skip
@@ -52,6 +138,17 @@ struct ProtectedTextSpans {
             guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
             return regex.matches(in: text, range: fullRange).map(\.range)
         }
+        let fences = CodeFences.ranges(in: text)
+        ranges += fences
+        // Inline code may have variable-length delimiters. Do not interpret an
+        // unmatched delimiter inside a fenced block as the start of a new span.
+        var start = 0
+        for fence in fences + [NSRange(location: fullRange.length, length: 0)] {
+            let gap = NSRange(location: start, length: fence.location - start)
+            ranges += Self.inlineCode.matches(in: text, range: gap).map(\.range)
+            start = NSMaxRange(fence)
+        }
+        ranges += Self.quoteRanges(in: text)
         for regex in additionalPatterns {
             ranges.append(contentsOf: regex.matches(in: text, range: fullRange).map(\.range))
         }

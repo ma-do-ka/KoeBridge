@@ -230,7 +230,7 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
         reviewSession?.cancel()
         // A capture may still be preparing; late callbacks are gated by
         // 'finished', and the original startup task releases its own mic.
-        mic?.stop { _ in }
+        mic?.stop(.cancelled) { _ in }
         mic = nil
         continuation?.finish()
         continuation = nil

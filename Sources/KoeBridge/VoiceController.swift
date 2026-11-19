@@ -1180,7 +1180,7 @@ import KoeBridgeCore
         let capture = take.mic
         take.mic = nil
         if let capture {
-            capture.stop { [weak self, weak take] losses in
+            capture.stop(.normal) { [weak self, weak take] losses in
                 Task { @MainActor [weak self, weak take] in
                     self?.resumeMicrophoneWarm()
                     guard let self, let take, !take.finished else { return }
@@ -1385,11 +1385,12 @@ import KoeBridgeCore
                     let result = try await GeminiTextTransformer.postProcess(
                         text: original, mode: take.postProcessMode, apiKey: key, timeout: budget)
                     guard !take.finished, !Task.isCancelled else { return }
-                    if PostProcessingPolicy.accepts(original: original, processed: result.text) {
-                        output = result.text
-                        DiagnosticLog.record("postprocess applied mode=\(take.postProcessMode.rawValue)")
+                    let adoption = PostProcessingPolicy.adoption(original: original, processed: result.text)
+                    output = adoption.text
+                    if let reason = adoption.rejection {
+                        DiagnosticLog.record("postprocess rejected \(reason.rawValue)")
                     } else {
-                        DiagnosticLog.record("postprocess rejected length")
+                        DiagnosticLog.record("postprocess applied mode=\(take.postProcessMode.rawValue)")
                     }
                     if let usage = result.usage {
                         DiagnosticLog.record("gemini postprocess usage; promptTokens=\(usage.promptTokens.map(String.init) ?? "unknown") responseTokens=\(usage.responseTokens.map(String.init) ?? "unknown") totalTokens=\(usage.totalTokens)")
@@ -1410,11 +1411,11 @@ import KoeBridgeCore
            DictationDelivery.skipped(suppressed: take.automaticDeliverySuppressed,
                requiresReview: take.review?.status == .needsReview,
                acousticReviewRequired: take.acousticReviewRequired, shouldPaste: take.shouldPaste) == nil {
-            let date = Date()
-            let clipboard = SnippetExpander.needsClipboard(original, rules: take.snippets, date: date)
-                ? NSPasteboard.general.string(forType: .string) : nil
-            text = SnippetExpander.expand(original, rules: take.snippets,
-                context: SnippetContext(date: date, clipboardText: clipboard))
+            let expansion = SnippetExpander.expansion(original, rules: take.snippets, date: Date()) {
+                NSPasteboard.general.string(forType: .string)
+            }
+            text = expansion.text
+            if expansion.budgetExhausted { DiagnosticLog.record("snippet expansion stopped reason=byte_budget") }
         }
         let partial = take.recoverableText
         let actualEngine: InputDiagnosticEvent.Token = take.successfulEngine == .gemini ? .gemini
@@ -1472,7 +1473,7 @@ import KoeBridgeCore
         let stoppingCapture = take.mic
         take.releaseResources()
         if let stoppingCapture {
-            stoppingCapture.stop { [weak self] _ in
+            stoppingCapture.stop(.cancelled) { [weak self] _ in
                 Task { @MainActor [weak self] in self?.resumeMicrophoneWarm() }
             }
         } else { resumeMicrophoneWarm() }

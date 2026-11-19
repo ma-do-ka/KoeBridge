@@ -11,12 +11,7 @@ public enum JapaneseDictationSpacing {
     // an explicit prompt, option, executable path or common bare command name.
     private static let literals = [
         #"(?m)(?:^[ \t]*(?:\$[ \t]+|(?:[./~][^\s]*|[a-z][a-z0-9_.-]*(?=[ \t]+[ぁ-ゖァ-ヺ一-鿿㐀-䶿])|cp|mv|ls|cd|mkdir|touch|echo|printf|cat|git|open|rm)[ \t]+)|(?<!\S)--?[A-Za-z][\w-]*(?=[= \t]))[^\r\n]*"#,
-        // Markdown permits backticks inside a longer code delimiter, and tilde fences.
-        #"(?<!\x60)(\x60{2,})(?!\x60)[\s\S]*?(?:(?<!\x60)\1(?!\x60)|\z)"#,
-        #"(?m)^[ ]{0,3}(~{3,})[^\n]*\n[\s\S]*?(?:^[ ]{0,3}\1~*[ \t]*$|\z)"#,
         #"[零壱弐参拾佰阡萬]+"#,
-        // An escaped delimiter inside a quoted argument does not close it.
-        #""(?:\\[^\n]|[^"\\\n])*(?:"|$)|'(?:\\[^\n]|[^'\\\n])*(?:'|$)"#,
         #"(?<![^\s@。、「」『』<>"])[^\s@。、「」『』<>"]+@[^\s@。、「」『』<>"]+"#
     ].map { try! NSRegularExpression(pattern: $0) }
 
@@ -31,13 +26,11 @@ public enum JapaneseDictationSpacing {
         var termOffsets = IndexSet()
         // A literal trigger may overlap another occurrence, or include leading/trailing spaces.
         for term in Set(protectedTerms) where term.utf8.contains(0x20) {
-            var start = 0
-            while start < source.length {
-                let match = source.range(of: term, options: .literal,
-                    range: NSRange(location: start, length: source.length - start))
-                guard match.location != NSNotFound else { break }
-                termOffsets.insert(integersIn: match.location..<NSMaxRange(match))
-                start = match.location + 1
+            var remainder = text[...]
+            while let match = remainder.firstRange(of: term) {
+                let range = NSRange(match, in: text)
+                termOffsets.insert(integersIn: range.location..<NSMaxRange(range))
+                remainder = text[text.index(after: match.lowerBound)...]
             }
         }
 

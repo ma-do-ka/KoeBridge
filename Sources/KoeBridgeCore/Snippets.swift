@@ -34,40 +34,99 @@ public enum SnippetExpander {
             }.map(\.element)
     }
 
-    /// Uses the same sequential replacement order as expansion, without reading a clipboard.
+    public struct Expansion {
+        public let text: String
+        public let budgetExhausted: Bool
+    }
+
+    // Limit every intermediate result, including a rendered clipboard template.
+    // Larger original inputs may shrink or pass through without truncation.
+    static let maximumBytes = 256 * 1024
+
     public static func needsClipboard(_ text: String, rules: [SnippetRule], date: Date,
                                       calendar: Calendar = .current) -> Bool {
-        var result = text
-        for rule in ordered(rules) where result.range(of: rule.trigger, options: .literal) != nil {
-            if rule.template.contains("{{CLIPBOARD}}") { return true }
-            result = result.replacingOccurrences(of: rule.trigger, with: template(
-                rule.template, context: SnippetContext(date: date, clipboardText: nil), calendar: calendar), options: .literal)
+        var needed = false
+        _ = expand(text, rules: rules, date: date, calendar: calendar, maximumBytes: maximumBytes) {
+            needed = true
+            return nil
         }
-        return false
+        return needed
     }
 
     public static func expand(_ text: String, rules: [SnippetRule], context: SnippetContext,
                               calendar: Calendar = .current) -> String {
-        var result = text
-        for rule in ordered(rules) where result.range(of: rule.trigger, options: .literal) != nil {
-            result = result.replacingOccurrences(of: rule.trigger,
-                with: template(rule.template, context: context, calendar: calendar), options: .literal)
-        }
-        return result
+        expand(text, rules: rules, date: context.date, calendar: calendar, maximumBytes: maximumBytes) {
+            context.clipboardText
+        }.text
     }
 
-    private static func template(_ text: String, context: SnippetContext, calendar: Calendar) -> String {
-        let parts = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: context.date)
-        let values = ["DATE": String(format: "%04d/%02d/%02d", parts.year ?? 0, parts.month ?? 0, parts.day ?? 0),
-                      "TIME": String(format: "%02d:%02d", parts.hour ?? 0, parts.minute ?? 0),
-                      "CLIPBOARD": context.clipboardText ?? ""]
-        // Replace only original template tokens: clipboard content is never interpreted as a token.
-        var result = text
-        for match in placeholderRegex.matches(in: text, range: NSRange(text.startIndex..., in: text)).reversed() {
-            guard let range = Range(match.range, in: result),
-                  let keyRange = Range(match.range(at: 1), in: text) else { continue }
-            result.replaceSubrange(range, with: values[String(text[keyRange])] ?? "")
+    /// Read the pasteboard once, only if a reached template asks for it.
+    public static func expansion(_ text: String, rules: [SnippetRule], date: Date,
+                                 clipboard: () -> String?) -> Expansion {
+        var read = false
+        var value: String?
+        return expand(text, rules: rules, date: date, calendar: .current, maximumBytes: maximumBytes) {
+            if !read { value = clipboard(); read = true }
+            return value
         }
+    }
+
+    static func expand(_ text: String, rules: [SnippetRule], date: Date, calendar: Calendar,
+                       maximumBytes: Int, clipboard: () -> String?) -> Expansion {
+        let limit = max(text.utf8.count, maximumBytes)
+        var result = text
+        for rule in ordered(rules) {
+            // Character equality is the same canonical equivalence as Set<String>.
+            var remainder = result[...]
+            guard var match = remainder.firstRange(of: rule.trigger) else { continue }
+            guard let replacement = template(rule.template, date: date, calendar: calendar,
+                                             limit: limit, clipboard: clipboard) else {
+                return Expansion(text: result, budgetExhausted: true)
+            }
+            var next = ""
+            while true {
+                guard append(remainder[..<match.lowerBound], to: &next, limit: limit),
+                      append(replacement, to: &next, limit: limit) else {
+                    return Expansion(text: result, budgetExhausted: true)
+                }
+                remainder = remainder[match.upperBound...]
+                guard let found = remainder.firstRange(of: rule.trigger) else { break }
+                match = found
+            }
+            guard append(remainder, to: &next, limit: limit) else {
+                return Expansion(text: result, budgetExhausted: true)
+            }
+            result = next
+        }
+        return Expansion(text: result, budgetExhausted: false)
+    }
+
+    private static func append(_ part: some StringProtocol, to result: inout String, limit: Int) -> Bool {
+        guard part.utf8.count <= limit - result.utf8.count else { return false }
+        result.append(contentsOf: part)
+        return true
+    }
+
+    private static func template(_ text: String, date: Date, calendar: Calendar, limit: Int,
+                                 clipboard: () -> String?) -> String? {
+        let source = text as NSString
+        var start = 0
+        var result = ""
+        let parts = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: date)
+        while let match = placeholderRegex.firstMatch(in: text,
+                    range: NSRange(location: start, length: source.length - start)) {
+            let prefix = NSRange(location: start, length: match.range.location - start)
+            guard append(source.substring(with: prefix), to: &result, limit: limit) else { return nil }
+            let value: String
+            switch source.substring(with: match.range(at: 1)) {
+            case "DATE": value = String(format: "%04d/%02d/%02d", parts.year ?? 0, parts.month ?? 0, parts.day ?? 0)
+            case "TIME": value = String(format: "%02d:%02d", parts.hour ?? 0, parts.minute ?? 0)
+            default: value = clipboard() ?? ""
+            }
+            guard append(value, to: &result, limit: limit) else { return nil }
+            start = NSMaxRange(match.range)
+        }
+        guard append(source.substring(from: start), to: &result, limit: limit) else { return nil }
         return result
     }
 }
