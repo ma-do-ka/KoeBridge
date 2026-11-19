@@ -377,6 +377,18 @@ public final class MicrophoneStartupGate: @unchecked Sendable {
     public func commit(at now: TimeInterval, deadline: TimeInterval,
                        engineRunning: Bool, expectedEpoch: UInt64? = nil) -> Bool {
         lock.lock(); defer { lock.unlock() }
+        return commitLocked(at: now, deadline: deadline, engineRunning: engineRunning, expectedEpoch: expectedEpoch)
+    }
+
+    /// Sample the live clock after acquiring the lock, at the commit decision.
+    package func commitBeforeDeadline(_ deadline: TimeInterval, engineRunning: Bool, expectedEpoch: UInt64) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return commitLocked(at: ProcessInfo.processInfo.systemUptime, deadline: deadline,
+                            engineRunning: engineRunning, expectedEpoch: expectedEpoch)
+    }
+
+    private func commitLocked(at now: TimeInterval, deadline: TimeInterval,
+                              engineRunning: Bool, expectedEpoch: UInt64?) -> Bool {
         guard !committed, !configuring, pendingSince == nil,
               expectedEpoch == nil || expectedEpoch == stabilityEpoch,
               decisionLocked(at: now, deadline: deadline, engineRunning: engineRunning) == .ready else {

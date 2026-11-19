@@ -251,15 +251,15 @@ final class MicrophoneCapture: @unchecked Sendable {
                     at: ProcessInfo.processInfo.systemUptime, deadline: deadline, engineRunning: running)
                 if decision == .ready {
                     let committed = processingQueue.sync { [self] in
-                        guard startupBufferEpoch == inspectedEpoch, startupGate.commit(at: ProcessInfo.processInfo.systemUptime,
-                                                 deadline: deadline, engineRunning: running,
-                                                 expectedEpoch: inspectedEpoch) else { return false }
-                        let pending = startupBuffers
-                        startupBuffers.removeAll(keepingCapacity: false)
-                        startupFrames = 0
+                        guard self.startupBufferEpoch == inspectedEpoch,
+                              self.startupGate.commitBeforeDeadline(deadline, engineRunning: running,
+                                                                    expectedEpoch: inspectedEpoch) else { return false }
+                        let pending = self.startupBuffers
+                        self.startupBuffers.removeAll(keepingCapacity: false)
+                        self.startupFrames = 0
                         // Preserve the start of speech without exposing PCM from
                         // a failed preparation to SoundAnalysis or either ASR.
-                        for buffer in pending { consume(buffer) }
+                        for buffer in pending { self.consume(buffer) }
                         return true
                     }
                     if !committed {
@@ -509,6 +509,8 @@ final class MicrophoneCapture: @unchecked Sendable {
         startupDiagnostics?.begin(.engineStart)
         try engine.start()
         startupDiagnostics?.end(.engineStart)
+        guard !startupGate.isStopped else { throw CancellationError() }
+        guard ProcessInfo.processInfo.systemUptime < attemptDeadline else { throw CaptureError.notReady(.unstableBuffers) }
         let phase = startupGate.finishConfiguring(at: ProcessInfo.processInfo.systemUptime)
         if case .revalidating = phase { scheduleRevalidation(after: 0) }
         else { startupDiagnostics?.begin(.awaitPCM) }
