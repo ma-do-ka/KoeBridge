@@ -60,6 +60,10 @@ import KoeBridgeCore
             scheduleWarmGemini()
         }
     }
+    @Published var normalizeJapaneseSpacing: Bool {
+        didSet { UserDefaults.standard.set(normalizeJapaneseSpacing, forKey: "normalizeJapaneseSpacing") }
+    }
+
     @Published var japaneseHint: Bool {
         didSet {
             UserDefaults.standard.set(japaneseHint, forKey: "japanese")
@@ -671,6 +675,7 @@ import KoeBridgeCore
             legacySmart: d.bool(forKey: "smart")
         )
         geminiPrewarmEnabled = d.object(forKey: "geminiPrewarm") == nil ? true : d.bool(forKey: "geminiPrewarm")
+        normalizeJapaneseSpacing = d.object(forKey: "normalizeJapaneseSpacing") as? Bool ?? true
         japaneseHint = d.object(forKey: "japanese") == nil ? true : d.bool(forKey: "japanese")
         automaticPaste = d.object(forKey: "autoPaste") == nil ? true : d.bool(forKey: "autoPaste")
         vocabulary = d.string(forKey: "vocabulary") ?? "GitHub\nn8n\nPython\nDeepSeek\nGemini\nCodex"
@@ -797,7 +802,8 @@ import KoeBridgeCore
                                 style: profile?.style.flatMap(TranscriptionStyle.init(rawValue:)) ?? transcriptionStyle,
                                 japaneseHint: japaneseHint,
                                 vocabulary: selectedVocabulary,
-                                shouldPaste: automaticPaste, options: options)
+                                shouldPaste: automaticPaste, options: options,
+                                normalizeJapaneseSpacing: normalizeJapaneseSpacing, snippets: snippets)
         take.retainAudioGeneration = retainAudioEnabled ? retentionGeneration : nil
         take.appBundleIdentifier = bundleIdentifier
         take.appProfileName = profile?.displayName
@@ -1315,8 +1321,9 @@ import KoeBridgeCore
             if take.voiceCommandsEnabled, take.transformSelection == nil, !take.isFixLastInput {
                 take.commandCandidate = VoiceCommandMatcher.match(text: result, enabled: take.enabledVoiceCommands)
             }
+            let adopted = take.adoptFinalText(result)
             let original = take.commandCandidate == nil && take.transformSelection == nil && take.preferred == .gemini && take.style == .agent
-                ? AgentInstructionFormatting.format(result) : result
+                ? AgentInstructionFormatting.format(adopted) : adopted
             // Only an actually confirmed primary result can survive a review
             // timeout. Pending/interim text never takes this route.
             let review = DictationReviewSession(
@@ -1344,6 +1351,8 @@ import KoeBridgeCore
     private func resolve(_ take: DictationTake, text: String?, reason: String?,
                          noInput: Bool = false, postProcessed: Bool = false) {
         guard !take.finished else { return }
+        // Review, post-processing and their deadline fallbacks converge here.
+        var text = text.map(take.adoptFinalText)
         var disposition: Disposition = .text
         if let command = take.commandCandidate {
             let same = text.flatMap { VoiceCommandMatcher.match(text: $0, enabled: take.enabledVoiceCommands) } == command
@@ -1392,15 +1401,15 @@ import KoeBridgeCore
         }
         // Freeze the exact deliverable before both ordered completion and history.
         // Save-only, suppressed, review-held, stale and no-input takes never expand.
-        var text = isCommand ? nil : text
+        if isCommand { text = nil }
         if take.transformSelection == nil, !noInput, finished.pending.contains(take.id), let original = text, !original.isEmpty,
            DictationDelivery.skipped(suppressed: take.automaticDeliverySuppressed,
                requiresReview: take.review?.status == .needsReview,
                acousticReviewRequired: take.acousticReviewRequired, shouldPaste: take.shouldPaste) == nil {
             let date = Date()
-            let clipboard = SnippetExpander.needsClipboard(original, rules: snippets, date: date)
+            let clipboard = SnippetExpander.needsClipboard(original, rules: take.snippets, date: date)
                 ? NSPasteboard.general.string(forType: .string) : nil
-            text = SnippetExpander.expand(original, rules: snippets,
+            text = SnippetExpander.expand(original, rules: take.snippets,
                 context: SnippetContext(date: date, clipboardText: clipboard))
         }
         let partial = take.recoverableText
@@ -1435,7 +1444,7 @@ import KoeBridgeCore
             if let text, !text.isEmpty {
                 take.historyRecordID = remember(text, isPartial: false, delivery: .pending,
                                                 engine: take.usedMode, review: take.review,
-                                                recordedAt: take.requestedAt)
+                                                recordedAt: take.requestedAt, preserveWhitespace: true)
             } else if !partial.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 take.historyRecordID = remember(partial, isPartial: true, delivery: .recognitionInterrupted,
                                                 engine: take.usedMode, review: take.review,
@@ -1971,10 +1980,10 @@ import KoeBridgeCore
                                               delivery: TranscriptRecord.Delivery,
                                               engine: String? = nil,
                                               review: TranscriptReview? = nil,
-                                              recordedAt: Date = Date()) -> UUID? {
+                                              recordedAt: Date = Date(), preserveWhitespace: Bool = false) -> UUID? {
         let id = historyStore.remember(text, isPartial: isPartial, delivery: delivery,
                               engine: engine ?? (usedMode.isEmpty ? requestedMode.label : usedMode),
-                              review: review, recordedAt: recordedAt)
+                              review: review, recordedAt: recordedAt, preserveWhitespace: preserveWhitespace)
         refreshRetainedAudio()
         return id
     }

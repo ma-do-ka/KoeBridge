@@ -91,6 +91,7 @@ public enum SettingsSearchCatalog {
         .init(id: "translate-shortcut", section: .shortcuts, title: "選択テキストを翻訳", keywords: "translate shortcut キー"),
         .init(id: "fix-shortcut", section: .shortcuts, title: "直前の入力を修正", keywords: "fix last input shortcut キー"),
         .init(id: "prewarm", section: .gemini, title: "録音前に接続を準備する", keywords: "Gemini prewarm 待ち時間"),
+        .init(id: "japanese-spacing", section: .gemini, title: "日本語の間の半角スペースを削除する", keywords: "空白 逐語 文字起こし"),
         .init(id: "post-processing", section: .gemini, title: "LLM後処理", keywords: "post processing Apple 文を整える"),
         .init(id: "post-mode", section: .gemini, title: "後処理モード", keywords: "post processing mode"),
         .init(id: "learned-terms", section: .gemini, title: "学習した語彙", keywords: "learned terms 修正 辞書"),

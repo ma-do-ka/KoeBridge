@@ -40,6 +40,7 @@ Sources/KoeBridgeCore/FinalizationPolicy.swift
 Sources/KoeBridgeCore/GeminiWire.swift
 Sources/KoeBridgeCore/HotKeyPressGate.swift
 Sources/KoeBridgeCore/InsertionFocusPolicy.swift
+Sources/KoeBridgeCore/JapaneseDictationSpacing.swift
 Sources/KoeBridgeCore/LoginItemRegistrationPolicy.swift
 Sources/KoeBridgeCore/ModifierToggleDetector.swift
 Sources/KoeBridgeCore/OrderedResultBuffer.swift

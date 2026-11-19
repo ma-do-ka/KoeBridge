@@ -20,7 +20,7 @@ struct ProtectedTextSpans {
         return ranges.map { Data(source.substring(with: $0).utf8) }
     }
 
-    init(_ text: String) {
+    init(_ text: String, additionalPatterns: [NSRegularExpression] = []) {
         // Quote bodies include punctuation/whitespace verbatim. ASCII runs
         // protect URLs, paths, flags, decimals, signs, IDs and English tokens;
         // token boundaries also prevent "foo bar" -> "foobar" acceptance.
@@ -42,10 +42,14 @@ struct ProtectedTextSpans {
         let fullRange = NSRange(text.startIndex..., in: text)
         // Match each family independently: a broad path token before a URL
         // must not hide the URL's longer, more specific protected span.
-        let ranges = patterns.flatMap { pattern -> [NSRange] in
+        var ranges = patterns.flatMap { pattern -> [NSRange] in
             guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
             return regex.matches(in: text, range: fullRange).map(\.range)
-        }.sorted { $0.location == $1.location ? $0.length > $1.length : $0.location < $1.location }
+        }
+        for regex in additionalPatterns {
+            ranges.append(contentsOf: regex.matches(in: text, range: fullRange).map(\.range))
+        }
+        ranges.sort { $0.location == $1.location ? $0.length > $1.length : $0.location < $1.location }
         var merged: [NSRange] = []
         for range in ranges {
             if let last = merged.last, range.location < NSMaxRange(last) {

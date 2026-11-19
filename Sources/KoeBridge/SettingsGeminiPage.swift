@@ -96,6 +96,13 @@ struct SettingsGeminiPage: View {
                 } label: { Label("接続準備と言語・スタイル", systemImage: "waveform") }
                 GroupBox {
                     VStack(spacing: 0) {
+                        SettingsRow("日本語の間の半角スペースを削除する",
+                                    description: "通常の音声入力が確定したときに、日本語の文字間や読点・句点の前の半角スペースを削除します。認識した空白を残すにはオフにしてください。") {
+                            Toggle("日本語の間の半角スペースを削除する", isOn: $controller.normalizeJapaneseSpacing)
+                                .settingsControlFocus("japanese-spacing").labelsHidden().toggleStyle(.switch)
+                        }
+                        .settingsTarget("japanese-spacing")
+                        Divider()
                         SettingsRow("LLM後処理",
                                     description: "Appleの認識結果にも適用できます（Gemini APIキーが必要）。認識結果が確定したあと、別のLLM処理で文を整えます。失敗した場合は元の認識結果がそのまま入力されます。エージェントスタイルでは適用されません。") {
                             Toggle("LLM後処理", isOn: $controller.postProcessEnabled).settingsControlFocus(ids: controller.postProcessEnabled ? ["post-processing"] : ["post-processing", "post-mode"])
