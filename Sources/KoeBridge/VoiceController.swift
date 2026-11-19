@@ -463,7 +463,7 @@ import KoeBridgeCore
         guard phase == .idle, active == nil, inFlight.isEmpty, !textOperationRunning else {
             status = "音声入力・処理の完了後に会議モードを開始してください"; return
         }
-        if requestedMode == .gemini, !hasKey { status = AppError.noKey.localizedDescription; return }
+        if requestedMode == .gemini, KeychainStore.load() == nil { status = AppError.noKey.localizedDescription; return }
         meetingRunning = true
         microphoneWarmKeeper.suspend(reason: "meeting")
         warmScheduleTask?.cancel(); prewarmer.shutdown()
@@ -743,7 +743,20 @@ import KoeBridgeCore
         }
     }
 
-    var hasKey: Bool { KeychainStore.load() != nil }
+    private var cachedKeyRegistration: Bool?
+    var hasKey: Bool {
+        guard KeychainStore.observingChanges else { return KeychainStore.load() != nil }
+        if let cachedKeyRegistration { return cachedKeyRegistration }
+        let registered = KeychainStore.load() != nil
+        cachedKeyRegistration = registered
+        return registered
+    }
+
+    func invalidateKeyRegistration() {
+        guard cachedKeyRegistration != nil else { return }
+        cachedKeyRegistration = nil
+        objectWillChange.send()
+    }
     var busy: Bool { active != nil }
     func reserveHistoryInsertion() -> UUID? { postingGate.reserveHistory() }
     func performHistoryIntent(_ ticket: UUID, deadline: ContinuousClock.Instant, perform: () async -> Void) async {
@@ -1997,6 +2010,7 @@ import KoeBridgeCore
 
     func saveKey(_ key: String) throws {
         try KeychainStore.save(key)
+        invalidateKeyRegistration()
         warmScheduleTask?.cancel()
         prewarmer.shutdown()
         scheduleWarmGemini()
@@ -2004,6 +2018,7 @@ import KoeBridgeCore
     }
     func deleteKey() throws {
         try KeychainStore.delete()
+        invalidateKeyRegistration()
         warmScheduleTask?.cancel()
         prewarmer.shutdown()
         objectWillChange.send()

@@ -348,6 +348,7 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
+        controller.invalidateKeyRegistration()
         PermissionGuide.shared.refresh()
     }
 

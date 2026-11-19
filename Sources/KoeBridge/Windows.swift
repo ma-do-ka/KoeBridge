@@ -50,6 +50,7 @@ import KoeBridgeCore
     }
 
     func showSettings() {
+        VoiceController.shared.invalidateKeyRegistration()
         let window: NSWindow
         if let settingsWindow { window = settingsWindow }
         else {
