@@ -79,6 +79,31 @@ public final class MicrophonePreparationDiagnostics: @unchecked Sendable {
         public let inputChannels: Int
         public let firstBufferMS: Int?
         public let lastBufferAgeMS: Int?
+        public func logLines(prefix: String) -> [String] {
+            let payload = rendered
+            let original = prefix + " " + payload
+            guard (epoch > 1 || churnCount > 0),
+                  original.utf8.count > DiagnosticLogPolicy.maximumEventBytes else { return [original] }
+            let fields = payload.split(separator: " ")
+            let identity = prefix + " " + fields[0]
+            let digits = String(repeating: "9", count: String(fields.count).count)
+            let limit = DiagnosticLogPolicy.maximumEventBytes - (identity + " part=" + digits + "/" + digits).utf8.count
+            var parts: [String] = []
+            var current = ""
+            for field in fields.dropFirst() {
+                guard field.utf8.count + 1 <= limit else { return [original] }
+                if current.utf8.count + 1 + field.utf8.count > limit {
+                    parts.append(current)
+                    current = ""
+                }
+                current += " " + field
+            }
+            parts.append(current)
+            return parts.enumerated().map { index, part in
+                identity + " part=\(index + 1)/\(parts.count)" + part
+            }
+        }
+
         public var rendered: String {
             var fields = ["seq=\(sequence)", "t_ms=\(elapsedMS)", "stage=\(stage.rawValue)",
                           "event=\(kind.rawValue)", "pending=\(pending ? 1 : 0)", "stage_ms=\(stageMS)",

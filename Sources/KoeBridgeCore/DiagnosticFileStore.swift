@@ -46,9 +46,15 @@ public struct DiagnosticFileStore {
     /// Flush bounded evidence after input has resolved. Formatting, file opens
     /// and permission updates happen once per batch, outside the receipt poll.
     public func appendBatch(_ events: [String], at timestamp: Date = Date()) throws {
-        let safeEvents = events.compactMap(DiagnosticLogPolicy.sanitizedEvent)
+        try appendTimedBatch(events.map { (event: $0, at: timestamp) })
+    }
+
+    public func appendTimedBatch(_ events: [(event: String, at: Date)]) throws {
+        let safeEvents = events.compactMap { item in
+            DiagnosticLogPolicy.sanitizedEvent(item.event).map { (event: $0, at: item.at) }
+        }
         guard !safeEvents.isEmpty else { return }
-        let date = ISO8601DateFormatter().string(from: timestamp)
+        let formatter = ISO8601DateFormatter()
         let cap = maximumFileBytes
         let fm = FileManager.default
         try fm.createDirectory(at: fileURL.deletingLastPathComponent(),
@@ -72,7 +78,7 @@ public struct DiagnosticFileStore {
         var writer: FileHandle?
         defer { try? writer?.close() }
         for safe in safeEvents {
-            let bytes = Data("\(date) \(safe)\n".utf8)
+            let bytes = Data("\(formatter.string(from: safe.at)) \(safe.event)\n".utf8)
             guard bytes.count <= cap else { continue }
             if DiagnosticLogPolicy.needsRotation(existingBytes: current, incomingBytes: bytes.count,
                                                 maximumFileBytes: cap) {
