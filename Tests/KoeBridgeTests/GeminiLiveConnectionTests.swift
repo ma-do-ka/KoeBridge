@@ -20,6 +20,12 @@ private final class ScriptedLiveSocket: GeminiSocket, @unchecked Sendable {
 }
 
 @MainActor struct GeminiLiveConnectionTests {
+    @Test func largeAudioMessageMatchesExistingWireBytes() async throws {
+        let pcm = Data((0..<1_048_576).map { UInt8(truncatingIfNeeded: $0) })
+        let expected = try GeminiWire.audio(pcm)
+        let built = try await GeminiLiveConnection.audioMessage(pcm)
+        #expect(built.utf8.elementsEqual(expected.utf8))
+    }
     private func makeTake() -> DictationTake {
         DictationTake(preferred: .gemini, style: .verbatim, japaneseHint: false,
                       vocabulary: [], shouldPaste: true, options: .init())

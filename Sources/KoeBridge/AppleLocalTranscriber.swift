@@ -69,19 +69,21 @@ import KoeBridgeCore
         // Some on-device recognizers finish a task early. Never keep accepting
         // unheard tail audio and later submit the earlier prefix as a full take.
         guard state.acceptsAudio else { throw LocalError.endedBeforeAudio }
-        guard data.count.isMultiple(of: 2), data.count / 2 <= Int(AVAudioFrameCount.max) else {
-            throw LocalError.recognitionFailure("音声データの形式が不正です")
-        }
-        let frames = AVAudioFrameCount(data.count / 2)
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: audioFormat, frameCapacity: frames),
-              let pointer = buffer.int16ChannelData?.pointee else {
-            throw LocalError.recognitionFailure("音声データを認識用に準備できませんでした")
-        }
-        buffer.frameLength = frames
-        data.withUnsafeBytes { src in
-            guard let base = src.baseAddress else { return }
-            memcpy(pointer, base, Int(frames) * MemoryLayout<Int16>.size)
-        }
+        let buffer = try LocalPCM.buffer(data, range: data.startIndex..<data.endIndex, format: audioFormat)
+        request.append(buffer)
+    }
+
+    func appendRecoveryPCM(_ data: Data, range: Range<Int>) async throws {
+        if state.phase == .cancelled { throw CancellationError() }
+        if let failure = state.failure { throw LocalError.recognitionFailure(failure) }
+        guard request != nil else { throw LocalError.unavailable }
+        guard state.acceptsAudio else { throw LocalError.endedBeforeAudio }
+        let buffer = try await LocalPCM.recoveryBuffer(data, range: range, format: audioFormat)
+        try Task.checkCancellation()
+        if state.phase == .cancelled { throw CancellationError() }
+        if let failure = state.failure { throw LocalError.recognitionFailure(failure) }
+        guard let request else { throw LocalError.unavailable }
+        guard state.acceptsAudio else { throw LocalError.endedBeforeAudio }
         request.append(buffer)
     }
 

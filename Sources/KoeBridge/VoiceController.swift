@@ -576,8 +576,19 @@ import KoeBridgeCore
                 if replayJob == job { replayRecordID = nil; replayLocal?.cancel(); replayLocal = nil; replayTask = nil }
             }
             do {
-                let pcm = try retainedAudio.read(record.id, history: &historyStore)
-                if retainedAudio.sweepIsReusable { updateRetentionStatus() } else { refreshRetainedAudio() }
+                let source = try retainedAudio.prepareRead(record.id, history: &historyStore)
+                let revision = historyRevision
+                let pcm: Data
+                do { pcm = try await source.loadOnWorker() }
+                catch {
+                    guard replayJob == job, !Task.isCancelled else { return }
+                    retainedAudio.handleReadFailure(error, source: source, history: &historyStore)
+                    throw error
+                }
+                guard replayJob == job, !Task.isCancelled,
+                      historyStore.entries.first(where: { $0.id == record.id })?.audioAsset == source.asset else { return }
+                if historyRevision == revision && retainedAudio.sweepIsReusable { updateRetentionStatus() } else { refreshRetainedAudio() }
+                guard replayJob == job, !Task.isCancelled else { return }
                 let text: String
                 if engine == .local {
                     guard pcm.count <= 50 * 32_000 else { throw RetainedAudioStore.ReplayError.localLimit }
@@ -1316,7 +1327,7 @@ import KoeBridgeCore
         while offset < length {
             try Task.checkCancellation()
             let end = min(offset + 3_200, length)
-            try local.appendPCM16(take.audioBackup.subdata(in: offset..<end))
+            try await local.appendRecoveryPCM(take.audioBackup, range: offset..<end)
             take.appleAudioBytes += end - offset
             offset = end
         }

@@ -101,26 +101,34 @@ import KoeBridgeCore
         guard let continuation, let converter else { throw LocalError.unavailable }
         guard !data.isEmpty else { return }
         guard state.acceptsAudio else { throw LocalError.endedBeforeAudio }
-        guard data.count.isMultiple(of: 2), data.count / 2 <= Int(AVAudioFrameCount.max) else {
-            throw LocalError.recognitionFailure("音声データの形式が不正です")
-        }
-        let frames = AVAudioFrameCount(data.count / 2)
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: audioFormat, frameCapacity: frames),
-              let pointer = buffer.int16ChannelData?.pointee else {
-            throw LocalError.recognitionFailure("音声データを認識用に準備できませんでした")
-        }
-        buffer.frameLength = frames
-        data.withUnsafeBytes { src in
-            guard let base = src.baseAddress else { return }
-            memcpy(pointer, base, Int(frames) * MemoryLayout<Int16>.size)
-        }
+        let buffer = try LocalPCM.buffer(data, range: data.startIndex..<data.endIndex, format: audioFormat)
         try convertAndYield(buffer, converter: converter, continuation: continuation)
     }
 
     // Drain every converter output, including any resampling tail at end of input.
     private func convertAndYield(_ input: AVAudioPCMBuffer?, converter: AVAudioConverter,
                                  continuation: AsyncStream<AnalyzerInput>.Continuation) throws {
-        let capacity = ceil(Double(input?.frameLength ?? 1024) * converter.outputFormat.sampleRate / audioFormat.sampleRate) + 256
+        do { try Self.convert(input, converter: converter, continuation: continuation) }
+        catch let failure as ConversionFailure { throw report(failure) }
+    }
+
+    private struct ConversionFailure: Error { let cause: NSError }
+
+    private func report(_ failure: ConversionFailure) -> LocalError {
+        DiagnosticLog.record("speechAnalyzer audio conversion failed: \(failure.cause.localizedDescription)")
+        return .recognitionFailure(UserFacingErrorMessage.message(for: failure.cause, operation: "音声データの変換"))
+    }
+
+    private nonisolated static func convertRecovery(_ data: Data, range: Range<Int>, format: AVAudioFormat,
+        converter: AVAudioConverter, continuation: AsyncStream<AnalyzerInput>.Continuation) async throws {
+        try Task.checkCancellation()
+        let buffer = try LocalPCM.buffer(data, range: range, format: format)
+        try convert(buffer, converter: converter, continuation: continuation)
+    }
+
+    private nonisolated static func convert(_ input: AVAudioPCMBuffer?, converter: AVAudioConverter,
+        continuation: AsyncStream<AnalyzerInput>.Continuation) throws {
+        let capacity = ceil(Double(input?.frameLength ?? 1024) * converter.outputFormat.sampleRate / converter.inputFormat.sampleRate) + 256
         guard capacity <= Double(AVAudioFrameCount.max) else {
             throw LocalError.recognitionFailure("音声データの形式が不正です")
         }
@@ -141,8 +149,7 @@ import KoeBridgeCore
                 return nil
             }
             if let error {
-                DiagnosticLog.record("speechAnalyzer audio conversion failed: \(error.localizedDescription)")
-                throw LocalError.recognitionFailure(UserFacingErrorMessage.message(for: error, operation: "音声データの変換"))
+                throw ConversionFailure(cause: error)
             }
             if status == .error { throw LocalError.recognitionFailure("音声データを変換できませんでした") }
             if output.frameLength > 0 {
@@ -152,6 +159,17 @@ import KoeBridgeCore
             }
             if status != .haveData { return }
         }
+    }
+
+    func appendRecoveryPCM(_ data: Data, range: Range<Int>) async throws {
+        if state.phase == .cancelled { throw CancellationError() }
+        if let failure = state.failure { throw LocalError.recognitionFailure(failure) }
+        guard let converter, let continuation else { throw LocalError.unavailable }
+        guard state.acceptsAudio else { throw LocalError.endedBeforeAudio }
+        do {
+            try await Self.convertRecovery(data, range: range, format: audioFormat,
+                                           converter: converter, continuation: continuation)
+        } catch let failure as ConversionFailure { throw report(failure) }
     }
 
     func endAudioAndAwaitFinal() async throws -> String {

@@ -9,7 +9,7 @@ import KoeBridgeCore
     static let lifetime: TimeInterval = 7 * 24 * 60 * 60
     let directory: URL
     private let attributes: (URL) throws -> [FileAttributeKey: Any]
-    private let readData: (URL) throws -> Data
+    private let readData: @Sendable (URL) throws -> Data
     private let capacity: Int
     // Valid only for the caller's current synchronous reconciliation. Keep the
     // original retry path for holds, repairs, unknown stats and capacity evictions.
@@ -23,7 +23,7 @@ import KoeBridgeCore
     init(directory: URL = RecentTranscriptArchive.defaultFileURL.deletingLastPathComponent()
         .appendingPathComponent("RetainedAudio", isDirectory: true), capacity: Int = 250_000_000,
         attributes: @escaping (URL) throws -> [FileAttributeKey: Any] = { try FileManager.default.attributesOfItem(atPath: $0.path) },
-        readData: @escaping (URL) throws -> Data = { try Data(contentsOf: $0) }) {
+        readData: @escaping @Sendable (URL) throws -> Data = { try Data(contentsOf: $0) }) {
         self.attributes = attributes
         self.readData = readData
         self.directory = directory; self.capacity = capacity
@@ -178,27 +178,43 @@ import KoeBridgeCore
         refreshCounts()
     }
 
-    func read(_ id: UUID, history: inout TranscriptHistoryStore) throws -> Data {
+    struct ReplaySource: Sendable {
+        let id: UUID
+        let asset: TranscriptRecord.AudioAsset
+        let file: URL
+        let readData: @Sendable (URL) throws -> Data
+
+        nonisolated func load() throws -> Data {
+            let data: Data
+            do { data = try readData(file) } catch { throw ReplayError.retryableRead }
+            let pcm = try PCM16WAV.extractPCM(data)
+            guard pcm.count == asset.pcmByteCount else { throw ReplayError.unavailable }
+            return pcm
+        }
+
+        nonisolated func loadOnWorker() async throws -> Data { try load() }
+    }
+
+    func prepareRead(_ id: UUID, history: inout TranscriptHistoryStore) throws -> ReplaySource {
         let retryable = sweep(history: &history)
         guard !retryable.contains(id) else { throw ReplayError.retryableRead }
-        guard let record = history.entries.first(where: { $0.id == id }), record.audioAsset != nil else {
+        guard let record = history.entries.first(where: { $0.id == id }), let asset = record.audioAsset else {
             throw ReplayError.unavailable
         }
-        let data: Data
-        do {
-            data = try readData(url(for: record))
-        } catch {
-            throw ReplayError.retryableRead
-        }
-        do {
-            let pcm = try PCM16WAV.extractPCM(data)
-            guard pcm.count == record.audioAsset?.pcmByteCount else { throw ReplayError.unavailable }
-            return pcm
-        } catch {
-            remove(url(for: record))
-            history.updateAudio(id, asset: nil, reason: "保存音声が見つからないか破損しています")
-            throw error
-        }
+        return ReplaySource(id: id, asset: asset, file: url(for: record), readData: readData)
+    }
+
+    func handleReadFailure(_ error: Error, source: ReplaySource, history: inout TranscriptHistoryStore) {
+        if case ReplayError.retryableRead = error { return }
+        guard history.entries.first(where: { $0.id == source.id })?.audioAsset == source.asset else { return }
+        remove(source.file)
+        history.updateAudio(source.id, asset: nil, reason: "保存音声が見つからないか破損しています")
+    }
+
+    func read(_ id: UUID, history: inout TranscriptHistoryStore) throws -> Data {
+        let source = try prepareRead(id, history: &history)
+        do { return try source.load() }
+        catch { handleReadFailure(error, source: source, history: &history); throw error }
     }
 
     private func remove(_ url: URL) {
