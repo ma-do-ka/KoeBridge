@@ -100,6 +100,8 @@ Tests/KoeBridgeCoreTests/SessionTransitionsTests.swift
 Tests/KoeBridgeCoreTests/StressTests.swift
 Tests/KoeBridgeCoreTests/TranscriptionStyleTests.swift
 Tests/KoeBridgeCoreTests/UserFacingErrorMessageTests.swift
+Tests/KoeBridgeTapFixtures/FakeTapNode.m
+Tests/KoeBridgeTapFixtures/include/KoeBridgeTapFixtures.h
 Tests/KoeBridgeTests/Build73DeliveryTests.swift
 Tests/KoeBridgeTests/GeminiLiveConnectionTests.swift
 Tests/KoeBridgeTests/HistoryHoverPanelTests.swift
@@ -332,6 +334,7 @@ Sources/KoeBridgeSelfTest/DeliveryPacingPolicyTests.swift
 Sources/KoeBridgeSelfTest/MicrophonePreparationDiagnosticsTests.swift
 Sources/KoeBridgeSelfTest/MicrophoneRevalidationPolicyTests.swift
 Sources/KoeBridgeSelfTest/MicrophoneStartupGateSettlingTests.swift
+Sources/KoeBridgeSelfTest/MicrophoneTapInstallationTests.swift
 Sources/KoeBridgeSelfTest/OverlayFeedbackTests.swift
 Sources/KoeBridgeSelfTest/StartupPreviewPolicyTests.swift
 Tests/KoeBridgeCoreTests/DeliveryDiagnosticsTests.swift

@@ -113,6 +113,11 @@ struct KoeBridgeSelfTest {
         await run("ContextAndTransformTests.contextCapsPreserveStartAndUnicode", { ContextAndTransformTests().contextCapsPreserveStartAndUnicode() })
         await run("ContextAndTransformTests.recheckContextIsOptionalAdditionalPart", { try ContextAndTransformTests().recheckContextIsOptionalAdditionalPart() })
         await run("ContextAndTransformTests.transformRequestAndResponse", { try ContextAndTransformTests().transformRequestAndResponse() })
+        #if os(macOS)
+        await run("MicrophoneTapInstallationTests.leaseAndBudget", { MicrophoneTapInstallationTests.leaseAndBudget() })
+        await run("MicrophoneTapInstallationTests.capture", { MicrophoneTapInstallationTests.exercise(warm: false) })
+        await run("MicrophoneTapInstallationTests.warmer", { MicrophoneTapInstallationTests.exercise(warm: true) })
+        #endif
         await run("MicWarmPolicyTests.allInputCombinations", { MicWarmPolicyTests().allInputCombinations() })
         await run("GeminiPrewarmPolicyTests.maximumWarmAgeIsFiveMinutes", { GeminiPrewarmPolicyTests().maximumWarmAgeIsFiveMinutes() })
         await run("GeminiPrewarmPolicyTests.matchingSnapshotWithinAgeLimit", { GeminiPrewarmPolicyTests().matchingSnapshotWithinAgeLimit() })
