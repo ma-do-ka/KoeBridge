@@ -66,6 +66,7 @@ Sources/KoeBridgeSelfTest/GeminiFinalizationTests.swift
 Sources/KoeBridgeSelfTest/GeminiWireTests.swift
 Sources/KoeBridgeSelfTest/HotKeyRecoveryTests.swift
 Sources/KoeBridgeSelfTest/InsertionSafetyTests.swift
+Sources/KoeBridgeSelfTest/JapaneseDictationSpacingTests.swift
 Sources/KoeBridgeSelfTest/LoginItemRegistrationPolicyTests.swift
 Sources/KoeBridgeSelfTest/ModifierToggleDetectorTests.swift
 Sources/KoeBridgeSelfTest/OrderedResultBufferTests.swift
