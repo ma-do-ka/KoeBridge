@@ -38,6 +38,7 @@ public struct GeminiServerFrame: Equatable, Sendable {
     public let transcriptionFinished: Bool
     public let tokenUsage: GeminiTokenUsage?
     /// Schema category only. This never includes transcript or API error text.
+    public let announcesGoAway: Bool
     public let diagnosticKind: String
 
     public init(data: Data) throws {
@@ -79,6 +80,7 @@ public struct GeminiServerFrame: Equatable, Sendable {
         }
         transcriptionFinished = transcription?["finished"] as? Bool == true
         tokenUsage = Self.usage(root["usageMetadata"] as? [String: Any])
+        announcesGoAway = root["goAway"] != nil
         diagnosticKind = Self.kind(root, content: content)
     }
 

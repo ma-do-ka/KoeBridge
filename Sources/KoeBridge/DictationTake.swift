@@ -72,13 +72,65 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
     var continuation: AsyncStream<Data>.Continuation?
     var worker: Task<Void, Never>?
     var permissionTask: Task<Void, Never>?
+    var recordingStart: ContinuousClock.Instant?
+    var effectiveMode: RecognitionMode?
+    var recordingDeadline: ContinuousClock.Instant? {
+        let seconds = transformSelection != nil ? 30 : ((effectiveMode ?? preferred) == .gemini ? 480 : 50)
+        return recordingStart?.advanced(by: .seconds(seconds))
+    }
     var recordingTimeout: Task<Void, Never>?
+    func scheduleRecordingTimeout(onDeadline: @escaping @MainActor () -> Void) {
+        guard let deadline = recordingDeadline else { return }
+        recordingTimeout?.cancel()
+        recordingTimeout = Task {
+            do { try await Task.sleep(until: deadline, clock: .continuous) } catch { return }
+            if !Task.isCancelled { onDeadline() }
+        }
+    }
     var finalizationTimeout: Task<Void, Never>?
     var cloud: GeminiLiveConnection?
     var local: LocalTranscribing?
     var audioIntegrity = AudioIntegrityState()
     var retainAudioGeneration: UUID?
     var audioBackup = Data()
+    var captureDrainedCleanly = false
+    static let maximumRescueBytes = 50 * 32_000
+
+    func transcribeLive(_ stream: AsyncStream<Data>, send: (Data) async throws -> Void,
+                        finish: () async throws -> String, rescue: () async throws -> String) async throws -> String {
+        var sendFailed = false
+        for await chunk in stream {
+            guard !finished, !Task.isCancelled else { throw CancellationError() }
+            audioBackup.append(chunk)
+            if !sendFailed {
+                do { try await send(chunk) }
+                catch {
+                    try Task.checkCancellation()
+                    if cloud?.assembler.exceededFinalBudget == true { throw GeminiLiveConnection.ConnectionError.finalBudgetExceeded }
+                    sendFailed = true
+                }
+            }
+            if sendFailed && audioBackup.count > Self.maximumRescueBytes { throw VoiceController.AppError.localRecoveryTooLong }
+        }
+        try Task.checkCancellation()
+        guard !finished else { throw CancellationError() }
+        guard audioIntegrity.droppedChunks == 0 else { throw VoiceController.AppError.audioDropped }
+        if !sendFailed {
+            do {
+                let text = try await finish()
+                successfulEngine = .gemini
+                return text
+            } catch { try Task.checkCancellation() }
+        }
+        if cloud?.assembler.exceededFinalBudget == true { throw GeminiLiveConnection.ConnectionError.finalBudgetExceeded }
+        guard !finished, captureDrainedCleanly, stoppingAt != nil, audioIntegrity.droppedChunks == 0 else {
+            throw VoiceController.AppError.audioDropped
+        }
+        DiagnosticLog.record("gemini transmit failed; attempting Apple on-device recovery")
+        let text = try await rescue()
+        successfulEngine = .local
+        return text
+    }
     var geminiAttempted = false
     var appleAttempted = false
     var fellBackToApple = false

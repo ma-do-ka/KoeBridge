@@ -129,6 +129,8 @@ public final class MicrophoneStartupGate: @unchecked Sendable {
     private let stableDuration: TimeInterval
     private let maximumGap: TimeInterval
     private var firstBufferAt: TimeInterval?
+    private var lastTapAt: TimeInterval?
+    public static let recordingGap: TimeInterval = 1
     private var lastBufferAt: TimeInterval?
     private var stableSince: TimeInterval?
     private var consecutiveBuffers = 0
@@ -242,6 +244,20 @@ public final class MicrophoneStartupGate: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         return acceptsBuffersLocked && token.stabilityEpoch == stabilityEpoch && token.tapGeneration == tapGeneration
     }
+    /// Called for admitted tap work, before conversion can hide an arrival gap.
+    /// The token may already be draining after stop.
+    public func noteTapArrival(_ token: TapCaptureToken, at now: TimeInterval) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard acceptsBuffersLocked, token.stabilityEpoch == stabilityEpoch,
+              token.tapGeneration == tapGeneration else { return false }
+        if committed, let previous = lastTapAt ?? lastBufferAt, now - previous >= Self.recordingGap {
+            failure = .buffersInterrupted
+            return true
+        }
+        lastTapAt = now
+        return false
+    }
+
     public func observeConvertedBuffer(frames: Int, at now: TimeInterval) {
         lock.lock(); defer { lock.unlock() }
         _ = observeLocked(frames: frames, at: now, epoch: stabilityEpoch)
@@ -266,7 +282,7 @@ public final class MicrophoneStartupGate: @unchecked Sendable {
         return committed ? .committed : .buffered
     }
     private func resetStabilityLocked() {
-        firstBufferAt = nil; lastBufferAt = nil; stableSince = nil; consecutiveBuffers = 0
+        firstBufferAt = nil; lastBufferAt = nil; lastTapAt = nil; stableSince = nil; consecutiveBuffers = 0
     }
     @discardableResult public func finishConfiguring(at now: TimeInterval) -> Phase {
         lock.lock(); defer { lock.unlock() }
@@ -403,7 +419,7 @@ public final class MicrophoneStartupGate: @unchecked Sendable {
     /// The lifecycle watchdog feeds a failure back through invalidate(), which
     /// emits the recording interruption at most once.
     public func recordingFailure(at now: TimeInterval, engineRunning: Bool,
-                                 maximumGap: TimeInterval = 1.0) -> Failure? {
+                                 maximumGap: TimeInterval = MicrophoneStartupGate.recordingGap) -> Failure? {
         lock.lock(); defer { lock.unlock() }
         guard committed, !stopped, failure == nil else { return nil }
         guard engineRunning else { return .engineStopped }

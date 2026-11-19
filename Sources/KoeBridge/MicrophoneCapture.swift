@@ -22,15 +22,17 @@ final class MicrophoneCapture: @unchecked Sendable {
     private var engine: AVAudioEngine? { engineLease?.resource }
     private let selectedInputUID: String
     private var selectedTarget: MicrophoneSelectionTarget? // lifecycleQueue only
-    init(selectedInputUID: String = "") { self.selectedInputUID = selectedInputUID }
-    private let startupGate = MicrophoneStartupGate(configuring: true)
+    init(selectedInputUID: String = "", startupGate: MicrophoneStartupGate = .init(configuring: true)) {
+        self.selectedInputUID = selectedInputUID
+        self.startupGate = startupGate
+    }
+    private let startupGate: MicrophoneStartupGate
     private var revalidationWorkItem: DispatchWorkItem? // lifecycleQueue only
     // Assigned before the observer is installed; immutable for the attempt.
     private var attemptDeadline: TimeInterval = 0
     private var startupBufferEpoch: UInt64 = 1 // processingQueue only
     private let stopLatch = MicrophoneStopLatch()
     private let tap = MicrophoneTapInstallation() // lifecycleQueue only
-    private var tapPlan: MicrophoneTapFormatPlan? // lifecycleQueue only
     private var teardownStarted = false // lifecycleQueue only
     private var startupBuffers: [AVAudioPCMBuffer] = [] // processingQueue only
     private var startupFrames = 0 // processingQueue only; capped at four seconds
@@ -111,6 +113,16 @@ final class MicrophoneCapture: @unchecked Sendable {
         healthLock.lock()
         if conversionError { conversionErrors += 1 } else { droppedBuffers += 1 }
         healthLock.unlock()
+    }
+
+    static func retryDelay(for error: Error, policy: MicrophoneStartupRetryPolicy,
+                           attempts: Int, elapsed: TimeInterval) -> TimeInterval? {
+        guard !(error is MicrophoneSelectionError), !(error is MicrophoneGraphError),
+              !(error is CancellationError) else { return nil }
+        if let error = error as? CaptureError, case .notReady(let failure) = error {
+            return policy.retryDelay(after: attempts, elapsed: elapsed, failure: failure)
+        }
+        return policy.retryDelay(after: attempts, elapsed: elapsed)
     }
 
     @MainActor
@@ -242,8 +254,8 @@ final class MicrophoneCapture: @unchecked Sendable {
                 default: break
                 }
                 let inspectedEpoch = startupGate.currentEpoch
-                if let engine, let tapPlan {
-                    do { try verifyTapFormat(engine.inputNode, plan: tapPlan) }
+                if let engine {
+                    do { try verifyTapFormat(engine.inputNode) }
                     catch {
                         startupDiagnostics?.note(.formatChanged)
                         startupGate.invalidate(.formatChanged)
@@ -384,8 +396,8 @@ final class MicrophoneCapture: @unchecked Sendable {
             deviceStillSelected: selected, engineRunning: running, tapInstalled: tap.isInstalled,
             outputConnectionsEmpty: node.map { engine?.outputConnectionPoints(for: $0, outputBus: 0).isEmpty == true } ?? false,
             hardwareFormatValid: hardware.map { MicrophoneTapFormatPlan(hardwareSampleRate: $0.sampleRate, hardwareChannels: $0.channelCount) != nil } ?? false,
-            hardwareMatchesPlan: hardware.map { tapPlan?.matches(sampleRate: $0.sampleRate, channels: $0.channelCount) == true } ?? false,
-            appliedMatchesPlan: applied.map { tapPlan?.matches(sampleRate: $0.sampleRate, channels: $0.channelCount) == true } ?? false,
+            hardwareMatchesPlan: hardware.map { tap.hardwareMatches($0) } ?? false,
+            appliedMatchesPlan: applied.map { tap.appliedMatches($0) } ?? false,
             droppedBuffers: losses, conversionErrors: errors)
         let verdict = MicrophoneRevalidationPolicy.evaluate(input)
         // Native reads can race a newer notification or cancellation. Never apply
@@ -434,7 +446,7 @@ final class MicrophoneCapture: @unchecked Sendable {
         let beganAt = Date()
         startupDiagnostics?.end(.lifecycle)
         startupDiagnostics?.begin(.deviceList)
-        let snapshot = MicrophoneDevices.snapshot()
+        let snapshot = try MicrophoneDevices.snapshot()
         startupDiagnostics?.end(.deviceList, code: snapshot.devices.count)
         startupDiagnostics?.begin(.selection)
         let target = try MicrophoneSelectionPolicy.resolve(uid: selectedInputUID,
@@ -484,6 +496,10 @@ final class MicrophoneCapture: @unchecked Sendable {
             // Timestamp arrival, not eventual conversion. Queued old buffers
             // must not make a stalled microphone appear live/ready.
             let arrivedAt = ProcessInfo.processInfo.systemUptime
+            if self.startupGate.noteTapArrival(token, at: arrivedAt) {
+                self.notifyInterruption(.buffersInterrupted, onDeviceChanged: onDeviceChanged)
+                return
+            }
             self.startupDiagnostics?.observeInput(frames: Int(buffer.frameLength), at: arrivedAt)
             guard self.workSlots.wait(timeout: .now()) == .success else { self.noteBufferLoss(); return }
             guard let copy = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: buffer.frameLength) else {
@@ -504,7 +520,6 @@ final class MicrophoneCapture: @unchecked Sendable {
         })
         let plan = try tap.installAndPrepare(graph: graph, gate: startupGate, deadline: attemptDeadline,
                                              diagnostics: startupDiagnostics, sink: sink)
-        tapPlan = plan
         guard !startupGate.isStopped else { throw CancellationError() }
         guard ProcessInfo.processInfo.systemUptime < attemptDeadline else { throw CaptureError.notReady(.unstableBuffers) }
         let startAt = Date()
@@ -541,28 +556,36 @@ final class MicrophoneCapture: @unchecked Sendable {
 
     /// Read back both scopes; never promote a successful API call alone to a
     /// valid stream. This does not change the system device or hardware rate.
-    private func verifyTapFormat(_ node: AVAudioInputNode,
-                                 plan: MicrophoneTapFormatPlan) throws {
+    private func verifyTapFormat(_ node: AVAudioInputNode) throws {
         let hardware = node.inputFormat(forBus: 0)
         let applied = node.outputFormat(forBus: 0)
         formatSnapshot?.appliedRate = applied.sampleRate
         formatSnapshot?.appliedChannels = applied.channelCount
-        guard plan.matches(sampleRate: hardware.sampleRate, channels: hardware.channelCount),
-              plan.matches(sampleRate: applied.sampleRate, channels: applied.channelCount) else {
+        guard tap.hardwareMatches(hardware),
+              tap.appliedMatches(applied) else {
             throw CaptureError.notReady(.formatChanged)
         }
+    }
+
+    func acceptsForConversion(_ buffer: AVAudioPCMBuffer, token: MicrophoneStartupGate.TapCaptureToken,
+                              expected: AVAudioFormat, onDeviceChanged: @escaping () -> Void) -> Bool {
+        guard startupGate.accepts(token), buffer.frameLength > 0 else { return false }
+        let format = buffer.format
+        guard format.sampleRate.isFinite, format.sampleRate > 0, format.channelCount > 0,
+              MicrophoneTapInstallation.sameFormat(format, expected) else {
+            noteBufferLoss(conversionError: true)
+            invalidateStartup(.formatChanged, onDeviceChanged: onDeviceChanged)
+            return false
+        }
+        return true
     }
 
     private func convert(_ incoming: AVAudioPCMBuffer, arrivedAt: TimeInterval,
                          token: MicrophoneStartupGate.TapCaptureToken,
                          onDeviceChanged: @escaping () -> Void) {
-        guard alive, startupGate.accepts(token), let converter else { return }
-        guard incoming.frameLength > 0 else { return }
-        guard incoming.format.sampleRate.isFinite, incoming.format.sampleRate > 0,
-              incoming.format.channelCount > 0, incoming.format.isEqual(converter.inputFormat) else {
-            invalidateStartup(.formatChanged, onDeviceChanged: onDeviceChanged)
-            return
-        }
+        guard alive, let converter,
+              acceptsForConversion(incoming, token: token, expected: converter.inputFormat,
+                                   onDeviceChanged: onDeviceChanged) else { return }
         let capacity = AVAudioFrameCount(ceil(Double(incoming.frameLength) * 16_000.0 / incoming.format.sampleRate)) + 128
         guard let target = AVAudioPCMBuffer(pcmFormat: output, frameCapacity: capacity) else {
             noteBufferLoss(conversionError: true)
@@ -706,7 +729,6 @@ final class MicrophoneCapture: @unchecked Sendable {
                 startupDiagnostics?.end(.tapRemove)
             }
         }
-        tapPlan = nil
         // Do not drop the process-wide engine owner here. Removing our
         // NotificationCenter observer does not drain AVFAudio's private queue.
         startupDiagnostics?.begin(.processingDrain)

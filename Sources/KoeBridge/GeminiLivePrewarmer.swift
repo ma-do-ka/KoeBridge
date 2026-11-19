@@ -9,23 +9,27 @@ import KoeBridgeCore
         case warming(UUID, Task<Void, Never>, GeminiLiveConnection, GeminiPrewarmSnapshot)
         case ready(GeminiLiveConnection, GeminiPrewarmSnapshot, Date)
     }
+    private let makeConnection: () -> GeminiLiveConnection
+    init(makeConnection: @escaping @MainActor () -> GeminiLiveConnection = { GeminiLiveConnection() }) {
+        self.makeConnection = makeConnection
+    }
     private var state: State = .idle
     private var expiry: Task<Void, Never>?
 
     /// The provider returns nil when disabled, a take is active, or no key is available.
-    func warmIfNeeded(snapshotProvider: () -> (snapshot: GeminiPrewarmSnapshot, apiKey: String)?) {
-        guard let input = snapshotProvider() else { return }
+    @discardableResult func warmIfNeeded(snapshotProvider: () -> (snapshot: GeminiPrewarmSnapshot, apiKey: String)?) -> Task<Void, Never>? {
+        guard let input = snapshotProvider() else { return nil }
         switch state {
-        case .warming(_, _, _, let snapshot):
-            if snapshot == input.snapshot { return }
+        case .warming(_, let task, _, let snapshot):
+            if snapshot == input.snapshot { return task }
             shutdown()
         case .ready(let connection, let snapshot, let warmedAt):
             if connection.isUsableForPrewarm && GeminiPrewarmPolicy.isUsable(
-                snapshot: snapshot, current: input.snapshot, warmedAt: warmedAt, now: Date()) { return }
+                snapshot: snapshot, current: input.snapshot, warmedAt: warmedAt, now: Date()) { return nil }
             shutdown()
         case .idle: break
         }
-        let connection = GeminiLiveConnection()
+        let connection = makeConnection()
         let id = UUID()
         let task = Task { [weak self] in
             do {
@@ -51,9 +55,26 @@ import KoeBridgeCore
             }
         }
         state = .warming(id, task, connection, input.snapshot)
+        return task
     }
 
-    func adopt(current: GeminiPrewarmSnapshot) -> GeminiLiveConnection? {
+    /// Assign ownership before the first suspension so cancelling preparation closes the socket.
+    func connectForTake(current: GeminiPrewarmSnapshot, enabled: Bool, apiKey: String,
+                        assign: (GeminiLiveConnection) -> Void) async throws -> GeminiLiveConnection {
+        if enabled, let warm = adopt(current: current) {
+            assign(warm)
+            DiagnosticLog.record("gemini prewarm adopted")
+            return warm
+        }
+        DiagnosticLog.record("gemini prewarm miss")
+        let fresh = makeConnection()
+        assign(fresh)
+        try await fresh.connect(apiKey: apiKey, vocabulary: current.vocabulary,
+                                style: current.style, japaneseHint: current.japaneseHint)
+        return fresh
+    }
+
+    private func adopt(current: GeminiPrewarmSnapshot) -> GeminiLiveConnection? {
         if case .ready(let connection, let snapshot, let warmedAt) = state {
             if connection.isUsableForPrewarm && GeminiPrewarmPolicy.isUsable(
                 snapshot: snapshot, current: current, warmedAt: warmedAt, now: Date()) {

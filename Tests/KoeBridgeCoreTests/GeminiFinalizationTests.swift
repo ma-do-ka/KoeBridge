@@ -3,6 +3,31 @@ import Testing
 @testable import KoeBridgeCore
 
 struct GeminiFinalizationTests {
+    @Test func interimReplacementAndLongLegitimateFinalsRemainExact() {
+        var limited = TranscriptAssembler(budget: .dictation)
+        var control = TranscriptAssembler()
+        for i in 0..<4096 {
+            limited.apply(.interim(String(repeating: "仮", count: 100) + String(i)))
+        }
+        #expect(!limited.exceededFinalBudget && limited.finalCount == 0)
+        for i in 0..<1024 {
+            let event = TranscribeEvent.final("長い発話の区間" + String(i))
+            limited.apply(event, segmentIdentity: String(i))
+            control.apply(event, segmentIdentity: String(i))
+        }
+        #expect(!limited.exceededFinalBudget)
+        #expect(limited.finalCount == 1024)
+        #expect(limited.committedText.utf8.elementsEqual(control.committedText.utf8))
+    }
+
+    @Test func oversizedFirstFinalKeepsOnlyWholeScalarsForRecovery() {
+        var limited = TranscriptAssembler(budget: .init(bytes: 8, identities: 4))
+        limited.apply(.final("日月火水"))
+        limited.apply(.interim("遅着"))
+        #expect(limited.exceededFinalBudget && limited.committedText.isEmpty)
+        #expect(limited.recoveryText == "日月")
+    }
+
     private let end = Date(timeIntervalSince1970: 1_000)
 
     @Test func aFinalBeforeTheStopIsNotProofThatTheEndWasReceived() {

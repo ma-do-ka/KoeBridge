@@ -475,13 +475,13 @@ import KoeBridgeCore
         session.onStatus = { [weak self] in self?.meetingStatus = $0 }
         session.onFinished = { [weak self, weak session] text, partial in
             guard let self, let session, meetingSession === session else { return }
-            // Saved-only is the existing non-failure status; no target or delivery queue.
-            let recordID = historyStore.remember(text, isPartial: partial, delivery: .automaticPasteDisabled,
-                engine: session.engine.label, recordedAt: session.recordedAt, kind: "meeting")
+            let recordID = session.save(text, partial: partial, to: &historyStore)
             refreshRetainedAudio()
             meetingSession = nil; meetingRunning = false
             meetingStatusTask?.cancel(); meetingStatusTask = nil
-            status = text.isEmpty ? "会議モードを終了しました（文字起こしなし）" : (historyStore.isSaved(recordID) ? "会議の文字起こしを履歴に保存しました" : "会議の文字起こしは未保存です")
+            if text.isEmpty { status = "会議モードを終了しました（文字起こしなし）" }
+            else if !historyStore.isSaved(recordID) { status = "会議の文字起こしは未保存です" }
+            else { status = partial ? "会議の途中結果を履歴に保存しました" : "会議の文字起こしを履歴に保存しました" }
             meetingStatus = status
             resumeMicrophoneWarm(); scheduleWarmGemini()
         }
@@ -965,15 +965,8 @@ import KoeBridgeCore
                         DiagnosticLog.recordMicrophoneEvidence("mic_prepare_format take=\(take.id.uuidString) attempt=\(attempts) \(format.diagnosticFields)")
                     }
                     DiagnosticLog.recordMicrophoneEvidence("mic_prepare_failed take=\(take.id.uuidString) attempt=\(attempts) category=\(category) code=\((error as NSError).code) elapsed_ms=\(Int(elapsed * 1_000))")
-                    let failure: MicrophoneStartupGate.Failure?
-                    if let captureError = error as? MicrophoneCapture.CaptureError,
-                       case .notReady(let reason) = captureError {
-                        failure = reason
-                    } else {
-                        failure = nil
-                    }
-                    if error is MicrophoneGraphError { throw error }
-                    guard let delay = retryPolicy.retryDelay(after: attempts, elapsed: elapsed, failure: failure) else { throw error }
+                    guard let delay = MicrophoneCapture.retryDelay(for: error, policy: retryPolicy,
+                        attempts: attempts, elapsed: elapsed) else { throw error }
                     status = "マイクの接続準備を待っています…（\(attempts + 1)/\(retryPolicy.maximumAttempts)）"
                     try await Task.sleep(for: .seconds(delay))
                 }
@@ -1000,6 +993,7 @@ import KoeBridgeCore
                 DiagnosticLog.recordMicrophoneEvidence("mic_prepare_ready take=\(take.id.uuidString) attempts=\(attempts) first_pcm_ms=\(Int(timing.firstBufferDelay * 1_000)) sample_rate=\(String(format: "%.0f", timing.sampleRate)) channels=\(timing.channels)")
             }
             take.startedAt = Date()
+            take.recordingStart = .now
             lastStartupSeconds = take.startedAt?.timeIntervalSince(take.requestedAt)
             phase = .recording
             isRecording = true
@@ -1011,17 +1005,20 @@ import KoeBridgeCore
             }
             DiagnosticLog.record("session recording; recognizer=pending; pending=\(finished.count)")
             status = (take.appProfileName.map { "\($0)用プロファイル適用中 — " } ?? "") + "録音中。\(take.transformSelection == nil || take.isFixLastInput ? shortcutChoice.label : (transformShortcut?.label ?? shortcutChoice.label)) でもう一度押すと確定"
-            let maxSeconds = take.transformSelection != nil ? 30 : (take.preferred == .gemini ? 480 : 50)
-            take.recordingTimeout = Task { [weak self, weak take] in
-                do { try await Task.sleep(for: .seconds(maxSeconds)) } catch { return }
-                guard let self, let take, self.active === take, self.phase == .recording else { return }
-                self.stop()
-            }
+            scheduleRecordingTimeout(take)
         } catch {
             if active === take, !take.finished {
                 DiagnosticLog.record("microphone start failed: \(error.localizedDescription)")
                 resolve(take, text: nil, reason: Self.userFacingFailure(error, operation: "マイクの開始"))
             }
+        }
+    }
+
+    private func scheduleRecordingTimeout(_ take: DictationTake) {
+        guard active === take, phase == .recording else { return }
+        take.scheduleRecordingTimeout { [weak self, weak take] in
+            guard let self, let take, self.active === take, self.phase == .recording else { return }
+            self.stop()
         }
     }
 
@@ -1032,24 +1029,15 @@ import KoeBridgeCore
                 let snapshot = GeminiPrewarmSnapshot(
                     vocabulary: take.vocabulary, style: take.style, japaneseHint: take.japaneseHint,
                     apiKeyFingerprint: GeminiPrewarmSnapshot.fingerprint(apiKey: key))
-                let warmed = geminiPrewarmEnabled ? prewarmer.adopt(current: snapshot) : nil
-                DiagnosticLog.record(warmed == nil ? "gemini prewarm miss" : "gemini prewarm adopted")
-                let candidate = warmed ?? GeminiLiveConnection()
                 take.geminiAttempted = true
                 take.geminiStartedAt = Date()
-                take.cloud = candidate
                 do {
-                    if warmed == nil {
-                        try await candidate.connect(apiKey: key,
-                                                    vocabulary: take.vocabulary,
-                                                    style: take.style,
-                                                    japaneseHint: take.japaneseHint)
-                    }
+                    let candidate = try await prewarmer.connectForTake(current: snapshot,
+                        enabled: geminiPrewarmEnabled, apiKey: key) { take.cloud = $0 }
                     guard !take.finished, !Task.isCancelled else {
                         candidate.cancel()
                         throw CancellationError()
                     }
-                    take.cloud = candidate
                     candidate.onEvent = { [weak self, weak take, weak candidate] event in
                         guard let self, let take, let candidate, take.cloud === candidate, !take.finished else { return }
                         switch event {
@@ -1065,17 +1053,21 @@ import KoeBridgeCore
                                 if case .final = event { isFinal = true } else { isFinal = false }
                                 self.updatePreview(for: take, isFinal: isFinal)
                             }
-                        case .error:
+                        case .error(let message):
+                            if candidate.assembler.exceededFinalBudget {
+                                self.resolve(take, text: nil, reason: message)
+                                return
+                            }
                             take.resetPreviewPublication()
                             DiagnosticLog.record("gemini receiver failure during take")
                         default: break
                         }
                     }
                 } catch is CancellationError {
-                    candidate.cancel()
+                    take.cloud?.cancel()
                     throw CancellationError()
                 } catch {
-                    candidate.cancel()
+                    take.cloud?.cancel()
                     DiagnosticLog.record("gemini setup failed; using local for THIS take")
                     take.fellBackToApple = true
                     actual = .local
@@ -1086,6 +1078,9 @@ import KoeBridgeCore
                 actual = .local
             }
         }
+        guard !take.finished, !Task.isCancelled else { throw CancellationError() }
+        take.effectiveMode = actual
+        scheduleRecordingTimeout(take)
         if actual == .local {
             var recognizer: LocalTranscribing = LocalTranscriberFactory.make()
             take.appleAttempted = true
@@ -1224,6 +1219,7 @@ import KoeBridgeCore
                         if self.overlayOwner == take.id && self.overlayFeedback == .ending {
                             self.overlayFeedback = .processing
                         }
+                        take.captureDrainedCleanly = true
                         take.continuation?.finish()
                     }
                 }
@@ -1241,7 +1237,7 @@ import KoeBridgeCore
         try Task.checkCancellation()
         guard !take.finished else { throw CancellationError() }
         guard !take.audioBackup.isEmpty else { throw AppError.connectionLost }
-        guard take.audioBackup.count <= 50 * 32_000 else { throw AppError.localRecoveryTooLong }
+        guard take.audioBackup.count <= DictationTake.maximumRescueBytes else { throw AppError.localRecoveryTooLong }
         // Only one fallback recognizer at a time. A wave of failed Gemini
         // sessions must not launch eight heavyweight local ASR tasks at once.
         let waitBegan = Date()
@@ -1293,40 +1289,23 @@ import KoeBridgeCore
     private func transmit(_ stream: AsyncStream<Data>, take: DictationTake) async {
         do {
             let mode = try await prepareRecognizer(take)
-            for await chunk in stream {
-                guard !take.finished, !Task.isCancelled else { return }
-                // 16kHz PCM is at most ~15 MB for a complete eight-minute take.
-                // Keep admitted PCM in RAM for recovery; opt-in retention writes it only after a text record exists.
-                take.audioBackup.append(chunk)
-                if mode == .gemini {
-                    guard let remote = take.cloud else { throw AppError.connectionLost }
-                    try await remote.sendAudio(chunk)
-                } else {
-                    guard let recognizer = take.local else { throw AppError.connectionLost }
-                    try recognizer.appendPCM16(chunk)
-                    take.appleAudioBytes += chunk.count
-                }
-            }
-            guard !take.finished, !Task.isCancelled else { return }
-            guard take.audioIntegrity.droppedChunks == 0 else { throw AppError.audioDropped }
             let result: String
             if mode == .gemini {
                 guard let remote = take.cloud else { throw AppError.connectionLost }
-                do {
+                result = try await take.transcribeLive(stream, send: remote.sendAudio, finish: {
                     try await remote.endAudio()
-                    result = try await remote.awaitFinal()
-                    take.successfulEngine = .gemini
-                } catch {
-                    try Task.checkCancellation()
-                    guard !take.finished else { throw CancellationError() }
-                    // No transcript despite valid audio: local ASR may recover
-                    // the text. A failed local attempt stays an explicit error.
-                    DiagnosticLog.record("gemini final failed; attempting Apple on-device recovery")
-                    result = try await retryLocally(take)
-                    take.successfulEngine = .local
-                }
+                    return try await remote.awaitFinal()
+                }, rescue: { try await self.retryLocally(take) })
             } else {
                 guard let recognizer = take.local else { throw AppError.connectionLost }
+                for await chunk in stream {
+                    guard !take.finished, !Task.isCancelled else { return }
+                    take.audioBackup.append(chunk)
+                    try recognizer.appendPCM16(chunk)
+                    take.appleAudioBytes += chunk.count
+                }
+                guard !take.finished, !Task.isCancelled else { return }
+                guard take.audioIntegrity.droppedChunks == 0 else { throw AppError.audioDropped }
                 result = try await recognizer.endAudioAndAwaitFinal()
                 take.successfulEngine = .local
             }
@@ -1934,6 +1913,7 @@ import KoeBridgeCore
     private static func failureCategory(_ error: Error) -> String {
         if let e = error as? GeminiLiveConnection.ConnectionError {
             switch e {
+            case .finalBudgetExceeded: return "gemini.final_budget"
             case .badURL: return "gemini.bad_url"
             case .setup: return "gemini.setup"
             case .disconnected: return "gemini.disconnected"
@@ -2030,6 +2010,7 @@ import KoeBridgeCore
         case let error as AppError: description = error.errorDescription
         case let error as AppleLocalTranscriber.LocalError: description = error.errorDescription
         case let error as GeminiLiveConnection.ConnectionError: description = error.errorDescription
+        case let error as MicrophoneDevices.DeviceError: description = error.errorDescription
         case let error as MicrophoneCapture.CaptureError: description = error.errorDescription
         case let error as RetainedAudioStore.ReplayError: description = error.errorDescription
         default: description = nil
