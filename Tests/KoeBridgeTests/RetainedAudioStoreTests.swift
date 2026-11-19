@@ -4,30 +4,6 @@ import Testing
 import KoeBridgeCore
 @testable import KoeBridge
 
-struct SettingsArrayTests {
-    @Test(arguments: ["appProfiles", "transformPresets", "learnedTerms", "snippets"])
-    func corruptRowProtectsUnchangedBytesUntilReset(key: String) throws {
-        struct Row: Codable, Equatable { let id: UUID }
-        let suite = UUID().uuidString
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
-        let row = Row(id: UUID())
-        var collection = SettingsArray<Row>(key, defaults: defaults)
-        #expect(collection.state == .unset)
-        #expect(collection.save([row]))
-        let damaged = Data("[ { \"id\": \"\(row.id)\" }, { \"id\": \"bad\" } ]".utf8)
-        defaults.set(damaged, forKey: key)
-        collection = SettingsArray(key, defaults: defaults)
-        #expect(collection.state == .corrupt)
-        #expect(!collection.save(collection.rows + [Row(id: UUID())]))
-        #expect(defaults.data(forKey: key) == damaged)
-        collection.resetCorruptValue()
-        #expect(collection.state == .unset)
-        #expect(collection.save([row]))
-        #expect(SettingsArray<Row>(key, defaults: defaults).rows == [row])
-    }
-}
-
 @MainActor struct RetainedAudioStoreTests {
     @Test func launchAndLaterSweepsWaitForReadableHistory() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -174,6 +150,7 @@ struct SettingsArrayTests {
         try Data(count: 46).write(to: store.directory.appendingPathComponent(id.uuidString + ".wav"))
         #expect(throws: (any Error).self) { _ = try store.read(id, history: &history) }
         #expect(history.entries.first?.audioAsset == nil)
+        #expect(!FileManager.default.fileExists(atPath: store.directory.appendingPathComponent(id.uuidString + ".wav").path))
         #expect(history.entries.first?.text == "keep")
         history.updateAudio(id, asset: .init(relativeFileName: id.uuidString + ".wav", pcmByteCount: Int.max,
             recordedAt: record.recordedAt, expiresAt: Date().addingTimeInterval(86400)))

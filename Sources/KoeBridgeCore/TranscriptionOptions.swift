@@ -98,3 +98,49 @@ public struct TranscriptionOptions: Codable, Equatable, Sendable {
         defaults.set(1, forKey: PreferenceKey.version)
     }
 }
+
+/// Keep the decoded rows bound to the defaults value they came from.
+public struct SettingsArray<Row: Codable> {
+    public enum State { case unset, loaded, corrupt }
+    private let key: String
+    private let defaults: UserDefaults
+    private var original: NSObject?
+    public private(set) var state: State = .unset
+    public private(set) var rows: [Row] = []
+
+    public init(_ key: String, defaults: UserDefaults = .standard) {
+        self.key = key
+        self.defaults = defaults
+        reload()
+    }
+
+    private mutating func reload() {
+        original = defaults.object(forKey: key) as? NSObject
+        rows = []
+        guard let original else { state = .unset; return }
+        guard let data = original as? Data,
+              let decoded = try? JSONDecoder().decode([Row].self, from: data) else {
+            state = .corrupt
+            return
+        }
+        rows = decoded
+        state = .loaded
+    }
+
+    @discardableResult public mutating func save(_ updated: [Row]) -> Bool {
+        guard original == defaults.object(forKey: key) as? NSObject else { reload(); return false }
+        guard state != .corrupt, let data = try? JSONEncoder().encode(updated) else { return false }
+        defaults.set(data, forKey: key)
+        original = data as NSData
+        rows = updated
+        state = .loaded
+        return true
+    }
+
+    public mutating func resetCorruptValue() {
+        if state == .corrupt, original == defaults.object(forKey: key) as? NSObject {
+            defaults.removeObject(forKey: key)
+        }
+        reload()
+    }
+}

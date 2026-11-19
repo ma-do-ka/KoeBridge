@@ -6,52 +6,6 @@ import Combine
 import SwiftUI
 import KoeBridgeCore
 
-/// Keep the decoded rows bound to the defaults value they came from.
-struct SettingsArray<Row: Codable> {
-    enum State { case unset, loaded, corrupt }
-    private let key: String
-    private let defaults: UserDefaults
-    private var original: NSObject?
-    private(set) var state: State = .unset
-    private(set) var rows: [Row] = []
-
-    init(_ key: String, defaults: UserDefaults = .standard) {
-        self.key = key
-        self.defaults = defaults
-        reload()
-    }
-
-    private mutating func reload() {
-        original = defaults.object(forKey: key) as? NSObject
-        rows = []
-        guard let original else { state = .unset; return }
-        guard let data = original as? Data,
-              let decoded = try? JSONDecoder().decode([Row].self, from: data) else {
-            state = .corrupt
-            return
-        }
-        rows = decoded
-        state = .loaded
-    }
-
-    @discardableResult mutating func save(_ updated: [Row]) -> Bool {
-        guard original == defaults.object(forKey: key) as? NSObject else { reload(); return false }
-        guard state != .corrupt, let data = try? JSONEncoder().encode(updated) else { return false }
-        defaults.set(data, forKey: key)
-        original = data as NSData
-        rows = updated
-        state = .loaded
-        return true
-    }
-
-    mutating func resetCorruptValue() {
-        if state == .corrupt, original == defaults.object(forKey: key) as? NSObject {
-            defaults.removeObject(forKey: key)
-        }
-        reload()
-    }
-}
-
 @MainActor final class VoiceController: ObservableObject {
     static let shared = VoiceController()
     typealias Phase = VoiceSessionPhase
