@@ -617,7 +617,7 @@ import KoeBridgeCore
         let file = directory.appendingPathComponent("history.json")
         var store = TranscriptHistoryStore(fileURL: file)
         let classifications: [(TextInsertion.Result?, TranscriptRecord.Delivery?)] = [
-            (nil, .blockedFocus), (.cancelled, .blockedFocus), (.focusChanged, .blockedFocus),
+            (nil, .blockedFocus), (.cancelled, .cancelledDelivery), (.focusChanged, .blockedFocus),
             (.eventUnavailable, .insertionUnavailable), (.notPermitted, .missingPermission),
             (.eventPermissionMissing, .missingPermission), (.partiallySubmitted, .partiallyDirect),
             (.inserted, .attemptedUnconfirmed), (.verifiedInserted, nil)
@@ -1369,6 +1369,29 @@ import KoeBridgeCore
         #expect(sequence == ["finalize", "reconcile"] && !gate.isHeld)
         let next = await gate.post(.dictation("x"), from: pending.source(.take), transport: pending.transport()) { true }
         #expect(next.reason == "prior_input_unverified" && pending.f.posts == 0)
+    }
+
+    @Test func cancellationDuringPreflightIsRecordedSeparately() async throws {
+        let gate = TextInsertion.PostingGate { _, _ in }
+        let sender = Sender(ticket: try #require(gate.historyTicket))
+        var t = sender.transport()
+        t.checkFocus = { _, _, _, _, _ in (false, "focused_element_unavailable_on_recheck") }
+        t.ax.sleep = { _ in await MainActor.run { gate.interrupt() } }
+        let report = await gate.post(.dictation("A"), from: sender.source(.take), transport: t) { true }
+        #expect(sender.f.posts == 0 && report.outcome.diagnosticOutcome == .cancelled)
+        #expect(DictationDelivery.classify(report).delivery == .cancelledDelivery)
+    }
+
+    @Test func cancellationAfterSubmissionRetainsUnconfirmedDeliveryStatus() async throws {
+        let gate = TextInsertion.PostingGate { _, _ in }
+        let sender = Sender(ticket: try #require(gate.historyTicket))
+        var transport = sender.transport()
+        transport.waitForReceiptPoll = { await MainActor.run { gate.interrupt() } }
+        let result = await gate.post(.dictation("x"), from: sender.source(.take), transport: transport) { true }
+        let saved = DictationDelivery.classify(result)
+        #expect(sender.f.posts == 1 && result.receipt == nil)
+        #expect(saved.submitted && saved.delivery == .interruptedDelivery)
+        #expect(saved.deferredFeedback == .deferredUnconfirmed)
     }
 
     @Test func competingProducersPostZeroUntilReceiptAndReconciliationFinish() async {

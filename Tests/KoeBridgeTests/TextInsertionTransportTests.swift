@@ -492,7 +492,7 @@ import KoeBridgeCore
         }) { false }
         #expect(!captured && !report.eventsPosted)
         #expect(report.outcome == .cancelled && report.reason == "delivery_cancelled_before_post")
-        #expect(DictationDelivery.skipped(suppressed: true, requiresReview: false, shouldPaste: true)?.delivery == .blockedFocus)
+        #expect(DictationDelivery.skipped(suppressed: true, requiresReview: false, shouldPaste: true)?.delivery == .cancelledDelivery)
     }
 
     @Test func settledUnconfirmedPredecessorAndTargetScopedLatchTransportBehavior() async throws {

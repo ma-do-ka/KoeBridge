@@ -460,6 +460,7 @@ import KoeBridgeCore
                 let verified = await verifySettledPredecessors(adjudicated.matchingSettled, for: fresh, takeStart: takeStart,
                     unverifiedPredecessors: unverifiedPredecessors, diagnostics: diagnostics,
                     transport: transport, shouldContinue: shouldContinue)
+                if Task.isCancelled || !shouldContinue() { return (fresh, "delivery_cancelled_before_post", nil) }
                 if !verified {
                     diagnostics?.record(.target, stage: .preflight, [
                         .reason: .token(.priorInputUnverified),
@@ -664,7 +665,8 @@ import KoeBridgeCore
                 diagnostics?.record(.receipt, stage: .receipt, summaryFields)
             }
             var resultFields: [InputDiagnosticEvent.Field: InputDiagnosticEvent.Value] = [
-                .outcome: .token(outcome.diagnosticOutcome), .reason: .reason(diagnosticReason ?? reason),
+                .outcome: .token(reason == "delivery_cancelled_after_post" ? .cancelled : outcome.diagnosticOutcome),
+                .reason: .reason(diagnosticReason ?? reason),
                 .plannedChunks: .integer(planned), .sentChunks: .integer(sent),
                 .eventsPosted: .flag(sent > 0), .receiptAvailable: .flag(receipt != nil),
                 .receiptMode: receipt.map { .reason($0.proof.mode.rawValue) } ?? .token(.none),
@@ -787,7 +789,8 @@ import KoeBridgeCore
                    sameProcess: transport.ax.frontPID() == target.pid,
                    alreadyRecheckedAtCheckpoint: false) {
                 try? await transport.ax.sleep(0.025)
-                if !Task.isCancelled, shouldContinue(), transport.ax.frontPID() == target.pid {
+                guard !Task.isCancelled, shouldContinue() else { return report(.cancelled, "delivery_cancelled_before_post") }
+                if transport.ax.frontPID() == target.pid {
                     initialFocus = transport.checkFocus(target, true, diagnostics, .preflight, 0)
                 }
             }

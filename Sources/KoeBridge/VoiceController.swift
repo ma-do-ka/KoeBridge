@@ -1524,15 +1524,18 @@ import KoeBridgeCore
         case .text: break
         }
         if result.noInput {
+            let cancelled = result.reason == "録音をキャンセルしました"
             take.inputDiagnostics?.record(.result, stage: .result, [
-                .outcome: .token(.skipped), .reason: .reason("no_input"), .eventsPosted: .flag(false)
+                .outcome: .token(cancelled ? .cancelled : .skipped),
+                .reason: .reason(cancelled ? "delivery_cancelled_before_post" : "no_input"), .eventsPosted: .flag(false)
             ])
             DiagnosticLog.record("empty rapid recording discarded; id=\(id.uuidString.prefix(8))")
             return
         }
         guard let text = result.text, !text.isEmpty else {
             take.inputDiagnostics?.record(.result, stage: .result, [
-                .outcome: .token(.skipped), .reason: .reason("recognition_failed"), .eventsPosted: .flag(false)
+                .outcome: .token(take.automaticDeliverySuppressed ? .cancelled : .skipped),
+                .reason: .reason(take.automaticDeliverySuppressed ? "system_suppressed" : "recognition_failed"), .eventsPosted: .flag(false)
             ])
             let recovered = result.partial.trimmingCharacters(in: .whitespacesAndNewlines)
             if !recovered.isEmpty, take.historyRecordID == nil {
@@ -1561,7 +1564,7 @@ import KoeBridgeCore
                 DiagnosticLog.recordMicrophoneEvidence("held_text_rescued take=\(id.uuidString.prefix(8)) chars=\(text.count) \(rescue.diagnostic)")
             }
             take.inputDiagnostics?.record(.result, stage: .result, [
-                .outcome: .token(.skipped),
+                .outcome: .token(take.automaticDeliverySuppressed ? .cancelled : .skipped),
                 .reason: .reason(take.automaticDeliverySuppressed ? "system_suppressed"
                     : (take.acousticReviewRequired ? "acoustic_review_required"
                         : (take.review?.status == .needsReview ? "review_required" : "automatic_input_disabled"))),
@@ -1884,7 +1887,7 @@ import KoeBridgeCore
     func discard() {
         guard let take = active else { return }
         DiagnosticLog.record("session discarded by user")
-        resolve(take, text: nil, reason: "音声入力なし", noInput: true)
+        resolve(take, text: nil, reason: "録音をキャンセルしました", noInput: true)
     }
 
     /// Never paste delayed transcripts after sleep, user switch or shutdown.
@@ -1900,7 +1903,7 @@ import KoeBridgeCore
             take.automaticDeliverySuppressed = true
             if take.finished, let recordID = take.historyRecordID {
                 updateRemembered(recordID,
-                                 delivery: take.id == deliveringTakeID ? .interruptedDelivery : .blockedFocus,
+                                 delivery: take.id == deliveringTakeID ? .interruptedDelivery : .cancelledDelivery,
                                  detail: take.id == deliveringTakeID
                                     ? "システム中断が発生しました。再送の前に入力先を確認してください。"
                                     : "システム中断により、待機中の自動入力を中止しました。")
