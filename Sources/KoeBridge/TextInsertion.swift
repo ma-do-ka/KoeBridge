@@ -509,6 +509,7 @@ import KoeBridgeCore
             self.reconcile = reconcile
         }
 
+        var lastDeliveryAnchor: LastDeliveryAnchor?
         private(set) var isHeld = false
         private var generation = UUID()
         var historyTicket: UUID? { isHeld ? nil : generation }
@@ -537,7 +538,6 @@ import KoeBridgeCore
                   shouldContinue: @MainActor () -> Bool) async -> Report {
             let take: DictationTake?
             let target: InsertionTarget?
-            var historyTicket: UUID?
             switch source {
             case .take(let current):
                 take = current
@@ -545,8 +545,7 @@ import KoeBridgeCore
             case .selection(let current):
                 take = nil
                 target = current
-            case .history(let original, let ticket):
-                historyTicket = ticket
+            case .history(let original, _):
                 take = nil
                 target = original
             }
@@ -556,18 +555,22 @@ import KoeBridgeCore
                 capture: nil, transport: transport,
                 livePriorBlock: { candidate in
                     take?.hasPriorBlock(for: candidate) ?? selectionPredecessors().contains { candidate.sameElement(as: $0) }
-                }, historyTicket: historyTicket, sourceTakeID: take?.id, finalize: finalize, shouldContinue: shouldContinue)
+                }, source: source, sourceTakeID: take?.id, finalize: finalize, shouldContinue: shouldContinue)
         }
 
         func submit(_ payload: Payload, takeStart: @autoclosure () -> InsertionTarget?, diagnostics: InputDiagnosticTrace?,
                     unverifiedPredecessors: @autoclosure () -> [InsertionTarget],
                     settledUnconfirmedPredecessors: @autoclosure () -> [SettledUnconfirmedPredecessor],
                     capture: TargetCapture?, transport: Transport, livePriorBlock: (InsertionTarget) -> Bool,
-                    historyTicket: UUID? = nil, sourceTakeID: UUID? = nil, finalize: (Report) -> Void = { _ in },
+                    source: Source? = nil, sourceTakeID: UUID? = nil, finalize: (Report) -> Void = { _ in },
                     shouldContinue: @MainActor () -> Bool) async -> Report {
-            if let historyTicket, historyTicket != generation { return busyReport(diagnostics) }
+            if case .history(_, let ticket) = source, ticket != generation { return busyReport(diagnostics) }
             guard let owner = acquire() else { return busyReport(diagnostics) }
             defer { isHeld = false }
+            switch source {
+            case .take, .selection: lastDeliveryAnchor = nil
+            case .history, nil: break
+            }
             let report = await deliverPayload(payload, takeStart: takeStart(), diagnostics: diagnostics,
                 unverifiedPredecessors: unverifiedPredecessors(), settledUnconfirmedPredecessors: settledUnconfirmedPredecessors(),
                 capture: capture, transport: transport, livePriorBlock: livePriorBlock,

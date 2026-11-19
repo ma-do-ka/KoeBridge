@@ -280,7 +280,6 @@ import KoeBridgeCore
                 self.textOperationDeadlineTask = nil
                 // The selected source is fixed; the destination is the current
                 // caret/selection when the completed transform is delivered.
-                self.lastDeliveryAnchor = nil
                 let report = await self.postingGate.post(.dictation(working), from: .selection(target),
                     selectionPredecessors: self.textOperationUnverifiedTargets) {
                     self.textOperationID == id && !Task.isCancelled
@@ -354,7 +353,6 @@ import KoeBridgeCore
         return true
     }
 
-    private(set) var lastDeliveryAnchor: LastDeliveryAnchor?
     @Published private(set) var fixLastShortcut = RecordingShortcut(rawValue: UserDefaults.standard.string(forKey: "fixLastShortcut") ?? "")
     var onFixLastShortcutChange: ((RecordingShortcut?) -> Bool)?
     func selectFixLastShortcut(_ choice: RecordingShortcut?) {
@@ -369,8 +367,8 @@ import KoeBridgeCore
     func fixLastInput() {
         guard !postingGate.isHeld else { status = DictationDelivery.postingBusyDetail; return }
         guard !hasPendingWork else { return }
-        guard let anchor = lastDeliveryAnchor, Date().timeIntervalSince(anchor.deliveredAt) < 600 else {
-            lastDeliveryAnchor = nil
+        guard let anchor = postingGate.lastDeliveryAnchor, Date().timeIntervalSince(anchor.deliveredAt) < 600 else {
+            postingGate.lastDeliveryAnchor = nil
             status = "修正できる直前の入力がありません"
             return
         }
@@ -797,8 +795,8 @@ import KoeBridgeCore
         let bundleIdentifier: String? = transformTarget != nil
             ? transformTarget?.bundleIdentifier
             : (frontApp?.processIdentifier == ProcessInfo.processInfo.processIdentifier ? nil : frontApp?.bundleIdentifier)
-        if let anchor = lastDeliveryAnchor, frontApp?.processIdentifier != anchor.target.pid {
-            lastDeliveryAnchor = nil
+        if let anchor = postingGate.lastDeliveryAnchor, frontApp?.processIdentifier != anchor.target.pid {
+            postingGate.lastDeliveryAnchor = nil
         }
         let profile = AppProfileResolver.match(profiles: appProfiles, bundleIdentifier: bundleIdentifier)
         let globalOptions = transcriptionOptions
@@ -1564,7 +1562,6 @@ import KoeBridgeCore
             if active == nil { status = result.reason ?? "文字起こしに失敗しました（履歴を確認）" }
             return
         }
-        lastDeliveryAnchor = nil // Any newer ordinary delivery invalidates the previous anchor.
         let recordID = take.historyRecordID ?? remember(text, isPartial: false, delivery: .pending,
                                                         engine: take.usedMode, review: take.review,
                                                         recordedAt: take.requestedAt)
@@ -1592,7 +1589,7 @@ import KoeBridgeCore
             deliveringTakeID = id
             let report = await postingGate.post(.dictation(text), from: .take(take), finalize: { report in
                 if let receipt = report.receipt {
-                    self.lastDeliveryAnchor = LastDeliveryAnchor(receipt: receipt, sourceRecordID: recordID)
+                    self.postingGate.lastDeliveryAnchor = LastDeliveryAnchor(receipt: receipt, sourceRecordID: recordID)
                 }
             }) {
                 !take.automaticDeliverySuppressed && self.inFlight[id] === take
@@ -1695,7 +1692,6 @@ import KoeBridgeCore
             feedback(.commandCancelled, command.completionMessage)
             return
         }
-        lastDeliveryAnchor = nil
         deliveringTakeID = take.id
         let report = await postingGate.post(.command(command), from: .take(take)) {
             !take.automaticDeliverySuppressed && self.inFlight[take.id] === take
@@ -1795,12 +1791,11 @@ import KoeBridgeCore
             // The source selection stays fixed for recognition/transformation.
             // Delivery follows the current target, including fix-last-input;
             // its initial anchor eligibility was checked before recording.
-            let sourceRecordID = lastDeliveryAnchor?.sourceRecordID
-            lastDeliveryAnchor = nil
+            let sourceRecordID = postingGate.lastDeliveryAnchor?.sourceRecordID
             deliveringTakeID = take.id
             let report = await postingGate.post(.dictation(output.text), from: .take(take), finalize: { report in
                 if take.isFixLastInput, let receipt = report.receipt {
-                    self.lastDeliveryAnchor = LastDeliveryAnchor(receipt: receipt, sourceRecordID: sourceRecordID)
+                    self.postingGate.lastDeliveryAnchor = LastDeliveryAnchor(receipt: receipt, sourceRecordID: sourceRecordID)
                 }
             }) {
                 !take.automaticDeliverySuppressed && self.inFlight[take.id] === take

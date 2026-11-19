@@ -1072,6 +1072,11 @@ import KoeBridgeCore
         }
     }
 }
+// The synthetic receiver has already applied the event when the receipt poll begins.
+@MainActor private func readyReceiptPoll() async {
+    await withCheckedContinuation { $0.resume() }
+}
+
 @MainActor struct Build78PostingTests {
     private typealias Fixture = Build73DeliveryTests.Fixture
 
@@ -1116,6 +1121,7 @@ import KoeBridgeCore
 
         func transport() -> TextInsertion.Transport {
             var t = f.transport()
+            t.waitForReceiptPoll = readyReceiptPoll
             var prepared = ""
             t.events = { part, source in
                 prepared = part
@@ -1242,6 +1248,44 @@ import KoeBridgeCore
         }
     }
 
+    @Test func anchorSurvivesBusyRejectionAndClearsOnAdmission() async throws {
+        let gate = TextInsertion.PostingGate(reconcile: { _, _ in })
+        let initial = Sender(ticket: try #require(gate.historyTicket))
+        let recordID = UUID()
+        let seed = await gate.post(.dictation("A"), from: initial.source(.take), transport: initial.transport(),
+            finalize: { report in
+                if let receipt = report.receipt {
+                    gate.lastDeliveryAnchor = LastDeliveryAnchor(receipt: receipt, sourceRecordID: recordID)
+                }
+            }) { true }
+        #expect(seed.outcome == .verifiedInserted)
+        let prior = try #require(gate.lastDeliveryAnchor)
+        let history = Sender(ticket: try #require(gate.historyTicket))
+        let contender = Sender(ticket: history.ticket)
+        var transport = history.transport()
+        transport.waitForReceiptPoll = {
+            for producer in [Producer.take, .command, .voiceTransform, .fixLast, .translation, .preset] {
+                let payload: TextInsertion.Payload = producer == .command ? .command(.newline) : .dictation("B")
+                let report = await gate.post(payload, from: contender.source(producer), transport: contender.transport()) { true }
+                #expect(report.reason == "posting_busy" && !report.eventsPosted)
+                #expect(gate.lastDeliveryAnchor?.sourceRecordID == recordID)
+                #expect(gate.lastDeliveryAnchor?.deliveredAt == prior.deliveredAt)
+            }
+        }
+        let holder = await gate.post(.dictation("H"), from: history.source(.history), transport: transport) { true }
+        #expect(holder.outcome == .verifiedInserted && contender.f.captures == 0 && contender.f.posts == 0)
+        #expect(gate.lastDeliveryAnchor?.sourceRecordID == recordID)
+
+        var failing = contender.transport()
+        failing.permissions = {
+            #expect(gate.isHeld && gate.lastDeliveryAnchor == nil)
+            return (false, false)
+        }
+        let admitted = await gate.post(.dictation("B"), from: contender.source(.take), transport: failing) { true }
+        #expect(admitted.outcome == .notPermitted && !admitted.eventsPosted)
+        #expect(contender.f.captures == 1 && contender.f.posts == 0 && gate.lastDeliveryAnchor == nil)
+    }
+
     @Test func historyTicketDetectsCompletedDeliveryDuringPopoverDelay() async {
         let gate = TextInsertion.PostingGate(reconcile: { _, _ in })
         let delayed = Sender(ticket: gate.historyTicket!)
@@ -1266,6 +1310,7 @@ import KoeBridgeCore
         configure: @escaping @MainActor (inout InsertionTarget.FocusReads, Stage, Int) -> Void = { _, _, _ in }
     ) -> TextInsertion.Transport {
         var t = f.transport()
+        t.waitForReceiptPoll = readyReceiptPoll
         t.checkFocus = { target, original, trace, stage, ordinal in
             var reads = InsertionTarget.FocusReads()
             reads.frontPID = { f.front }
