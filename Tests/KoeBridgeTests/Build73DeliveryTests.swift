@@ -513,6 +513,49 @@ import KoeBridgeCore
         }
     }
 
+    @Test func boundedValueObservationAndTypedSelections() throws {
+        let f = Fixture()
+        f.recover()
+        let target = try #require(f.transport().capture(nil).resolution.target)
+        for persistent in [false, true] {
+            var attempts = 0
+            var reads = InsertionTarget.FocusReads()
+            reads.attribute = { _, name, _, _, _, _, _ in
+                if name as String == kAXValueAttribute {
+                    attempts += 1
+                    return persistent || attempts == 1 ? Read(value: nil, status: .cannotComplete)
+                        : Read(value: "a" as CFString, status: .success)
+                }
+                return f.attribute(name as String)
+            }
+            let (snapshot, reason) = target.deliveryBaseline(diagnostics: nil, reads: reads)
+            #expect(attempts == 2)
+            #expect(snapshot?.text == (persistent ? nil : "a"))
+            #expect(reason == (persistent ? .valueUnavailable : .snapshotAvailable))
+        }
+        let overflow = try #require(f.range(Int.max, 1).value)
+        let valid = try #require(f.range(2, 3).value)
+        let marker = try #require(f.liveMarker().value)
+        #expect(InsertionTarget.decodeSelection(overflow, kind: .numericRange) == nil)
+        #expect(InsertionTarget.decodeSelection(valid, kind: .numericRange) == .numeric(.init(location: 2, length: 3)))
+        #expect(InsertionTarget.decodeSelection(marker, kind: .textMarker) == .marker(marker))
+        #expect(InsertionTarget.decodeSelection(valid, kind: .textMarker) == nil)
+        #expect(InsertionTarget.decodeSelection(marker, kind: .numericRange) == nil)
+        var readCount = 0
+        let result = InsertionTarget.copyAX(f.field, name: kAXValueAttribute as CFString, operation: .value,
+            setTimeout: { _, _ in .failure }, read: { _, _, _ in readCount += 1; return .success },
+            diagnostics: nil, stage: .preflight)
+        #expect(result.value == nil && result.status != .success && readCount == 0)
+        var failedSetup = InsertionTarget.FocusReads()
+        failedSetup.attribute = { element, name, operation, scope, timeout, trace, stage in
+            InsertionTarget.copyAX(element, name: name, operation: operation, scope: scope, timeout: timeout,
+                setTimeout: { _, _ in .failure }, read: { _, _, _ in readCount += 1; return .success },
+                diagnostics: trace, stage: stage)
+        }
+        #expect(target.observedSnapshot(timeout: 0.04, reads: failedSetup) == nil)
+        #expect(readCount == 0)
+    }
+
     @Test func historyAndDeferredFeedbackRespectOwnership() {
         let old = UUID(), newer = UUID()
         for (delivery, title, feedback) in [
@@ -1211,6 +1254,17 @@ import KoeBridgeCore
             t.receiptSnapshot = { _, _, _ in self.observed }
             return t
         }
+    }
+
+    @Test func valueFailureKeepsPredecessorHardBlocked() async throws {
+        let gate = TextInsertion.PostingGate { _, _ in }
+        let sender = Sender(ticket: try #require(gate.historyTicket))
+        sender.f.initialSnapshot = nil
+        var transport = sender.transport()
+        transport.snapshot = { _, _ in (nil, .valueUnavailable) }
+        let report = await gate.post(.dictation("B"), from: sender.source(.take), transport: transport) { true }
+        #expect(report.eventsPosted && report.postSendFocusVerified)
+        #expect(report.settledUnconfirmedPredecessor == nil && report.unverifiedTarget?.hasHardPredecessorBlock == true)
     }
 
     @Test func competingProducersPostZeroUntilReceiptAndReconciliationFinish() async {

@@ -23,12 +23,13 @@ import KoeBridgeCore
 
     private typealias Field = InputDiagnosticEvent.Field
     private typealias Value = InputDiagnosticEvent.Value
-    private typealias Token = InputDiagnosticEvent.Token
-    private typealias Stage = InputDiagnosticEvent.Stage
+    typealias Token = InputDiagnosticEvent.Token
+    typealias Stage = InputDiagnosticEvent.Stage
 
     struct AttributeRead {
         let value: CFTypeRef?
         let status: AXError
+        var timeoutConfigurationFailed = false
 
         func diagnosticState(hasValue: Bool, classifyTimeout: Bool = true) -> InputDiagnosticEvent.Token {
             switch status {
@@ -54,7 +55,7 @@ import KoeBridgeCore
         func rejection(hasTextSelection: Bool, diagnostics: InputDiagnosticTrace?,
                        stage: InputDiagnosticEvent.Stage, began: TimeInterval?, retryCandidate: @autoclosure () -> Bool = false) -> String? {
             let subroleValue = subrole.value as? String
-            let editableValue = editable.value as? Bool
+            let editableValue = editable.value.flatMap { CFGetTypeID($0) == CFBooleanGetTypeID() ? $0 as? Bool : nil }
             guard let reason = DeliveryTargetPolicy.blockedReason(
                 role: role, subrole: subroleValue, editable: editableValue ?? false,
                 hasTextSelection: hasTextSelection,
@@ -85,19 +86,21 @@ import KoeBridgeCore
     }
 
     /// Record content-free status and duration for bounded AX reads.
-    private static func copyAX(_ element: AXUIElement, name: CFString,
-                               operation: Token, scope: Token = .focusedElement,
-                               timeout: Float = 0.08, configureTimeout: Bool = true,
-                               diagnostics: InputDiagnosticTrace?, stage: Stage) -> AttributeRead {
+    static func copyAX(_ element: AXUIElement, name: CFString,
+                       operation: Token, scope: Token = .focusedElement,
+                       timeout: Float = 0.08,
+                       setTimeout: (AXUIElement, Float) -> AXError = AXUIElementSetMessagingTimeout,
+                       read: (AXUIElement, CFString, UnsafeMutablePointer<CFTypeRef?>) -> AXError = AXUIElementCopyAttributeValue,
+                       diagnostics: InputDiagnosticTrace?, stage: Stage) -> AttributeRead {
         let diagnostics = diagnostics?.isCollecting == true ? diagnostics : nil
         let began = diagnostics.map { _ in ProcessInfo.processInfo.systemUptime }
-        let timeoutStatus = configureTimeout ? AXUIElementSetMessagingTimeout(element, timeout) : nil
+        let timeoutStatus = setTimeout(element, timeout)
         var value: CFTypeRef?
         var status = AXError.failure
         defer {
             // Setting a timeout on the system-wide object changes the process
             // default. Never leave a short receipt-poll timeout installed.
-            let resetStatus = scope == .system ? AXUIElementSetMessagingTimeout(element, 0) : nil
+            let resetStatus = scope == .system ? setTimeout(element, 0) : nil
             if let diagnostics, let began {
                 var fields: [Field: Value] = [
                     .operation: .token(operation), .scope: .token(scope),
@@ -106,12 +109,16 @@ import KoeBridgeCore
                     .elapsedMS: .integer(Self.elapsedMilliseconds(since: began)),
                     .outcome: .token(status == .success ? (value == nil ? .missing : .ok) : .unavailable)
                 ]
-                if let timeoutStatus { fields[.timeoutError] = .integer(Int(timeoutStatus.rawValue)) }
+                fields[.timeoutError] = .integer(Int(timeoutStatus.rawValue))
                 if let resetStatus { fields[.resetError] = .integer(Int(resetStatus.rawValue)) }
                 diagnostics.record(.ax, stage: stage, fields)
             }
         }
-        status = AXUIElementCopyAttributeValue(element, name, &value)
+        guard timeoutStatus == .success else {
+            status = timeoutStatus
+            return AttributeRead(value: nil, status: .cannotComplete, timeoutConfigurationFailed: true)
+        }
+        status = read(element, name, &value)
         return AttributeRead(value: status == .success ? value : nil, status: status)
     }
 
@@ -288,6 +295,9 @@ import KoeBridgeCore
             selectionAttribute = read.value == nil ? nil : "AXSelectedTextMarkerRange"
             selection = read.value
         }
+        if let selection, decodeSelection(selection, kind: markerRead == nil ? .numericRange : .textMarker) == nil {
+            return failure(.capturedSelectionInvalid, pid: app.processIdentifier)
+        }
         var target = InsertionTarget(bundleIdentifier: app.bundleIdentifier, localizedName: app.localizedName,
                                      pid: app.processIdentifier, focused: focused,
                                      window: window, selectionAttribute: selectionAttribute,
@@ -388,7 +398,7 @@ import KoeBridgeCore
         let subrole = read(kAXSubroleAttribute, .subrole)
         if let externalText {
             guard externalText.permits(role: read(kAXRoleAttribute, .role), subrole: subrole) else { return nil }
-        } else if subrole.status == .success, subrole.value as? String == "AXSecureTextField" {
+        } else if subrole.timeoutConfigurationFailed || (subrole.status == .success && subrole.value as? String == "AXSecureTextField") {
             return nil
         }
         return read(kAXSelectedTextAttribute, .value).value as? String
@@ -436,6 +446,7 @@ import KoeBridgeCore
                                        timeout, diagnostics, stage)
             guard externalText.permits(role: role, subrole: subrole) else { return nil }
         }
+        guard !subrole.timeoutConfigurationFailed else { return nil }
         if subrole.status == .success, (subrole.value as? String) == "AXSecureTextField" {
             evidence?[.subrole] = .token(.secure)
             outcome = .secure
@@ -454,7 +465,7 @@ import KoeBridgeCore
         let value = reads.attribute(element, kAXValueAttribute as CFString, .value, .focusedElement,
                                     timeout, diagnostics, stage)
         guard let raw = value.value else {
-            outcome = value.status == .success ? .missing : .unavailable
+            outcome = value.status == .attributeUnsupported ? .unsupported : value.status == .success ? .missing : .unavailable
             return nil
         }
         guard let text = raw as? String else {
@@ -469,6 +480,26 @@ import KoeBridgeCore
         }
         outcome = .ok
         return text
+    }
+
+    /// Keep the original four-read preflight budget even when retrying AXValue.
+    func deliveryBaseline(diagnostics: InputDiagnosticTrace?, reads: FocusReads = FocusReads())
+        -> (InsertionReceiptPolicy.Snapshot?, ReceiptEligibilityReason) {
+        var reason = ReceiptEligibilityReason.notAttempted
+        let deadline = ProcessInfo.processInfo.systemUptime + 0.16
+        var bounded = reads
+        bounded.attribute = { element, name, operation, scope, timeout, trace, stage in
+            let remaining = Float(deadline - ProcessInfo.processInfo.systemUptime).nextDown
+            guard remaining > 0 else { return AttributeRead(value: nil, status: .cannotComplete) }
+            return reads.attribute(element, name, operation, scope, min(timeout, remaining), trace, stage)
+        }
+        for _ in 0..<2 {
+            let result = observedSnapshot(timeout: 0.04, diagnostics: diagnostics, reads: bounded,
+                                          eligibility: { reason = $0 })
+            if let result { return (result.snapshot, reason) }
+            if reason != .valueUnavailable { break }
+        }
+        return (nil, reason)
     }
 
     /// Read text between two equal selections, so a moving editor does not
@@ -516,6 +547,13 @@ import KoeBridgeCore
             evidence?[.selection] = .token(firstRead.status == .success ? .missing : .unavailable)
             return nil
         }
+        let firstRange = Self.numericSelection(first)
+        guard let initialRange = firstRange.range else {
+            evidence?[.selection] = .token(firstRange.outcome)
+            outcome = firstRange.outcome
+            selectionRead = firstRange.outcome
+            return nil
+        }
         guard let text = observedValue(timeout: timeout, diagnostics: diagnostics, stage: stage,
                                       externalText: externalText, reads: reads, observation: { attempted, result in
                                           valueAttempted = attempted
@@ -531,14 +569,7 @@ import KoeBridgeCore
             evidence?[.selection] = .token(lastRead.status == .success ? .missing : .unavailable)
             return nil
         }
-        let firstRange = Self.numericSelection(first)
         let lastRange = Self.numericSelection(last)
-        guard let initialRange = firstRange.range else {
-            evidence?[.selection] = .token(firstRange.outcome)
-            outcome = firstRange.outcome
-            selectionRead = firstRange.outcome
-            return nil
-        }
         guard let range = lastRange.range else {
             evidence?[.selection] = .token(lastRange.outcome)
             outcome = lastRange.outcome
@@ -566,6 +597,27 @@ import KoeBridgeCore
         return (snapshot, last)
     }
 
+    enum DecodedSelection: Equatable {
+        case numeric(InsertionReceiptPolicy.Selection)
+        case marker(CFTypeRef)
+
+        static func == (lhs: Self, rhs: Self) -> Bool {
+            switch (lhs, rhs) {
+            case (.numeric(let a), .numeric(let b)): return a == b
+            case (.marker(let a), .marker(let b)): return CFEqual(a, b)
+            default: return false
+            }
+        }
+    }
+
+    static func decodeSelection(_ value: CFTypeRef, kind: Token) -> DecodedSelection? {
+        switch kind {
+        case .numericRange: return numericSelection(value).range.map(DecodedSelection.numeric)
+        case .textMarker: return CFGetTypeID(value) == AXTextMarkerRangeGetTypeID() ? .marker(value) : nil
+        default: return nil
+        }
+    }
+
     static func numericSelection(_ value: CFTypeRef)
         -> (range: InsertionReceiptPolicy.Selection?, outcome: InputDiagnosticEvent.Token) {
         guard CFGetTypeID(value) == AXValueGetTypeID() else { return (nil, .invalidType) }
@@ -573,7 +625,7 @@ import KoeBridgeCore
         guard AXValueGetType(axValue) == .cfRange else { return (nil, .invalidType) }
         var range = CFRange(location: 0, length: 0)
         guard AXValueGetValue(axValue, .cfRange, &range),
-              range.location >= 0, range.length >= 0 else { return (nil, .invalidRange) }
+              range.location >= 0, range.length >= 0, range.length <= Int.max - range.location else { return (nil, .invalidRange) }
         return (InsertionReceiptPolicy.Selection(location: range.location, length: range.length), .ok)
     }
 
@@ -637,9 +689,8 @@ import KoeBridgeCore
         }
         var attribute: @MainActor (AXUIElement, CFString, InputDiagnosticEvent.Token, InputDiagnosticEvent.Token,
                                    Float, InputDiagnosticTrace?, InputDiagnosticEvent.Stage) -> AttributeRead = {
-            // AXValue is read immediately after its security attributes on the same element.
             InsertionTarget.copyAX($0, name: $1, operation: $2, scope: $3, timeout: $4,
-                                   configureTimeout: ($1 as String) != kAXValueAttribute, diagnostics: $5, stage: $6)
+                                   diagnostics: $5, stage: $6)
         }
     }
 
@@ -762,7 +813,11 @@ import KoeBridgeCore
                 } else {
                     // Marker ranges are opaque. Do not infer numeric offsets
                     // or substitute pointer identity for their CF equality.
-                    selectionMatches = CFEqual(selection, value)
+                    guard let expected = Self.decodeSelection(selection, kind: .textMarker),
+                          let actual = Self.decodeSelection(value, kind: .textMarker) else {
+                        return result(false, "selection_value_invalid_on_recheck")
+                    }
+                    selectionMatches = expected == actual
                     evidence?[.selection] = .token(selectionMatches == true ? .same : .different)
                     if selectionMatches == false { selectionFailure = "marker_selection_changed" }
                 }

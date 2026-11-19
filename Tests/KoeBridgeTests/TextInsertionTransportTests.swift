@@ -57,7 +57,8 @@ import KoeBridgeCore
         } else if numeric {
             selection = AXValueCreate(.cfRange, &range)
         } else {
-            selection = "opaque-marker" as CFString
+            var start: UInt8 = 1, end: UInt8 = 2
+            selection = AXTextMarkerRangeCreateWithBytes(nil, &start, 1, &end, 1)
         }
         return InsertionTarget(bundleIdentifier: "com.example.Editor", localizedName: "Editor", pid: pid,
             focused: element ?? AXUIElementCreateApplication(pid), window: window,

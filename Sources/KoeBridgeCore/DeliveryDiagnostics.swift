@@ -1,10 +1,11 @@
 import Foundation
 
-/// Diagnostic classifications only. None of these grant delivery permission.
+/// Baseline observations. Only an unsupported value or a typed marker can establish structural ineligibility.
 public enum ReceiptEligibilityReason: String, CaseIterable, Equatable, Sendable {
     case markerNotNumeric = "marker_not_numeric"
     case selectionMissing = "selection_missing"
     case selectionUnavailable = "selection_unavailable"
+    case valueUnsupported = "value_unsupported"
     case valueUnavailable = "value_unavailable"
     case snapshotInvalid = "snapshot_invalid"
     case noObservableDelta = "no_observable_delta"
@@ -24,6 +25,7 @@ public enum ReceiptEligibilityReason: String, CaseIterable, Equatable, Sendable 
             if selectionRead == .notAttempted { return .notAttempted }
             if selectionRead != .ok { return .selectionUnavailable }
             if valueRead == .notAttempted { return .notAttempted }
+            if valueRead == .unsupported { return .valueUnsupported }
             if valueRead != .ok { return .valueUnavailable }
             return .snapshotInvalid
         default: return .unknown

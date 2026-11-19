@@ -33,7 +33,7 @@ struct DeliveryDiagnosticsTests {
         }
         let codes = Set(Reason.allCases.map(\.rawValue))
         #expect(codes == Set(["marker_not_numeric", "selection_missing", "selection_unavailable",
-                             "value_unavailable", "snapshot_invalid", "no_observable_delta",
+                             "value_unavailable", "value_unsupported", "snapshot_invalid", "no_observable_delta",
                              "snapshot_available", "not_attempted", "unknown"]))
         for code in codes {
             #expect(InputDiagnosticEvent.Value.reason(code) != .token(.unknown) || code == "unknown")

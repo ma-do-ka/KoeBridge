@@ -58,6 +58,7 @@ import KoeBridgeCore
         let target: InsertionTarget?
         let diagnostics: InputDiagnosticTrace?
         let resultUptimeMS: Int
+        var valueUnsupported = false
         var exactBaselineAvailable: Bool = false
         var postSendFocusVerified: Bool = false
         var completedAtUptime: TimeInterval = ProcessInfo.processInfo.systemUptime
@@ -78,6 +79,9 @@ import KoeBridgeCore
                   postSendFocusVerified,
                   reason == "posted_without_observable_edit",
                   let target,
+                  let selection = target.selection,
+                  InsertionTarget.decodeSelection(selection, kind: target.selectionKind) != nil,
+                  target.selectionKind == .textMarker || valueUnsupported,
                   let window = target.window,
                   CFGetTypeID(window) == AXUIElementGetTypeID() else { return nil }
             return SettledUnconfirmedPredecessor(target: target, completedAt: completedAtUptime)
@@ -208,10 +212,7 @@ import KoeBridgeCore
             $0.focusCheck(requireOriginalSelection: $1, diagnostics: $2, stage: $3, chunkOrdinal: $4)
         }
         var snapshot: @MainActor (InsertionTarget, InputDiagnosticTrace?) -> (InsertionReceiptPolicy.Snapshot?, ReceiptEligibilityReason) = { target, trace in
-            var eligibility = ReceiptEligibilityReason.notAttempted
-            let snapshot = target.observedSnapshot(timeout: 0.04, diagnostics: trace, stage: .preflight,
-                                                   eligibility: { eligibility = $0 })?.snapshot
-            return (snapshot, eligibility)
+            target.deliveryBaseline(diagnostics: trace)
         }
         var waitForReceiptPoll: () async throws -> Void = { try await Task.sleep(for: .milliseconds(35)) }
         var receiptFocus: @MainActor (InsertionTarget, Float, InputDiagnosticTrace?, Int) -> (allowed: Bool, reason: String) = {
@@ -313,30 +314,11 @@ import KoeBridgeCore
                                                   shouldContinue: @MainActor () -> Bool) async -> Bool {
         func readSelectionEqual(_ left: InsertionTarget.AttributeRead, _ right: InsertionTarget.AttributeRead,
                                 kind: InputDiagnosticEvent.Token) -> Bool {
-            switch kind {
-            case .numericRange:
-                guard left.status == .success, right.status == .success,
-                      let lv = left.value, let rv = right.value,
-                      CFGetTypeID(lv) == AXValueGetTypeID(), CFGetTypeID(rv) == AXValueGetTypeID(),
-                      AXValueGetType(lv as! AXValue) == .cfRange, AXValueGetType(rv as! AXValue) == .cfRange else {
-                    return false
-                }
-                var lr = CFRange()
-                var rr = CFRange()
-                guard AXValueGetValue(lv as! AXValue, .cfRange, &lr),
-                      AXValueGetValue(rv as! AXValue, .cfRange, &rr) else { return false }
-                return lr.location == rr.location && lr.length == rr.length
-            case .textMarker:
-                guard left.status == .success, right.status == .success,
-                      let lv = left.value, let rv = right.value,
-                      CFGetTypeID(lv) == AXTextMarkerRangeGetTypeID(),
-                      CFGetTypeID(rv) == AXTextMarkerRangeGetTypeID() else {
-                    return false
-                }
-                return CFEqual(lv, rv)
-            default:
-                return false
-            }
+            guard left.status == .success, right.status == .success,
+                  let lv = left.value, let rv = right.value,
+                  let first = InsertionTarget.decodeSelection(lv, kind: kind),
+                  let second = InsertionTarget.decodeSelection(rv, kind: kind) else { return false }
+            return first == second
         }
 
         // Window identity must be positively established (both non-nil AXUIElement and CFEqual).
@@ -674,7 +656,8 @@ import KoeBridgeCore
                 ?? InputDiagnosticTrace.uptimeMilliseconds(ProcessInfo.processInfo.systemUptime)
             return Report(outcome: outcome, reason: reason, receipt: receipt,
                           eventsPosted: sent > 0, target: target, diagnostics: diagnostics,
-                          resultUptimeMS: resultUptimeMS, exactBaselineAvailable: exactBaselineAvailable,
+                          resultUptimeMS: resultUptimeMS, valueUnsupported: receiptEligibility == .valueUnsupported,
+                          exactBaselineAvailable: exactBaselineAvailable,
                           postSendFocusVerified: postSendFocusVerified,
                           completedAtUptime: transport.ax.now())
         }
