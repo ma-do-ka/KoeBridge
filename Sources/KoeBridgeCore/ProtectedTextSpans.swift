@@ -60,42 +60,54 @@ struct ProtectedTextSpans {
     private static let inlineCode = try! NSRegularExpression(pattern:
         #"(?<!\x60)(\x60{2,})(?!\x60)[\s\S]*?(?:(?<!\x60)\1(?!\x60)|\z)|\x60[^\x60\n]*(?:\x60|\n|\z)"#)
 
+    private static let closingQuote: [Unicode.Scalar: Unicode.Scalar] = [
+        "「": "」", "『": "』", "“": "”", "‘": "’", "'": "'", "\"": "\""
+    ]
+
     private static func quoteRanges(in text: String) -> [NSRange] {
-        // Track each delimiter family independently, as the original protections
-        // can overlap (e.g. an unmatched quotation inside a command).
         let scalars = text.unicodeScalars
         let word = CharacterSet.alphanumerics.union(.nonBaseCharacters)
-        let pairs: [(Unicode.Scalar, Unicode.Scalar)] = [("「", "」"), ("『", "』"), ("“", "”"),
-                                                         ("‘", "’"), ("'", "'"), ("\"", "\"")]
         var ranges: [NSRange] = []
-        for (open, close) in pairs where scalars.contains(open) {
-            var start = 0, depth = 0, offset = 0
-            var previousIsWord = false, escaped = false
-            let singleLine = open == close
-            for index in scalars.indices {
-                let ch = scalars[index]
-                let end = offset + ch.utf16.count
-                let next = scalars.index(after: index)
-                let internalApostrophe = (ch == "'" || ch == "’") && previousIsWord &&
-                    next < scalars.endIndex && word.contains(scalars[next])
-                if singleLine && ch == "\n" && depth > 0 {
-                    ranges.append(NSRange(location: start, length: end - start))
+        var active: (open: Unicode.Scalar, close: Unicode.Scalar)?
+        var start = 0, depth = 0, offset = 0
+        var previousIsWord = false, escaped = false
+
+        for index in scalars.indices {
+            let ch = scalars[index]
+            let end = offset + ch.utf16.count
+            if let pair = active {
+                // Only the outer family owns this span. An unmatched foreign
+                // quote inside it cannot start a second span beyond its end.
+                if CharacterSet.newlines.contains(ch) {
                     depth = 0
-                } else if !internalApostrophe && !escaped {
-                    if depth > 0 && ch == close {
-                        depth -= 1
-                        if depth == 0 { ranges.append(NSRange(location: start, length: end - start)) }
-                    } else if ch == open {
-                        if depth == 0 { start = offset }
-                        depth += 1
-                    }
+                } else if escaped {
+                    escaped = false
+                } else if pair.open == pair.close && ch == "\\" {
+                    escaped = true
+                } else if ch == pair.close {
+                    let next = scalars.index(after: index)
+                    let withinWord = (ch == "'" || ch == "’") && previousIsWord &&
+                        next < scalars.endIndex && word.contains(scalars[next])
+                    if !withinWord { depth -= 1 }
+                } else if ch == pair.open {
+                    depth += 1
                 }
-                escaped = singleLine && depth > 0 && ch == "\\" && !escaped
-                previousIsWord = word.contains(ch)
-                offset = end
+
+                if depth == 0 {
+                    ranges.append(NSRange(location: start, length: end - start))
+                    active = nil
+                    escaped = false
+                }
+            } else if let close = closingQuote[ch], !(ch == "'" && previousIsWord) {
+                // A word-internal or trailing apostrophe (don't, users') cannot open a quotation.
+                active = (ch, close)
+                start = offset
+                depth = 1
             }
-            if depth > 0 { ranges.append(NSRange(location: start, length: offset - start)) }
+            previousIsWord = word.contains(ch)
+            offset = end
         }
+        if active != nil { ranges.append(NSRange(location: start, length: offset - start)) }
         return ranges
     }
 
