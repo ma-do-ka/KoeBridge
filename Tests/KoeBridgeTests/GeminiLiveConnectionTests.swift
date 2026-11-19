@@ -5,6 +5,26 @@ import KoeBridgeCore
 @testable import KoeBridge
 
 @MainActor struct GeminiLiveConnectionTests {
+    @Test func providerMessageIsDiscardedBeforeLoggingAndPresentation() throws {
+        let marker = "B79-private-request-491bc7"
+        let frame = try GeminiWire.decode("""
+            {"error":{"message":"\(marker)","status":"\(marker)","code":429}}
+            """)
+        guard case .providerError(let failure) = frame.events.first else {
+            Issue.record("Missing classified provider failure")
+            return
+        }
+        #expect(failure.kind == .rateLimited)
+        let diagnostic = GeminiLiveConnection.diagnosticFailure(failure)
+        #expect(DiagnosticLogPolicy.sanitizedEvent(diagnostic) == "kind=rateLimited code=429")
+        let presentation = GeminiLiveConnection.connectionFailureReason(for: failure)
+        #expect(presentation.contains("利用上限"))
+        for representation in [String(reflecting: frame), frame.diagnosticKind, diagnostic,
+                               presentation, GeminiLiveConnection.ConnectionError.setup(presentation).localizedDescription] {
+            #expect(!representation.contains(marker))
+        }
+    }
+
     @Test func setupReplyIsMappedOnceBeforeAddingTheAPIPrefix() {
         let raw = "Gemini API: The setup request was rejected."
         let error = GeminiLiveConnection.ConnectionError.setup(raw)

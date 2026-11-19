@@ -580,7 +580,7 @@ import KoeBridgeCore
                 historyStore.appendRetranscription(record.id, result: .init(engine: engine.label, text: text))
                 replayStatus = "再文字起こし結果を履歴に追加しました"
             } catch {
-                DiagnosticLog.record("audio replay recognition failed: \(error.localizedDescription)")
+                DiagnosticLog.record("audio replay recognition failed; category=\(Self.failureCategory(error))")
                 if replayJob == job, !Task.isCancelled {
                     replayStatus = Self.userFacingFailure(error, operation: "再文字起こし")
                 }
@@ -1353,7 +1353,6 @@ import KoeBridgeCore
         } catch {
             guard !take.finished, !Task.isCancelled else { return }
             DiagnosticLog.record("recognition failure; category=\(Self.failureCategory(error))")
-            DiagnosticLog.record("recognition failure detail: \(error.localizedDescription)")
             resolve(take, text: nil, reason: Self.userFacingFailure(error, operation: "音声認識"))
         }
     }

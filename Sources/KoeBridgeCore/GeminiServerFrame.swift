@@ -1,5 +1,35 @@
 import Foundation
 
+/// Only the numeric status crosses the provider trust boundary.
+public struct GeminiProviderError: LocalizedError, Equatable, Sendable {
+    public enum Kind: String, Sendable {
+        case authentication, rateLimited, unavailable, rejected
+    }
+
+    public let code: Int?
+    public init(code: Int?) { self.code = code }
+
+    public var kind: Kind {
+        switch code {
+        case 401, 403: return .authentication
+        case 429: return .rateLimited
+        case 500, 502, 503, 504: return .unavailable
+        default: return .rejected
+        }
+    }
+
+    public var diagnostic: String { "kind=\(kind.rawValue) code=\(code.map(String.init) ?? "unknown")" }
+
+    public var errorDescription: String? {
+        switch kind {
+        case .authentication: return "APIキーとアクセス権を確認してください。"
+        case .rateLimited: return "利用上限に達しました。時間をおいてもう一度お試しください。"
+        case .unavailable: return "サーバーを利用できません。時間をおいてもう一度お試しください。"
+        case .rejected: return "リクエストが拒否されました。"
+        }
+    }
+}
+
 /// A single decoded server message. Transcription, segment identity and usage
 /// must come from the same frame; receiving code does not reparse its JSON.
 public struct GeminiServerFrame: Equatable, Sendable {
@@ -22,7 +52,7 @@ public struct GeminiServerFrame: Equatable, Sendable {
         var events: [TranscribeEvent] = []
         if root["setupComplete"] != nil { events.append(.setupComplete) }
         if let error = root["error"] as? [String: Any] {
-            events.append(.error((error["message"] as? String) ?? "API エラー"))
+            events.append(.providerError(GeminiProviderError(code: error["code"] as? Int)))
         }
         if let partial = content?["interimInputTranscription"] as? [String: Any],
            let text = partial["text"] as? String, !text.isEmpty {
