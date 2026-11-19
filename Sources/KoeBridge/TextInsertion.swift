@@ -737,7 +737,7 @@ import KoeBridgeCore
         switch payload {
         case .dictation(let text):
             safeText = UnicodeTypingPlan.safeText(text)
-            parts = UnicodeTypingPlan.chunks(text)
+            parts = UnicodeTypingPlan.chunks(sanitized: safeText)
         case .command(let command):
             safeText = command.insertionText ?? ""
             parts = safeText.isEmpty ? [] : [safeText]
