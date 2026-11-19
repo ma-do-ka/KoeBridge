@@ -46,20 +46,18 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
     // Only reports received while this take is pending participate. A newly
     // started take does not inherit an earlier take's unconfirmed submission.
     func hasPriorBlock(for candidate: InsertionTarget) -> Bool {
-        if unverifiedInputTargets.contains(where: { candidate.sameElement(as: $0) }) {
+        let allowSettledDictation = commandCandidate == nil && transformSelection == nil && !isFixLastInput
+        let effectiveSettled = allowSettledDictation ? settledUnconfirmedInputTargets : []
+        let adjudicated = TextInsertion.adjudicatePredecessors(
+            for: candidate, takeStart: target,
+            unverifiedPredecessors: unverifiedInputTargets,
+            settledUnconfirmedPredecessors: effectiveSettled)
+        if adjudicated.startBlocks || adjudicated.hasHardUnverified {
             return true
         }
-        if target?.isBlocked == true, target.map({ candidate.sameElement(as: $0) }) == true {
-            let allowSettledDictation = commandCandidate == nil && transformSelection == nil && !isFixLastInput
-            if allowSettledDictation,
-               settledUnconfirmedInputTargets.contains(where: { candidate.sameField(as: $0.target) }) {
-                return false
-            }
+        if !allowSettledDictation,
+           settledUnconfirmedInputTargets.contains(where: { candidate.sameElement(as: $0.target) }) {
             return true
-        }
-        if settledUnconfirmedInputTargets.contains(where: { candidate.sameElement(as: $0.target) }) {
-            let allowSettledDictation = commandCandidate == nil && transformSelection == nil && !isFixLastInput
-            return !allowSettledDictation
         }
         return false
     }

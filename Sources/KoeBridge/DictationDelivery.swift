@@ -37,9 +37,12 @@ import KoeBridgeCore
         var historyInsertionDetail: String {
             guard let report, report.outcome != .verifiedInserted else { return detail }
             switch report.reason {
-            case "recovery_deadline_expired": return "制限時間内に入力先を確認できませんでした。"
-            case "recovery_host_changed": return "入力欄・選択範囲の安全確認に失敗しました。"
-            case "delivery_cancelled_before_post": return "処理が中断されたため、入力前に停止しました。"
+            case "recovery_deadline_expired" where report.outcome != .partiallySubmitted:
+                return "制限時間内に入力先を確認できませんでした。"
+            case "recovery_host_changed" where report.outcome != .partiallySubmitted:
+                return "入力欄・選択範囲の安全確認に失敗しました。"
+            case "delivery_cancelled_before_post":
+                return "処理が中断されたため、入力前に停止しました。"
             default:
                 guard let reason = InputDiagnosticEvent.Token(rawValue: report.reason) else { return detail }
                 return detail + "（" + reason.rawValue + "）"

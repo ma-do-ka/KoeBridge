@@ -194,15 +194,28 @@ import KoeBridgeCore
     }
 
     @Test func initialEligibilityIsNarrow() async {
-        let cases: [(Fixture) -> Void] = [
-            { $0.bundle = "com.example.Editor" }, { $0.role = "AXCheckBox" }, { $0.currentWindow = nil },
+        // Broadened denylisted roles across apps enter bounded recovery when all-noValue evidence holds (Fix 1a / I9b).
+        for (bundle, role) in [("com.meta.endo", "AXButton"),
+                               ("com.example.Editor", "AXButton"),
+                               ("com.meta.endo", "AXCheckBox"),
+                               ("com.google.Chrome", "AXStaticText")] {
+            let f = Fixture()
+            f.bundle = bundle
+            f.role = role
+            _ = await f.deliver()
+            #expect(f.posts == 0 && f.slots.count == 2)
+        }
+        // Ineligible cases never enter recovery (0 posts, 0 waits).
+        let ineligibleCases: [(Fixture) -> Void] = [
+            { $0.currentWindow = nil },
             { $0.role = nil }, { $0.role = "AXSecureTextField" }, { $0.blocked = true },
+            { $0.subrole = Read(value: "AXSecureTextField" as CFString, status: .success) },
             { $0.selection = Read(value: nil, status: .cannotComplete) },
             { $0.editable = Read(value: nil, status: .attributeUnsupported) },
             { $0.marker = Read(value: nil, status: .attributeUnsupported) },
             { $0.subrole = Read(value: nil, status: .failure) }
         ]
-        for change in cases {
+        for change in ineligibleCases {
             let f = Fixture()
             change(f)
             _ = await f.deliver()
@@ -349,7 +362,9 @@ import KoeBridgeCore
             let trace = InputDiagnosticTrace(takeID: UUID(), consent: try #require(consent.token),
                                              permits: { consent.allows($0) })
             let result = await f.deliver(trace: trace)
-            #expect(result.outcome == .focusChanged && f.posts == 0 && f.slots.isEmpty)
+            let expectedSlots: [Double] = (reason == "first_chunk_focused_window_unavailable_on_recheck"
+                || reason == "first_chunk_focused_element_unavailable_on_recheck") ? [0.025] : []
+            #expect(result.outcome == .focusChanged && f.posts == 0 && f.slots == expectedSlots)
             let code = try #require(InputDiagnosticEvent.Token(rawValue: reason))
             #expect(trace.buffer.entries.last?.event.fields[.reason] == .token(code))
         }
@@ -732,6 +747,156 @@ import KoeBridgeCore
             configure(f)
             let result = await f.deliver()
             #expect(result.outcome == .focusChanged && f.posts == 0 && f.slots.isEmpty)
+        }
+    }
+
+    @Test func reviewerProbesI1aI1bI6aI6bI7aI7bI7cI8() async throws {
+        // I1a: Unavailable-recovery multi-chunk delivery must reject element identity swap on chunk >= 1.
+        do {
+            let f = Fixture()
+            f.bundle = "com.google.Chrome"
+            f.currentField = nil
+            var t = f.transport()
+            t.capture = { _ in
+                f.captures += 1
+                return .unavailable(.focusedTextElementUnavailable, pid: f.pid, focused: nil, ownerStatus: nil)
+            }
+            f.onWait = {
+                f.currentField = f.field
+                f.role = "AXTextArea"
+                f.selection = f.range(0, 0)
+            }
+            f.onPost = {
+                // Swap to a different element in the same window with identical role/selection before chunk 1.
+                f.currentField = f.other
+            }
+            let outcome = await DictationDelivery.send(String(repeating: "a", count: 29), to: nil, transport: t) { f.allowed }
+            let result = try #require(outcome.report)
+            #expect(result.outcome == .partiallySubmitted && result.reason == "recovery_host_changed")
+            #expect(f.posts == 1)
+            // I8: Partial submission with recovery_host_changed must preserve partial delivery detail.
+            #expect(outcome.historyInsertionDetail.contains("入力が途中で中断しました"))
+            #expect(outcome.historyInsertionDetail.contains("（recovery_host_changed）"))
+        }
+
+        // I8: Partial submission with recovery_deadline_expired must also preserve partial delivery detail.
+        do {
+            let partialDeadline = TextInsertion.Report(
+                outcome: .partiallySubmitted, reason: "recovery_deadline_expired",
+                receipt: nil, eventsPosted: true, target: nil, diagnostics: nil, resultUptimeMS: 1_000)
+            let outcome = DictationDelivery.Outcome(
+                delivery: .partiallyDirect,
+                detail: DictationDelivery.description(.partiallyDirect, reason: "recovery_deadline_expired"),
+                report: partialDeadline)
+            #expect(outcome.historyInsertionDetail.contains("入力が途中で中断しました"))
+            #expect(outcome.historyInsertionDetail.contains("（recovery_deadline_expired）"))
+        }
+
+        // I1b: Pre-send unavailable-recovery must bind to takeStart's window when takeStart?.window != nil.
+        do {
+            let f = Fixture()
+            f.bundle = "com.google.Chrome"
+            let startWindow = AXUIElementCreateApplication(77777)
+            let takeStart = InsertionTarget(bundleIdentifier: f.bundle, localizedName: "Chrome",
+                                            pid: f.pid, focused: f.field, window: startWindow,
+                                            selectionAttribute: kAXSelectedTextRangeAttribute,
+                                            selection: f.range(0, 0).value, textSnapshot: nil,
+                                            capturedAt: 0, blockedReason: nil)
+            f.currentField = nil
+            var t = f.transport()
+            t.capture = { _ in
+                f.captures += 1
+                return .unavailable(.focusedTextElementUnavailable, pid: f.pid, focused: nil, ownerStatus: nil)
+            }
+            f.onWait = {
+                // App's current focused window is f.window (different from takeStart.window = startWindow).
+                f.currentField = f.field
+                f.role = "AXTextArea"
+                f.selection = f.range(0, 0)
+            }
+            let rejected = await TextInsertion.deliver("x", to: takeStart, transport: t) { f.allowed }
+            #expect(rejected.outcome == .focusChanged && f.posts == 0 && f.slots.count == 1)
+
+            // When currentWindow and elementWindow match takeStart.window, recovery succeeds.
+            let fSame = Fixture()
+            fSame.bundle = "com.google.Chrome"
+            fSame.currentWindow = startWindow
+            fSame.elementWindow = startWindow
+            fSame.currentField = nil
+            var tSame = fSame.transport()
+            tSame.capture = { _ in
+                fSame.captures += 1
+                return .unavailable(.focusedTextElementUnavailable, pid: fSame.pid, focused: nil, ownerStatus: nil)
+            }
+            fSame.onWait = {
+                fSame.currentField = fSame.field
+                fSame.role = "AXTextArea"
+                fSame.selection = fSame.range(0, 0)
+            }
+            let accepted = await TextInsertion.deliver("x", to: takeStart, transport: tSame) { fSame.allowed }
+            #expect(accepted.outcome == .inserted && fSame.posts == 1 && fSame.slots.count == 1)
+        }
+
+        // I6a + Nit: Endo AXButton / AXStaticText recovering on the same element to AXGroup with marker selection.
+        for initialRole in ["AXButton", "AXStaticText"] {
+            let f = Fixture()
+            f.bundle = "com.meta.endo"
+            f.role = initialRole
+            f.onWait = {
+                f.role = "AXGroup"
+                f.marker = f.liveMarker()
+                f.editable = Read(value: nil, status: .noValue)
+            }
+            let result = await f.deliver()
+            #expect(result.outcome == .inserted && f.posts == 1 && f.slots.count == 1)
+        }
+
+        // I7a: Pre-chunk-1 (.posting index == 0) transient unavailability recovers after a single 25 ms recheck.
+        do {
+            let f = Fixture()
+            f.role = "AXTextField"
+            f.selection = f.range(0, 0)
+            var postingChecks = 0
+            f.onCheck = { stage in
+                if stage == .posting {
+                    postingChecks += 1
+                    f.currentField = postingChecks == 1 ? nil : f.field
+                }
+            }
+            let result = await f.deliver("x")
+            #expect(result.outcome == .inserted && postingChecks == 2 && f.posts == 1 && f.slots == [0.025])
+        }
+
+        // I7b: Receipt-stage transient unavailability does not consume a 25 ms sleep in the receipt path.
+        do {
+            let f = Fixture()
+            f.role = "AXTextField"
+            f.marker = f.liveMarker()
+            var receiptChecks = 0
+            f.onCheck = { stage in
+                if stage == .receipt {
+                    receiptChecks += 1
+                    f.currentField = nil
+                }
+            }
+            let result = await f.deliver("b")
+            #expect(result.eventsPosted && !result.postSendFocusVerified && f.posts == 1 && f.slots.isEmpty && receiptChecks == 1)
+        }
+
+        // I7c: Affirmative mismatch (e.g. focused_window_changed) dominates transient selection_unavailable_on_recheck.
+        do {
+            let f = Fixture()
+            f.role = "AXTextField"
+            f.selection = f.range(0, 0)
+            f.onCheck = { stage in
+                if stage == .preflight {
+                    f.currentWindow = f.other
+                    f.selection = Read(value: nil, status: .noValue)
+                }
+            }
+            let result = await f.deliver("x")
+            #expect(result.outcome == .focusChanged && result.reason == "focused_window_changed")
+            #expect(f.posts == 0 && f.slots.isEmpty)
         }
     }
 }

@@ -156,11 +156,6 @@ public enum InsertionReceiptPolicy {
         if candidate == receipt.before || candidate == receipt.after {
             return .rebased(receipt.after)
         }
-        if receipt.mode != .strict,
-           let expectedFullAfter = expectedAfter(before: receipt.before, inserted: receipt.inserted),
-           candidate == expectedFullAfter {
-            return .rebased(candidate)
-        }
         // A new take can start while the editor is consuming an earlier
         // batch of Unicode events. Accept only the exact prefix edit, and
         // only when its capture occurred inside that submission's interval.

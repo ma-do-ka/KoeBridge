@@ -59,21 +59,27 @@ import KoeBridgeCore
         let diagnostics: InputDiagnosticTrace?
         let resultUptimeMS: Int
         var exactBaselineAvailable: Bool = false
+        var postSendFocusVerified: Bool = false
         var completedAtUptime: TimeInterval = ProcessInfo.processInfo.systemUptime
 
         /// Preserve the actual delivery target even when a pending take was
         /// captured in another field (or had no take-start target at all).
         var unverifiedTarget: InsertionTarget? {
-            eventsPosted && receipt == nil ? target : nil
+            guard eventsPosted, receipt == nil, let target else { return nil }
+            return settledUnconfirmedPredecessor == nil ? target.blockedByPriorInput(hard: true) : target
         }
 
-        /// Predecessor delivered all chunks without post-send focus failure on a target
-        /// where exact receipt verification is structurally unavailable (e.g. marker-only).
+        /// Predecessor delivered all chunks with verified post-send focus on a target
+        /// where exact receipt verification is structurally unavailable (e.g. marker-only)
+        /// and window identity is positively established.
         var settledUnconfirmedPredecessor: SettledUnconfirmedPredecessor? {
             guard outcome == .inserted, eventsPosted, receipt == nil,
                   !exactBaselineAvailable,
+                  postSendFocusVerified,
                   reason == "posted_without_observable_edit",
-                  let target else { return nil }
+                  let target,
+                  let window = target.window,
+                  CFGetTypeID(window) == AXUIElementGetTypeID() else { return nil }
             return SettledUnconfirmedPredecessor(target: target, completedAt: completedAtUptime)
         }
 
@@ -113,8 +119,12 @@ import KoeBridgeCore
                 record(.unchanged, "no_events_posted")
                 return candidate
             }
-            guard !candidate.isBlocked else {
+            let isHardBlock = settledUnconfirmedPredecessor == nil
+            if candidate.isBlocked {
                 record(.blocked, "already_blocked")
+                if isHardBlock, candidate.sameElement(as: target), !candidate.hasHardPredecessorBlock {
+                    return candidate.blockedByPriorInput(hard: true)
+                }
                 return candidate
             }
             let reconciliation = InsertionReceiptPolicy.reconcile(
@@ -134,7 +144,7 @@ import KoeBridgeCore
                     return updated
                 }
                 record(.blocked, "rebase_failed")
-                return candidate.blockedByPriorInput()
+                return candidate.blockedByPriorInput(hard: true)
             case .blocked:
                 // A verified predecessor is settled. A pending take may have
                 // moved its caret or edited text since capture; its fresh
@@ -152,7 +162,7 @@ import KoeBridgeCore
                     why = "invalid_candidate_snapshot"
                 } else { why = "candidate_edit_unmatched" }
                 record(.blocked, why)
-                return candidate.blockedByPriorInput()
+                return candidate.blockedByPriorInput(hard: isHardBlock)
             }
         }
     }
@@ -211,6 +221,46 @@ import KoeBridgeCore
         }
     }
 
+    /// Evaluate each predecessor individually for `candidate`.
+    /// Any hard predecessor matching `candidate` blocks regardless of settled entries;
+    /// settled relaxation applies only to the specific settled predecessor it was classified from,
+    /// and requires positive non-nil window identity (both non-nil AXUIElement and CFEqual).
+    static func adjudicatePredecessors(for candidate: InsertionTarget,
+                                       takeStart: InsertionTarget?,
+                                       unverifiedPredecessors: [InsertionTarget],
+                                       settledUnconfirmedPredecessors: [SettledUnconfirmedPredecessor])
+        -> (matchingUnverified: [InsertionTarget],
+            matchingSettled: [SettledUnconfirmedPredecessor],
+            hasHardUnverified: Bool,
+            startBlocks: Bool) {
+        let candidateHasValidWindow = candidate.window.map { CFGetTypeID($0) == AXUIElementGetTypeID() } ?? false
+        let matchingUnverified = unverifiedPredecessors.filter { candidate.sameElement(as: $0) }
+        let matchingSettled = settledUnconfirmedPredecessors.filter { settled in
+            guard candidateHasValidWindow,
+                  let sWin = settled.target.window,
+                  CFGetTypeID(sWin) == AXUIElementGetTypeID() else { return false }
+            return candidate.sameField(as: settled.target)
+        }
+        let settledIDs = Set(matchingSettled.map { $0.target.instanceID })
+        let hasHardUnverified = matchingUnverified.contains { unverified in
+            unverified.hasHardPredecessorBlock || !settledIDs.contains(unverified.instanceID)
+        }
+        let freshMatchesStart = takeStart.map { candidate.sameElement(as: $0) } ?? false
+        let startBlocks: Bool
+        if let start = takeStart, start.isBlocked {
+            if !freshMatchesStart && (!unverifiedPredecessors.isEmpty || !settledUnconfirmedPredecessors.isEmpty) {
+                startBlocks = false
+            } else if freshMatchesStart && !start.hasHardPredecessorBlock && !matchingSettled.isEmpty && !hasHardUnverified {
+                startBlocks = false
+            } else {
+                startBlocks = true
+            }
+        } else {
+            startBlocks = false
+        }
+        return (matchingUnverified, matchingSettled, hasHardUnverified, startBlocks)
+    }
+
     /// Capture exactly once at the shared boundary for dictation, commands and
     /// transforms. Take-start contents/caret are only diagnostic context here.
     /// Pending unverified input remains a latch; recapture cannot unlock it.
@@ -232,29 +282,14 @@ import KoeBridgeCore
                             "accessibility_not_granted"]
             return (nil, specific.contains(current.reason) ? current.reason : "target_unavailable_at_delivery")
         }
-        let matchingUnverified = unverifiedPredecessors.filter { fresh.sameElement(as: $0) }
-        let matchingSettled = settledUnconfirmedPredecessors.filter { fresh.sameField(as: $0.target) }
-        let hasHardUnverifiedOnFresh = matchingUnverified.contains { unverified in
-            !matchingSettled.contains { $0.target.sameField(as: unverified) }
-        }
-        let freshMatchesStart = takeStart.map { fresh.sameElement(as: $0) } ?? false
-        let startBlocksFresh: Bool
-        if takeStart?.isBlocked == true {
-            if !freshMatchesStart && (!unverifiedPredecessors.isEmpty || !settledUnconfirmedPredecessors.isEmpty) {
-                startBlocksFresh = false
-            } else if freshMatchesStart && !matchingSettled.isEmpty && !hasHardUnverifiedOnFresh {
-                startBlocksFresh = false
-            } else {
-                startBlocksFresh = true
-            }
-        } else {
-            startBlocksFresh = false
-        }
-        guard !startBlocksFresh, !hasHardUnverifiedOnFresh else {
+        let adjudicated = adjudicatePredecessors(for: fresh, takeStart: takeStart,
+                                                 unverifiedPredecessors: unverifiedPredecessors,
+                                                 settledUnconfirmedPredecessors: settledUnconfirmedPredecessors)
+        guard !adjudicated.startBlocks, !adjudicated.hasHardUnverified else {
             diagnostics?.record(.target, stage: .preflight, [
                 .reason: .token(.priorInputUnverified),
                 .startBlocked: .flag(takeStart?.isBlocked == true),
-                .freshMatchesPrior: .flag(!matchingUnverified.isEmpty),
+                .freshMatchesPrior: .flag(!adjudicated.matchingUnverified.isEmpty),
                 .unverifiedPredecessorCount: .integer(unverifiedPredecessors.count)
             ])
             return (fresh, "prior_input_unverified")
@@ -292,30 +327,36 @@ import KoeBridgeCore
                     return false
                 }
                 return CFEqual(lv, rv)
-            case .none:
-                let leftAbsent = left.status == .noValue || left.status == .attributeUnsupported
-                let rightAbsent = right.status == .noValue || right.status == .attributeUnsupported
-                return leftAbsent && rightAbsent
             default:
                 return false
             }
         }
 
+        // Window identity must be positively established (both non-nil AXUIElement and CFEqual).
+        guard let freshWindow = fresh.window,
+              CFGetTypeID(freshWindow) == AXUIElementGetTypeID(),
+              settled.allSatisfy({
+                  guard let sWindow = $0.target.window,
+                        CFGetTypeID(sWindow) == AXUIElementGetTypeID() else { return false }
+                  return CFEqual(freshWindow, sWindow)
+              }) else { return false }
+
         let now = transport.ax.now()
         guard let minElapsed = settled.map({ now - $0.completedAt }).min() else { return false }
         let read1Focus = transport.checkFocus(fresh, false, diagnostics, .preflight, 0)
         guard read1Focus.allowed else { return false }
-        let selAttr = fresh.selectionAttribute ?? (fresh.selectionKind == .textMarker ? "AXSelectedTextMarkerRange" : kAXSelectedTextRangeAttribute)
-        let focusedElement: AXUIElement? = CFGetTypeID(fresh.focused) == AXUIElementGetTypeID()
-            ? (fresh.focused as! AXUIElement) : nil
-        let read1Selection = focusedElement.flatMap { try? transport.ax.read($0, selAttr, until: transport.ax.now() + 0.040) }
-            ?? InsertionTarget.AttributeRead(value: fresh.selection, status: fresh.selection != nil ? .success : .noValue)
-        try? await transport.ax.sleep(0.035)
+        guard let selAttr = fresh.selectionAttribute,
+              CFGetTypeID(fresh.focused) == AXUIElementGetTypeID() else { return false }
+        let focusedElement = fresh.focused as! AXUIElement
+        guard let read1Selection = try? transport.ax.read(focusedElement, selAttr, until: transport.ax.now() + 0.040),
+              read1Selection.status == .success, read1Selection.value != nil else { return false }
+        do { try await transport.ax.sleep(0.035) }
+        catch { return false }
         guard !Task.isCancelled, shouldContinue() else { return false }
         let read2Focus = transport.checkFocus(fresh, false, diagnostics, .preflight, 0)
         guard read2Focus.allowed else { return false }
-        let read2Selection = focusedElement.flatMap { try? transport.ax.read($0, selAttr, until: transport.ax.now() + 0.040) }
-            ?? InsertionTarget.AttributeRead(value: fresh.selection, status: fresh.selection != nil ? .success : .noValue)
+        guard let read2Selection = try? transport.ax.read(focusedElement, selAttr, until: transport.ax.now() + 0.040),
+              read2Selection.status == .success, read2Selection.value != nil else { return false }
         let selectionStable = readSelectionEqual(read1Selection, read2Selection, kind: fresh.selectionKind)
         return InsertionReceiptPolicy.mayProceedWithPredecessorState(
             operation: .dictation,
@@ -360,14 +401,31 @@ import KoeBridgeCore
         let recoveryCandidate: (retry: DeliveryRecovery, baselineTarget: InsertionTarget)?
         switch sample {
         case .rejected(let denied, "current_target_not_text_input") where denied.eligible:
-            recoveryCandidate = (DeliveryRecovery(rejection: denied, ax: transport.ax), denied.target)
+            if let start = takeStart, let startWindow = start.window {
+                if start.pid == denied.target.pid,
+                   CFGetTypeID(startWindow) == AXUIElementGetTypeID(),
+                   let deniedWindow = denied.target.window,
+                   CFGetTypeID(deniedWindow) == AXUIElementGetTypeID(),
+                   CFEqual(startWindow, deniedWindow) {
+                    recoveryCandidate = (DeliveryRecovery(rejection: denied, ax: transport.ax), denied.target)
+                } else {
+                    recoveryCandidate = nil
+                }
+            } else {
+                recoveryCandidate = (DeliveryRecovery(rejection: denied, ax: transport.ax), denied.target)
+            }
         case .unavailable(.focusedTextElementUnavailable, let pid?, _, _):
             let app = AXUIElementCreateApplication(pid)
             let now = transport.ax.now()
-            let windowRead = try? transport.ax.read(app, kAXFocusedWindowAttribute, until: now + 0.080)
-            let window = (windowRead?.status == .success && windowRead?.value.map { CFGetTypeID($0) == AXUIElementGetTypeID() } == true)
-                ? windowRead?.value : takeStart.flatMap { $0.pid == pid ? $0.window : nil }
-            if let window {
+            let requiredWindow: CFTypeRef?
+            if let start = takeStart, let startWindow = start.window {
+                requiredWindow = (start.pid == pid && CFGetTypeID(startWindow) == AXUIElementGetTypeID()) ? startWindow : nil
+            } else {
+                let windowRead = try? transport.ax.read(app, kAXFocusedWindowAttribute, until: now + 0.080)
+                requiredWindow = (windowRead?.status == .success && windowRead?.value.map { CFGetTypeID($0) == AXUIElementGetTypeID() } == true)
+                    ? windowRead?.value : nil
+            }
+            if let window = requiredWindow {
                 let placeholder = InsertionTarget(
                     bundleIdentifier: takeStart?.pid == pid ? takeStart?.bundleIdentifier : NSRunningApplication(processIdentifier: pid)?.bundleIdentifier,
                     localizedName: takeStart?.pid == pid ? takeStart?.localizedName : NSRunningApplication(processIdentifier: pid)?.localizedName,
@@ -403,16 +461,18 @@ import KoeBridgeCore
                                        settledUnconfirmedPredecessors: effectiveSettled,
                                        diagnostics: diagnostics, capture: { _ in current })
         if recaptured.reason == "ok", let fresh = recaptured.target {
-            let matchingSettled = effectiveSettled.filter { fresh.sameField(as: $0.target) }
-            if !matchingSettled.isEmpty {
-                let verified = await verifySettledPredecessors(matchingSettled, for: fresh, takeStart: takeStart,
+            let adjudicated = adjudicatePredecessors(for: fresh, takeStart: takeStart,
+                                                     unverifiedPredecessors: unverifiedPredecessors,
+                                                     settledUnconfirmedPredecessors: effectiveSettled)
+            if !adjudicated.matchingSettled.isEmpty {
+                let verified = await verifySettledPredecessors(adjudicated.matchingSettled, for: fresh, takeStart: takeStart,
                     unverifiedPredecessors: unverifiedPredecessors, diagnostics: diagnostics,
                     transport: transport, shouldContinue: shouldContinue)
                 if !verified {
                     diagnostics?.record(.target, stage: .preflight, [
                         .reason: .token(.priorInputUnverified),
                         .startBlocked: .flag(takeStart?.isBlocked == true),
-                        .freshMatchesPrior: .flag(unverifiedPredecessors.contains { fresh.sameElement(as: $0) }),
+                        .freshMatchesPrior: .flag(!adjudicated.matchingUnverified.isEmpty),
                         .unverifiedPredecessorCount: .integer(unverifiedPredecessors.count)
                     ])
                     return (fresh, "prior_input_unverified", nil)
@@ -474,6 +534,7 @@ import KoeBridgeCore
         var budgetInsufficient = false
         var receiptEligibility: ReceiptEligibilityReason = .notAttempted
         var exactBaselineAvailable = false
+        var postSendFocusVerified = false
         var progress = DeliveryChunkProgress()
         var pacingBudgetExceeded = false
         var phase: InputDiagnosticEvent.Token = .preflight
@@ -538,6 +599,7 @@ import KoeBridgeCore
             return Report(outcome: outcome, reason: reason, receipt: receipt,
                           eventsPosted: sent > 0, target: target, diagnostics: diagnostics,
                           resultUptimeMS: resultUptimeMS, exactBaselineAvailable: exactBaselineAvailable,
+                          postSendFocusVerified: postSendFocusVerified,
                           completedAtUptime: transport.ax.now())
         }
         guard !Task.isCancelled, shouldContinue() else {
@@ -551,25 +613,10 @@ import KoeBridgeCore
         let effectiveSettled = operation == .dictation ? settledUnconfirmedPredecessors : []
         func stopReason(_ candidate: InsertionTarget) -> String? {
             if Task.isCancelled || !shouldContinue() { return "delivery_cancelled_before_post" }
-            let matchingUnverified = unverifiedPredecessors.filter { candidate.sameElement(as: $0) }
-            let matchingSettled = effectiveSettled.filter { candidate.sameField(as: $0.target) }
-            let hasHardUnverified = matchingUnverified.contains { unverified in
-                !matchingSettled.contains { $0.target.sameField(as: unverified) }
-            }
-            let startBlocks: Bool
-            if takeStart?.isBlocked == true {
-                let sameStart = takeStart.map { candidate.sameElement(as: $0) } ?? false
-                if !sameStart && (!unverifiedPredecessors.isEmpty || !effectiveSettled.isEmpty) {
-                    startBlocks = false
-                } else if sameStart && !matchingSettled.isEmpty && !hasHardUnverified {
-                    startBlocks = false
-                } else {
-                    startBlocks = true
-                }
-            } else {
-                startBlocks = false
-            }
-            if startBlocks || livePriorBlock(candidate) || hasHardUnverified {
+            let adjudicated = adjudicatePredecessors(for: candidate, takeStart: takeStart,
+                                                     unverifiedPredecessors: unverifiedPredecessors,
+                                                     settledUnconfirmedPredecessors: effectiveSettled)
+            if adjudicated.startBlocks || livePriorBlock(candidate) || adjudicated.hasHardUnverified {
                 return "prior_input_unverified"
             }
             return nil
@@ -716,19 +763,20 @@ import KoeBridgeCore
             if recaptured.recovered == nil && index % 4 == 0 {
                 var check = transport.checkFocus(target, index == 0, diagnostics, .posting, index + 1)
                 if !check.allowed,
-                   sent > 0,
                    InsertionFocusPolicy.mayRecheckTransientFocusUnavailability(
                        reason: check.reason,
                        sameProcess: transport.ax.frontPID() == target.pid,
                        alreadyRecheckedAtCheckpoint: false) {
                     try? await transport.ax.sleep(0.025)
                     guard !Task.isCancelled, shouldContinue() else {
-                        return report(.partiallySubmitted, "delivery_cancelled_after_partial_post")
+                        return report(sent == 0 ? .cancelled : .partiallySubmitted,
+                                      sent == 0 ? "delivery_cancelled_before_post" : "delivery_cancelled_after_partial_post")
                     }
                     if transport.ax.frontPID() != target.pid {
-                        return report(.partiallySubmitted, "active_app_changed")
+                        return report(sent == 0 ? .focusChanged : .partiallySubmitted, "active_app_changed",
+                                      diagnosticReason: index == 0 ? "first_chunk_active_app_changed" : nil)
                     }
-                    check = transport.checkFocus(target, false, diagnostics, .posting, index + 1)
+                    check = transport.checkFocus(target, index == 0, diagnostics, .posting, index + 1)
                 }
                 if !check.allowed {
                     return report(sent == 0 ? .focusChanged : .partiallySubmitted, check.reason,
@@ -744,7 +792,7 @@ import KoeBridgeCore
                     return report(stop == "delivery_cancelled_before_post" ? .cancelled : .focusChanged, stop)
                 }
                 guard case .editor(let host) = recovery.observe(until: limit),
-                      index != 0 || adopted.matches(host) else {
+                      adopted.matchesHostIdentity(host, requireOriginalSelection: index == 0) else {
                     return report(sent == 0 ? .focusChanged : .partiallySubmitted,
                                   recovery.ax.now() >= limit ? "recovery_deadline_expired" : "recovery_host_changed")
                 }
@@ -776,12 +824,12 @@ import KoeBridgeCore
         else { textChanged = false }
         receiptEligibility = receiptEligibility.afterPosting(expectedEditAvailable: expected != nil, textChanged: textChanged)
         guard let before, let expected, textChanged else {
+            let observationBegan = ProcessInfo.processInfo.systemUptime
+            let focus = transport.checkFocus(target, false, diagnostics, .receipt, sent)
+            postSendFocusVerified = focus.allowed
             if diagnostics?.isCollecting == true {
                 // Classification only: one bounded identity check and an
                 // independent value-only probe. Neither can create a receipt.
-                let observationBegan = ProcessInfo.processInfo.systemUptime
-                let focus = target.focusCheck(requireOriginalSelection: false, timeout: 0.01,
-                                              diagnostics: diagnostics, stage: .receipt, chunkOrdinal: sent)
                 var attempted = false
                 var valueResult: InputDiagnosticEvent.Token = .notAttempted
                 var valueAvailable = false
@@ -836,19 +884,8 @@ import KoeBridgeCore
             }
             polls += 1
             let timeout = Float(min(0.035, remaining / 12))
-            var focus = target.focusCheck(requireOriginalSelection: false, timeout: timeout,
+            let focus = target.focusCheck(requireOriginalSelection: false, timeout: timeout,
                                           diagnostics: diagnostics, stage: .receipt, chunkOrdinal: sent)
-            if !focus.allowed,
-               InsertionFocusPolicy.mayRecheckTransientFocusUnavailability(
-                   reason: focus.reason,
-                   sameProcess: transport.ax.frontPID() == target.pid,
-                   alreadyRecheckedAtCheckpoint: false) {
-                try? await transport.ax.sleep(0.025)
-                if !Task.isCancelled, shouldContinue(), transport.ax.frontPID() == target.pid {
-                    focus = target.focusCheck(requireOriginalSelection: false, timeout: timeout,
-                                              diagnostics: diagnostics, stage: .receipt, chunkOrdinal: sent)
-                }
-            }
             guard focus.allowed else { return report(.inserted, "posted_then_" + focus.reason) }
             let observed = target.observedSnapshot(timeout: timeout, diagnostics: diagnostics, stage: .receipt)?.snapshot
             let spans = InputReceiptObservation.compareSpans(before: before, inserted: safeText, after: observed)
@@ -880,19 +917,8 @@ import KoeBridgeCore
                                                             after: after, sameTarget: true) else { continue }
             // Focus may move while AX is answering. Recheck before accepting
             // the receipt, without imposing the already-replaced old caret.
-            var finalFocus = target.focusCheck(requireOriginalSelection: false, timeout: timeout,
+            let finalFocus = target.focusCheck(requireOriginalSelection: false, timeout: timeout,
                                                diagnostics: diagnostics, stage: .receipt, chunkOrdinal: sent)
-            if !finalFocus.allowed,
-               InsertionFocusPolicy.mayRecheckTransientFocusUnavailability(
-                   reason: finalFocus.reason,
-                   sameProcess: transport.ax.frontPID() == target.pid,
-                   alreadyRecheckedAtCheckpoint: false) {
-                try? await transport.ax.sleep(0.025)
-                if !Task.isCancelled, shouldContinue(), transport.ax.frontPID() == target.pid {
-                    finalFocus = target.focusCheck(requireOriginalSelection: false, timeout: timeout,
-                                                   diagnostics: diagnostics, stage: .receipt, chunkOrdinal: sent)
-                }
-            }
             guard finalFocus.allowed else { return report(.inserted, "posted_then_" + finalFocus.reason) }
             guard !Task.isCancelled, shouldContinue() else {
                 return report(.inserted, "delivery_cancelled_after_post")

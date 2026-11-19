@@ -160,4 +160,27 @@ struct InsertionReceiptPolicyTests {
         #expect(Policy.reconcile(state("😀", 2), using: receipt, sameTarget: true, eventsPosted: true,
                                capturedDuringSubmission: true) == .rebased(state("😀A", 3)))
     }
+
+    @Test func blockScopedAndTrailingNewlineNormalizedReceiptsVerifyAndReconcileSafely() throws {
+        let suffix9 = "123456789"
+        let inserted26 = String(repeating: "あ", count: 26)
+        let beforeCaret0 = state(suffix9, 0)
+        let afterBlock0 = state(inserted26, 26)
+        let receiptBlock0 = try #require(Policy.verify(before: beforeCaret0, inserted: inserted26,
+                                                       after: afterBlock0, sameTarget: true))
+        #expect(receiptBlock0.mode == .blockScoped)
+        #expect(receiptBlock0.after == afterBlock0)
+        let fullAfter0 = try #require(Policy.expectedAfter(before: beforeCaret0, inserted: inserted26))
+        #expect(Policy.reconcile(beforeCaret0, using: receiptBlock0, sameTarget: true, eventsPosted: true) == .rebased(afterBlock0))
+        #expect(Policy.reconcile(afterBlock0, using: receiptBlock0, sameTarget: true, eventsPosted: true) == .rebased(afterBlock0))
+        #expect(Policy.reconcile(fullAfter0, using: receiptBlock0, sameTarget: true, eventsPosted: true) == .blocked)
+
+        let probeReceiptI5 = try #require(Policy.verify(before: state("pZ", 1), inserted: "X",
+                                                        after: state("pX", 2), sameTarget: true))
+        #expect(probeReceiptI5.mode == .blockScoped)
+        #expect(Policy.reconcile(state("pXZ", 2), using: probeReceiptI5, sameTarget: true,
+                                 eventsPosted: true, capturedDuringSubmission: false) == .blocked)
+        #expect(Policy.reconcile(state("pX", 2), using: probeReceiptI5, sameTarget: true,
+                                 eventsPosted: true, capturedDuringSubmission: false) == .rebased(state("pX", 2)))
+    }
 }

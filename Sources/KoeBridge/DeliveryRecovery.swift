@@ -82,7 +82,7 @@ struct RecoveryAX {
 
     init(unavailableTarget: InsertionTarget, rejectedAt: TimeInterval, ax: RecoveryAX) {
         original = unavailableTarget
-        systemFocus = true
+        systemFocus = false
         self.rejectedAt = rejectedAt
         self.ax = ax
         defaultFailureReason = "target_unavailable_at_delivery"
@@ -94,9 +94,15 @@ struct RecoveryAX {
         let role: String
 
         func matches(_ other: Host) -> Bool {
+            matchesHostIdentity(other, requireOriginalSelection: true)
+        }
+
+        func matchesHostIdentity(_ other: Host, requireOriginalSelection: Bool) -> Bool {
             guard target.sameField(as: other.target),
-                  role == other.role, target.selectionAttribute == other.target.selectionAttribute,
-                  let a = target.selection, let b = other.target.selection else { return false }
+                  role == other.role,
+                  target.selectionAttribute == other.target.selectionAttribute else { return false }
+            guard requireOriginalSelection else { return true }
+            guard let a = target.selection, let b = other.target.selection else { return false }
             return CFEqual(a, b)
         }
     }
@@ -216,17 +222,19 @@ struct RecoveryAX {
             fields[.role] = .token(roleRead.diagnosticState(hasValue: role != nil))
             fields[.roleBucket] = .roleBucket(role)
             let sub = try read(kAXSubroleAttribute)
+            let subrole = sub.value as? String
+            let subroleReadable = InsertionTarget.secureExclusionReadable(sub.value, status: sub.status)
             fields[.subroleState] = .token(sub.diagnosticState(hasValue: sub.value is String))
             guard roleRead.status == .success, let role,
-                  InsertionTarget.secureExclusionReadable(sub.value, status: sub.status),
-                  sub.value as? String != "AXSecureTextField",
+                  subroleReadable,
+                  subrole != "AXSecureTextField",
                   role != "AXSecureTextField" else { return .rejected }
-            if isSameElement {
-                guard DeliveryTargetPolicy.isDenylisted(role: role)
-                    || ["AXTextField", "AXTextArea"].contains(role) else { return .rejected }
+            if requireSameElement && isSameElement {
+                let allowedSameElementRole = DeliveryTargetPolicy.isDenylisted(role: role)
+                    || ["AXTextField", "AXTextArea"].contains(role)
+                    || (original.bundleIdentifier == "com.meta.endo" && !DeliveryTargetPolicy.isDenylisted(role: role))
+                guard allowedSameElementRole else { return .rejected }
             } else {
-                // Case B: Different element in the same window/process requires positive editor evidence
-                // and must not be a denylisted control role unless AXEditable == true with live selection.
                 guard Self.positiveTextRoles.contains(role) || !DeliveryTargetPolicy.isDenylisted(role: role) else {
                     return .rejected
                 }
@@ -235,6 +243,12 @@ struct RecoveryAX {
             let markerName = "AXSelectedTextMarkerRange"
             let range = try read(rangeName)
             fields[.selectedRangeState] = .token(range.diagnosticState(hasValue: range.value != nil))
+            var hasValidNumericSelection = false
+            var hasValidMarkerSelection = false
+            var rangeAbsent = false
+            var markerAbsent = false
+            var editableValue: Bool?
+            var editableAbsent = false
             let name: String
             let selection: CFTypeRef
             if let value = range.value {
@@ -247,37 +261,71 @@ struct RecoveryAX {
                     fields[.selectedRangeState] = .token(.invalidRange)
                     return .rejected
                 }
-                guard range.status == .success, !DeliveryTargetPolicy.isDenylisted(role: role) else { return .rejected }
+                guard range.status == .success,
+                      !DeliveryTargetPolicy.isDenylisted(role: role),
+                      !requireSameElement || !isSameElement || ["AXTextField", "AXTextArea"].contains(role) else { return .rejected }
+                hasValidNumericSelection = true
                 name = rangeName
                 selection = value
             } else {
                 guard range.status == .noValue || range.status == .attributeUnsupported || range.status == .success
                 else { return .rejected }
+                rangeAbsent = range.status == .noValue
                 let marker = try read(markerName)
                 fields[.selectedMarkerState] = .token(marker.diagnosticState(hasValue: marker.value != nil))
-                if isSameElement && DeliveryTargetPolicy.isDenylisted(role: role) {
-                    guard range.status == .noValue, marker.status == .noValue else { return .rejected }
+                markerAbsent = marker.status == .noValue
+                if requireSameElement && isSameElement && DeliveryTargetPolicy.isDenylisted(role: role) {
+                    guard rangeAbsent, markerAbsent else { return .rejected }
                     let editable = try read("AXEditable")
                     fields[.editableState] = .token(editable.diagnosticState(hasValue: editable.value != nil))
-                    return editable.status == .noValue && ax.now() < limit ? .button : .rejected
+                    editableAbsent = editable.status == .noValue
+                    let action = DeliveryTargetPolicy.recoveryCandidateAction(
+                        requireSameElement: requireSameElement, sameProcess: true, sameOwner: true,
+                        sameFocusedWindow: true, sameElementWindow: true, isSameElement: true,
+                        bundleIdentifier: original.bundleIdentifier, role: role, subrole: subrole,
+                        subroleReadable: subroleReadable, hasValidNumericSelection: false,
+                        hasValidMarkerSelection: false, rangeAbsent: rangeAbsent,
+                        markerAbsent: markerAbsent, editable: nil, editableAbsent: editableAbsent)
+                    return action == .waitOnButton && ax.now() < limit ? .button : .rejected
                 }
                 guard marker.status == .success, let value = marker.value else { return .rejected }
                 guard CFGetTypeID(value) == AXTextMarkerRangeGetTypeID() else {
                     fields[.selectedMarkerState] = .token(.invalidType)
                     return .rejected
                 }
+                hasValidMarkerSelection = true
                 name = markerName
                 selection = value
             }
-            if !isSameElement && !Self.positiveTextRoles.contains(role) {
+            if (!requireSameElement && !Self.positiveTextRoles.contains(role))
+                || (requireSameElement && isSameElement && !["AXTextField", "AXTextArea"].contains(role)) {
                 let editable = try read("AXEditable")
-                let editableTrue = editable.status == .success
-                    && editable.value.map { CFGetTypeID($0) == CFBooleanGetTypeID() } == true
-                    && (editable.value as? Bool) == true
-                fields[.editableState] = .token(editableTrue ? .trueValue : editable.diagnosticState(hasValue: false))
-                guard editableTrue else { return .rejected }
+                editableAbsent = editable.status == .noValue || editable.status == .attributeUnsupported
+                if editable.status == .success,
+                   editable.value.map({ CFGetTypeID($0) == CFBooleanGetTypeID() }) == true,
+                   let boolValue = editable.value as? Bool {
+                    editableValue = boolValue
+                    fields[.editableState] = .token(boolValue ? .trueValue : .falseValue)
+                } else {
+                    fields[.editableState] = .token(editable.diagnosticState(hasValue: false))
+                    if requireSameElement && isSameElement && editable.value != nil {
+                        editableValue = false
+                    } else if requireSameElement && isSameElement && !editableAbsent {
+                        return .rejected
+                    }
+                }
             }
-            guard matches(try read(kAXWindowAttribute), window, field: .elementWindow),
+            let sameElementWindow = matches(try read(kAXWindowAttribute), window, field: .elementWindow)
+            let action = DeliveryTargetPolicy.recoveryCandidateAction(
+                requireSameElement: requireSameElement, sameProcess: true, sameOwner: true,
+                sameFocusedWindow: true, sameElementWindow: sameElementWindow,
+                isSameElement: isSameElement, bundleIdentifier: original.bundleIdentifier,
+                role: role, subrole: subrole, subroleReadable: subroleReadable,
+                hasValidNumericSelection: hasValidNumericSelection,
+                hasValidMarkerSelection: hasValidMarkerSelection,
+                rangeAbsent: rangeAbsent, markerAbsent: markerAbsent,
+                editable: editableValue, editableAbsent: editableAbsent)
+            guard action == .acceptEditor,
                   let rechecked = try resolveCandidate(),
                   CFEqual(rechecked.element, element),
                   CFEqual(rechecked.window, window) else { return .rejected }

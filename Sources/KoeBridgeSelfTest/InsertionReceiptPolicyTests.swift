@@ -172,11 +172,19 @@ struct InsertionReceiptPolicyTests {
                                                       after: afterBlock0, sameTarget: true))
         check(receiptBlock0.mode == .blockScoped)
         check(receiptBlock0.after == afterBlock0)
-        // Reconcile accepts before, block-scoped after, or full expectedAfter.
+        // Reconcile accepts before or observed block-scoped after, and blocks unverified full expectedAfter (I5).
         let fullAfter0 = try require(Policy.expectedAfter(before: beforeCaret0, inserted: inserted26))
         check(Policy.reconcile(beforeCaret0, using: receiptBlock0, sameTarget: true, eventsPosted: true) == .rebased(afterBlock0))
         check(Policy.reconcile(afterBlock0, using: receiptBlock0, sameTarget: true, eventsPosted: true) == .rebased(afterBlock0))
-        check(Policy.reconcile(fullAfter0, using: receiptBlock0, sameTarget: true, eventsPosted: true) == .rebased(fullAfter0))
+        check(Policy.reconcile(fullAfter0, using: receiptBlock0, sameTarget: true, eventsPosted: true) == .blocked)
+        // Reviewer probe I5: before = "pZ"@1, inserted = "X", observed = "pX"@2 (block-scoped), candidate = "pXZ"@2 -> .blocked.
+        let probeReceiptI5 = try require(Policy.verify(before: state("pZ", 1), inserted: "X",
+                                                       after: state("pX", 2), sameTarget: true))
+        check(probeReceiptI5.mode == .blockScoped)
+        check(Policy.reconcile(state("pXZ", 2), using: probeReceiptI5, sameTarget: true,
+                               eventsPosted: true, capturedDuringSubmission: false) == .blocked)
+        check(Policy.reconcile(state("pX", 2), using: probeReceiptI5, sameTarget: true,
+                               eventsPosted: true, capturedDuringSubmission: false) == .rebased(state("pX", 2)))
 
         // 2. Block-scoped AX read-back at non-zero prefix (location 5) with 12 UTF-16 units below.
         let beforeMid = state("アイウエオ\nカキクケコサシスセソタ", 5)

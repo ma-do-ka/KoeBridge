@@ -176,6 +176,40 @@ extension InsertionSafetyTests {
                 subroleReadable: true, hasValidNumericSelection: true, hasValidMarkerSelection: false,
                 rangeAbsent: false, markerAbsent: true, editable: nil, editableAbsent: true) == .acceptEditor)
         }
+        // Case A Endo marker-selection exception (I6a): com.meta.endo same element transitioning from denylisted role
+        // to non-denylisted role (e.g. AXGroup, AXWebArea, AXTextArea) with valid marker selection and editable != false.
+        for endoRole in ["AXGroup", "AXWebArea", "AXTextArea"] {
+            for editable in [nil, true] as [Bool?] {
+                check(DeliveryTargetPolicy.recoveryCandidateAction(
+                    requireSameElement: true, sameProcess: true, sameOwner: true,
+                    sameFocusedWindow: true, sameElementWindow: true, isSameElement: true,
+                    bundleIdentifier: "com.meta.endo", role: endoRole, subrole: nil,
+                    subroleReadable: true, hasValidNumericSelection: false, hasValidMarkerSelection: true,
+                    rangeAbsent: true, markerAbsent: false, editable: editable, editableAbsent: editable == nil) == .acceptEditor)
+            }
+            // editable == false on container roles (AXGroup, AXWebArea) rejects in Case A.
+            if !["AXTextField", "AXTextArea"].contains(endoRole) {
+                check(DeliveryTargetPolicy.recoveryCandidateAction(
+                    requireSameElement: true, sameProcess: true, sameOwner: true,
+                    sameFocusedWindow: true, sameElementWindow: true, isSameElement: true,
+                    bundleIdentifier: "com.meta.endo", role: endoRole, subrole: nil,
+                    subroleReadable: true, hasValidNumericSelection: false, hasValidMarkerSelection: true,
+                    rangeAbsent: true, markerAbsent: false, editable: false, editableAbsent: false) == .reject)
+            }
+        }
+        check(DeliveryTargetPolicy.recoveryCandidateAction(
+            requireSameElement: true, sameProcess: true, sameOwner: true,
+            sameFocusedWindow: true, sameElementWindow: true, isSameElement: true,
+            bundleIdentifier: "com.google.Chrome", role: "AXGroup", subrole: nil,
+            subroleReadable: true, hasValidNumericSelection: false, hasValidMarkerSelection: true,
+            rangeAbsent: true, markerAbsent: false, editable: true, editableAbsent: false) == .reject)
+        // Denylisted role with marker selection in Case A is still rejected.
+        check(DeliveryTargetPolicy.recoveryCandidateAction(
+            requireSameElement: true, sameProcess: true, sameOwner: true,
+            sameFocusedWindow: true, sameElementWindow: true, isSameElement: true,
+            bundleIdentifier: "com.meta.endo", role: "AXButton", subrole: nil,
+            subroleReadable: true, hasValidNumericSelection: false, hasValidMarkerSelection: true,
+            rangeAbsent: true, markerAbsent: false, editable: true, editableAbsent: false) == .reject)
         // When requireSameElement is true (Endo AXButton rejection), a different element is never adopted.
         check(DeliveryTargetPolicy.recoveryCandidateAction(
             requireSameElement: true, sameProcess: true, sameOwner: true, sameFocusedWindow: true,

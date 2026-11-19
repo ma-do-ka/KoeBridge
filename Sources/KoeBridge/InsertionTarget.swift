@@ -6,6 +6,7 @@ import KoeBridgeCore
 
 /// A conservative target snapshot. Never activate another application just to type.
 @MainActor struct InsertionTarget {
+    let instanceID = UUID()
     let bundleIdentifier: String?
     let localizedName: String?
     let pid: pid_t
@@ -16,6 +17,7 @@ import KoeBridgeCore
     private(set) var textSnapshot: InsertionReceiptPolicy.Snapshot?
     private(set) var capturedAt: TimeInterval
     private(set) var blockedReason: String?
+    private(set) var hasHardPredecessorBlock = false
 
     var isBlocked: Bool { blockedReason != nil }
 
@@ -158,18 +160,20 @@ import KoeBridgeCore
             guard owner.status == .success, owner.pid == pid else { return nil }
             return (candidate, scope == .system)
         }
-        var timedOut = false
+        var mayAwakenViaWindow = true
         for (root, scope) in [(app, Token.application), (system, Token.system)] {
             let read = copyAX(root, name: kAXFocusedUIElementAttribute as CFString,
                               operation: .focusedElement, scope: scope, timeout: timeout,
                               diagnostics: diagnostics, stage: stage)
-            if read.status == .cannotComplete { timedOut = true }
             if let resolved = validated(read, scope: scope) { return resolved }
+            if read.value != nil || (read.status != .noValue && read.status != .attributeUnsupported) {
+                mayAwakenViaWindow = false
+            }
         }
         // In Chromium/Electron apps, querying kAXFocusedWindowAttribute awakens
         // lazy renderer accessibility trees when kAXFocusedUIElementAttribute
-        // initially returns .noValue on the application and system roots.
-        guard !timedOut else { return nil }
+        // initially returns .noValue / .attributeUnsupported on the application and system roots.
+        guard mayAwakenViaWindow else { return nil }
         let windowRead = copyAX(app, name: kAXFocusedWindowAttribute as CFString,
                                 operation: .focusedWindow, scope: .application, timeout: timeout,
                                 diagnostics: diagnostics, stage: stage)
@@ -180,7 +184,8 @@ import KoeBridgeCore
                                  operation: .focusedElement, scope: .focusedWindow, timeout: timeout,
                                  diagnostics: diagnostics, stage: stage)
         if let resolved = validated(windowFocus, scope: .focusedWindow) { return resolved }
-        guard windowFocus.status != .cannotComplete else { return nil }
+        guard windowFocus.value == nil,
+              windowFocus.status == .noValue || windowFocus.status == .attributeUnsupported else { return nil }
         let reawakenedApp = copyAX(app, name: kAXFocusedUIElementAttribute as CFString,
                                    operation: .focusedElement, scope: .application, timeout: timeout,
                                    diagnostics: diagnostics, stage: stage)
@@ -564,9 +569,10 @@ import KoeBridgeCore
         return target
     }
 
-    func blockedByPriorInput() -> InsertionTarget {
+    func blockedByPriorInput(hard: Bool = false) -> InsertionTarget {
         var updated = self
         updated.blockedReason = "prior_input_unverified"
+        if hard { updated.hasHardPredecessorBlock = true }
         return updated
     }
 
@@ -701,12 +707,17 @@ import KoeBridgeCore
             }
         }
         // Preserve the original fail-closed decisions and failure precedence;
-        // a failed read is never misreported as proof that the user moved.
-        if let windowFailure { return result(false, windowFailure) }
-        guard sameElementOwner else {
-            return result(false, owner.status == .success ? "focused_element_owner_changed"
-                          : "focused_element_owner_unavailable")
+        // an affirmative mismatch or invalid value dominates transient unavailability
+        // so it is never eligible for a transient-unavailability recheck.
+        let ownerFailure: String? = sameElementOwner ? nil
+            : (owner.status == .success ? "focused_element_owner_changed" : "focused_element_owner_unavailable")
+        for failure in [windowFailure, ownerFailure, selectionFailure].compactMap({ $0 }) {
+            if !InsertionFocusPolicy.isTransientFocusUnavailability(failure) {
+                return result(false, failure)
+            }
         }
+        if let windowFailure { return result(false, windowFailure) }
+        if let ownerFailure { return result(false, ownerFailure) }
         if let selectionFailure { return result(false, selectionFailure) }
         let permitted = InsertionFocusPolicy.mayPaste(sameProcess: sameProcess,
                                                        sameWindow: sameWindow,

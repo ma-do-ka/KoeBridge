@@ -98,6 +98,7 @@ public enum DeliveryTargetPolicy {
                                                sameFocusedWindow: Bool,
                                                sameElementWindow: Bool,
                                                isSameElement: Bool,
+                                               bundleIdentifier: String? = nil,
                                                role: String?,
                                                subrole: String?,
                                                subroleReadable: Bool,
@@ -111,18 +112,26 @@ public enum DeliveryTargetPolicy {
         guard isSameElement || !requireSameElement else { return .reject }
         guard let role, subroleReadable,
               role != "AXSecureTextField", subrole != "AXSecureTextField" else { return .reject }
-        if isSameElement && isDenylisted(role: role) {
+        if requireSameElement && isSameElement && isDenylisted(role: role) {
             guard rangeAbsent, markerAbsent, editableAbsent else { return .reject }
             return .waitOnButton
         }
         guard sameElementWindow else { return .reject }
         let hasSelection = hasValidNumericSelection || hasValidMarkerSelection
         guard hasSelection else { return .reject }
-        if isSameElement {
-            guard ["AXTextField", "AXTextArea"].contains(role) else { return .reject }
-            return .acceptEditor
+        if requireSameElement && isSameElement {
+            if ["AXTextField", "AXTextArea"].contains(role) {
+                return .acceptEditor
+            }
+            if bundleIdentifier == "com.meta.endo",
+               !isDenylisted(role: role),
+               hasValidMarkerSelection,
+               editable != false {
+                return .acceptEditor
+            }
+            return .reject
         }
-        // Case B: Different element in the same window/process.
+        // Case B: Unavailable initial focus (requireSameElement == false).
         guard !isDenylisted(role: role) else { return .reject }
         if positiveTextRoles.contains(role) {
             return .acceptEditor

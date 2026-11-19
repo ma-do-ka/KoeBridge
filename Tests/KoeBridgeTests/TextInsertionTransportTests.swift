@@ -46,7 +46,7 @@ import KoeBridgeCore
 
     // Synthetic AX identities only. These tests never post keyboard events or
     // depend on the user's frontmost application/accessibility permissions.
-    private func target(pid: pid_t = 10_001, element: CFTypeRef? = nil,
+    private func target(pid: pid_t = 10_001, element: CFTypeRef? = nil, window: CFTypeRef? = nil,
                         text: String = "ab", caret: Int = 1,
                         selectionAttribute: String? = kAXSelectedTextRangeAttribute as String) -> InsertionTarget {
         var range = CFRange(location: caret, length: 0)
@@ -60,7 +60,7 @@ import KoeBridgeCore
             selection = "opaque-marker" as CFString
         }
         return InsertionTarget(bundleIdentifier: "com.example.Editor", localizedName: "Editor", pid: pid,
-            focused: element ?? AXUIElementCreateApplication(pid), window: nil,
+            focused: element ?? AXUIElementCreateApplication(pid), window: window,
             selectionAttribute: selectionAttribute, selection: selection,
             textSnapshot: numeric ? .init(text: text, selection: .init(location: caret, length: 0)) : nil,
             capturedAt: 1, blockedReason: nil)
@@ -495,12 +495,14 @@ import KoeBridgeCore
     }
 
     @Test func settledUnconfirmedPredecessorAndTargetScopedLatchTransportBehavior() async throws {
-        let fieldA = target(pid: 10_001, selectionAttribute: "AXSelectedTextMarkerRange")
-        let fieldB = target(pid: 10_002, selectionAttribute: "AXSelectedTextMarkerRange")
+        let winA = AXUIElementCreateApplication(20_001)
+        let winB = AXUIElementCreateApplication(20_002)
+        let fieldA = target(pid: 10_001, window: winA, selectionAttribute: "AXSelectedTextMarkerRange")
+        let fieldB = target(pid: 10_002, window: winB, selectionAttribute: "AXSelectedTextMarkerRange")
         let source = TextInsertion.Report(outcome: .inserted, reason: "posted_without_observable_edit",
                                           receipt: nil, eventsPosted: true, target: fieldA, diagnostics: nil,
                                           resultUptimeMS: 1_100, exactBaselineAvailable: false,
-                                          completedAtUptime: 1.000)
+                                          postSendFocusVerified: true, completedAtUptime: 1.000)
         #expect(source.settledUnconfirmedPredecessor != nil)
         let candidate = DictationTake(preferred: .local, style: .verbatim, japaneseHint: false,
                                       vocabulary: [], shouldPaste: true, options: .init())
@@ -527,8 +529,68 @@ import KoeBridgeCore
         let timeoutSource = TextInsertion.Report(outcome: .inserted, reason: "posted_receipt_timeout",
                                                  receipt: nil, eventsPosted: true, target: fieldA, diagnostics: nil,
                                                  resultUptimeMS: 1_100, exactBaselineAvailable: true,
-                                                 completedAtUptime: 1.000)
+                                                 postSendFocusVerified: true, completedAtUptime: 1.000)
         #expect(timeoutSource.settledUnconfirmedPredecessor == nil)
+
+        // 4. I3: Predecessor with postSendFocusVerified == false never creates settledUnconfirmedPredecessor.
+        let unverifiedFocusSource = TextInsertion.Report(outcome: .inserted, reason: "posted_without_observable_edit",
+                                                         receipt: nil, eventsPosted: true, target: fieldA, diagnostics: nil,
+                                                         resultUptimeMS: 1_100, exactBaselineAvailable: false,
+                                                         postSendFocusVerified: false, completedAtUptime: 1.000)
+        #expect(unverifiedFocusSource.settledUnconfirmedPredecessor == nil)
+
+        // 5. I4: Predecessor with target.window == nil never creates settledUnconfirmedPredecessor.
+        let windowlessField = target(pid: 10_001, window: nil, selectionAttribute: "AXSelectedTextMarkerRange")
+        let windowlessSource = TextInsertion.Report(outcome: .inserted, reason: "posted_without_observable_edit",
+                                                    receipt: nil, eventsPosted: true, target: windowlessField, diagnostics: nil,
+                                                    resultUptimeMS: 1_100, exactBaselineAvailable: false,
+                                                    postSendFocusVerified: true, completedAtUptime: 1.000)
+        #expect(windowlessSource.settledUnconfirmedPredecessor == nil)
+
+        // 6. I2: Coexistence of settled-unconfirmed predecessor + hard unverified predecessor (e.g. posted_receipt_timeout)
+        //        on the same element must keep prepareTarget, stopReason, and DictationTake.hasPriorBlock hard-blocked.
+        VoiceController.reconcileDelivery(timeoutSource, sourceTakeID: UUID(), into: candidate)
+        #expect(candidate.unverifiedInputTargets.count == 2)
+        #expect(candidate.settledUnconfirmedInputTargets.count == 1)
+        #expect(candidate.target?.hasHardPredecessorBlock == true)
+        #expect(candidate.hasPriorBlock(for: fieldA))
+        let blockedByCoexistingHard = TextInsertion.prepareTarget(
+            takeStart: candidate.target,
+            unverifiedPredecessors: candidate.unverifiedInputTargets,
+            settledUnconfirmedPredecessors: candidate.settledUnconfirmedInputTargets,
+            capture: { _ in (fieldA, "ok") })
+        #expect(blockedByCoexistingHard.target?.sameElement(as: fieldA) == true
+            && blockedByCoexistingHard.reason == "prior_input_unverified")
+
+        // 7. I4: Bracketed settled verification requires non-nil window identity and two successful AX selection reads.
+        let settledOnlyTake = DictationTake(preferred: .local, style: .verbatim, japaneseHint: false,
+                                            vocabulary: [], shouldPaste: true, options: .init())
+        settledOnlyTake.target = fieldA
+        VoiceController.reconcileDelivery(source, sourceTakeID: UUID(), into: settledOnlyTake)
+        #expect(!settledOnlyTake.hasPriorBlock(for: fieldA))
+
+        var markerByte: UInt8 = 7
+        let markerValue = try #require(AXTextMarkerRangeCreateWithBytes(nil, &markerByte, 1, &markerByte, 1))
+        let markerFieldA = InsertionTarget(bundleIdentifier: "com.meta.endo", localizedName: "Muse",
+                                           pid: 10_001, focused: fieldA.focused, window: winA,
+                                           selectionAttribute: "AXSelectedTextMarkerRange",
+                                           selection: markerValue, textSnapshot: nil,
+                                           capturedAt: 1.200, blockedReason: nil)
+        // If live AX selection read returns .noValue (nil), verifySettledPredecessors must NOT fall back to fresh.selection.
+        var failingTransport = TextInsertion.Transport()
+        failingTransport.ax.now = { 1.300 }
+        failingTransport.ax.sleep = { _ in }
+        failingTransport.ax.frontPID = { 10_001 }
+        failingTransport.ax.owner = { _ in 10_001 }
+        failingTransport.ax.attribute = { _, _ in .init(value: nil, status: .noValue) }
+        failingTransport.capture = { _ in .accepted(markerFieldA) }
+        let blockedOnNoLiveSelection = await TextInsertion.deliver(
+            "追加入力", to: settledOnlyTake.target,
+            unverifiedPredecessors: settledOnlyTake.unverifiedInputTargets,
+            settledUnconfirmedPredecessors: settledOnlyTake.settledUnconfirmedInputTargets,
+            transport: failingTransport) { true }
+        #expect(blockedOnNoLiveSelection.outcome == .focusChanged && blockedOnNoLiveSelection.reason == "prior_input_unverified")
+        #expect(!blockedOnNoLiveSelection.eventsPosted)
     }
 }
 #endif
