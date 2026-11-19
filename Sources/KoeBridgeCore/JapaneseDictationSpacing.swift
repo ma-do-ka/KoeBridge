@@ -11,9 +11,13 @@ public enum JapaneseDictationSpacing {
     // an explicit prompt, option, executable path or common bare command name.
     private static let literals = [
         #"(?m)(?:^[ \t]*(?:\$[ \t]+|(?:[./~][^\s]*|[a-z][a-z0-9_.-]*(?=[ \t]+[ぁ-ゖァ-ヺ一-鿿㐀-䶿])|cp|mv|ls|cd|mkdir|touch|echo|printf|cat|git|open|rm)[ \t]+)|(?<!\S)--?[A-Za-z][\w-]*(?=[= \t]))[^\r\n]*"#,
+        // Markdown permits backticks inside a longer code delimiter, and tilde fences.
+        #"(?<!\x60)(\x60{2,})(?!\x60)[\s\S]*?(?:(?<!\x60)\1(?!\x60)|\z)"#,
+        #"(?m)^[ ]{0,3}(~{3,})[^\n]*\n[\s\S]*?(?:^[ ]{0,3}\1~*[ \t]*$|\z)"#,
+        #"[零壱弐参拾佰阡萬]+"#,
         // An escaped delimiter inside a quoted argument does not close it.
         #""(?:\\[^\n]|[^"\\\n])*(?:"|$)|'(?:\\[^\n]|[^'\\\n])*(?:'|$)"#,
-        #"[^\s@。、「」『』<>"]+@[^\s@。、「」『』<>"]+"#
+        #"(?<![^\s@。、「」『』<>"])[^\s@。、「」『』<>"]+@[^\s@。、「」『』<>"]+"#
     ].map { try! NSRegularExpression(pattern: $0) }
 
     public static func adopt(_ text: String, enabled: Bool, protectedTerms: [String]) -> String {

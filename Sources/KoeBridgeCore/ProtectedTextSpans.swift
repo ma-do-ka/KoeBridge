@@ -24,21 +24,27 @@ struct ProtectedTextSpans {
         // Quote bodies include punctuation/whitespace verbatim. ASCII runs
         // protect URLs, paths, flags, decimals, signs, IDs and English tokens;
         // token boundaries also prevent "foo bar" -> "foobar" acceptance.
-        let patterns = [
+        var patterns = [
             #"```[\s\S]*?(?:```|$)"#,
             #"`[^`\n]*(?:`|\n|$)"#,
             #"「[^」]*(?:」|$)|『[^』]*(?:』|$)"#,
             #"“[^”]*(?:”|$)|‘[^’]*(?:’|$)"#,
             #""[^"\n]*(?:"|\n|$)|'[^'\n]*(?:'|\n|$)"#,
-            // URLs may contain Japanese punctuation. A path with an extension
-            // ends at that extension, even when a Japanese particle follows it;
-            // otherwise an unspaced paragraph would all become protected text.
-            #"(?:[A-Za-z][A-Za-z0-9+.-]*://|www\.)[^\s<>"'「」『』“”‘’`]+"#,
-            #"(?:[^\s。、<>"'「」『』“”‘’`/\\]*[/\\])+[^\s<>"'「」『』“”‘’`/\\]*?\.[A-Za-z0-9]{1,12}(?:\.[A-Za-z0-9]{1,12})*(?![A-Za-z0-9_.])"#,
-            #"[^\s。、<>"'「」『』“”‘’`/\\]*[/\\][^\s。、<>"'「」『』“”‘’`]*"#,
-            #"[^\s、<>"'「」『』“”‘’`/\\]+?\.[A-Za-z0-9]{1,12}(?:\.[A-Za-z0-9]{1,12})*(?![A-Za-z0-9_.])"#,
             #"[\p{N}〇一二三四五六七八九十百千万億兆]+|[!-~]+"#
         ]
+        // Every path/URL pattern requires a slash, backslash or period. Skip
+        // their unanchored searches through long uninterrupted Japanese phrases.
+        if text.utf8.contains(where: { $0 == 0x2f || $0 == 0x5c || $0 == 0x2e }) {
+            patterns += [
+                // URLs may contain Japanese punctuation. A path with an extension
+                // ends at that extension, even when a Japanese particle follows it;
+                // otherwise an unspaced paragraph would all become protected text.
+                #"(?:[A-Za-z][A-Za-z0-9+.-]*://|www\.)[^\s<>"'「」『』“”‘’`]+"#,
+                #"(?:[^\s。、<>"'「」『』“”‘’`/\\]*[/\\])+[^\s<>"'「」『』“”‘’`/\\]*?\.[A-Za-z0-9]{1,12}(?:\.[A-Za-z0-9]{1,12})*(?![A-Za-z0-9_.])"#,
+                #"[^\s。、<>"'「」『』“”‘’`/\\]*[/\\][^\s。、<>"'「」『』“”‘’`]*"#,
+                #"[^\s、<>"'「」『』“”‘’`/\\]+?\.[A-Za-z0-9]{1,12}(?:\.[A-Za-z0-9]{1,12})*(?![A-Za-z0-9_.])"#
+            ]
+        }
         let fullRange = NSRange(text.startIndex..., in: text)
         // Match each family independently: a broad path token before a URL
         // must not hide the URL's longer, more specific protected span.

@@ -1444,7 +1444,7 @@ import KoeBridgeCore
             if let text, !text.isEmpty {
                 take.historyRecordID = remember(text, isPartial: false, delivery: .pending,
                                                 engine: take.usedMode, review: take.review,
-                                                recordedAt: take.requestedAt, preserveWhitespace: true)
+                                                recordedAt: take.requestedAt)
             } else if !partial.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 take.historyRecordID = remember(partial, isPartial: true, delivery: .recognitionInterrupted,
                                                 engine: take.usedMode, review: take.review,
@@ -1980,10 +1980,10 @@ import KoeBridgeCore
                                               delivery: TranscriptRecord.Delivery,
                                               engine: String? = nil,
                                               review: TranscriptReview? = nil,
-                                              recordedAt: Date = Date(), preserveWhitespace: Bool = false) -> UUID? {
+                                              recordedAt: Date = Date()) -> UUID? {
         let id = historyStore.remember(text, isPartial: isPartial, delivery: delivery,
                               engine: engine ?? (usedMode.isEmpty ? requestedMode.label : usedMode),
-                              review: review, recordedAt: recordedAt, preserveWhitespace: preserveWhitespace)
+                              review: review, recordedAt: recordedAt, preserveWhitespace: !isPartial)
         refreshRetainedAudio()
         return id
     }
