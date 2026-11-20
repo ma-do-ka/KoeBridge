@@ -131,13 +131,13 @@ enum OutputVolumeHAL {
     }
 
     static func set(_ device: UInt32, _ address: AudioObjectPropertyAddress, _ scalar: Float,
-                    ifCurrent: () throws -> Bool) throws -> Bool {
+                    submit: (() throws -> Void) throws -> Bool) throws -> Bool {
         var property = address
         var value = scalar
-        guard try ifCurrent() else { return false }
-        guard AudioObjectSetPropertyData(device, &property, 0, nil, UInt32(MemoryLayout<Float32>.size), &value) == noErr
-        else { throw ReadError.unavailable }
-        return true
+        return try submit {
+            guard AudioObjectSetPropertyData(device, &property, 0, nil, UInt32(MemoryLayout<Float32>.size), &value) == noErr
+            else { throw ReadError.unavailable }
+        }
     }
 }
 #endif

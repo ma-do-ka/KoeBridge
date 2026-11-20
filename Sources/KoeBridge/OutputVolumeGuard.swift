@@ -4,16 +4,40 @@ import Foundation
 import KoeBridgeCore
 
 final class OutputVolumeGuard: @unchecked Sendable {
+    static let snapshotWaitMilliseconds = 40
     static let preferenceKey = "outputVolumeGuardEnabled"
     let queue = DispatchQueue(label: "dev.koebridge.output-volume-guard")
     private let notifications = DispatchQueue(label: "dev.koebridge.output-volume-events")
 
-    // Only metadata and FIFO submission go under stateLock. No HAL call can
-    // hold up a lifecycle checkpoint, cancellation or preference change.
+    // Only metadata and FIFO submission go under stateLock. Snapshot reads,
+    // listener management and native writes never hold this lock.
     private let stateLock = NSLock()
     private var enabled: Bool
     private var owner: UUID?
     private var attempt: UUID?
+    // Revocation and the actual raw setter share this submission's mutex.
+    // HAL reads and listener work never hold it. Lifecycle notifications do
+    // not take it; only an invalidator of an admitted native Set can join it.
+    private final class Submission {
+        // A synchronous native callback may itself request cancellation.
+        // Only this already-entered syscall can then finish.
+        private let lock = NSRecursiveLock()
+        private var revoked = false
+
+        func revoke() { lock.withLock { revoked = true } }
+
+        func run(while authorized: () -> Bool, _ rawSet: () throws -> Void) rethrows -> Bool {
+            try lock.withLock {
+                guard !revoked, authorized() else { return false }
+                try rawSet()
+                return true
+            }
+        }
+    }
+    private var submission: Submission?
+    // Both starts use the serial microphone lifecycle lane. After a timeout,
+    // a warm handover need not wait a second time for the same slow read.
+    private var snapshotHandoffGeneration: UInt64?
     private var generation: UInt64 = 0
     private var snapshotGeneration: UInt64 = 0
     private var live: (() -> Bool)?
@@ -26,15 +50,24 @@ final class OutputVolumeGuard: @unchecked Sendable {
     private var cleanup: DispatchWorkItem?
     private var cleanupDelay = 0.25
     private var lastWrite = [Property: TimeInterval]()
-    private struct Repair {
+    private struct Control: Hashable {
         let uid: String
-        let device: UInt32
-        let written: Float
-        let acknowledged: Bool
-        let acknowledgeBy: TimeInterval
-        let lowered: Float
+        let property: Property
     }
-    private var repairs = [OutputVolumeElement: Repair]()
+    private struct PendingWrite {
+        let written: Float
+        var reflected = false
+        var lower: Float?
+
+        mutating func observe(_ value: Float) {
+            guard (0...1).contains(value) else { return }
+            if value == written { reflected = true }
+            if value < written { lower = min(lower ?? value, value) }
+        }
+    }
+    // Guard and HAL notification lanes share outstanding observations. There is
+    // no time limit on HAL reflection. A debounce wakeup is never a receipt.
+    private var pending = [Control: PendingWrite]() // observationLock
     private var trailing: DispatchWorkItem?
 
     struct Hardware {
@@ -82,44 +115,72 @@ final class OutputVolumeGuard: @unchecked Sendable {
     }
 
     func changePreference(_ value: Bool, evidence: MicrophoneEvidenceWriter?) {
-        stateLock.withLock {
-            guard enabled != value else { return }
+        let admitted: Submission? = stateLock.withLock {
+            guard enabled != value else { return nil }
             enabled = value
             snapshotGeneration &+= 1
             let session = snapshotGeneration
             generation &+= 1
             let epoch = generation
             queue.async { [self] in
-                resetMonitoring()
+                resetMonitoring(clearDebounce: false)
                 self.evidence = evidence
                 policy.setEnabled(value) {
                     permits(epoch) ? snapshot(session, device: hardware.defaultDevice, writer: evidence) : nil
                 }
                 evaluate(epoch)
             }
+            return submission
         }
+        admitted?.revoke()
     }
 
     func begin(_ id: UUID, attempt attemptID: UUID? = nil, device: @escaping () -> UInt32?,
-               evidence: MicrophoneEvidenceWriter?, live isLive: @escaping () -> Bool = { true }) {
-        stateLock.withLock {
-            guard isLive() else { return }
+               evidence: MicrophoneEvidenceWriter?, startupDeadline: TimeInterval? = nil,
+               live isLive: @escaping () -> Bool = { true }) {
+        // Budget queueing and the actual read together. On timeout capture is
+        // allowed to start; its first successful read can then be post-switch.
+        let deadline = DispatchTime.now() + .milliseconds(Self.snapshotWaitMilliseconds)
+        let ready: DispatchSemaphore? = stateLock.withLock {
+            guard isLive() else { return nil }
             let previous = owner
             if previous != id { snapshotGeneration &+= 1 }
             let session = snapshotGeneration
+            let hasTime = startupDeadline.map {
+                $0 - ProcessInfo.processInfo.systemUptime >= Double(Self.snapshotWaitMilliseconds) / 1_000
+            } ?? true
+            let ready = enabled && snapshotHandoffGeneration != session && hasTime ? DispatchSemaphore(value: 0) : nil
+            if ready != nil { snapshotHandoffGeneration = session }
             owner = id
             attempt = attemptID ?? id
             live = isLive
             generation &+= 1
             let epoch = generation
             queue.async { [self] in
-                resetMonitoring(clearDebounce: previous != id)
                 if let previous, previous != id { policy.end(previous) }
                 self.evidence = evidence
                 policy.begin(id) { snapshot(session, device: device, writer: evidence) }
+                stateLock.withLock {
+                    if snapshotGeneration == session {
+                        snapshotHandoffGeneration = policy.snapshot == nil ? nil : session
+                    }
+                }
+                ready?.signal() // HAL listener management and writes are outside the handoff
+                resetMonitoring(clearDebounce: previous != id)
                 evaluate(epoch)
             }
+            return ready
         }
+        guard let ready, ready.wait(timeout: .now()) == .timedOut else { return }
+        // macOS may coalesce an ordinary semaphore timeout. Request a strict
+        // wakeup at the same absolute deadline; scheduling the timer cannot
+        // extend that deadline, even if its delivery queue is busy.
+        let timeout = DispatchSource.makeTimerSource(flags: .strict, queue: .global(qos: .userInteractive))
+        timeout.schedule(deadline: deadline, leeway: .nanoseconds(0))
+        timeout.setEventHandler { ready.signal() }
+        timeout.activate()
+        _ = ready.wait(timeout: deadline)
+        timeout.cancel()
     }
 
     func handover(from warm: UUID, to take: UUID, attempt attemptID: UUID? = nil,
@@ -141,18 +202,20 @@ final class OutputVolumeGuard: @unchecked Sendable {
 
     /// Retry gaps have no write authority, but retain the logical take's snapshot.
     func pause(_ id: UUID, attempt attemptID: UUID) {
-        stateLock.withLock {
-            guard owner == id, attempt == attemptID else { return }
+        let admitted: Submission? = stateLock.withLock {
+            guard owner == id, attempt == attemptID else { return nil }
             attempt = nil
             live = nil
             generation &+= 1
             queue.async { [self] in resetMonitoring(clearDebounce: false) }
+            return submission
         }
+        admitted?.revoke()
     }
 
     func end(_ id: UUID) {
-        stateLock.withLock {
-            guard owner == id else { return }
+        let admitted: Submission? = stateLock.withLock {
+            guard owner == id else { return nil }
             owner = nil
             snapshotGeneration &+= 1
             attempt = nil
@@ -163,15 +226,19 @@ final class OutputVolumeGuard: @unchecked Sendable {
                 evidence = nil
                 resetMonitoring()
             }
+            return submission
         }
+        admitted?.revoke()
     }
 
     private func resetMonitoring(clearDebounce: Bool = true) {
         updateListeners([], epoch: 0)
         trailing?.cancel()
         trailing = nil
-        repairs.removeAll()
-        if clearDebounce { lastWrite.removeAll() }
+        if clearDebounce {
+            observationLock.withLock { pending.removeAll() }
+            lastWrite.removeAll()
+        }
     }
 
     func check() {
@@ -184,6 +251,11 @@ final class OutputVolumeGuard: @unchecked Sendable {
 
     private func evaluate(_ epoch: UInt64) {
         guard permits(epoch), policy.isMonitoring else { return }
+        defer {
+            if observationLock.withLock({ !pending.isEmpty }), permits(epoch) {
+                scheduleCheck(after: 0.25, epoch: epoch)
+            }
+        }
         var wanted: Set<Property> = [Property(AudioObjectID(kAudioObjectSystemObject),
             OutputVolumeHAL.address(kAudioHardwarePropertyDefaultOutputDevice, scope: kAudioObjectPropertyScopeGlobal))]
         guard let device = hardware.defaultDevice() else {
@@ -191,7 +263,6 @@ final class OutputVolumeGuard: @unchecked Sendable {
             return
         }
         guard device != kAudioObjectUnknown else {
-            repairs.removeAll()
             policy.disconnected()
             updateListeners(wanted, epoch: epoch)
             return
@@ -211,21 +282,14 @@ final class OutputVolumeGuard: @unchecked Sendable {
         guard permits(epoch) else { return }
         updateListeners(wanted, epoch: epoch)
         var writes = policy.corrections(for: current.reading, settable: current.settable)
-        // Keep a witnessed lowering through a delayed HAL acknowledgement or a
-        // failed repair. Any other readback, route or mute invalidates the claim.
-        for (element, repair) in repairs {
-            guard repair.device == device, repair.uid == current.reading.uid, !current.reading.muted,
-                  current.settable.contains(element), let value = current.reading.volumes[element] else {
-                repairs.removeValue(forKey: element)
-                continue
+        for (element, value) in current.reading.volumes {
+            let key = Control(uid: current.reading.uid, property: Property(device, OutputVolumeHAL.address(element)))
+            guard let outstanding = readPending(key, sampled: value) else { continue }
+            writes.removeValue(forKey: element)
+            if outstanding.reflected, let lower = outstanding.lower, value > lower,
+               !current.reading.muted, current.settable.contains(element) {
+                writes[element] = lower
             }
-            if value == repair.written {
-                writes[element] = repair.lowered
-            } else if !repair.acknowledged, value > repair.written,
-                      ProcessInfo.processInfo.systemUptime < repair.acknowledgeBy {
-                writes.removeValue(forKey: element)
-                scheduleCheck(after: max(0, repair.acknowledgeBy - ProcessInfo.processInfo.systemUptime), epoch: epoch)
-            } else { repairs.removeValue(forKey: element) }
         }
         for element in writes.keys.sorted(by: { Self.order($0) < Self.order($1) }) {
             guard permits(epoch), let ceiling = writes[element] else { return }
@@ -236,17 +300,11 @@ final class OutputVolumeGuard: @unchecked Sendable {
                 continue
             }
             do {
-                let pending = repairs[element]
-                let witnessed = try write(current.reading, element: element, ceiling: ceiling,
-                                          expected: pending?.written, epoch: epoch)
-                repairs[element] = witnessed
-                if let witnessed, witnessed.acknowledged {
-                    // One immediate reconciliation, with a fresh final check.
-                    // Further contention or a HAL error goes through the debounce.
-                    repairs[element] = try write(current.reading, element: element, ceiling: witnessed.lowered,
-                                                 expected: witnessed.written, epoch: epoch)
+                if let receipt = try write(current.reading, element: element, ceiling: ceiling, epoch: epoch) {
+                    if receipt.reflected, let lower = receipt.lower {
+                        _ = try write(current.reading, element: element, ceiling: lower, epoch: epoch)
+                    }
                 }
-                if repairs[element] != nil { scheduleCheck(after: 0.25, epoch: epoch) }
             } catch {
                 lastWrite[key] = ProcessInfo.processInfo.systemUptime
                 scheduleCheck(after: 0.25, epoch: epoch)
@@ -266,56 +324,113 @@ final class OutputVolumeGuard: @unchecked Sendable {
     }
     private var window: Window?
 
+    // A lower value read during a delayed write remains attached to that
+    // device/element through retries, temporary mute, disconnect and handover.
+    // Once the requested write has reflected, either a lower readback is
+    // already safe or the witnessed lower value becomes the only write target.
+    private func readPending(_ key: Control, sampled: Float? = nil) -> PendingWrite? {
+        observationLock.withLock {
+            guard var record = pending[key] else { return nil }
+            if let sampled { record.observe(sampled) }
+            guard let value = try? hardware.scalar(key.property.device, key.property.address) else {
+                pending[key] = record
+                return record
+            }
+            record.observe(value)
+            if record.reflected && (record.lower.map { value <= $0 } ?? true) {
+                pending.removeValue(forKey: key)
+                return nil
+            }
+            pending[key] = record
+            return record
+        }
+    }
+
     private func observe(_ device: UInt32, addresses: UnsafeBufferPointer<AudioObjectPropertyAddress>, epoch: UInt64) {
         observationLock.withLock {
-            guard let w = window, w.epoch == epoch else { return }
-            if addresses.contains(where: { address in
+            let w = window
+            if let w, w.epoch == epoch, addresses.contains(where: { address in
                 (device == kAudioObjectSystemObject && address.mSelector == kAudioHardwarePropertyDefaultOutputDevice)
                     || (device == w.key.device && (address.mSelector == kAudioDevicePropertyMute
                         || address.mSelector == kAudioDevicePropertyStreamConfiguration))
-            }) {
-                window?.invalidated = true
-                return
+            }) { window?.invalidated = true }
+
+            for address in addresses {
+                let property = Property(device, address)
+                let inWindow = w?.epoch == epoch && w?.key == property
+                guard inWindow || pending.keys.contains(where: { $0.property == property }),
+                      let uid = hardware.finalReads.uid(device),
+                      let value = try? hardware.scalar(device, address), (0...1).contains(value) else { continue }
+                let key = Control(uid: uid, property: property)
+                pending[key]?.observe(value)
+                if inWindow, let w, value < w.ceiling { window?.lower = min(w.lower ?? value, value) }
             }
-            guard device == w.key.device, addresses.contains(where: { Property(device, $0) == w.key }),
-                  let value = try? hardware.scalar(device, w.key.address),
-                  (0..<w.ceiling).contains(value) else { return }
-            window?.lower = value
         }
     }
 
-    /// Skip a contested observation instead of waiting between final reads and
-    /// syscall admission. The listener submits another check after sampling.
-    private func admitSet(_ epoch: UInt64) -> Bool {
-        guard observationLock.try() else { return false }
-        defer { observationLock.unlock() }
-        return window?.invalidated == false && window?.lower == nil && permits(epoch)
+    // Final admission and the raw setter are one synchronous submission. There
+    // is no reusable Boolean permission. OFF/stop/cancel revoke new admission
+    // and cannot complete in a gap before an admitted native Set starts.
+    // HAL can reflect an admitted Set later. An external change after this
+    // gate which no listener or readback observes cannot be reconstructed.
+    private func submit(_ key: Control, value: Float, epoch: UInt64,
+                        perform: () throws -> Void) throws -> Bool {
+        let flight = Submission()
+        let registered = stateLock.withLock {
+            guard generation == epoch else { return false }
+            submission = flight
+            return true
+        }
+        guard registered else { return false }
+        defer { stateLock.withLock { submission = nil } }
+
+        var old: PendingWrite?
+        do {
+            return try flight.run(while: {
+                guard self.observationLock.try() else { return false }
+                defer { self.observationLock.unlock() }
+                guard self.window?.invalidated == false, self.window?.lower == nil else { return false }
+                old = self.pending[key]
+                if let old {
+                    guard old.reflected, let lower = old.lower, value <= lower else { return false }
+                }
+                guard self.permits(epoch) else { return false }
+                self.pending[key] = PendingWrite(written: value)
+                return true
+            }, perform)
+        } catch {
+            observationLock.withLock {
+                // A rejected repair still owes the original witnessed value.
+                let witnessed = pending[key]?.lower
+                pending[key] = old
+                if let witnessed {
+                    if pending[key] == nil { pending[key] = PendingWrite(written: value, reflected: true) }
+                    pending[key]?.observe(witnessed)
+                }
+            }
+            throw error
+        }
     }
 
     private func write(_ reading: OutputVolumeReading, element: OutputVolumeElement,
-                       ceiling: Float, expected: Float?, epoch: UInt64) throws -> Repair? {
+                       ceiling: Float, epoch: UInt64) throws -> PendingWrite? {
         let property = OutputVolumeHAL.address(element)
-        let key = Property(reading.device, property)
-        observationLock.withLock { window = Window(key: key, ceiling: ceiling, epoch: epoch) }
+        let key = Control(uid: reading.uid, property: Property(reading.device, property))
+        observationLock.withLock { window = Window(key: key.property, ceiling: ceiling, epoch: epoch) }
         defer { observationLock.withLock { window = nil } }
         var verifiedValue: Float?
-        let submitted = try hardware.set(reading.device, property, ceiling) {
+        let submitted = try hardware.set(reading.device, property, ceiling) { perform in
             guard self.permits(epoch),
-                  let value = try OutputVolumeHAL.finalValue(reading, element, reads: self.hardware.finalReads),
-                  value > ceiling, expected == nil || expected == value else { return false }
+                  let value = try OutputVolumeHAL.finalValue(reading, element, reads: self.hardware.finalReads) else { return false }
+            self.observationLock.withLock { self.pending[key]?.observe(value) }
+            guard value > ceiling else { return false }
             verifiedValue = value
-            return self.admitSet(epoch)
+            return try self.submit(key, value: ceiling, epoch: epoch, perform: perform)
         }
         guard submitted, let before = verifiedValue else { return nil }
-        lastWrite[key] = ProcessInfo.processInfo.systemUptime
+        lastWrite[key.property] = ProcessInfo.processInfo.systemUptime
         evidence?.enqueue("output_volume_guard device=\(reading.device) element=\(element) from=\(before) to=\(ceiling)")
-        let after = try? hardware.scalar(reading.device, property)
-        if let after, after < ceiling { return nil }
-        return observationLock.withLock {
-            guard let lower = window?.lower, window?.invalidated == false else { return nil }
-            return Repair(uid: reading.uid, device: reading.device, written: ceiling, acknowledged: after == ceiling,
-                          acknowledgeBy: ProcessInfo.processInfo.systemUptime + 0.25, lowered: lower)
-        }
+        return readPending(key)
     }
 
     private static func order(_ element: OutputVolumeElement) -> UInt64 {

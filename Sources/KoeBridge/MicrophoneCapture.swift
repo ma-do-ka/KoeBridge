@@ -94,9 +94,9 @@ final class MicrophoneCapture: @unchecked Sendable {
                               live: { [weak self] in self?.volumeGuardLive == true })
     }
 
-    func beginVolumeGuard(outputID: UInt32?) {
+    func beginVolumeGuard(outputID: UInt32?, deadline: TimeInterval? = nil) {
         volumeGuard?.begin(volumeGuardOwner, attempt: diagnosticID, device: { outputID }, evidence: microphoneEvidence,
-                           live: { [weak self] in self?.volumeGuardLive == true })
+                           startupDeadline: deadline, live: { [weak self] in self?.volumeGuardLive == true })
     }
 
     func invalidateVolumeGuard() {
@@ -542,7 +542,7 @@ final class MicrophoneCapture: @unchecked Sendable {
         startupDiagnostics?.end(.selection)
         startupDiagnostics?.begin(.routeSnapshot)
         routeSnapshot = MicrophoneRouteSnapshot.current(inputDeviceID: target.deviceID)
-        beginVolumeGuard(outputID: routeSnapshot?.outputDeviceID)
+        beginVolumeGuard(outputID: routeSnapshot?.outputDeviceID, deadline: attemptDeadline)
         startupDiagnostics?.end(.routeSnapshot)
         startupDiagnostics?.begin(.engineLease)
         guard let lease = Self.engineLifetime.acquire() else {

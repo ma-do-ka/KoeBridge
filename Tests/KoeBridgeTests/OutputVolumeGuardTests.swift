@@ -73,26 +73,26 @@ struct OutputVolumeGuardTests {
                 hook?()
                 return value
             }
-            hal.set = { device, p, value, ifCurrent in
+            hal.set = { device, p, value, submit in
                 let admissionHook = self.beforeAdmission
                 self.beforeAdmission = nil
                 admissionHook?()
-                guard try ifCurrent() else { return false }
-                if self.failFirstSet {
-                    self.failFirstSet = false
-                    self.failedSets += 1
-                    throw CocoaError(.fileWriteUnknown)
+                return try submit {
+                    if self.failFirstSet {
+                        self.failFirstSet = false
+                        self.failedSets += 1
+                        throw CocoaError(.fileWriteUnknown)
+                    }
+                    #expect(device == self.device && !self.muted && !self.fixed)
+                    let during = self.duringSet
+                    self.duringSet = nil
+                    during?()
+                    self.volumes[self.element(p)] = value
+                    self.writes.append(value)
+                    let after = self.afterSet
+                    self.afterSet = nil
+                    after?()
                 }
-                #expect(device == self.device && !self.muted && !self.fixed)
-                let during = self.duringSet
-                self.duringSet = nil
-                during?()
-                self.volumes[self.element(p)] = value
-                self.writes.append(value)
-                let after = self.afterSet
-                self.afterSet = nil
-                after?()
-                return true
             }
             hal.add = { device, p, queue, block in
                 self.additions += 1
@@ -308,6 +308,74 @@ struct OutputVolumeGuardTests {
         }
     }
 
+    @Test func observedLoweringOutlivesDebounceUntilHALReflectsTheWrite() async throws {
+        enum Source { case duringSet, laterListener, postWriteRead }
+        for source in [Source.duringSet, .laterListener, .postWriteRead] {
+            let f = Fixture()
+            f.begin()
+            f.volumes = [.scalar(1): 0.9]
+            if source == .duringSet {
+                f.duringSet = { f.volumes[.scalar(1)] = 0.2; f.send() }
+            }
+            // The setter accepts 0.50, but the driver still reads 0.90.
+            f.afterSet = { f.volumes[.scalar(1)] = source == .postWriteRead ? 0.2 : 0.9 }
+            f.check(); f.drain()
+            if source == .laterListener {
+                f.controller.queue.sync {
+                    f.volumes[.scalar(1)] = 0.2
+                    f.send() // notification after the setter's stack has unwound
+                    f.volumes[.scalar(1)] = 0.9
+                }
+            }
+            if source == .postWriteRead {
+                // Same logical take, fresh capture attempt, still no HAL receipt.
+                f.controller.pause(f.owner, attempt: f.owner); f.drain()
+                f.volumes[.scalar(1)] = 0.9
+                f.begin(attempt: UUID())
+            }
+            try await Task.sleep(for: .milliseconds(400))
+            f.controller.queue.sync {
+                #expect(f.writes == [0.5])
+                f.volumes[.scalar(1)] = 0.5
+                f.send()
+            }
+            f.drain()
+            #expect(f.writes == [0.5, 0.2] && f.volumes[.scalar(1)] == 0.2)
+            f.controller.end(f.owner); f.drain()
+        }
+    }
+
+    @Test func invalidationCannotCompleteInTheMiddleOfNativeSubmission() {
+        for mode in 0..<3 {
+            let f = Fixture(), attempt = UUID()
+            f.begin(attempt: attempt)
+            f.volumes = [.scalar(1): 0.9, .scalar(2): 0.8]
+            let inside = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+            let revoking = DispatchSemaphore(value: 0), revoked = DispatchSemaphore(value: 0)
+            f.duringSet = {
+                inside.signal()
+                _ = release.wait(timeout: .now() + 2)
+            }
+            f.controller.check()
+            #expect(inside.wait(timeout: .now() + 2) == .success)
+            DispatchQueue.global().async {
+                revoking.signal()
+                switch mode {
+                case 0: f.controller.changePreference(false, evidence: nil)
+                case 1: f.controller.end(f.owner)
+                default: f.controller.pause(f.owner, attempt: attempt)
+                }
+                revoked.signal()
+            }
+            #expect(revoking.wait(timeout: .now() + 2) == .success)
+            #expect(revoked.wait(timeout: .now() + .milliseconds(25)) == .timedOut)
+            release.signal()
+            #expect(revoked.wait(timeout: .now() + 2) == .success)
+            f.check()
+            #expect(f.writes == [0.5]) // only the already-entered first Set
+        }
+    }
+
     @Test func invalidatingDuringFinalReadRejectsQueuedAndInFlightChecks() {
         for mode in 0..<3 {
             let f = Fixture(), attempt = UUID()
@@ -390,6 +458,39 @@ struct OutputVolumeGuardTests {
         }
     }
 
+    @Test func prepareAndWarmStartSnapshotBeforeSimulatedProfileSwitch() {
+        for warm in [false, true] {
+            let f = Fixture(), take = UUID()
+            let guardController = f.controller
+            let capture = MicrophoneCapture(volumeGuard: guardController, takeID: take)
+            let lock = NSLock()
+            var switched = false
+            let sampled = DispatchSemaphore(value: 0)
+            f.snapshotHook = {
+                f.volumes = [.scalar(0): lock.withLock { switched ? 0.6 : 0.5 }]
+                sampled.signal()
+            }
+            let preparing = DispatchSemaphore(value: 0)
+            guardController.queue.async {
+                _ = preparing.wait(timeout: .now() + 1)
+                Thread.sleep(forTimeInterval: 0.010)
+            }
+            MicrophoneCapture.warmLifecycleQueue.sync {
+                preparing.signal()
+                if warm { guardController.begin(f.owner, device: { 41 }, evidence: nil) }
+                else { capture.beginVolumeGuard(outputID: 41) }
+                lock.withLock { switched = true } // engine.start changes the profile
+            }
+            #expect(sampled.wait(timeout: .now()) == .success)
+            f.drain()
+            #expect(f.volumes[.scalar(0)] == 0.5)
+            f.volumes = [.scalar(0): 0.6]
+            f.check()
+            #expect(f.snapshots == 1 && f.writes == [0.5])
+            guardController.end(warm ? f.owner : take); f.drain()
+        }
+    }
+
     @Test func slowSnapshotLeavesCaptureAndWarmHandoverLaneAvailable() {
         for (enabled, warm) in [(false, false), (true, false), (false, true), (true, true)] {
             let f = Fixture(enabled: enabled), take = UUID()
@@ -404,7 +505,10 @@ struct OutputVolumeGuardTests {
                     else { capture.beginVolumeGuard(outputID: 41) }
                 }
             }
-            if enabled { #expect(started.wait(timeout: .now() + 1) == .success) }
+            if enabled {
+                #expect(started.wait(timeout: .now() + 1) == .success)
+                #expect(beginTime >= .milliseconds(OutputVolumeGuard.snapshotWaitMilliseconds))
+            }
             let checkpointTime = clock.measure {
                 MicrophoneCapture.warmLifecycleQueue.sync {
                     guardController.check()

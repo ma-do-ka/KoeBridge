@@ -81,7 +81,7 @@ import KoeBridgeCore
                 return
             }
             volumeGuard.begin(owner, device: MicrophoneRouteSnapshot.defaultOutputDeviceID, evidence: evidence,
-                              live: { !gate.isStopped })
+                              startupDeadline: deadline, live: { !gate.isStopped })
             lease = acquired
             activeGate = gate
             let engine = acquired.resource
