@@ -48,6 +48,12 @@ class FeedTests(unittest.TestCase):
     def test_nonstable_channel_rejected(self):
         self.changed('<item>', '<item><sparkle:channel>beta</sparkle:channel>')
         with self.assertRaises(ValueError): self.run_validate()
+    def test_duplicate_release_metadata_rejected(self):
+        for tag in ('sparkle:version', 'sparkle:shortVersionString', 'sparkle:minimumSystemVersion', 'title'):
+            with self.subTest(tag=tag):
+                self.changed('</item>', f'<{tag}>33</{tag}><{tag}>999</{tag}></item>')
+                with self.assertRaises(ValueError): self.run_validate()
+
     def test_multiple_enclosures_rejected(self):
         self.changed('</item>','<enclosure /></item>')
         with self.assertRaises(ValueError): self.run_validate()

@@ -23,13 +23,17 @@ if [[ ! "$RELEASE_LABEL" =~ ^[0-9]+\.[0-9]+\.[0-9]+[a-z]?$ ]] || [[ ! "$BUILD_NU
   exit 1
 fi
 ARCHIVE_NAME="KoeBridge-v${RELEASE_LABEL}-macOS-universal-development.zip"
+mkdir -p dist
+STAGE="$(mktemp -d "$PWD/dist/.package.XXXXXX")"
+trap 'rm -rf "$STAGE"' EXIT
+export KOEBRIDGE_BUILD_OUTPUT="$STAGE"
 if [ "$PACKAGE_SIGNING" = stable ]; then
   # Reuse the ordinary local build's identity selection and pinning unchanged.
   KOEBRIDGE_UNIVERSAL=1 bash scripts/build_app.sh
 else
   KOEBRIDGE_SIGNING_IDENTITY=- KOEBRIDGE_ALLOW_ADHOC=1 KOEBRIDGE_UNIVERSAL=1 bash scripts/build_app.sh
 fi
-APP_PATH=dist/KoeBridge.app
+APP_PATH="$STAGE/KoeBridge.app"
 ARCHIVE_PATH="dist/$ARCHIVE_NAME"
 codesign --verify --deep --strict "$APP_PATH"
 if [ "$PACKAGE_SIGNING" = stable ]; then
@@ -38,15 +42,18 @@ if [ "$PACKAGE_SIGNING" = stable ]; then
     exit 1
   fi
   if printf '%s\n' "$SIGNATURE" | grep -Eq '^Signature=adhoc$' ||
-     ! printf '%s\n' "$SIGNATURE" | grep -Eq '^TeamIdentifier=[A-Z0-9]{10}$'; then
-    echo 'ERROR: Stable packages require a non-ad-hoc signature with an Apple TeamIdentifier.' >&2
+     ! printf '%s\n' "$SIGNATURE" | grep -Fxq 'TeamIdentifier=R2JNT26DG7' ||
+     ! printf '%s\n' "$SIGNATURE" | grep -Eq '^Authority=Apple Development: '; then
+    echo 'ERROR: Stable packages require an Apple Development signature from team R2JNT26DG7.' >&2
     exit 1
   fi
 fi
 lipo "$APP_PATH/Contents/MacOS/KoeBridge" -verify_arch arm64 x86_64
 test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Contents/Info.plist")" = "$BUILD_NUMBER"
-rm -f "$ARCHIVE_PATH"
-ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$ARCHIVE_PATH"
-(cd dist && shasum -a 256 "$ARCHIVE_NAME" > SHA256SUMS.txt)
+ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$STAGE/$ARCHIVE_NAME"
+test -s "$STAGE/$ARCHIVE_NAME"
+(cd "$STAGE" && shasum -a 256 "$ARCHIVE_NAME" > SHA256SUMS.txt)
+mv -f "$STAGE/$ARCHIVE_NAME" "$ARCHIVE_PATH"
+mv -f "$STAGE/SHA256SUMS.txt" dist/SHA256SUMS.txt
 test -s "$ARCHIVE_PATH"
 echo "Packaged: $ARCHIVE_PATH ($PACKAGE_SIGNING signing; not notarized)"

@@ -17,7 +17,7 @@ jobs:
           xcodebuild -version
           swift --version
       - name: Verify published files and icon assets
-        run: python3 scripts/audit_public_release.py
+        run: python3 scripts/audit_public_release.py --check-tracked
       - name: Privacy-safe Python usage estimator tests
         run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
       - name: Unit tests

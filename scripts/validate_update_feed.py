@@ -23,9 +23,12 @@ def validate(feed: Path, archive: Path, label: str, build: str) -> None:
         raise ValueError('invalid feed structure')
     root = ET.fromstring(data)
     items = root.findall('./channel/item')
-    if root.tag != 'rss' or len(root.findall('channel')) != 1 or len(items) != 1:
+    if root.tag != 'rss' or len(root.findall('channel')) != 1 or len(items) != 1 or len(root.findall('.//item')) != 1:
         raise ValueError('expected a single-release appcast')
     item = items[0]
+    for tag in ('title', f'{{{NS}}}version', f'{{{NS}}}shortVersionString', f'{{{NS}}}minimumSystemVersion'):
+        if len(item.findall(tag)) > 1:
+            raise ValueError('duplicate release metadata')
     if item.findtext(f'{{{NS}}}version') != build:
         raise ValueError('build does not match the package')
     if item.find(f'{{{NS}}}channel') is not None:
