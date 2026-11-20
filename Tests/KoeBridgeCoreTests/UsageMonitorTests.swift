@@ -69,6 +69,25 @@ struct UsageMonitorTests {
         #expect(try Data(contentsOf: url) == contents)
     }
 
+    @Test func oversizedUsageCannotOverflowChartsOrSurviveReload() throws {
+        let url = file()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        var store = try UsageMonitorArchive(fileURL: url)
+        let sample = GeminiTokenSample(at: Date(), usage: .init(promptTokens: nil, responseTokens: nil, totalTokens: 5))
+        try store.append(engineEvents: [], tokenEvents: [sample])
+        var archive = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        var rows = try #require(archive["tokenEvents"] as? [[String: Any]])
+        var invalid = rows[0]
+        invalid["totalTokens"] = Int.max
+        rows.append(invalid)
+        archive["tokenEvents"] = rows
+        try JSONSerialization.data(withJSONObject: archive).write(to: url)
+        #expect(try UsageMonitorArchive(fileURL: url).tokenEvents == [sample])
+        #expect(GeminiTokenUsage.adding(1, to: Int.max) == Int.max)
+        #expect(GeminiWire.parseTokenUsage(#"{"usageMetadata":{"totalTokenCount":9223372036854775807}}"#) == nil)
+        #expect(GeminiWire.parseTokenUsage(#"{"usageMetadata":{"totalTokenCount":true}}"#) == nil)
+    }
+
     @Test func clearingUsageDoesNotAffectOtherArchives() throws {
         let url = file()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }

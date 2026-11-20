@@ -117,8 +117,9 @@ struct UsageMonitorView: View {
                 totals.outcomes[event.engine, default: [:]][event.outcome, default: 0] += 1
             }
             for sample in controller.monitorTokens where sample.at >= start {
-                tokens[bucket(sample.at), default: 0] += sample.totalTokens
-                totals.totalTokens += sample.totalTokens
+                let date = bucket(sample.at)
+                tokens[date] = GeminiTokenUsage.adding(sample.totalTokens, to: tokens[date, default: 0])
+                totals.totalTokens = GeminiTokenUsage.adding(sample.totalTokens, to: totals.totalTokens)
             }
             totals.engines = grouped.map {
                 EngineBar(bucket: $0.key.date, engine: $0.key.engine, count: $0.value.count, seconds: $0.value.seconds)
