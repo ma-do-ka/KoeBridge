@@ -572,17 +572,17 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
 
     func configureMouse(_ button: MouseTriggerButton) -> Bool {
         if button == .none {
+            resetActivationMode()
             mouseMonitor?.stop()
             mouseMonitor = nil
-            resetActivationMode()
             return true
         }
         let monitor = MouseShortcutMonitor(button: button) { [weak self] pressed, time in
             self?.route(pressed: pressed, at: time)
         }
         guard monitor.start() else { return false }
-        mouseMonitor?.stop()
         resetActivationMode()
+        mouseMonitor?.stop()
         mouseMonitor = monitor
         return true
     }
@@ -961,6 +961,7 @@ private final class ModifierShortcutMonitor {
                 guard event.flags.contains(.maskSecondaryFn),
                       event.flags.intersection(others).isEmpty else { return false }
                 if !fnSpaceHeld && event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
+                    releaseUpSamples = 0
                     fnSpaceHeld = true
                     requestEdge(true, at: Double(event.timestamp) / 1_000_000_000)
                 }

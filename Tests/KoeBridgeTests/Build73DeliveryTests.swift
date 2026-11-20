@@ -637,13 +637,14 @@ import KoeBridgeCore
                         eventsPosted: [.verifiedInserted, .partiallySubmitted, .inserted].contains($0),
                         target: nil, diagnostics: nil, resultUptimeMS: 0)
                 }
-                kind.save("intermediate", final: false, report: report, engine: "test", in: &store)
+                kind.save("intermediate", final: false, report: report, in: &store)
                 let final = "  final " + String(expected) + "\n"
-                kind.save(final, final: true, report: report, engine: "test", in: &store)
+                kind.save(final, final: true, report: report, in: &store)
                 if let delivery {
                     expected += 1
                     let record = try #require(store.entries.first { $0.text == final && $0.kind == kind.rawValue })
                     #expect(record.delivery == delivery && !record.isPartial && record.deliveryDetail != nil)
+                    #expect(record.engine == GeminiTransformWire.model)
                 }
                 #expect(store.entries.count == expected)
             }

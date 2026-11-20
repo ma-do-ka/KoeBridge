@@ -1696,19 +1696,18 @@ import KoeBridgeCore
         case voiceTransform, fixLastInput, selectionTranslation, presetChain
 
         @MainActor func save(_ text: String, final: Bool, report: TextInsertion.Report?,
-                             engine: String, in history: inout TranscriptHistoryStore) {
+                             in history: inout TranscriptHistoryStore) {
             guard final, report?.outcome != .verifiedInserted else { return }
             let outcome = report.map(DictationDelivery.classify)
             history.remember(text, isPartial: false, delivery: outcome?.delivery ?? .blockedFocus,
-                engine: engine, kind: rawValue, deliveryDetail: outcome?.detail ?? "操作の中断により未送信です。",
+                engine: GeminiTransformWire.model, kind: rawValue, deliveryDetail: outcome?.detail ?? "操作の中断により未送信です。",
                 preserveWhitespace: true)
         }
     }
 
     private func saveGeneratedResult(_ text: String, kind: GeneratedOperation, final: Bool = true,
                                      report: TextInsertion.Report?) {
-        kind.save(text, final: final, report: report, engine: RecognitionMode.gemini.label,
-                  in: &historyStore)
+        kind.save(text, final: final, report: report, in: &historyStore)
         refreshRetainedAudio()
     }
 
