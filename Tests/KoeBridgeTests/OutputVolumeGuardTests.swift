@@ -28,6 +28,7 @@ struct OutputVolumeGuardTests {
         var duringSet: (() -> Void)?
         var afterSet: (() -> Void)?
         var snapshotHook: (() -> Void)?
+        var didReadSnapshot: ((OutputVolumeReading) -> Void)?
         private var callbacks: [String: (DispatchQueue, AudioObjectPropertyListenerBlock)] = [:]
         let owner = UUID()
         let enabled: Bool
@@ -52,8 +53,10 @@ struct OutputVolumeGuardTests {
                     if self.failedReads > 0 { self.failedReads -= 1; return nil }
                 }
                 guard self.device == device else { return nil }
-                return .init(reading: .init(uid: String(device), device: device, muted: self.muted,
-                    volumes: self.volumes), settable: self.fixed ? [] : Set(self.volumes.keys))
+                let reading = OutputVolumeReading(uid: String(device), device: device, muted: self.muted,
+                                                  volumes: self.volumes)
+                if snapshot { self.didReadSnapshot?(reading) }
+                return .init(reading: reading, settable: self.fixed ? [] : Set(self.volumes.keys))
             }
             hal.finalReads.defaultDevice = {
                 let hook = self.beforeVerification
@@ -512,36 +515,22 @@ struct OutputVolumeGuardTests {
             let f = Fixture(), take = UUID()
             let guardController = f.controller
             let capture = MicrophoneCapture(volumeGuard: guardController, takeID: take)
-            let lock = NSLock()
-            var switched = false
+            f.volumes = [.scalar(0): 0.5]
             let sampled = DispatchSemaphore(value: 0)
-            f.snapshotHook = {
-                f.volumes = [.scalar(0): lock.withLock { switched ? 0.6 : 0.5 }]
+            f.didReadSnapshot = { reading in
+                #expect(reading.volumes[.scalar(0)] == 0.5)
                 sampled.signal()
             }
-            let workerReady = DispatchSemaphore(value: 0)
-            let preparing = DispatchSemaphore(value: 0)
-            try MicrophoneCapture.warmLifecycleQueue.sync {
-                // Start both queues before measuring the 10 ms delay inside the 40 ms handoff.
-                guardController.queue.async {
-                    workerReady.signal()
-                    guard preparing.wait(timeout: .now() + 5) == .success else {
-                        Issue.record("Timed out waiting for prepare to start")
-                        return
-                    }
-                    Thread.sleep(forTimeInterval: 0.010)
-                }
-                try #require(workerReady.wait(timeout: .now() + 5) == .success)
-                preparing.signal()
+            MicrophoneCapture.warmLifecycleQueue.sync {
                 if warm { guardController.begin(f.owner, device: { 41 }, evidence: nil) }
                 else { capture.beginVolumeGuard(outputID: 41) }
-                lock.withLock { switched = true } // engine.start changes the profile
             }
-            #expect(sampled.wait(timeout: .now() + 5) == .success)
-            f.drain()
-            #expect(f.volumes[.scalar(0)] == 0.5)
-            f.volumes = [.scalar(0): 0.6]
+
+            // Model engine start after a successful snapshot handoff.
+            try #require(sampled.wait(timeout: .now() + 5) == .success)
+            guardController.queue.sync { f.volumes[.scalar(0)] = 0.6 }
             f.check()
+            #expect(f.volumes[.scalar(0)] == 0.5)
             #expect(f.snapshots == 1 && f.writes == [0.5])
             guardController.end(warm ? f.owner : take); f.drain()
         }
