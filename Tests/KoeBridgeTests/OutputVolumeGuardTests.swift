@@ -507,7 +507,7 @@ struct OutputVolumeGuardTests {
         }
     }
 
-    @Test func prepareAndWarmStartSnapshotBeforeSimulatedProfileSwitch() {
+    @Test func prepareAndWarmStartSnapshotBeforeSimulatedProfileSwitch() throws {
         for warm in [false, true] {
             let f = Fixture(), take = UUID()
             let guardController = f.controller
@@ -519,18 +519,25 @@ struct OutputVolumeGuardTests {
                 f.volumes = [.scalar(0): lock.withLock { switched ? 0.6 : 0.5 }]
                 sampled.signal()
             }
+            let workerReady = DispatchSemaphore(value: 0)
             let preparing = DispatchSemaphore(value: 0)
-            guardController.queue.async {
-                _ = preparing.wait(timeout: .now() + 1)
-                Thread.sleep(forTimeInterval: 0.010)
-            }
-            MicrophoneCapture.warmLifecycleQueue.sync {
+            try MicrophoneCapture.warmLifecycleQueue.sync {
+                // Start both queues before measuring the 10 ms delay inside the 40 ms handoff.
+                guardController.queue.async {
+                    workerReady.signal()
+                    guard preparing.wait(timeout: .now() + 5) == .success else {
+                        Issue.record("Timed out waiting for prepare to start")
+                        return
+                    }
+                    Thread.sleep(forTimeInterval: 0.010)
+                }
+                try #require(workerReady.wait(timeout: .now() + 5) == .success)
                 preparing.signal()
                 if warm { guardController.begin(f.owner, device: { 41 }, evidence: nil) }
                 else { capture.beginVolumeGuard(outputID: 41) }
                 lock.withLock { switched = true } // engine.start changes the profile
             }
-            #expect(sampled.wait(timeout: .now()) == .success)
+            #expect(sampled.wait(timeout: .now() + 5) == .success)
             f.drain()
             #expect(f.volumes[.scalar(0)] == 0.5)
             f.volumes = [.scalar(0): 0.6]
