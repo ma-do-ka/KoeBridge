@@ -88,6 +88,21 @@ struct UsageMonitorTests {
         #expect(GeminiWire.parseTokenUsage(#"{"usageMetadata":{"totalTokenCount":true}}"#) == nil)
     }
 
+    @Test func failedArchiveStillValidatesInMemorySamples() throws {
+        let url = file()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("invalid archive".utf8).write(to: url)
+        var store = UsageMonitorStore(fileURL: url)
+        let valid = GeminiTokenSample(at: Date(), usage: .init(promptTokens: nil, responseTokens: nil, totalTokens: 1))
+        let invalid = GeminiTokenSample(at: Date(), usage: .init(promptTokens: nil, responseTokens: nil, totalTokens: -1))
+        store.append(engineEvents: [.init(at: Date(), engine: .apple, audioSeconds: .greatestFiniteMagnitude,
+                                          outcome: .success)], tokenEvents: [valid, invalid])
+        #expect(store.tokenEvents == [valid])
+        #expect(store.engineEvents.isEmpty)
+        #expect(try Data(contentsOf: url) == Data("invalid archive".utf8))
+    }
+
     @Test func clearingUsageDoesNotAffectOtherArchives() throws {
         let url = file()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }

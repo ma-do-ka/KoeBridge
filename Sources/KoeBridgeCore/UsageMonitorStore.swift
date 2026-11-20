@@ -23,6 +23,8 @@ public struct UsageMonitorStore {
 
     public mutating func append(engineEvents: [EngineUsageSample], tokenEvents: [GeminiTokenSample],
                                 now: Date = Date()) {
+        let engineEvents = engineEvents.filter(\.hasValidDuration)
+        let tokenEvents = tokenEvents.filter(\.hasValidCounters)
         guard !engineEvents.isEmpty || !tokenEvents.isEmpty else { return }
         guard var store = archive else {
             // Do not replace an unreadable archive with a fresh file.
