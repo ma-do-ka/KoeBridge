@@ -36,35 +36,35 @@ struct ResilienceTests {
     }
 
     func finalBeforeReleaseCannotFinalizeEarly() {
-        let end = Date(timeIntervalSince1970: 100)
-        let final = end.addingTimeInterval(-5)
+        let end = ContinuousClock.now
+        let final = end.advanced(by: .seconds(-5))
         check(!FinalizationPolicy.canFinish(endedAt: end, lastFinalAt: final,
-                                              turnCompleteAt: nil, now: end))
+                                              endAcknowledgedAt: nil, now: end))
         check(!FinalizationPolicy.canFinish(endedAt: end, lastFinalAt: final,
-                                              turnCompleteAt: nil, now: end.addingTimeInterval(0.8)))
+                                              endAcknowledgedAt: nil, now: end.advanced(by: .seconds(0.8))))
         check(!FinalizationPolicy.canFinish(endedAt: end, lastFinalAt: final,
-                                              turnCompleteAt: nil, now: end.addingTimeInterval(1.25)))
+                                              endAcknowledgedAt: nil, now: end.advanced(by: .seconds(1.25))))
     }
 
     func finalAndTurnCompleteInEitherOrder() {
-        let end = Date(timeIntervalSince1970: 100)
+        let end = ContinuousClock.now
         check(!FinalizationPolicy.canFinish(endedAt: end, lastFinalAt: nil,
-                                              turnCompleteAt: end.addingTimeInterval(0.1), now: end.addingTimeInterval(2)))
-        check(!FinalizationPolicy.canFinish(endedAt: end, lastFinalAt: end.addingTimeInterval(0.2),
-                                              turnCompleteAt: end.addingTimeInterval(0.2), now: end.addingTimeInterval(0.3)))
-        check(!FinalizationPolicy.canFinish(endedAt: end, lastFinalAt: end.addingTimeInterval(0.2),
-                                              turnCompleteAt: end.addingTimeInterval(0.2), now: end.addingTimeInterval(0.4)))
-        check(FinalizationPolicy.canFinish(endedAt: end, lastFinalAt: end.addingTimeInterval(0.2),
-                                             turnCompleteAt: end.addingTimeInterval(0.2), now: end.addingTimeInterval(0.7)))
+                                              endAcknowledgedAt: end.advanced(by: .seconds(0.1)), now: end.advanced(by: .seconds(2))))
+        check(!FinalizationPolicy.canFinish(endedAt: end, lastFinalAt: end.advanced(by: .seconds(0.2)),
+                                              endAcknowledgedAt: end.advanced(by: .seconds(0.2)), now: end.advanced(by: .seconds(0.3))))
+        check(!FinalizationPolicy.canFinish(endedAt: end, lastFinalAt: end.advanced(by: .seconds(0.2)),
+                                              endAcknowledgedAt: end.advanced(by: .seconds(0.2)), now: end.advanced(by: .seconds(0.4))))
+        check(FinalizationPolicy.canFinish(endedAt: end, lastFinalAt: end.advanced(by: .seconds(0.2)),
+                                             endAcknowledgedAt: end.advanced(by: .seconds(0.2)), now: end.advanced(by: .seconds(0.7))))
     }
 
     func finalWithoutTurnCompleteDoesNotFinish() {
-        let end = Date(timeIntervalSince1970: 100)
-        let final = end.addingTimeInterval(1.0)
+        let end = ContinuousClock.now
+        let final = end.advanced(by: .seconds(1.0))
         check(!FinalizationPolicy.canFinish(endedAt: end, lastFinalAt: final,
-                                              turnCompleteAt: nil, now: end.addingTimeInterval(1.25)))
+                                              endAcknowledgedAt: nil, now: end.advanced(by: .seconds(1.25))))
         check(!FinalizationPolicy.canFinish(endedAt: end, lastFinalAt: final,
-                                              turnCompleteAt: nil, now: end.addingTimeInterval(1.70)))
+                                              endAcknowledgedAt: nil, now: end.advanced(by: .seconds(1.70))))
     }
 
     func droppedAudioIsRememberedAcrossThreads() {

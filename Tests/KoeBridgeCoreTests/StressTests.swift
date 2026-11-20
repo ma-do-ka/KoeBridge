@@ -1,4 +1,5 @@
 import Foundation
+import KoeBridgeTestSupport
 import Testing
 @testable import KoeBridgeCore
 
@@ -31,30 +32,20 @@ struct StressTests {
     }
 
     @Test func finalizationNeverAuthorizesUnacknowledgedPreStopResult() {
-        let ended = Date(timeIntervalSince1970: 10_000)
+        let ended = ContinuousClock.now
         for seconds in 16...1000 {
-            let now = ended.addingTimeInterval(Double(seconds) / 10)
-            let early = ended.addingTimeInterval(-Double(seconds) / 10)
+            let now = ended.advanced(by: .seconds(Double(seconds) / 10))
+            let early = ended.advanced(by: .seconds(-Double(seconds) / 10))
             #expect(!FinalizationPolicy.canFinish(endedAt: ended, lastFinalAt: early,
-                                                   turnCompleteAt: nil, now: now))
+                                                   endAcknowledgedAt: nil, now: now))
         }
     }
 
     @Test func aThousandTranscriptWritesRetainTheNewestMaximum() throws {
-        let folder = FileManager.default.temporaryDirectory
-            .appendingPathComponent("KoeBridgeStress-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: folder) }
-        let url = folder.appendingPathComponent("history.json")
-        var store = try RecentTranscriptArchive(fileURL: url)
-        for n in 0..<1000 {
-            let record = TranscriptRecord(engine: "test", text: "発話\(n)",
-                                          isPartial: false, delivery: .attemptedUnconfirmed)
-            try store.insert(record)
-        }
-        #expect(store.entries.count == RecentTranscriptArchive.maximumRecords)
-        #expect(store.entries.first?.text == "発話999")
-        #expect(store.entries.last?.text == "発話\(1000 - RecentTranscriptArchive.maximumRecords)")
-        let reopened = try RecentTranscriptArchive(fileURL: url)
-        #expect(reopened.entries == store.entries)
+        let result = try HistoryStressFixture.run()
+        #expect(result.correctCount)
+        #expect(result.newest)
+        #expect(result.oldest)
+        #expect(result.persisted)
     }
 }

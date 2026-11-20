@@ -104,6 +104,7 @@ Tests/KoeBridgeCoreTests/TranscriptionStyleTests.swift
 Tests/KoeBridgeCoreTests/UserFacingErrorMessageTests.swift
 Tests/KoeBridgeTapFixtures/FakeTapNode.m
 Tests/KoeBridgeTapFixtures/include/KoeBridgeTapFixtures.h
+Tests/KoeBridgeTestSupport/HistoryStressFixture.swift
 Tests/KoeBridgeTests/Build73DeliveryTests.swift
 Tests/KoeBridgeTests/GeminiLiveConnectionTests.swift
 Tests/KoeBridgeTests/HistoryHoverPanelTests.swift

@@ -4,8 +4,6 @@ import Foundation
 /// Begin only after all preceding PCM writes have completed. A terminal event
 /// received during the end write belongs to that activity, but is not usable
 /// until the write succeeds. This avoids relying on task-resumption order.
-public typealias ManualEndpointState = TimedManualEndpointState<Date>
-
 public struct TimedManualEndpointState<Instant: Sendable>: Sendable {
     public enum Phase: Equatable, Sendable {
         case recording, writingEnd, endWritten, failed, cancelled
@@ -83,37 +81,11 @@ public enum FinalizationPolicy {
     /// A bounded recovery policy, not a guarantee of the provider's latency.
     public static let maximumWaitSeconds: TimeInterval = 8
 
-    public static func canFinish(endedAt: Date, lastFinalAt: Date?,
-                                 turnCompleteAt: Date?, now: Date,
-                                 hasPendingInterim: Bool = false,
-                                 lastTranscriptionAt: Date? = nil) -> Bool {
-        canFinish(endedAt: endedAt, lastFinalAt: lastFinalAt,
-                  endAcknowledgedAt: turnCompleteAt, now: now,
-                  hasPendingInterim: hasPendingInterim,
-                  lastTranscriptionAt: lastTranscriptionAt)
-    }
-
-    public static func canFinish(endedAt: Date, lastFinalAt: Date?,
-                                 endAcknowledgedAt: Date?, now: Date,
-                                 hasPendingInterim: Bool = false,
-                                 lastTranscriptionAt: Date? = nil) -> Bool {
-        canFinish(endedAt: endedAt, lastFinalAt: lastFinalAt, acknowledgedAt: endAcknowledgedAt,
-                  now: now, pending: hasPendingInterim, lastUpdate: lastTranscriptionAt,
-                  advanced: { $0.addingTimeInterval($1) })
-    }
-
     public static func canFinish(endedAt: ContinuousClock.Instant, lastFinalAt: ContinuousClock.Instant?,
                                  endAcknowledgedAt: ContinuousClock.Instant?, now: ContinuousClock.Instant,
                                  hasPendingInterim: Bool = false, lastTranscriptionAt: ContinuousClock.Instant? = nil) -> Bool {
-        canFinish(endedAt: endedAt, lastFinalAt: lastFinalAt, acknowledgedAt: endAcknowledgedAt,
-                  now: now, pending: hasPendingInterim, lastUpdate: lastTranscriptionAt,
-                  advanced: { $0.advanced(by: .seconds($1)) })
-    }
-
-    private static func canFinish<T: Comparable>(endedAt: T, lastFinalAt: T?, acknowledgedAt: T?,
-                                                  now: T, pending: Bool, lastUpdate: T?,
-                                                  advanced: (T, Double) -> T) -> Bool {
-        guard !pending, let final = lastFinalAt, let ack = acknowledgedAt, ack >= endedAt else { return false }
-        return now >= advanced(endedAt, 0.40) && now >= advanced(max(final, ack, lastUpdate ?? final), 0.25)
+        guard !hasPendingInterim, let final = lastFinalAt, let ack = endAcknowledgedAt, ack >= endedAt else { return false }
+        return now >= endedAt.advanced(by: .milliseconds(400)) &&
+            now >= max(final, ack, lastTranscriptionAt ?? final).advanced(by: .milliseconds(250))
     }
 }

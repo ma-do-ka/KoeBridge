@@ -2,7 +2,7 @@
 import Foundation
 import KoeBridgeCore
 
-private final class TransformSessionDelegate: NSObject, URLSessionTaskDelegate {
+private final class GeminiTransferDelegate: NSObject, URLSessionTaskDelegate {
     func urlSession(_ session: URLSession, task: URLSessionTask,
                     willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest,
@@ -27,10 +27,21 @@ private final class TransformSessionDelegate: NSObject, URLSessionTaskDelegate {
     static func postProcess(text: String, mode: PostProcessingMode, apiKey: String,
                             timeout: TimeInterval) async throws -> Result {
         try await send(body: GeminiPostProcessWire.request(text: text, mode: mode),
-                       apiKey: apiKey, timeout: timeout)
+                       apiKey: apiKey, timeout: timeout, parse: GeminiPostProcessWire.response)
     }
 
-    private static func send(body: Data, apiKey: String, timeout: TimeInterval) async throws -> Result {
+    private static func send(body: Data, apiKey: String, timeout: TimeInterval,
+                             parse: (Data) throws -> String? = GeminiTransformWire.response) async throws -> Result {
+        let data = try await GeminiTransfer.send(body: body, endpoint: GeminiTransformWire.endpoint,
+                                                apiKey: apiKey, timeout: timeout)
+        guard let text = try parse(data) else { throw GeminiRecheckWire.RecheckError.incompleteResponse }
+        let usage = String(data: data, encoding: .utf8).flatMap(GeminiWire.parseTokenUsage)
+        return Result(text: text, usage: usage)
+    }
+}
+
+enum GeminiTransfer {
+    static func send(body: Data, endpoint: String, apiKey: String, timeout: TimeInterval) async throws -> Data {
         try Task.checkCancellation()
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = timeout
@@ -38,10 +49,10 @@ private final class TransformSessionDelegate: NSObject, URLSessionTaskDelegate {
         configuration.urlCache = nil
         configuration.httpCookieStorage = nil
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        let delegate = TransformSessionDelegate()
+        let delegate = GeminiTransferDelegate()
         let session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
         defer { session.invalidateAndCancel() }
-        var request = URLRequest(url: URL(string: GeminiTransformWire.endpoint)!)
+        var request = URLRequest(url: URL(string: endpoint)!)
         request.httpMethod = "POST"
         request.timeoutInterval = timeout
         request.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
@@ -57,9 +68,7 @@ private final class TransformSessionDelegate: NSObject, URLSessionTaskDelegate {
             session.invalidateAndCancel()
         }
         try Task.checkCancellation()
-        let text = try GeminiTransformWire.response(data)
-        let usage = String(data: data, encoding: .utf8).flatMap(GeminiWire.parseTokenUsage)
-        return Result(text: text, usage: usage)
+        return data
     }
 
     /// Enforce the existing response limit while receiving, before URLSession

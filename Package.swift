@@ -2,7 +2,7 @@
 import PackageDescription
 
 var applicationDependencies: [Target.Dependency] = ["KoeBridgeCore", "KoeBridgePOSIX"]
-var selfTestDependencies: [Target.Dependency] = ["KoeBridgeCore", "KoeBridgePOSIX"]
+var selfTestDependencies: [Target.Dependency] = ["KoeBridgeTestSupport", "KoeBridgeCore", "KoeBridgePOSIX"]
 var coreDependencies: [Target.Dependency] = []
 var applicationTestDependencies: [Target.Dependency] = ["KoeBridge", "KoeBridgeCore"]
 var additionalTargets: [Target] = []
@@ -30,7 +30,8 @@ let package = Package(
             swiftSettings: [.swiftLanguageMode(.v5)],
             linkerSettings: [.unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"],
                                           .when(platforms: [.macOS]))]),
-        .testTarget(name: "KoeBridgeCoreTests", dependencies: ["KoeBridgeCore"]),
+        .target(name: "KoeBridgeTestSupport", dependencies: ["KoeBridgeCore"], path: "Tests/KoeBridgeTestSupport"),
+        .testTarget(name: "KoeBridgeCoreTests", dependencies: ["KoeBridgeCore", "KoeBridgeTestSupport"]),
         .testTarget(name: "KoeBridgeTests", dependencies: applicationTestDependencies,
                     swiftSettings: [.swiftLanguageMode(.v5)]),
         .executableTarget(name: "KoeBridgeSelfTest", dependencies: selfTestDependencies,
