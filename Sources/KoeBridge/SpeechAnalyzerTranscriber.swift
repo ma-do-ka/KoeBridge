@@ -108,7 +108,9 @@ import KoeBridgeCore
     // Drain every converter output, including any resampling tail at end of input.
     private func convertAndYield(_ input: AVAudioPCMBuffer?, converter: AVAudioConverter,
                                  continuation: AsyncStream<AnalyzerInput>.Continuation) throws {
-        do { try Self.convert(input, converter: converter, continuation: continuation) }
+        do {
+            try Self.convert(input, converter: converter) { try Self.yield($0, to: continuation) }
+        }
         catch let failure as ConversionFailure { throw report(failure) }
     }
 
@@ -120,14 +122,16 @@ import KoeBridgeCore
     }
 
     private nonisolated static func convertRecovery(_ data: Data, range: Range<Int>, format: AVAudioFormat,
-        converter: AVAudioConverter, continuation: AsyncStream<AnalyzerInput>.Continuation) async throws {
+        converter: AVAudioConverter) async throws -> [AnalyzerInput] {
         try Task.checkCancellation()
         let buffer = try LocalPCM.buffer(data, range: range, format: format)
-        try convert(buffer, converter: converter, continuation: continuation)
+        var converted: [AnalyzerInput] = []
+        try convert(buffer, converter: converter) { converted.append($0) }
+        return converted
     }
 
     private nonisolated static func convert(_ input: AVAudioPCMBuffer?, converter: AVAudioConverter,
-        continuation: AsyncStream<AnalyzerInput>.Continuation) throws {
+        consume: (AnalyzerInput) throws -> Void) throws {
         let capacity = ceil(Double(input?.frameLength ?? 1024) * converter.outputFormat.sampleRate / converter.inputFormat.sampleRate) + 256
         guard capacity <= Double(AVAudioFrameCount.max) else {
             throw LocalError.recognitionFailure("音声データの形式が不正です")
@@ -153,12 +157,14 @@ import KoeBridgeCore
             }
             if status == .error { throw LocalError.recognitionFailure("音声データを変換できませんでした") }
             if output.frameLength > 0 {
-                if case .terminated = continuation.yield(AnalyzerInput(buffer: output)) {
-                    throw LocalError.endedBeforeAudio
-                }
+                try consume(AnalyzerInput(buffer: output))
             }
             if status != .haveData { return }
         }
+    }
+
+    private nonisolated static func yield(_ input: AnalyzerInput, to continuation: AsyncStream<AnalyzerInput>.Continuation) throws {
+        if case .terminated = continuation.yield(input) { throw LocalError.endedBeforeAudio }
     }
 
     func appendRecoveryPCM(_ data: Data, range: Range<Int>) async throws {
@@ -166,10 +172,16 @@ import KoeBridgeCore
         if let failure = state.failure { throw LocalError.recognitionFailure(failure) }
         guard let converter, let continuation else { throw LocalError.unavailable }
         guard state.acceptsAudio else { throw LocalError.endedBeforeAudio }
+        let converted: [AnalyzerInput]
         do {
-            try await Self.convertRecovery(data, range: range, format: audioFormat,
-                                           converter: converter, continuation: continuation)
+            converted = try await Self.convertRecovery(data, range: range, format: audioFormat,
+                                                        converter: converter)
         } catch let failure as ConversionFailure { throw report(failure) }
+        try Task.checkCancellation()
+        if state.phase == .cancelled { throw CancellationError() }
+        if let failure = state.failure { throw LocalError.recognitionFailure(failure) }
+        guard state.acceptsAudio else { throw LocalError.endedBeforeAudio }
+        for input in converted { try Self.yield(input, to: continuation) }
     }
 
     func endAudioAndAwaitFinal() async throws -> String {

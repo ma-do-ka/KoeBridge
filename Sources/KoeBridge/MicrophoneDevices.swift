@@ -10,8 +10,16 @@ import KoeBridgeCore
 /// default device. Names/UIDs are shown locally but never enter diagnostics.
 enum MicrophoneDevices {
     struct Snapshot: Sendable {
-        var devices: [MicrophoneDeviceOption]
-        var defaultID: UInt32?
+        let devices: [MicrophoneDeviceOption]
+        let defaultID: UInt32?
+        let collidingUIDs: Set<String>
+
+        init(devices: [MicrophoneDeviceOption], defaultID: UInt32?) {
+            let groups = Dictionary(grouping: devices, by: \.uid)
+            self.devices = devices.filter { groups[$0.uid]?.count == 1 }
+            self.collidingUIDs = Set(groups.filter { $0.value.count > 1 }.keys)
+            self.defaultID = defaultID
+        }
     }
 
     static func enumerate(readSize: (inout UInt32) -> OSStatus,
@@ -45,10 +53,7 @@ enum MicrophoneDevices {
                                           name: string(id, kAudioObjectPropertyName) ?? "名称不明のマイク",
                                           deviceID: id)
         }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-        // Duplicate UIDs are ambiguous and cannot be represented by a Picker tag.
-        let counts = Dictionary(grouping: devices, by: \.uid)
-        return Snapshot(devices: devices.filter { counts[$0.uid]?.count == 1 },
-                        defaultID: MicrophoneRouteSnapshot.defaultInputDeviceID())
+        return Snapshot(devices: devices, defaultID: MicrophoneRouteSnapshot.defaultInputDeviceID())
     }
 
     static func isBluetooth(deviceID: AudioObjectID) -> Bool {
@@ -124,7 +129,7 @@ enum MicrophoneDevices {
               let value else { return nil }
         return value as String
     }
-    enum DeviceError: LocalizedError {
+    enum DeviceError: LocalizedError, Equatable {
         case enumerationFailed, noAudioUnit, selectionFailed(OSStatus), selectionNotApplied
         var errorDescription: String? {
             switch self {
@@ -154,8 +159,9 @@ enum MicrophoneDevices {
         }
         return "システム設定に従う（\(device.name)）"
     }
+    var selectedUIDCollides: Bool { snapshot?.collidingUIDs.contains(selectedUID) == true }
     var selectedDeviceMissing: Bool {
-        loaded && !selectedUID.isEmpty && !devices.contains { $0.uid == selectedUID }
+        loaded && !selectedUIDCollides && !selectedUID.isEmpty && !devices.contains { $0.uid == selectedUID }
     }
     func select(_ uid: String) {
         guard !VoiceController.shared.busy,

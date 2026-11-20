@@ -171,6 +171,8 @@ import KoeBridgeCore
     }
 
     func clear(history: inout TranscriptHistoryStore) {
+        validUntil = .distantPast
+        validatedIDs.removeAll()
         history.clearAudioReferences(reason: "保存音声を削除しました")
         for file in wavFiles() {
             remove(file)

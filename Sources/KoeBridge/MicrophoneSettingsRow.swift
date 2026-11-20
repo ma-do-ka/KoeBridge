@@ -14,7 +14,7 @@ struct MicrophoneSettingsRow: View {
                     Text(microphones.systemLabel).tag("")
                     if !microphones.selectedUID.isEmpty &&
                         !microphones.devices.contains(where: { $0.uid == microphones.selectedUID }) {
-                        Text(microphones.loaded ? "選択したマイク（未接続）" : "選択したマイク（確認中）")
+                        Text(microphones.selectedUIDCollides ? "選択したIDを複数のマイクが使用しています" : microphones.loaded ? "選択したマイク（未接続）" : "選択したマイク（確認中）")
                             .tag(microphones.selectedUID)
                     }
                     ForEach(microphones.devices) { device in
