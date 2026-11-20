@@ -62,9 +62,6 @@ struct RecoveryAX {
 }
 
 @MainActor struct DeliveryRecovery {
-    private static let positiveTextRoles: Set<String> = [
-        "AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"
-    ]
 
     let original: InsertionTarget
     let systemFocus: Bool
@@ -231,16 +228,9 @@ struct RecoveryAX {
                   subroleReadable,
                   subrole != "AXSecureTextField",
                   role != "AXSecureTextField" else { return .rejected }
-            if requireSameElement && isSameElement {
-                let allowedSameElementRole = DeliveryTargetPolicy.isDenylisted(role: role)
-                    || ["AXTextField", "AXTextArea"].contains(role)
-                    || (original.bundleIdentifier == "com.meta.endo" && !DeliveryTargetPolicy.isDenylisted(role: role))
-                guard allowedSameElementRole else { return .rejected }
-            } else {
-                guard Self.positiveTextRoles.contains(role) || !DeliveryTargetPolicy.isDenylisted(role: role) else {
-                    return .rejected
-                }
-            }
+            let sameHost = requireSameElement && isSameElement
+            guard DeliveryTargetPolicy.mayReadRecoverySelection(role: role, sameHost: sameHost,
+                                                                 bundle: original.bundleIdentifier) else { return .rejected }
             let rangeName = kAXSelectedTextRangeAttribute as String
             let markerName = "AXSelectedTextMarkerRange"
             let range = try read(rangeName)
@@ -260,8 +250,7 @@ struct RecoveryAX {
                     return .rejected
                 }
                 guard range.status == .success,
-                      !DeliveryTargetPolicy.isDenylisted(role: role),
-                      !requireSameElement || !isSameElement || ["AXTextField", "AXTextArea"].contains(role) else { return .rejected }
+                      DeliveryTargetPolicy.allowsNumericRecovery(role: role, sameHost: sameHost) else { return .rejected }
                 hasValidNumericSelection = true
                 name = rangeName
                 selection = value
@@ -295,8 +284,7 @@ struct RecoveryAX {
                 name = markerName
                 selection = value
             }
-            if (!requireSameElement && !Self.positiveTextRoles.contains(role))
-                || (requireSameElement && isSameElement && !["AXTextField", "AXTextArea"].contains(role)) {
+            if DeliveryTargetPolicy.requiresRecoveryEditability(role: role, sameHost: sameHost) {
                 let editable = try read("AXEditable")
                 editableAbsent = editable.status == .noValue || editable.status == .attributeUnsupported
                 if editable.status == .success,

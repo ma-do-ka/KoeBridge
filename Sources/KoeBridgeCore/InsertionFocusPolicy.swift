@@ -84,6 +84,25 @@ public enum DeliveryTargetPolicy {
         "AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"
     ]
 
+    private static func standardEditor(_ role: String) -> Bool {
+        role == "AXTextField" || role == "AXTextArea"
+    }
+
+    public static func mayReadRecoverySelection(role: String, sameHost: Bool, bundle: String?) -> Bool {
+        if sameHost {
+            return isDenylisted(role: role) || standardEditor(role) || bundle == "com.meta.endo"
+        }
+        return positiveTextRoles.contains(role) || !isDenylisted(role: role)
+    }
+
+    public static func allowsNumericRecovery(role: String, sameHost: Bool) -> Bool {
+        !isDenylisted(role: role) && (!sameHost || standardEditor(role))
+    }
+
+    public static func requiresRecoveryEditability(role: String, sameHost: Bool) -> Bool {
+        sameHost ? !standardEditor(role) : !positiveTextRoles.contains(role)
+    }
+
     /// Evaluate a candidate element observed during bounded pre-send recovery.
     /// - Case A (`isSameElement == true`): any denylisted role (`DeliveryTargetPolicy.isDenylisted(role:)`)
     ///   waits when selection/editable are absent; `AXTextField`/`AXTextArea` with live selection accepts.
@@ -120,10 +139,10 @@ public enum DeliveryTargetPolicy {
         let hasSelection = hasValidNumericSelection || hasValidMarkerSelection
         guard hasSelection else { return .reject }
         if requireSameElement && isSameElement {
-            if ["AXTextField", "AXTextArea"].contains(role) {
+            if allowsNumericRecovery(role: role, sameHost: true) {
                 return .acceptEditor
             }
-            if bundleIdentifier == "com.meta.endo",
+            if mayReadRecoverySelection(role: role, sameHost: true, bundle: bundleIdentifier),
                !isDenylisted(role: role),
                hasValidMarkerSelection,
                editable != false {
@@ -133,7 +152,7 @@ public enum DeliveryTargetPolicy {
         }
         // Case B: Unavailable initial focus (requireSameElement == false).
         guard !isDenylisted(role: role) else { return .reject }
-        if positiveTextRoles.contains(role) {
+        if !requiresRecoveryEditability(role: role, sameHost: false) {
             return .acceptEditor
         }
         return editable == true ? .acceptEditor : .reject

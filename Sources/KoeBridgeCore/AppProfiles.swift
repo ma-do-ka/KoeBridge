@@ -42,6 +42,13 @@ public struct AppProfile: Codable, Equatable, Identifiable, Sendable {
 }
 
 public enum AppProfileResolver {
+    public static func existingForAddition(_ bundle: String, manuallyEntered: Bool,
+                                           profiles: [AppProfile]) -> Int? {
+        if let exact = profiles.firstIndex(where: { $0.bundleIdentifier == bundle }) { return exact }
+        guard manuallyEntered else { return nil }
+        return profiles.firstIndex { $0.bundleIdentifier.caseInsensitiveCompare(bundle) == .orderedSame }
+    }
+
     public static func match(profiles: [AppProfile], bundleIdentifier: String?) -> AppProfile? {
         guard let bundleIdentifier, !bundleIdentifier.isEmpty else { return nil }
         return profiles.first { $0.isEnabled && $0.bundleIdentifier == bundleIdentifier }

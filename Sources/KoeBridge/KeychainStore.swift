@@ -19,6 +19,12 @@ enum KeychainStore {
         }, events, nil) == errSecSuccess
     }()
 
+    @MainActor static func loadForUse() -> String? {
+        let key = load()
+        if key == nil { VoiceController.shared.invalidateKeyRegistration() }
+        return key
+    }
+
     static func load() -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,

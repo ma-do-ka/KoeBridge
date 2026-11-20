@@ -209,7 +209,7 @@ import KoeBridgeCore
             status = translating ? "翻訳する選択テキストは2,000文字以内にしてください" : "変換する選択テキストは2,000文字以内にしてください"
             return
         }
-        guard let key = KeychainStore.load() else { status = AppError.noKey.localizedDescription; return }
+        guard let key = KeychainStore.loadForUse() else { status = AppError.noKey.localizedDescription; return }
         let direction = translationDirection == .auto ? TranslationPolicy.direction(for: selected) : translationDirection
         runTextOperation(target: target, original: selected,
                          kind: translating ? .selectionTranslation : .presetChain,
@@ -335,7 +335,7 @@ import KoeBridgeCore
             status = "変換する選択テキストは2,000文字以内にしてください"
             return
         }
-        guard KeychainStore.load() != nil else { status = AppError.noKey.localizedDescription; return }
+        guard KeychainStore.loadForUse() != nil else { status = AppError.noKey.localizedDescription; return }
         beginRecording(transformTarget: target, selection: selected)
     }
     @Published private(set) var appProfilesStore = SettingsArray<AppProfile>("appProfiles")
@@ -379,7 +379,7 @@ import KoeBridgeCore
             status = "修正できる直前の入力がありません"
             return
         }
-        guard KeychainStore.load() != nil else { status = AppError.noKey.localizedDescription; return }
+        guard KeychainStore.loadForUse() != nil else { status = AppError.noKey.localizedDescription; return }
         var selectedTarget: InsertionTarget?
         let admitted = postingGate.withSelectionWrite {
             guard let current = InsertionTarget.capture().target,
@@ -406,11 +406,19 @@ import KoeBridgeCore
             onInputConfigurationChange?()
         }
     }
-    @Published var mouseTriggerButton: MouseTriggerButton {
-        didSet {
-            UserDefaults.standard.set(mouseTriggerButton.rawValue, forKey: "mouseTriggerButton")
-            onInputConfigurationChange?()
+    @Published private(set) var mouseTriggerButton: MouseTriggerButton
+    @Published private(set) var mouseRegistrationProblem = ""
+    var registerMouse: ((MouseTriggerButton) -> Bool)?
+
+    func selectMouseButton(_ button: MouseTriggerButton) {
+        guard registerMouse?(button) == true else {
+            mouseRegistrationProblem = "マウスボタンを登録できません。入力監視の許可を確認して再試行してください。"
+            return
         }
+        mouseRegistrationProblem = ""
+        guard button != mouseTriggerButton else { return }
+        mouseTriggerButton = button
+        UserDefaults.standard.set(button.rawValue, forKey: "mouseTriggerButton")
     }
     var onInputConfigurationChange: (() -> Void)?
     @Published var vocabulary: String {
@@ -479,12 +487,12 @@ import KoeBridgeCore
         guard phase == .idle, active == nil, inFlight.isEmpty, !textOperationRunning else {
             status = "音声入力・処理の完了後に会議モードを開始してください"; return
         }
-        if requestedMode == .gemini, KeychainStore.load() == nil { status = AppError.noKey.localizedDescription; return }
+        if requestedMode == .gemini, KeychainStore.loadForUse() == nil { status = AppError.noKey.localizedDescription; return }
         meetingRunning = true
         microphoneWarmKeeper.suspend(reason: "meeting")
         warmScheduleTask?.cancel(); prewarmer.shutdown()
         let session = MeetingSession(engine: requestedMode, vocabulary: currentAudioVocabulary,
-            style: transcriptionStyle, japaneseHint: japaneseHint, apiKey: KeychainStore.load(),
+            style: transcriptionStyle, japaneseHint: japaneseHint, apiKey: KeychainStore.loadForUse(),
             microphoneUID: MicrophoneDeviceStore.shared.selectedUID)
         meetingSession = session
         meetingStatus = session.liveStatus
@@ -597,12 +605,12 @@ import KoeBridgeCore
                     try await local.start()
                     for offset in stride(from: 0, to: pcm.count, by: 3_200) {
                         try Task.checkCancellation()
-                        try local.appendPCM16(pcm.subdata(in: offset..<min(offset + 3_200, pcm.count)))
+                        try await local.appendRecoveryPCM(pcm, range: offset..<min(offset + 3_200, pcm.count))
                         await Task.yield()
                     }
                     text = try await local.endAudioAndAwaitFinal()
                 } else {
-                    guard let key = KeychainStore.load() else { throw AppError.noKey }
+                    guard let key = KeychainStore.loadForUse() else { throw AppError.noKey }
                     text = try await GeminiAudioRechecker.recognize(pcm16LE: pcm,
                         vocabulary: currentAudioVocabulary, style: transcriptionStyle,
                         japaneseHint: japaneseHint, apiKey: key, timeout: 60).text
@@ -760,7 +768,7 @@ import KoeBridgeCore
         prewarmer.warmIfNeeded { [self] in
             guard !meetingRunning, geminiPrewarmEnabled, requestedMode == .gemini, active == nil,
                   !inFlight.values.contains(where: { !$0.finished }),
-                  let key = KeychainStore.load() else { return nil }
+                  let key = KeychainStore.loadForUse() else { return nil }
             let terms = AgentVocabulary.terms(user: vocabulary.components(separatedBy: .newlines), learned: learnedTerms.map(\.term),
                                              registeredEnabled: registeredVocabularyEnabled,
                                              topicEnabled: topicVocabularyEnabled)
@@ -814,16 +822,14 @@ import KoeBridgeCore
     /// Recording STOP frees the shortcut synchronously. Recognition and
     /// paste continue on the take that just ended; the next F8 can start NOW.
     func toggle() {
-        switch phase {
-        case .idle: beginRecording()
-        case .preparing:
+        switch VoiceSessionTransitions().shortcut(phase: phase) {
+        case .start:
+            if phase == .finalizing { phase = .idle }
+            beginRecording()
+        case .discard:
             DiagnosticLog.record("shortcut cancel preparing; no deferred restart")
             discard()
-        case .recording: stop()
-        case .finalizing:
-            // No take owns this global phase in v0.3.9. Defensive recovery.
-            phase = .idle
-            beginRecording()
+        case .stop: stop()
         }
     }
 
@@ -1005,7 +1011,7 @@ import KoeBridgeCore
                     if error is CancellationError { throw error }
                     // A missing explicit choice must never become another mic.
                     if error is MicrophoneSelectionError { throw error }
-                    let category = (error as? MicrophoneCapture.CaptureError)?.diagnosticCategory ?? (error as? MicrophoneGraphError)?.rawValue ?? "engine_start_failed"
+                    let category = (error as? MicrophoneCapture.CaptureError)?.diagnosticCategory ?? (error as? MicrophoneGraphError)?.rawValue ?? ((error as? MicrophoneDevices.DeviceError) == .enumerationFailed ? "enumeration_failed" : "engine_start_failed")
                     let elapsed = ProcessInfo.processInfo.systemUptime - preparationBegan
                     if let route = candidate.routeSnapshot {
                         DiagnosticLog.recordMicrophoneEvidence("mic_prepare_route take=\(take.id.uuidString) attempt=\(attempts) \(route.diagnosticFields)")
@@ -1074,7 +1080,7 @@ import KoeBridgeCore
     private func prepareRecognizer(_ take: DictationTake) async throws -> RecognitionMode {
         var actual = take.preferred
         if actual == .gemini {
-            if let key = KeychainStore.load() {
+            if let key = KeychainStore.loadForUse() {
                 let snapshot = GeminiPrewarmSnapshot(
                     vocabulary: take.vocabulary, style: take.style, japaneseHint: take.japaneseHint,
                     apiKeyFingerprint: GeminiPrewarmSnapshot.fingerprint(apiKey: key))
@@ -1290,10 +1296,10 @@ import KoeBridgeCore
         guard take.audioBackup.count <= DictationTake.maximumRescueBytes else { throw AppError.localRecoveryTooLong }
         // Only one fallback recognizer at a time. A wave of failed Gemini
         // sessions must not launch eight heavyweight local ASR tasks at once.
-        let waitBegan = Date()
+        let recoveryDeadline = ContinuousClock.now.advanced(by: .seconds(7))
         while localRecoveryBusy {
             try Task.checkCancellation()
-            guard !take.finished, Date().timeIntervalSince(waitBegan) < 7 else {
+            guard !take.finished, ContinuousClock.now < recoveryDeadline else {
                 throw AppError.localRecoveryBusy
             }
             try await Task.sleep(for: .milliseconds(75))
@@ -1422,7 +1428,7 @@ import KoeBridgeCore
                 var output = original
                 do {
                     let budget = TranscriptReviewDeadline.available(stoppedAt: take.stoppingAt, now: Date())
-                    guard budget > 0, let key = KeychainStore.load() else { throw AppError.noKey }
+                    guard budget > 0, let key = KeychainStore.loadForUse() else { throw AppError.noKey }
                     let result = try await GeminiTextTransformer.postProcess(
                         text: original, mode: take.postProcessMode, apiKey: key, timeout: budget)
                     guard !take.finished, !Task.isCancelled else { return }
@@ -1701,7 +1707,7 @@ import KoeBridgeCore
 
     private func saveGeneratedResult(_ text: String, kind: GeneratedOperation, final: Bool = true,
                                      report: TextInsertion.Report?) {
-        kind.save(text, final: final, report: report, engine: usedMode.isEmpty ? requestedMode.label : usedMode,
+        kind.save(text, final: final, report: report, engine: RecognitionMode.gemini.label,
                   in: &historyStore)
         refreshRetainedAudio()
     }
@@ -1806,7 +1812,7 @@ import KoeBridgeCore
             return
         }
         do {
-            guard let key = KeychainStore.load() else { throw AppError.noKey }
+            guard let key = KeychainStore.loadForUse() else { throw AppError.noKey }
             if active == nil && overlayOwner == take.id {
                 overlayDismissal?.cancel()
                 overlayDismissal = nil

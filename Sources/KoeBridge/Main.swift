@@ -159,7 +159,6 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
     private var recordingObservation: AnyCancellable?
     private var popoverMonitors: [Any] = []
     private var popoverActivationObserver: NSObjectProtocol?
-    private var lastPopoverClosedAt: Date?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -186,6 +185,7 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
             onToggleMeeting: { [weak self] in self?.afterClosingPopover { $0.controller.toggleMeeting() } },
             onDiscard: { [weak self] in self?.afterClosingPopover { $0.controller.discard() } },
             onCopyRecord: { [weak self] id in self?.copyRecentHistory(id) },
+            onInsertRecord: { [weak self] in self?.insertRecentHistory($0) },
             onHoverRecord: { [weak self] record, rect, window in
                 guard let self, self.statusPopover.isShown else { return }
                 self.historyHoverPanel.show(record, anchor: rect, parent: window,
@@ -259,7 +259,7 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
         }
         controller.onInputConfigurationChange = { [weak self] in
             guard let self else { return }
-            self.shortcut?.configureMouse()
+            self.shortcut?.resetActivationMode()
             if let choice = self.controller.fixLastShortcut,
                self.fixLastShortcutMonitor?.register(choice, rearm: true) != true {
                 self.controller.status = "修正ショートカットを登録できません"
@@ -276,7 +276,8 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
                 self.controller.shortcutRegistrationFailed()
             }
         }
-        shortcut?.configureMouse()
+        controller.registerMouse = { [weak self] button in self?.shortcut?.configureMouse(button) == true }
+        controller.selectMouseButton(controller.mouseTriggerButton)
         if shortcut?.register(controller.shortcutChoice) != true {
             controller.shortcutRegistrationFailed()
         }
@@ -367,9 +368,19 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
 
     @objc private func statusItemClicked(_ sender: NSStatusBarButton) {
         let event = NSApp.currentEvent
-        if event?.type == .rightMouseUp || event?.modifierFlags.contains(.control) == true {
+        if event?.type != .leftMouseUp || event?.modifierFlags.contains(.control) == true {
             statusPopover.performClose(nil)
             let menu = NSMenu()
+            let entries = RecentHistoryMenuPolicy.entries(from: controller.history)
+            if !entries.isEmpty {
+                let history = NSMenu()
+                for entry in entries {
+                    let row = history.addItem(withTitle: entry.preview, action: #selector(insertHistoryFromMenu(_:)), keyEquivalent: "")
+                    row.representedObject = entry.recordID
+                    row.target = self
+                }
+                menu.addItem(withTitle: "履歴から入力", action: nil, keyEquivalent: "").submenu = history
+            }
             add(menu, "設定…", #selector(showSettings))
             add(menu, "アップデートを確認…", #selector(checkForUpdates))
             menu.addItem(.separator())
@@ -380,10 +391,6 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
         } else if statusPopover.isShown {
             statusPopover.performClose(nil)
         } else {
-            // The outside-click monitor closes on the button's mouseDown, before this
-            // mouseUp action runs; without this guard, the click that closed it
-            // would immediately reopen it instead of toggling it shut.
-            if let closedAt = lastPopoverClosedAt, Date().timeIntervalSince(closedAt) < 0.2 { return }
             historyMenu.prepareForOpening()
             PermissionGuide.shared.refresh()
             if let hosting = statusPopover.contentViewController {
@@ -425,6 +432,8 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
     private func closePopoverIfOutside() {
         guard statusPopover.isShown,
               let window = statusPopover.contentViewController?.view.window else { return }
+        if let button = item.button, let statusWindow = button.window,
+           statusWindow.convertToScreen(button.convert(button.bounds, to: nil)).contains(NSEvent.mouseLocation) { return }
         if !window.frame.contains(NSEvent.mouseLocation),
            !historyHoverPanel.contains(NSEvent.mouseLocation) { statusPopover.performClose(nil) }
     }
@@ -452,7 +461,6 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
     func popoverDidClose(_ notification: Notification) {
         historyHoverPanel.hide()
         stopPopoverMonitors()
-        lastPopoverClosedAt = Date()
     }
 
     /// Close first so insertion-target capture sees the user's original editor.
@@ -496,6 +504,12 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
         }
     }
 
+    @objc private func insertHistoryFromMenu(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? UUID,
+              let record = controller.history.first(where: { $0.id == id }) else { return }
+        insertRecentHistory(record)
+    }
+
     private func copyRecentHistory(_ id: UUID) {
         RecentHistoryMenuPolicy.select(id, from: controller.history, copy: controller.copyRecord,
             close: { statusPopover.performClose(nil) },
@@ -530,7 +544,6 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
     }
     @objc private func quit() {
         statusPopover.performClose(nil)
-        controller.discard()
         NSApp.terminate(nil)
     }
 }
@@ -551,19 +564,27 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
     private var monitorGeneration = UUID()
     private var carbonGate = HotKeyPressGate()
 
-    func configureMouse() {
+    func resetActivationMode() {
         operationPressDown = false
         policy.reset()
         policy.mode = VoiceController.shared.shortcutActivationMode
-        mouseMonitor?.stop()
-        mouseMonitor = nil
-        let button = VoiceController.shared.mouseTriggerButton
-        guard button != .none else { return }
+    }
+
+    func configureMouse(_ button: MouseTriggerButton) -> Bool {
+        if button == .none {
+            mouseMonitor?.stop()
+            mouseMonitor = nil
+            resetActivationMode()
+            return true
+        }
         let monitor = MouseShortcutMonitor(button: button) { [weak self] pressed, time in
             self?.route(pressed: pressed, at: time)
         }
+        guard monitor.start() else { return false }
+        mouseMonitor?.stop()
+        resetActivationMode()
         mouseMonitor = monitor
-        monitor.start()
+        return true
     }
 
     private var operationPressDown = false
@@ -983,8 +1004,8 @@ private final class ModifierShortcutMonitor {
     // After two physically confirmed UP samples, resolve a missing release.
     // If the key remains held, the detector is never re-armed by the timer.
     private func reconcileLostModifierUp() {
-        guard isActive, let code = choice.modifierKeyCode,
-              detector?.isHeld == true, CGPreflightListenEventAccess() else {
+        guard isActive, let code = choice == .fnSpace ? Int(kVK_Space) : choice.modifierKeyCode,
+              (fnSpaceHeld || detector?.isHeld == true), CGPreflightListenEventAccess() else {
             releaseUpSamples = 0
             return
         }
@@ -995,7 +1016,10 @@ private final class ModifierShortcutMonitor {
         releaseUpSamples += 1
         guard releaseUpSamples >= 2 else { return }
         releaseUpSamples = 0
-        if detector?.isHeld == true {
+        if fnSpaceHeld {
+            fnSpaceHeld = false
+            requestEdge(false, at: ProcessInfo.processInfo.systemUptime)
+        } else if detector?.isHeld == true {
             let completedTap = detector?.recoverPhysicalRelease() == true
             let time = ProcessInfo.processInfo.systemUptime
             if mode == .toggle {

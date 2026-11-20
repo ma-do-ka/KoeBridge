@@ -216,6 +216,13 @@ import KoeBridgeCore
         #expect(refused == nil)
     }
 
+    @Test func historyFeedbackRemovesOnlyLegacyDiagnosticSuffixes() {
+        #expect(DictationDelivery.displayDetail("再送前に確認。（posted_without_observable_edit）") == "再送前に確認。")
+        #expect(DictationDelivery.displayDetail("反映を確認しました。履歴に保存済みです。", saved: false)
+            == "反映を確認しました。履歴の状態は未保存です。")
+        #expect(DictationDelivery.displayDetail("再送前に確認。（一部送信）") == "再送前に確認。（一部送信）")
+    }
+
     @Test func endoAndFirstSampleControl() async {
         let stuck = Fixture()
         let report = await stuck.deliver()
@@ -255,7 +262,7 @@ import KoeBridgeCore
             return button.attribute(name as String)
         }
         let blocked = await DictationDelivery.send("x", to: nil, transport: transport, shouldContinue: { true })
-        #expect(blocked.historyInsertionDetail.contains("current_target_not_text_input"))
+        #expect(!blocked.historyInsertionDetail.contains("current_target_not_text_input"))
         #expect(blocked.delivery == .blockedFocus && button.slots.count == 2 && button.posts == 0 && ancestorReads == 0)
         let history = Fixture()
         var pending = false
@@ -642,22 +649,18 @@ import KoeBridgeCore
             }
         }
         #expect(try RecentTranscriptArchive(fileURL: file).entries == store.entries)
-        for (result, delivery, reason, expectedToken) in [
-            (TextInsertion.Result.inserted, TranscriptRecord.Delivery.attemptedUnconfirmed, "posted_receipt_timeout", true),
-            (.inserted, .attemptedUnconfirmed, "posted_without_observable_edit", true),
-            (.partiallySubmitted, .partiallyDirect, "posted_then_active_app_changed", true),
-            (.inserted, .attemptedUnconfirmed, "PRIVATE_USER_TEXT_MUST_NEVER_APPEAR", false),
-            (.verifiedInserted, .verifiedInserted, "verified_value_and_selection", false)
+        for (result, delivery, reason) in [
+            (TextInsertion.Result.inserted, TranscriptRecord.Delivery.attemptedUnconfirmed, "posted_receipt_timeout"),
+            (.inserted, .attemptedUnconfirmed, "posted_without_observable_edit"),
+            (.partiallySubmitted, .partiallyDirect, "posted_then_active_app_changed"),
+            (.inserted, .attemptedUnconfirmed, "PRIVATE_USER_TEXT_MUST_NEVER_APPEAR"),
+            (.verifiedInserted, .verifiedInserted, "verified_value_and_selection")
         ] {
             let report = TextInsertion.Report(outcome: result, reason: reason, receipt: nil,
                 eventsPosted: true, target: nil, diagnostics: nil, resultUptimeMS: 0)
             let classified = DictationDelivery.classify(report)
             #expect(classified.delivery == delivery)
-            if expectedToken {
-                #expect(classified.historyInsertionDetail.contains("（\(reason)）"))
-            } else {
-                #expect(!classified.historyInsertionDetail.contains(reason))
-            }
+            #expect(!classified.historyInsertionDetail.contains(reason))
             if let pending = store.remember("detail-\(reason)", isPartial: false, delivery: .pending, engine: "test") {
                 classified.updateSavedRecord(pending, in: &store)
                 let saved = try #require(store.entries.first { $0.id == pending })
@@ -1027,7 +1030,7 @@ import KoeBridgeCore
             #expect(f.posts == 1)
             // I8: Partial submission with recovery_host_changed must preserve partial delivery detail.
             #expect(outcome.historyInsertionDetail.contains("入力が途中で中断しました"))
-            #expect(outcome.historyInsertionDetail.contains("（recovery_host_changed）"))
+            #expect(!outcome.historyInsertionDetail.contains("（recovery_host_changed）"))
         }
 
         // I8: Partial submission with recovery_deadline_expired must also preserve partial delivery detail.
@@ -1040,7 +1043,7 @@ import KoeBridgeCore
                 detail: DictationDelivery.description(.partiallyDirect, reason: "recovery_deadline_expired"),
                 report: partialDeadline)
             #expect(outcome.historyInsertionDetail.contains("入力が途中で中断しました"))
-            #expect(outcome.historyInsertionDetail.contains("（recovery_deadline_expired）"))
+            #expect(!outcome.historyInsertionDetail.contains("（recovery_deadline_expired）"))
         }
 
         // I1b: Pre-send unavailable-recovery must bind to takeStart's window when takeStart?.window != nil.
@@ -1100,6 +1103,19 @@ import KoeBridgeCore
             }
             let result = await f.deliver()
             #expect(result.outcome == .inserted && f.posts == 1 && f.slots.count == 1)
+        }
+
+        // Numeric evidence takes precedence even when the same Endo host also supplies a marker.
+        for validNumeric in [true, false] {
+            let f = Fixture()
+            f.role = "AXButton"
+            f.onWait = {
+                f.role = "AXGroup"
+                f.selection = validNumeric ? f.range(0, 0) : Read(value: "invalid" as CFString, status: .success)
+                f.marker = f.liveMarker()
+            }
+            let result = await f.deliver()
+            #expect(result.outcome == .focusChanged && f.posts == 0)
         }
 
         // I7a: Pre-chunk-1 (.posting index == 0) transient unavailability recovers after a single 25 ms recheck.

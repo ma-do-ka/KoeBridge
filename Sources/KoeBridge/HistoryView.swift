@@ -105,7 +105,7 @@ struct HistoryView: View {
                                                 .font(.caption2).foregroundStyle(.secondary)
                                             Text(record.text.replacingOccurrences(of: "\n", with: " "))
                                                 .lineLimit(2).font(.body)
-                                            Text(recordLabel(record))
+                                            Text(record.kind == "meeting" && record.isPartial ? "認識途中・" + recordLabel(record) : recordLabel(record))
                                                 .font(.caption2).foregroundStyle(.secondary)
                                         }
                                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -127,8 +127,8 @@ struct HistoryView: View {
                                 .font(.caption).foregroundStyle(.secondary)
                             Text(recordLabel(selected))
                                 .font(.caption).foregroundStyle(.secondary)
-                            if controller.isHistorySaved(selected.id), let detail = selected.deliveryDetail {
-                                Text(detail).font(.caption).foregroundStyle(.secondary)
+                            if let detail = selected.deliveryDetail {
+                                Text(DictationDelivery.displayDetail(detail, saved: controller.isHistorySaved(selected.id))).font(.caption).foregroundStyle(.secondary)
                                     .textSelection(.enabled)
                             }
                             if let review = selected.review {

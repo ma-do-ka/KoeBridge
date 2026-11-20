@@ -7,6 +7,18 @@ import KoeBridgeCore
 @MainActor enum DictationDelivery {
     static let postingBusyDetail = "入力処理中のため未送信です。"
 
+    static func displayDetail(_ stored: String, saved: Bool = true) -> String {
+        let detail = saved ? stored : stored
+            .replacingOccurrences(of: "履歴に保存済みです", with: "履歴の状態は未保存です")
+            .replacingOccurrences(of: "履歴に保存しました", with: "起動中の履歴に保持しています")
+            .replacingOccurrences(of: "履歴へ保存しました", with: "起動中の履歴に保持しています")
+            .replacingOccurrences(of: "両方の文章を保存しました", with: "両方の文章を起動中の履歴に保持しています")
+        guard detail.last == "）", let open = detail.lastIndex(of: "（"),
+              InputDiagnosticEvent.Token(rawValue: String(detail[detail.index(after: open)..<detail.index(before: detail.endIndex)])) != nil
+        else { return detail }
+        return String(detail[..<open])
+    }
+
     struct Outcome {
         let delivery: TranscriptRecord.Delivery
         let detail: String
@@ -47,8 +59,7 @@ import KoeBridgeCore
             case "delivery_cancelled_before_post":
                 return "処理が中断されたため、入力前に停止しました。"
             default:
-                guard let reason = InputDiagnosticEvent.Token(rawValue: report.reason) else { return detail }
-                return detail + "（" + reason.rawValue + "）"
+                return detail
             }
         }
 
