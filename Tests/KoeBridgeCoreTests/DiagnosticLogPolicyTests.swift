@@ -7,7 +7,9 @@ struct DiagnosticLogPolicyTests {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
         let guide = try String(contentsOf: root.appendingPathComponent("docs/input-diagnostics.md"), encoding: .utf8)
-        #expect(guide.contains(DiagnosticLogPolicy.retentionDescription))
+        let description = DiagnosticLogPolicy.retentionDescription
+        #expect(description.contains("マイク用ログ"))
+        #expect(guide.contains(description))
     }
 
     @Test func rotationPrunesOldPolicyGenerationsAndProtectsLinkedFiles() throws {

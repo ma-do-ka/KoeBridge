@@ -1020,6 +1020,9 @@ private final class ModifierShortcutMonitor {
         if fnSpaceHeld {
             fnSpaceHeld = false
             requestEdge(false, at: ProcessInfo.processInfo.systemUptime)
+            DispatchQueue.main.async {
+                DiagnosticLog.record("fn+space missing key-up recovered using physical state")
+            }
         } else if detector?.isHeld == true {
             let completedTap = detector?.recoverPhysicalRelease() == true
             let time = ProcessInfo.processInfo.systemUptime

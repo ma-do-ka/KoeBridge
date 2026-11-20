@@ -118,24 +118,30 @@ import KoeBridgeCore
     @Published var contextSurroundingEnabled = UserDefaults.standard.object(forKey: "contextSurroundingEnabled") as? Bool ?? false {
         didSet { UserDefaults.standard.set(contextSurroundingEnabled, forKey: "contextSurroundingEnabled") }
     }
+    @Published private(set) var transformShortcutProblem = ""
     @Published private(set) var transformShortcut = RecordingShortcut(rawValue: UserDefaults.standard.string(forKey: "transformShortcut") ?? "")
     var onTransformShortcutChange: ((RecordingShortcut?) -> Bool)?
     func selectTransformShortcut(_ choice: RecordingShortcut?) {
         guard onTransformShortcutChange?(choice) == true else {
-            status = "変換ショートカットを登録できません（キーの競合を確認してください）"
+            transformShortcutProblem = "変換ショートカットを登録できません（キーの競合を確認してください）"
+            status = transformShortcutProblem
             return
         }
+        transformShortcutProblem = ""
         transformShortcut = choice
         UserDefaults.standard.set(choice?.rawValue, forKey: "transformShortcut")
     }
 
+    @Published private(set) var translateShortcutProblem = ""
     @Published private(set) var translateShortcut = RecordingShortcut(rawValue: UserDefaults.standard.string(forKey: "translateShortcut") ?? "")
     var onTranslateShortcutChange: ((RecordingShortcut?) -> Bool)?
     func selectTranslateShortcut(_ choice: RecordingShortcut?) {
         guard onTranslateShortcutChange?(choice) == true else {
-            status = "翻訳ショートカットを登録できません（キーの競合を確認してください）"
+            translateShortcutProblem = "翻訳ショートカットを登録できません（キーの競合を確認してください）"
+            status = translateShortcutProblem
             return
         }
+        translateShortcutProblem = ""
         translateShortcut = choice
         UserDefaults.standard.set(choice?.rawValue, forKey: "translateShortcut")
     }
@@ -360,13 +366,16 @@ import KoeBridgeCore
         return true
     }
 
+    @Published private(set) var fixLastShortcutProblem = ""
     @Published private(set) var fixLastShortcut = RecordingShortcut(rawValue: UserDefaults.standard.string(forKey: "fixLastShortcut") ?? "")
     var onFixLastShortcutChange: ((RecordingShortcut?) -> Bool)?
     func selectFixLastShortcut(_ choice: RecordingShortcut?) {
         guard onFixLastShortcutChange?(choice) == true else {
-            status = "修正ショートカットを登録できません（キーの競合を確認してください）"
+            fixLastShortcutProblem = "修正ショートカットを登録できません（キーの競合を確認してください）"
+            status = fixLastShortcutProblem
             return
         }
+        fixLastShortcutProblem = ""
         fixLastShortcut = choice
         UserDefaults.standard.set(choice?.rawValue, forKey: "fixLastShortcut")
     }

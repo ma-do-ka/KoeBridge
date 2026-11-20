@@ -16,7 +16,7 @@ public enum DiagnosticLogPolicy {
     public static let microphone = StoreLimits(maximumFileBytes: 256 * 1024, maximumGenerations: 8)
 
     public static var retentionDescription: String {
-        let series = [("主ログ", main), ("マイクログ", microphone)]
+        let series = [("主ログ", main), ("マイク用ログ", microphone)]
         func capacity(_ bytes: Int) -> String {
             if bytes.isMultiple(of: 1_048_576) { return "\(bytes / 1_048_576) MiB" }
             if bytes.isMultiple(of: 1024) { return "\(bytes / 1024) KiB" }
