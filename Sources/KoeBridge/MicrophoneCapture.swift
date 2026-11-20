@@ -82,7 +82,10 @@ final class MicrophoneCapture: @unchecked Sendable {
     private var engine: AVAudioEngine? { engineLease?.resource }
     private let selectedInputUID: String
     private var selectedTarget: MicrophoneSelectionTarget? // lifecycleQueue only
-    init(selectedInputUID: String = "", startupGate: MicrophoneStartupGate = .init(configuring: true)) {
+    private let volumeGuard: OutputVolumeGuard?
+    var volumeGuardOwner: UUID { diagnosticID }
+    init(selectedInputUID: String = "", volumeGuard: OutputVolumeGuard? = nil, startupGate: MicrophoneStartupGate = .init(configuring: true)) {
+        self.volumeGuard = volumeGuard
         self.selectedInputUID = selectedInputUID
         self.startupGate = startupGate
     }
@@ -441,6 +444,7 @@ final class MicrophoneCapture: @unchecked Sendable {
         case .readyToRevalidate(let readyEpoch): epoch = readyEpoch
         }
         startupDiagnostics?.begin(.revalidating)
+        volumeGuard?.check()
         let engine = self.engine
         let node = engine?.inputNode
         let selected = selectedTarget.map { target in
@@ -516,6 +520,7 @@ final class MicrophoneCapture: @unchecked Sendable {
         startupDiagnostics?.end(.selection)
         startupDiagnostics?.begin(.routeSnapshot)
         routeSnapshot = MicrophoneRouteSnapshot.current(inputDeviceID: target.deviceID)
+        volumeGuard?.begin(volumeGuardOwner, device: routeSnapshot?.outputDeviceID, evidence: microphoneEvidence)
         startupDiagnostics?.end(.routeSnapshot)
         startupDiagnostics?.begin(.engineLease)
         guard let lease = Self.engineLifetime.acquire() else {
@@ -584,6 +589,7 @@ final class MicrophoneCapture: @unchecked Sendable {
                 self?.convert(copy, arrivedAt: arrivedAt, token: token, onDeviceChanged: onDeviceChanged)
             }
         })
+        volumeGuard?.check()
         let plan = try tap.installAndPrepare(graph: graph, gate: startupGate, deadline: attemptDeadline,
                                              diagnostics: startupDiagnostics, sink: sink)
         guard !startupGate.isStopped else { throw CancellationError() }
@@ -591,6 +597,7 @@ final class MicrophoneCapture: @unchecked Sendable {
         let startAt = Date()
         startupDiagnostics?.begin(.engineStart)
         try engine.start()
+        volumeGuard?.check()
         startupDiagnostics?.end(.engineStart)
         guard !startupGate.isStopped else { throw CancellationError() }
         guard ProcessInfo.processInfo.systemUptime < attemptDeadline else { throw CaptureError.notReady(.unstableBuffers) }
@@ -795,6 +802,7 @@ final class MicrophoneCapture: @unchecked Sendable {
                 startupDiagnostics?.end(.tapRemove)
             }
         }
+        volumeGuard?.end(volumeGuardOwner)
         // Do not drop the process-wide engine owner here. Removing our
         // NotificationCenter observer does not drain AVFAudio's private queue.
         startupDiagnostics?.begin(.processingDrain)

@@ -49,6 +49,13 @@ import KoeBridgeCore
             else { scheduleWarmGemini() }
         }
     }
+    @Published var outputVolumeGuardEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(outputVolumeGuardEnabled, forKey: OutputVolumeGuard.preferenceKey)
+            volumeGuard.changePreference(outputVolumeGuardEnabled,
+                evidence: outputVolumeGuardEnabled ? DiagnosticLog.microphoneEvidenceWriter() : nil)
+        }
+    }
     @Published var bluetoothMicWarmEnabled: Bool {
         didSet {
             UserDefaults.standard.set(bluetoothMicWarmEnabled, forKey: "bluetoothMicWarm")
@@ -659,7 +666,8 @@ import KoeBridgeCore
             monitorProblem = usageStore.problem
         }
     }
-    private let microphoneWarmKeeper = MicrophoneWarmKeeper()
+    private let volumeGuard: OutputVolumeGuard
+    private let microphoneWarmKeeper: MicrophoneWarmKeeper
     private var microphoneStoreObservation: AnyCancellable?
     private func resumeMicrophoneWarm(reason: String = "teardown") {
         guard !meetingRunning else { return }
@@ -720,6 +728,11 @@ import KoeBridgeCore
 
     private init() {
         let d = UserDefaults.standard
+        let guardEnabled = d.bool(forKey: OutputVolumeGuard.preferenceKey)
+        outputVolumeGuardEnabled = guardEnabled
+        let guardController = OutputVolumeGuard(enabled: guardEnabled)
+        volumeGuard = guardController
+        microphoneWarmKeeper = MicrophoneWarmKeeper(volumeGuard: guardController)
         bluetoothMicWarmEnabled = d.bool(forKey: "bluetoothMicWarm")
         shortcutActivationMode = ShortcutActivationMode(rawValue: d.string(forKey: "shortcutActivationMode") ?? "") ?? .toggle
         mouseTriggerButton = MouseTriggerButton(rawValue: d.string(forKey: "mouseTriggerButton") ?? "") ?? .none
@@ -986,13 +999,13 @@ import KoeBridgeCore
                 let timeout = retryPolicy.timeoutForNextAttempt(elapsed: elapsed)
                 guard timeout > 0 else { throw MicrophoneCapture.CaptureError.notReady(.noBuffers) }
                 attempts += 1
-                let candidate = MicrophoneCapture(selectedInputUID: selectedInputUID)
+                let candidate = MicrophoneCapture(selectedInputUID: selectedInputUID, volumeGuard: volumeGuard)
                 // Own preparation, not just a successfully started microphone.
                 // discard()/releaseResources() can now stop it immediately.
                 take.mic = candidate
                 DiagnosticLog.recordMicrophoneEvidence("mic_prepare_attempt take=\(take.id.uuidString) attempt=\(attempts)")
                 do {
-                    microphoneWarmKeeper.suspend(reason: "take")
+                    microphoneWarmKeeper.suspend(reason: "take", handingTo: candidate.volumeGuardOwner)
                     let deadline = min(attemptBegan + timeout, preparationBegan + retryPolicy.totalTimeout)
                     try await candidate.start(deadline: deadline, onAudio: { [weak self, weak take] data in
                         let delivery = continuation.yield(data)

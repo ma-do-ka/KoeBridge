@@ -13,9 +13,19 @@ struct MicrophoneRouteSnapshot: Sendable {
 
     static func current(inputDeviceID: UInt32? = nil) -> Self {
         let input = inputDeviceID ?? defaultInputDeviceID()
-        let output = deviceID(selector: kAudioHardwarePropertyDefaultOutputDevice)
+        let output = defaultOutputDeviceID()
         return Self(inputDeviceID: input, outputDeviceID: output,
                     inputTransport: transport(of: input), outputTransport: transport(of: output))
+    }
+
+    static func defaultOutputDeviceID() -> UInt32? {
+        guard let id = defaultOutputObject(), id != kAudioObjectUnknown else { return nil }
+        return id
+    }
+
+    /// Preserve HAL's explicit "no device" result separately from a read error.
+    static func defaultOutputObject() -> UInt32? {
+        uint32(object: AudioObjectID(kAudioObjectSystemObject), selector: kAudioHardwarePropertyDefaultOutputDevice)
     }
 
     static func defaultInputDeviceID() -> UInt32? {

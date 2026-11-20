@@ -122,4 +122,3 @@ struct OutputVolumeGuardPolicyTests {
         #expect(!policy.isMonitoring)
     }
 }
-

@@ -32,6 +32,12 @@ struct MicrophoneSettingsRow: View {
                     .labelsHidden()
             }
             .settingsTarget("bluetooth-warm")
+            SettingsRow("録音中の音量ガード",
+                        description: "録音中やマイクの接続を温めている間は、再生音量が開始時の音量を超えると、手動で上げた場合もその上限まで下げます。Bluetooth以外のマイクを選ぶと、ヘッドセットが通話用の音声経路に切り替わるのを防げます。", icon: "speaker.wave.2") {
+                Toggle("録音中の音量ガード", isOn: $controller.outputVolumeGuardEnabled)
+                    .settingsControlFocus("output-volume-guard").labelsHidden()
+            }
+            .settingsTarget("output-volume-guard")
             if microphones.selectedDeviceMissing {
                 Text("選択したマイクが接続されていません。別のマイクには自動で切り替えません。")
                     .font(.caption).foregroundStyle(.orange)

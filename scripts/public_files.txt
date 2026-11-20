@@ -26,6 +26,8 @@ Sources/KoeBridge/KoeBridgeUpdateUserDriver.swift
 Sources/KoeBridge/LoginItemManager.swift
 Sources/KoeBridge/Main.swift
 Sources/KoeBridge/MicrophoneCapture.swift
+Sources/KoeBridge/OutputVolumeGuard.swift
+Sources/KoeBridge/OutputVolumeHAL.swift
 Sources/KoeBridge/TextInsertion.swift
 Sources/KoeBridge/VoiceController.swift
 Sources/KoeBridge/Windows.swift
@@ -111,6 +113,7 @@ Tests/KoeBridgeTests/Build73DeliveryTests.swift
 Tests/KoeBridgeTests/GeminiLiveConnectionTests.swift
 Tests/KoeBridgeTests/HistoryHoverPanelTests.swift
 Tests/KoeBridgeTests/KoeBridgeUpdateUserDriverTests.swift
+Tests/KoeBridgeTests/OutputVolumeGuardTests.swift
 Tests/KoeBridgeTests/VoiceCommandPresentationTests.swift
 V100_RELEASE_NOTES.md
 scripts/Info.plist
