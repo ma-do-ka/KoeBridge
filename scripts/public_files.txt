@@ -26,6 +26,8 @@ Sources/KoeBridge/KoeBridgeUpdateUserDriver.swift
 Sources/KoeBridge/LoginItemManager.swift
 Sources/KoeBridge/Main.swift
 Sources/KoeBridge/MicrophoneCapture.swift
+Sources/KoeBridge/OutputVolumeGuard.swift
+Sources/KoeBridge/OutputVolumeHAL.swift
 Sources/KoeBridge/TextInsertion.swift
 Sources/KoeBridge/VoiceController.swift
 Sources/KoeBridge/Windows.swift
@@ -44,6 +46,7 @@ Sources/KoeBridgeCore/JapaneseDictationSpacing.swift
 Sources/KoeBridgeCore/LoginItemRegistrationPolicy.swift
 Sources/KoeBridgeCore/ModifierToggleDetector.swift
 Sources/KoeBridgeCore/OrderedResultBuffer.swift
+Sources/KoeBridgeCore/OutputVolumeGuardPolicy.swift
 Sources/KoeBridgeCore/PermissionSetupPolicy.swift
 Sources/KoeBridgeCore/QuickNoInputPolicy.swift
 Sources/KoeBridgeCore/ReleaseUpdatePolicy.swift
@@ -93,6 +96,7 @@ Tests/KoeBridgeCoreTests/InsertionSafetyTests.swift
 Tests/KoeBridgeCoreTests/LoginItemRegistrationPolicyTests.swift
 Tests/KoeBridgeCoreTests/ModifierToggleDetectorTests.swift
 Tests/KoeBridgeCoreTests/OrderedResultBufferTests.swift
+Tests/KoeBridgeCoreTests/OutputVolumeGuardPolicyTests.swift
 Tests/KoeBridgeCoreTests/PermissionSetupPolicyTests.swift
 Tests/KoeBridgeCoreTests/RecentTranscriptArchiveTests.swift
 Tests/KoeBridgeCoreTests/RecentHistoryMenuPolicyTests.swift
@@ -109,6 +113,7 @@ Tests/KoeBridgeTests/Build73DeliveryTests.swift
 Tests/KoeBridgeTests/GeminiLiveConnectionTests.swift
 Tests/KoeBridgeTests/HistoryHoverPanelTests.swift
 Tests/KoeBridgeTests/KoeBridgeUpdateUserDriverTests.swift
+Tests/KoeBridgeTests/OutputVolumeGuardTests.swift
 Tests/KoeBridgeTests/VoiceCommandPresentationTests.swift
 V100_RELEASE_NOTES.md
 scripts/Info.plist

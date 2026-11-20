@@ -32,6 +32,12 @@ struct MicrophoneSettingsRow: View {
                     .labelsHidden()
             }
             .settingsTarget("bluetooth-warm")
+            SettingsRow("録音中の音量ガード",
+                        description: "録音中やマイクの接続を温めている間は、開始時も現在も出力がミュートされておらず、調整可能な再生音量が開始時の上限を超えたときに、手動で上げた場合もその上限まで下げます。Bluetooth以外のマイクを選ぶと、KoeBridgeのマイク使用による通話用の音声経路への切り替えを避けられます。", icon: "speaker.wave.2") {
+                Toggle("録音中の音量ガード", isOn: $controller.outputVolumeGuardEnabled)
+                    .settingsControlFocus("output-volume-guard").labelsHidden()
+            }
+            .settingsTarget("output-volume-guard")
             if microphones.selectedDeviceMissing {
                 Text("選択したマイクが接続されていません。別のマイクには自動で切り替えません。")
                     .font(.caption).foregroundStyle(.orange)

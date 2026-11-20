@@ -6,7 +6,8 @@ import KoeBridgeCore
 /// Control stays on the main actor; every engine operation uses capture's lane.
 @MainActor final class MicrophoneWarmKeeper {
     var onConfigurationChange: (() -> Void)?
-    private let worker = Worker()
+    private let worker: Worker
+    init(volumeGuard: OutputVolumeGuard) { worker = Worker(volumeGuard: volumeGuard) }
     private var pending: MicrophoneStartupGate?
 
     func resume(enabled: Bool, selectedUID: String, takeActive: Bool, reason: String) {
@@ -20,19 +21,22 @@ import KoeBridgeCore
             Task { @MainActor [weak self] in self?.onConfigurationChange?() }
         }
         let worker = worker
+        let evidence = enabled && UserDefaults.standard.bool(forKey: OutputVolumeGuard.preferenceKey)
+            ? DiagnosticLog.microphoneEvidenceWriter() : nil
         MicrophoneCapture.warmLifecycleQueue.async {
             worker.resume(enabled: enabled && permitted, uid: selectedUID,
-                          takeActive: takeActive, reason: reason, gate: gate, deadline: deadline, changed: changed)
+                          takeActive: takeActive, reason: reason, gate: gate, deadline: deadline, evidence: evidence, changed: changed)
         }
     }
 
     /// Enqueued before capture.start: FIFO on the shared lane completes the
     /// handoff before capture can acquire its lease. No warm lease spans a take.
-    func suspend(reason: String = "take") {
+    func suspend(reason: String = "take", handingTo take: MicrophoneCapture? = nil) {
         pending?.cancelWarmPreparation()
         pending = nil
+        worker.pauseGuard()
         let worker = worker
-        MicrophoneCapture.warmLifecycleQueue.async { worker.stop(reason: reason) }
+        MicrophoneCapture.warmLifecycleQueue.async { worker.stop(reason: reason, handingTo: take) }
     }
 
     private final class Worker: @unchecked Sendable {
@@ -41,10 +45,14 @@ import KoeBridgeCore
         private var target: MicrophoneSelectionTarget?
         private let tap = MicrophoneTapInstallation()
         private var activeGate: MicrophoneStartupGate?
+        private let volumeGuard: OutputVolumeGuard
+        private let owner = UUID()
+        init(volumeGuard: OutputVolumeGuard) { self.volumeGuard = volumeGuard }
+        func pauseGuard() { volumeGuard.pause(owner, attempt: owner) }
         private var observer: NSObjectProtocol?
 
         func resume(enabled: Bool, uid: String, takeActive: Bool, reason: String,
-                    gate: MicrophoneStartupGate, deadline: TimeInterval, changed: @escaping @Sendable () -> Void) {
+                    gate: MicrophoneStartupGate, deadline: TimeInterval, evidence: MicrophoneEvidenceWriter?, changed: @escaping @Sendable () -> Void) {
             guard !gate.isStopped else { return }
             guard enabled, !takeActive, ProcessInfo.processInfo.systemUptime < deadline else {
                 stop(reason: "policy")
@@ -65,13 +73,15 @@ import KoeBridgeCore
                 let hardware = lease.resource.inputNode.inputFormat(forBus: 0)
                 let applied = lease.resource.inputNode.outputFormat(forBus: 0)
                 if tap.hardwareMatches(hardware),
-                   tap.appliedMatches(applied) { return }
+                   tap.appliedMatches(applied) { volumeGuard.check(); return }
             }
             stop(reason: "route")
             guard let acquired = MicrophoneCapture.warmEngineLifetime.acquire() else {
                 log("mic warm stop reason=leased")
                 return
             }
+            volumeGuard.begin(owner, device: MicrophoneRouteSnapshot.defaultOutputDeviceID, evidence: evidence,
+                              startupDeadline: deadline, live: { !gate.isStopped })
             lease = acquired
             activeGate = gate
             let engine = acquired.resource
@@ -89,7 +99,9 @@ import KoeBridgeCore
                 }
                 _ = try tap.installAndPrepare(graph: graph, gate: gate, deadline: deadline,
                                                     sink: .warm)
+                volumeGuard.check()
                 try engine.start()
+                volumeGuard.check()
                 guard !gate.isStopped, ProcessInfo.processInfo.systemUptime < deadline,
                       MicrophoneDevices.isStillSelected(selected, node: node),
                       gate.finishWarmStart(deadline: deadline) else {
@@ -103,8 +115,10 @@ import KoeBridgeCore
             }
         }
 
-        func stop(reason: String) {
+        func stop(reason: String, handingTo take: MicrophoneCapture? = nil) {
             guard let lease else { return }
+            take?.inheritVolumeGuard(from: owner)
+            volumeGuard.end(owner) // also closes a handover rejected by a cancelled take
             activeGate?.stop()
             activeGate = nil
             if let observer { NotificationCenter.default.removeObserver(observer) }

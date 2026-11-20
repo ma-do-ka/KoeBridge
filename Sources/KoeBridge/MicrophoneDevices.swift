@@ -120,6 +120,11 @@ enum MicrophoneDevices {
         var value: UInt32 = 0; var size: UInt32 = 4
         return AudioObjectGetPropertyData(id, &address, 0, nil, &size, &value) == noErr && size == 4 ? value : nil
     }
+    static func uid(of id: AudioObjectID) -> String? {
+        guard let value = string(id, kAudioDevicePropertyDeviceUID), !value.isEmpty else { return nil }
+        return value
+    }
+
     private static func string(_ id: AudioObjectID, _ selector: AudioObjectPropertySelector) -> String? {
         var address = AudioObjectPropertyAddress(mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal,
                                                 mElement: kAudioObjectPropertyElementMain)

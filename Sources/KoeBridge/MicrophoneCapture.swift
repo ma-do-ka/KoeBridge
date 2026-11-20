@@ -82,7 +82,31 @@ final class MicrophoneCapture: @unchecked Sendable {
     private var engine: AVAudioEngine? { engineLease?.resource }
     private let selectedInputUID: String
     private var selectedTarget: MicrophoneSelectionTarget? // lifecycleQueue only
-    init(selectedInputUID: String = "", startupGate: MicrophoneStartupGate = .init(configuring: true)) {
+    private let volumeGuard: OutputVolumeGuard?
+    private let volumeGuardOwner: UUID
+    private let volumeGuardStopped = Atomic(false)
+    private var volumeGuardLive: Bool {
+        !volumeGuardStopped.load(ordering: .acquiring) && !startupGate.isStopped
+    }
+
+    func inheritVolumeGuard(from warm: UUID) {
+        volumeGuard?.handover(from: warm, to: volumeGuardOwner, attempt: diagnosticID,
+                              live: { [weak self] in self?.volumeGuardLive == true })
+    }
+
+    func beginVolumeGuard(outputID: UInt32?, deadline: TimeInterval? = nil) {
+        volumeGuard?.begin(volumeGuardOwner, attempt: diagnosticID, device: { outputID }, evidence: microphoneEvidence,
+                           startupDeadline: deadline, live: { [weak self] in self?.volumeGuardLive == true })
+    }
+
+    func invalidateVolumeGuard() {
+        volumeGuardStopped.store(true, ordering: .releasing)
+        volumeGuard?.pause(volumeGuardOwner, attempt: diagnosticID)
+    }
+
+    init(selectedInputUID: String = "", volumeGuard: OutputVolumeGuard? = nil, takeID: UUID = UUID(), startupGate: MicrophoneStartupGate = .init(configuring: true)) {
+        volumeGuardOwner = takeID
+        self.volumeGuard = volumeGuard
         self.selectedInputUID = selectedInputUID
         self.startupGate = startupGate
     }
@@ -350,6 +374,7 @@ final class MicrophoneCapture: @unchecked Sendable {
 
     /// Wait for failed-attempt teardown before creating another engine.
     func cancelAndWait() async {
+        invalidateVolumeGuard()
         startupDiagnostics?.note(.stopRequested)
         startupGate.stop(at: ProcessInfo.processInfo.systemUptime)
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
@@ -441,6 +466,7 @@ final class MicrophoneCapture: @unchecked Sendable {
         case .readyToRevalidate(let readyEpoch): epoch = readyEpoch
         }
         startupDiagnostics?.begin(.revalidating)
+        volumeGuard?.check()
         let engine = self.engine
         let node = engine?.inputNode
         let selected = selectedTarget.map { target in
@@ -516,6 +542,7 @@ final class MicrophoneCapture: @unchecked Sendable {
         startupDiagnostics?.end(.selection)
         startupDiagnostics?.begin(.routeSnapshot)
         routeSnapshot = MicrophoneRouteSnapshot.current(inputDeviceID: target.deviceID)
+        beginVolumeGuard(outputID: routeSnapshot?.outputDeviceID, deadline: attemptDeadline)
         startupDiagnostics?.end(.routeSnapshot)
         startupDiagnostics?.begin(.engineLease)
         guard let lease = Self.engineLifetime.acquire() else {
@@ -584,6 +611,7 @@ final class MicrophoneCapture: @unchecked Sendable {
                 self?.convert(copy, arrivedAt: arrivedAt, token: token, onDeviceChanged: onDeviceChanged)
             }
         })
+        volumeGuard?.check()
         let plan = try tap.installAndPrepare(graph: graph, gate: startupGate, deadline: attemptDeadline,
                                              diagnostics: startupDiagnostics, sink: sink)
         guard !startupGate.isStopped else { throw CancellationError() }
@@ -591,6 +619,7 @@ final class MicrophoneCapture: @unchecked Sendable {
         let startAt = Date()
         startupDiagnostics?.begin(.engineStart)
         try engine.start()
+        volumeGuard?.check()
         startupDiagnostics?.end(.engineStart)
         guard !startupGate.isStopped else { throw CancellationError() }
         guard ProcessInfo.processInfo.systemUptime < attemptDeadline else { throw CaptureError.notReady(.unstableBuffers) }
@@ -762,6 +791,7 @@ final class MicrophoneCapture: @unchecked Sendable {
     }
 
     func stop(_ end: CaptureEnd, completion: @escaping (Int) -> Void) {
+        invalidateVolumeGuard()
         startupDiagnostics?.note(.stopRequested)
         startupGate.stop(at: ProcessInfo.processInfo.systemUptime)
         Self.lifecycleQueue.async { [self] in
@@ -770,6 +800,7 @@ final class MicrophoneCapture: @unchecked Sendable {
     }
     private func stopBlocking(flushPendingAudio: Bool, end: CaptureEnd = .cancelled, completion: ((Int) -> Void)? = nil) {
         guard stopLatch.begin(completion: completion) else { return }
+        invalidateVolumeGuard()
         startupDiagnostics?.begin(.stopGate)
         teardownStarted = true
         updateSettlingDiagnostics()
