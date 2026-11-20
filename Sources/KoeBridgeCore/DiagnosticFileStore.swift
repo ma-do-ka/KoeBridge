@@ -25,18 +25,31 @@ public struct DiagnosticFileStore {
     }
 
     /// Include older generations left by a store with a larger retention limit.
-    private func allGenerationURLs() throws -> [URL] {
-        let directory = fileURL.deletingLastPathComponent()
-        guard FileManager.default.fileExists(atPath: directory.path) else { return [fileURL] }
-        let prefix = fileURL.lastPathComponent + "."
-        let older = try FileManager.default.contentsOfDirectory(at: directory,
-                                                              includingPropertiesForKeys: nil).filter {
-            let name = $0.lastPathComponent
-            guard name.hasPrefix(prefix) else { return false }
-            let suffix = name.dropFirst(prefix.count)
-            return !suffix.isEmpty && suffix.allSatisfy { $0 >= "0" && $0 <= "9" }
+    private func generationNames(in dir: Int32) throws -> [String] {
+        let fd = dup(dir)
+        guard fd >= 0 else { throw posixError() }
+        guard let stream = fdopendir(fd) else {
+            let error = posixError()
+            close(fd)
+            throw error
         }
-        return [fileURL] + older
+        defer { closedir(stream) }
+        let base = fileURL.lastPathComponent
+        let prefix = base + "."
+        var names = [base]
+        while true {
+            errno = 0
+            guard let entry = readdir(stream) else {
+                if errno != 0 { throw posixError() }
+                return names
+            }
+            let name = withUnsafeBytes(of: &entry.pointee.d_name) { bytes in
+                String(validatingCString: bytes.bindMemory(to: CChar.self).baseAddress!)
+            }
+            guard let name, name.hasPrefix(prefix) else { continue }
+            let suffix = name.dropFirst(prefix.count)
+            if !suffix.isEmpty && suffix.utf8.allSatisfy({ (48...57).contains($0) }) { names.append(name) }
+        }
     }
 
     public func append(_ event: String, at timestamp: Date = Date()) throws {
@@ -59,22 +72,26 @@ public struct DiagnosticFileStore {
         let fm = FileManager.default
         try fm.createDirectory(at: fileURL.deletingLastPathComponent(),
                                withIntermediateDirectories: true)
-        // Never follow a user-controlled symlink into an unrelated file.
-        let generations = try allGenerationURLs()
-        for url in generations {
-            try validateRegularFileIfPresent(url)
-        }
-        for url in generations where fm.fileExists(atPath: url.path) {
-            // Apply the advertised limit to every generation, including an
-            // oversized old file left by another version or external edits.
-            if fileSize(url) > cap {
-                try removeGeneration(url)
+        let dir = open(fileURL.deletingLastPathComponent().path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard dir >= 0 else { throw posixError() }
+        defer { close(dir) }
+        let base = fileURL.lastPathComponent
+        let names = try generationNames(in: dir)
+        // Check every candidate before changing permissions or pruning any file.
+        for name in names { _ = try regularInfo(dir, name) }
+        for name in names {
+            guard let info = try regularInfo(dir, name) else { continue }
+            let suffix = String(name.dropFirst(base.count + 1))
+            let number = Int(suffix)
+            let retained = name == base || number.map { $0 > 0 && $0 < maximumGenerations && String($0) == suffix } == true
+            if !retained || info.st_size > cap {
+                guard unlinkat(dir, name, 0) == 0 else { throw posixError() }
             } else {
-                try fm.setAttributes([.posixPermissions: NSNumber(value: 0o600)],
-                                     ofItemAtPath: url.path)
+                let file = try openRegular(dir, name, flags: O_RDONLY)
+                try file.close()
             }
         }
-        var current = fileSize(fileURL)
+        var current = Int(try regularInfo(dir, base)?.st_size ?? 0)
         var writer: FileHandle?
         defer { try? writer?.close() }
         for safe in safeEvents {
@@ -84,83 +101,77 @@ public struct DiagnosticFileStore {
                                                 maximumFileBytes: cap) {
                 try writer?.close()
                 writer = nil
-                let oldest = generationURL(maximumGenerations - 1)
-                if fm.fileExists(atPath: oldest.path) { try removeGeneration(oldest) }
-                if maximumGenerations > 1 {
-                    for generation in stride(from: maximumGenerations - 2, through: 0, by: -1) {
-                        let source = generationURL(generation)
-                        if fm.fileExists(atPath: source.path) {
-                            try fm.moveItem(at: source, to: generationURL(generation + 1))
-                        }
-                    }
-                }
-                current = 0
+                try rotate(dir, firstRecord: bytes)
+                current = bytes.count
+            } else {
+                if writer == nil { writer = try openRegular(dir, base, flags: O_WRONLY | O_APPEND | O_CREAT) }
+                try writer?.write(contentsOf: bytes)
+                current += bytes.count
             }
-            if writer == nil {
-                if !fm.fileExists(atPath: fileURL.path) {
-                    guard fm.createFile(atPath: fileURL.path, contents: nil,
-                                        attributes: [.posixPermissions: NSNumber(value: 0o600)]) else {
-                        throw StoreError.createFailed
-                    }
-                }
-                writer = try FileHandle(forWritingTo: fileURL)
-                _ = try writer?.seekToEnd()
-            }
-            try writer?.write(contentsOf: bytes)
-            current += bytes.count
         }
     }
+
+    private func rotate(_ dir: Int32, firstRecord: Data) throws {
+        let temporary = ".KoeBridge-\(UUID().uuidString).tmp"
+        let staged = try openRegular(dir, temporary, flags: O_WRONLY | O_CREAT | O_EXCL)
+        defer { _ = unlinkat(dir, temporary, 0) }
+        try staged.write(contentsOf: firstRecord)
+        try staged.synchronize()
+        try staged.close()
+
+        for generation in (1..<maximumGenerations).reversed() {
+            let source = generationURL(generation - 1).lastPathComponent
+            let destination = generationURL(generation).lastPathComponent
+            let existing = try regularInfo(dir, destination)
+            if try regularInfo(dir, source) != nil {
+                guard renameat(dir, source, dir, destination) == 0 else { throw posixError() }
+            } else if existing != nil {
+                guard unlinkat(dir, destination, 0) == 0 else { throw posixError() }
+            }
+        }
+        _ = try regularInfo(dir, fileURL.lastPathComponent)
+        guard renameat(dir, temporary, dir, fileURL.lastPathComponent) == 0 else { throw posixError() }
+    }
+
+    private func regularInfo(_ dir: Int32, _ name: String, requireSingleLink: Bool = true) throws -> stat? {
+        var info = stat()
+        if fstatat(dir, name, &info, AT_SYMLINK_NOFOLLOW) != 0 {
+            if errno == ENOENT { return nil }
+            throw posixError()
+        }
+        guard info.st_mode & S_IFMT == S_IFREG, (!requireSingleLink || info.st_nlink == 1) else { throw StoreError.invalidFile }
+        return info
+    }
+
+    private func openRegular(_ dir: Int32, _ name: String, flags: Int32) throws -> FileHandle {
+        let fd = openat(dir, name, flags | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC, mode_t(0o600))
+        guard fd >= 0 else { throw posixError() }
+        let file = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        var info = stat()
+        guard fstat(fd, &info) == 0 else { throw posixError() }
+        guard info.st_mode & S_IFMT == S_IFREG, info.st_nlink == 1 else { throw StoreError.invalidFile }
+        guard fchmod(fd, 0o600) == 0 else { throw posixError() }
+        return file
+    }
+
+    private func posixError() -> NSError { NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
 
     public func deleteAll() throws {
-        for url in try allGenerationURLs() {
-            try removeGeneration(url)
-        }
-    }
-
-    private func removeGeneration(_ url: URL) throws {
-        let directory = fileURL.deletingLastPathComponent()
-        guard url.deletingLastPathComponent().standardizedFileURL == directory.standardizedFileURL else {
-            throw StoreError.invalidFile
-        }
-        let descriptor = open(directory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-        guard descriptor >= 0 else {
+        let dir = open(fileURL.deletingLastPathComponent().path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard dir >= 0 else {
             if errno == ENOENT { return }
-            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+            throw posixError()
         }
-        defer { close(descriptor) }
-        var info = stat()
-        let name = url.lastPathComponent
-        guard fstatat(descriptor, name, &info, AT_SYMLINK_NOFOLLOW) == 0 else {
-            if errno == ENOENT { return }
-            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
-        }
-        guard info.st_mode & S_IFMT == S_IFREG else { throw StoreError.invalidFile }
-        // A replacement directory can never be recursively removed by unlinkat.
-        if unlinkat(descriptor, name, 0) != 0 && errno != ENOENT {
-            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        defer { close(dir) }
+        for name in try generationNames(in: dir) {
+            guard try regularInfo(dir, name, requireSingleLink: false) != nil else { continue }
+            if unlinkat(dir, name, 0) != 0 && errno != ENOENT { throw posixError() }
         }
     }
 
     public func fileSize(_ url: URL) -> Int {
         let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
         return (attrs?[.size] as? NSNumber)?.intValue ?? 0
-    }
-
-    private func isSymbolicLink(_ url: URL) throws -> Bool {
-        // `attributesOfItem` follows the symlink; use `lstat` via URL values
-        // carefully, without logging anything from the linked destination.
-        let values = try? url.resourceValues(forKeys: [.isSymbolicLinkKey])
-        return values?.isSymbolicLink == true
-    }
-
-    private func validateRegularFileIfPresent(_ url: URL) throws {
-        if try isSymbolicLink(url) { throw StoreError.invalidFile }
-        let fm = FileManager.default
-        guard fm.fileExists(atPath: url.path) else { return }
-        let attributes = try fm.attributesOfItem(atPath: url.path)
-        guard attributes[.type] as? FileAttributeType == .typeRegular else {
-            throw StoreError.invalidFile
-        }
     }
 
     public enum StoreError: Error {

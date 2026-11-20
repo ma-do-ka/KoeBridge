@@ -36,8 +36,8 @@ the existing “動作記録を削除” action removes both stores and all thei
 
 1. Enable **設定 → 履歴と記録 → 問題調査用の記録を残す** before reproducing.
 2. Reproduce normally and note the approximate failure time and operation order.
-3. Open `~/Library/Logs/` in Finder and copy `KoeBridge.log`, its existing `.1`
-   and `.2`, plus `KoeBridge-mic.log` and all existing `.1` through `.7`.
+3. Open `~/Library/Logs/` in Finder and copy `KoeBridge.log`, `KoeBridge-mic.log`
+   and their existing numbered generations.
 4. Share only with the investigator who needs them, without publishing logs in
    a public issue without permission. Turn logging OFF when finished; use the
    existing deletion action when the retained files are no longer needed.

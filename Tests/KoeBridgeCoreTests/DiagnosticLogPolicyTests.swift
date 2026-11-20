@@ -3,6 +3,30 @@ import Testing
 @testable import KoeBridgeCore
 
 struct DiagnosticLogPolicyTests {
+    @Test func publishedRetentionMatchesAppPolicy() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        let guide = try String(contentsOf: root.appendingPathComponent("docs/input-diagnostics.md"), encoding: .utf8)
+        #expect(guide.contains(DiagnosticLogPolicy.retentionDescription))
+    }
+
+    @Test func rotationPrunesOldPolicyGenerationsAndProtectsLinkedFiles() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let log = dir.appendingPathComponent("main.log")
+        let stale = log.appendingPathExtension("9")
+        try Data("old".utf8).write(to: stale)
+        let store = DiagnosticFileStore(fileURL: log, maximumFileBytes: 64, maximumGenerations: 2)
+        try store.append("first")
+        #expect(!FileManager.default.fileExists(atPath: stale.path))
+        let other = dir.appendingPathComponent("other")
+        try Data("preserve".utf8).write(to: other)
+        try FileManager.default.linkItem(at: other, to: store.rotatedURL)
+        #expect(throws: DiagnosticFileStore.StoreError.invalidFile) { try store.append("next") }
+        #expect(try String(contentsOf: other, encoding: .utf8) == "preserve")
+    }
+
     @Test func deletionChecksGenerationTypeAndKeepsEscapingTargets() throws {
         let fm = FileManager.default
         let root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
