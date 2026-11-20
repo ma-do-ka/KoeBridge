@@ -51,9 +51,9 @@ import KoeBridgeCore
     }
     @Published var outputVolumeGuardEnabled: Bool {
         didSet {
-            UserDefaults.standard.set(outputVolumeGuardEnabled, forKey: OutputVolumeGuard.preferenceKey)
             volumeGuard.changePreference(outputVolumeGuardEnabled,
                 evidence: outputVolumeGuardEnabled ? DiagnosticLog.microphoneEvidenceWriter() : nil)
+            UserDefaults.standard.set(outputVolumeGuardEnabled, forKey: OutputVolumeGuard.preferenceKey)
         }
     }
     @Published var bluetoothMicWarmEnabled: Bool {
@@ -999,7 +999,7 @@ import KoeBridgeCore
                 let timeout = retryPolicy.timeoutForNextAttempt(elapsed: elapsed)
                 guard timeout > 0 else { throw MicrophoneCapture.CaptureError.notReady(.noBuffers) }
                 attempts += 1
-                let candidate = MicrophoneCapture(selectedInputUID: selectedInputUID, volumeGuard: volumeGuard)
+                let candidate = MicrophoneCapture(selectedInputUID: selectedInputUID, volumeGuard: volumeGuard, takeID: take.id)
                 // Own preparation, not just a successfully started microphone.
                 // discard()/releaseResources() can now stop it immediately.
                 take.mic = candidate
@@ -1212,6 +1212,8 @@ import KoeBridgeCore
     /// microphone teardown. Each recording's worker owns its own ASR state.
     func stop() {
         guard phase == .recording, let take = active else { return }
+        take.mic?.invalidateVolumeGuard()
+        volumeGuard.end(take.id)
         take.resetPreviewPublication()
         active = nil
         phase = .idle
@@ -1423,6 +1425,8 @@ import KoeBridgeCore
     private func resolve(_ take: DictationTake, text: String?, reason: String?,
                          noInput: Bool = false, postProcessed: Bool = false) {
         guard !take.finished else { return }
+        take.mic?.invalidateVolumeGuard()
+        volumeGuard.end(take.id)
         // Review, post-processing and their deadline fallbacks converge here.
         var text = text.map(take.adoptFinalText)
         var disposition: Disposition = .text

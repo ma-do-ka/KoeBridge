@@ -91,8 +91,9 @@ enum OutputVolumeHAL {
                 if snapshot {
                     volumes[element] = try? read(device, &property, initial: Float32(0))
                 } else {
-                    volumes[element] = try read(device, &property, initial: Float32(0))
-                    if try isSettable(device, &property) { settable.insert(element) }
+                    guard let value = try? read(device, &property, initial: Float32(0)) else { continue }
+                    volumes[element] = value
+                    if (try? isSettable(device, &property)) == true { settable.insert(element) }
                 }
             }
             guard MicrophoneRouteSnapshot.defaultOutputDeviceID() == device else { return nil }
@@ -100,21 +101,43 @@ enum OutputVolumeHAL {
         } catch { return nil }
     }
 
-    /// Controls can alias (virtual main, physical main, stereo channels).
-    /// Re-read after previous writes and re-resolve the default just before setting.
-    static func lower(_ reading: OutputVolumeReading, element: OutputVolumeElement, to ceiling: Float) throws -> Float? {
+    static func scalar(_ device: UInt32, _ address: AudioObjectPropertyAddress) throws -> Float {
+        var property = address
+        let value = try read(device, &property, initial: Float32(0))
+        guard (0...1).contains(value) else { throw ReadError.unavailable }
+        return value
+    }
+
+    struct FinalReads {
+        var defaultDevice = MicrophoneRouteSnapshot.defaultOutputDeviceID
+        var uid = MicrophoneDevices.uid
+        var alive = OutputVolumeHAL.alive
+        var muted: (UInt32) throws -> Bool = { try OutputVolumeHAL.muted($0, channels: channelCount($0)) }
+        var settable = OutputVolumeHAL.isSettable
+        var scalar = OutputVolumeHAL.scalar
+    }
+
+    /// Executed in the same guard-queue turn as the setter, including when
+    /// reconciling a concurrent lowering. Core Audio has no conditional setter.
+    static func finalValue(_ reading: OutputVolumeReading, _ element: OutputVolumeElement,
+                           reads: FinalReads) throws -> Float? {
         let device = reading.device
         var property = address(element)
-        guard try alive(device), MicrophoneDevices.uid(of: device) == reading.uid,
-              try !muted(device, channels: channelCount(device)) else { throw ReadError.unavailable }
-        guard try isSettable(device, &property) else { return nil }
-        let before = try read(device, &property, initial: Float32(0))
-        guard (0...1).contains(before), before > ceiling else { return nil }
-        guard MicrophoneRouteSnapshot.defaultOutputDeviceID() == device else { throw ReadError.unavailable }
-        var value = ceiling
+        guard reads.defaultDevice() == device, try reads.alive(device), reads.uid(device) == reading.uid,
+              try !reads.muted(device), try reads.settable(device, &property) else { return nil }
+        let value = try reads.scalar(device, property)
+        guard reads.defaultDevice() == device else { return nil }
+        return value
+    }
+
+    static func set(_ device: UInt32, _ address: AudioObjectPropertyAddress, _ scalar: Float,
+                    ifCurrent: () throws -> Bool) throws -> Bool {
+        var property = address
+        var value = scalar
+        guard try ifCurrent() else { return false }
         guard AudioObjectSetPropertyData(device, &property, 0, nil, UInt32(MemoryLayout<Float32>.size), &value) == noErr
         else { throw ReadError.unavailable }
-        return before
+        return true
     }
 }
 #endif

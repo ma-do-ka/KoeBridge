@@ -6,7 +6,6 @@ import Testing
 import KoeBridgeCore
 
 struct OutputVolumeGuardTests {
-    /// Each fixture and its guard are used exclusively on the lifecycle queue.
     private final class Fixture: @unchecked Sendable {
         var device: UInt32? = 41
         var volumes: [OutputVolumeElement: Float] = [.scalar(1): 0.5, .scalar(2): 0.4]
@@ -17,124 +16,409 @@ struct OutputVolumeGuardTests {
         var snapshots = 0
         var additions = 0
         var removals = 0
-        var callback: AudioObjectPropertyListenerBlock?
         var writes: [Float] = []
+        var failedSets = 0
+        var failFirstSet = false
+        var failRemovals = false
+        var failedReads = 0
+        var beforeVerification: (() -> Void)?
+        var afterVerificationRead: (() -> Void)?
+        var beforeAdmission: (() -> Void)?
+        var duringSet: (() -> Void)?
+        var afterSet: (() -> Void)?
+        var snapshotHook: (() -> Void)?
+        private var callbacks: [String: (DispatchQueue, AudioObjectPropertyListenerBlock)] = [:]
+        let owner = UUID()
+        let enabled: Bool
+        init(enabled: Bool = true) { self.enabled = enabled }
+        lazy var controller = OutputVolumeGuard(enabled: enabled, hardware: hardware())
 
-        func hardware() -> OutputVolumeGuard.Hardware {
+        private func key(_ device: UInt32, _ p: AudioObjectPropertyAddress) -> String {
+            "\(device)/\(p.mSelector)/\(p.mScope)/\(p.mElement)"
+        }
+        private func element(_ p: AudioObjectPropertyAddress) -> OutputVolumeElement {
+            p.mSelector == kAudioDevicePropertyVolumeScalar ? .scalar(p.mElement) : .virtualMain
+        }
+
+        private func hardware() -> OutputVolumeGuard.Hardware {
             var hal = OutputVolumeGuard.Hardware()
             hal.defaultDevice = { self.reads += 1; return self.device }
             hal.sample = { device, snapshot in
                 self.reads += 1
-                if snapshot { self.snapshots += 1 }
+                if snapshot {
+                    self.snapshots += 1
+                    self.snapshotHook?()
+                    if self.failedReads > 0 { self.failedReads -= 1; return nil }
+                }
                 guard self.device == device else { return nil }
                 return .init(reading: .init(uid: String(device), device: device, muted: self.muted,
                     volumes: self.volumes), settable: self.fixed ? [] : Set(self.volumes.keys))
             }
-            hal.lower = { reading, element, ceiling in
-                #expect(reading.device == self.device && !self.muted && !self.fixed)
-                let before = self.volumes[element]
-                self.volumes[element] = ceiling
-                self.writes.append(ceiling)
-                return before
+            hal.finalReads.defaultDevice = {
+                let hook = self.beforeVerification
+                self.beforeVerification = nil
+                hook?()
+                return self.device
             }
-            hal.add = { _, _, _, block in
+            hal.finalReads.uid = { String($0) }
+            hal.finalReads.alive = { _ in true }
+            hal.finalReads.muted = { _ in self.muted }
+            hal.finalReads.settable = { _, _ in !self.fixed }
+            hal.scalar = { _, property in try #require(self.volumes[self.element(property)]) }
+            let scalar = hal.scalar
+            hal.finalReads.scalar = { device, property in
+                let value = try scalar(device, property)
+                let hook = self.afterVerificationRead
+                self.afterVerificationRead = nil
+                hook?()
+                return value
+            }
+            hal.set = { device, p, value, ifCurrent in
+                let admissionHook = self.beforeAdmission
+                self.beforeAdmission = nil
+                admissionHook?()
+                guard try ifCurrent() else { return false }
+                if self.failFirstSet {
+                    self.failFirstSet = false
+                    self.failedSets += 1
+                    throw CocoaError(.fileWriteUnknown)
+                }
+                #expect(device == self.device && !self.muted && !self.fixed)
+                let during = self.duringSet
+                self.duringSet = nil
+                during?()
+                self.volumes[self.element(p)] = value
+                self.writes.append(value)
+                let after = self.afterSet
+                self.afterSet = nil
+                after?()
+                return true
+            }
+            hal.add = { device, p, queue, block in
                 self.additions += 1
                 guard !self.refuseListeners else { return kAudioHardwareUnsupportedOperationError }
-                self.callback = block
+                let key = self.key(device, p)
+                #expect(self.callbacks[key] == nil)
+                self.callbacks[key] = (queue, block)
                 return noErr
             }
-            hal.remove = { _, _, _, _ in self.removals += 1; return noErr }
+            hal.remove = { device, p, _, _ in
+                guard !self.failRemovals else { return kAudioHardwareUnspecifiedError }
+                self.removals += 1
+                self.callbacks.removeValue(forKey: self.key(device, p))
+                return noErr
+            }
             return hal
         }
 
-        func notify() {
-            var address = OutputVolumeHAL.address(kAudioDevicePropertyVolumeScalar)
-            callback?(1, &address)
+        func begin(_ id: UUID? = nil, attempt: UUID? = nil) {
+            controller.begin(id ?? owner, attempt: attempt, device: { self.reads += 1; return self.device }, evidence: nil)
+            drain()
+        }
+        func drain() { controller.queue.sync {} }
+        func check() { controller.check(); drain() }
+
+        func send(_ element: OutputVolumeElement = .scalar(1), defaultChanged: Bool = false) {
+            var p = defaultChanged
+                ? OutputVolumeHAL.address(kAudioHardwarePropertyDefaultOutputDevice, scope: kAudioObjectPropertyScopeGlobal)
+                : OutputVolumeHAL.address(element)
+            let id = defaultChanged ? AudioObjectID(kAudioObjectSystemObject) : (device ?? 0)
+            guard let (queue, block) = callbacks[key(id, p)] else { return }
+            queue.sync { block(1, &p) }
+        }
+        func sendMute() {
+            var address = OutputVolumeHAL.address(kAudioDevicePropertyMute)
+            let wildcard = OutputVolumeHAL.address(kAudioDevicePropertyMute, kAudioObjectPropertyElementWildcard)
+            guard let (queue, block) = callbacks[key(device ?? 0, wildcard)] else { return }
+            queue.sync { block(1, &address) }
+        }
+        var hasListeners: Bool { !callbacks.isEmpty }
+        func staleCallback() -> (() -> Void)? {
+            var address = OutputVolumeHAL.address(.scalar(2))
+            guard let (queue, block) = callbacks[key(device ?? 0, address)] else { return nil }
+            return { queue.sync { block(1, &address) } }
         }
     }
 
     @Test func idleAndDisabledNeverProbeOrInstallListeners() {
-        MicrophoneCapture.warmLifecycleQueue.sync {
-            for enabled in [false, true] {
-                let f = Fixture(), owner = UUID()
-                let guardController = OutputVolumeGuard(enabled: enabled, hardware: f.hardware())
-                guardController.check()
-                if !enabled {
-                    guardController.begin(owner, device: { f.reads += 1; return f.device }(), evidence: nil)
-                    guardController.check()
-                    guardController.end(owner)
-                }
-                #expect(f.reads == 0 && f.additions == 0 && f.writes.isEmpty)
+        for enabled in [false, true] {
+            let f = Fixture(enabled: enabled)
+            f.check()
+            if !enabled {
+                f.begin()
+                f.check()
+                f.controller.end(f.owner)
+                f.drain()
             }
+            #expect(f.reads == 0 && f.additions == 0 && f.writes.isEmpty)
         }
     }
 
     @Test func listenerHandoverRouteChangeAndQueuedCallbackAfterStop() {
-        MicrophoneCapture.warmLifecycleQueue.sync {
-            let f = Fixture(), warm = UUID(), take = UUID()
-            let controller = OutputVolumeGuard(enabled: true, hardware: f.hardware())
-            controller.begin(warm, device: f.device, evidence: nil)
-            #expect(f.additions > 0)
-            f.volumes = [.scalar(0): 0.6]
-            controller.handover(from: warm, to: take)
-            controller.end(warm)
-            controller.begin(take, device: f.device, evidence: nil)
-            #expect(f.snapshots == 1 && f.writes == [0.5])
-            f.device = nil // transient read error
-            f.notify()
-            f.device = UInt32(kAudioObjectUnknown) // HAL explicitly reports disconnection
-            f.notify()
-            #expect(f.writes == [0.5])
-            f.device = 44
-            f.volumes = [.scalar(2): 0.8]
-            f.fixed = true
-            f.notify()
-            f.fixed = false
-            f.muted = true
-            f.notify()
-            #expect(f.writes == [0.5])
-            f.muted = false
-            f.notify()
-            #expect(f.writes == [0.5, 0.5])
-            controller.end(take)
-            #expect(f.additions == f.removals)
-            let reads = f.reads
-            f.notify()
-            #expect(f.reads == reads && f.writes.count == 2)
-        }
+        let f = Fixture(), take = UUID()
+        f.begin()
+        #expect(f.additions > 0)
+        f.volumes = [.scalar(0): 0.6]
+        f.controller.handover(from: f.owner, to: take)
+        f.controller.end(f.owner)
+        f.begin(take)
+        #expect(f.snapshots == 1 && f.writes == [0.5])
+        f.device = nil
+        f.send(defaultChanged: true); f.drain()
+        f.device = UInt32(kAudioObjectUnknown)
+        f.send(defaultChanged: true); f.drain()
+        #expect(f.writes == [0.5])
+        f.device = 44
+        f.volumes = [.scalar(2): 0.8]
+        f.fixed = true
+        f.send(defaultChanged: true); f.drain()
+        f.fixed = false
+        f.muted = true
+        f.send(.scalar(2)); f.drain()
+        #expect(f.writes == [0.5])
+        f.muted = false
+        f.send(.scalar(2)); f.drain()
+        #expect(f.writes == [0.5, 0.5])
+        let stale = f.staleCallback()
+        f.controller.end(take); f.drain()
+        #expect(f.additions == f.removals)
+        let reads = f.reads
+        stale?(); f.drain()
+        #expect(f.reads == reads && f.writes.count == 2)
     }
 
     @Test func unsupportedListenersStillAllowCheckpointCorrections() {
-        MicrophoneCapture.warmLifecycleQueue.sync {
-            let f = Fixture(), owner = UUID()
-            f.refuseListeners = true
-            let controller = OutputVolumeGuard(enabled: true, hardware: f.hardware())
-            controller.begin(owner, device: f.device, evidence: nil)
-            f.volumes = [.scalar(0): 0.7]
-            controller.check()
-            controller.end(owner)
-            #expect(f.callback == nil && f.writes == [0.5])
-        }
+        let f = Fixture()
+        f.refuseListeners = true
+        f.begin()
+        f.volumes = [.scalar(0): 0.7]
+        f.check()
+        f.controller.end(f.owner); f.drain()
+        #expect(!f.hasListeners && f.writes == [0.5])
     }
 
     @Test func debounceRechecksTheLatestValue() async throws {
-        let queue = MicrophoneCapture.warmLifecycleQueue
-        let f = Fixture(), owner = UUID()
-        let controller = OutputVolumeGuard(enabled: true, hardware: f.hardware())
-        queue.sync {
-            controller.begin(owner, device: f.device, evidence: nil)
-            f.volumes = [.scalar(1): 0.9, .scalar(2): 0.8]
-            f.notify()
-            f.volumes = [.scalar(1): 0.8, .scalar(2): 0.9]
-            f.notify()
-            #expect(f.writes == [0.5, 0.4])
-            f.volumes[.scalar(1)] = 0.1
-        }
+        let f = Fixture()
+        f.begin()
+        f.volumes = [.scalar(1): 0.9, .scalar(2): 0.8]
+        f.send(); f.drain()
+        f.volumes = [.scalar(1): 0.8, .scalar(2): 0.9]
+        f.send(); f.drain()
+        #expect(f.writes == [0.5, 0.4])
+        f.volumes[.scalar(1)] = 0.1
         try await Task.sleep(for: .milliseconds(350))
-        queue.sync {
-            #expect(f.writes == [0.5, 0.4, 0.4])
-            #expect(f.volumes[.scalar(1)] == 0.1)
-            controller.end(owner)
+        f.drain()
+        #expect(f.writes == [0.5, 0.4, 0.4])
+        #expect(f.volumes[.scalar(1)] == 0.1)
+        f.controller.end(f.owner); f.drain()
+    }
+
+    @Test func finalVerificationRejectsStaleDeviceMuteSettabilityAndScalar() {
+        for change in 0..<4 {
+            let f = Fixture()
+            f.begin()
+            f.volumes = [.scalar(1): 0.9]
+            f.beforeVerification = {
+                switch change {
+                case 0: f.volumes[.scalar(1)] = 0.2
+                case 1: f.device = 42
+                case 2: f.muted = true
+                default: f.fixed = true
+                }
+            }
+            f.check()
+            #expect(f.writes.isEmpty)
+            f.controller.end(f.owner); f.drain()
+        }
+    }
+
+    @Test func observedChangesBetweenFinalReadAndAdmissionVetoTheSetter() {
+        for change in 0..<3 {
+            let f = Fixture()
+            f.begin()
+            f.volumes = [.scalar(1): 0.9]
+            f.afterVerificationRead = {
+                switch change {
+                case 0: f.volumes[.scalar(1)] = 0.2; f.send()
+                case 1: f.device = 42; f.volumes = [.scalar(1): 0.15]; f.send(defaultChanged: true)
+                default: f.muted = true; f.sendMute()
+                }
+            }
+            f.check(); f.drain()
+            #expect(f.writes.isEmpty)
+            f.controller.end(f.owner); f.drain()
+        }
+    }
+
+    @Test func captureCancellationPreventsAnEngineStartCheckpointFromWriting() {
+        let f = Fixture()
+        let capture = MicrophoneCapture(volumeGuard: f.controller, takeID: f.owner)
+        capture.beginVolumeGuard(outputID: 41)
+        f.drain()
+        f.volumes = [.scalar(1): 0.9]
+        let entered = DispatchSemaphore(value: 0), resume = DispatchSemaphore(value: 0)
+        f.beforeAdmission = { entered.signal(); _ = resume.wait(timeout: .now() + 2) }
+        f.controller.check()
+        #expect(entered.wait(timeout: .now() + 2) == .success)
+        capture.stop(.cancelled) { _ in }
+        f.controller.check()
+        capture.beginVolumeGuard(outputID: 41) // stale queued prepare cannot resurrect the attempt
+        resume.signal(); f.drain()
+        #expect(f.snapshots == 1 && f.writes.isEmpty)
+        f.controller.end(f.owner); f.drain()
+    }
+
+    @Test func loweringObservedInsideSetIsReconciledButLowerReadbackIsUntouched() {
+        for overwritten in [true, false] {
+            let f = Fixture()
+            f.begin()
+            f.volumes = [.scalar(1): 0.9]
+            let lower = { f.volumes[.scalar(1)] = 0.2; f.send() }
+            if overwritten { f.duringSet = lower } else { f.afterSet = lower }
+            f.check(); f.drain()
+            #expect(f.volumes[.scalar(1)] == 0.2)
+            #expect(f.writes == (overwritten ? [0.5, 0.2] : [0.5]))
+            f.controller.end(f.owner); f.drain()
+        }
+    }
+
+    @Test func witnessedLoweringSurvivesDelayedAcknowledgementAndFailedRepair() async throws {
+        for delayed in [false, true] {
+            let f = Fixture()
+            f.begin()
+            f.volumes = [.scalar(1): 0.9]
+            f.duringSet = {
+                f.volumes[.scalar(1)] = 0.2
+                f.send()
+                f.failFirstSet = !delayed
+            }
+            if delayed { f.afterSet = { f.volumes[.scalar(1)] = 0.9 } }
+            f.check(); f.drain()
+            #expect(f.writes == [0.5])
+            if delayed {
+                // The device acknowledges the requested scalar asynchronously.
+                f.volumes[.scalar(1)] = 0.5
+                f.send(); f.drain()
+            }
+            try await Task.sleep(for: .milliseconds(350))
+            f.drain()
+            #expect(f.writes == [0.5, 0.2] && f.volumes[.scalar(1)] == 0.2)
+            f.controller.end(f.owner); f.drain()
+        }
+    }
+
+    @Test func invalidatingDuringFinalReadRejectsQueuedAndInFlightChecks() {
+        for mode in 0..<3 {
+            let f = Fixture(), attempt = UUID()
+            f.begin(attempt: attempt)
+            f.volumes = [.scalar(1): 0.8]
+            let entered = DispatchSemaphore(value: 0), resume = DispatchSemaphore(value: 0)
+            f.afterVerificationRead = { entered.signal(); _ = resume.wait(timeout: .now() + 2) }
+            f.controller.check()
+            #expect(entered.wait(timeout: .now() + 2) == .success)
+            f.controller.check()
+            switch mode {
+            case 0: f.controller.changePreference(false, evidence: nil)
+            case 1: f.controller.end(f.owner)
+            default: f.controller.pause(f.owner, attempt: attempt)
+            }
+            resume.signal(); f.drain()
+            #expect(f.writes.isEmpty)
+        }
+    }
+
+    @Test func retriesReuseTheFirstValidLogicalCeiling() {
+        for warm in [false, true] {
+            let f = Fixture(), take = UUID(), first = UUID()
+            if warm {
+                f.begin()
+                f.controller.handover(from: f.owner, to: take)
+                f.volumes = [.scalar(0): 0.6]
+            } else { f.failedReads = 1 }
+            f.fixed = true
+            f.begin(take, attempt: first)
+            f.controller.pause(take, attempt: first); f.drain()
+            let count = f.writes.count
+            f.check()
+            #expect(f.writes.count == count)
+            f.begin(take, attempt: UUID())
+            let expectedSnapshots = warm ? 1 : 2
+            #expect(f.snapshots == expectedSnapshots)
+            f.fixed = false
+            f.volumes = [.scalar(0): 0.6]
+            f.check()
+            #expect(f.writes == [0.5] && f.volumes[.scalar(0)] == 0.5)
+            f.controller.end(take); f.drain()
+            f.begin(UUID())
+            #expect(f.snapshots == expectedSnapshots + 1)
+        }
+    }
+
+    @Test func failingChannelDoesNotStrandItsSiblingOrItsOwnRetry() async throws {
+        let f = Fixture()
+        f.begin()
+        f.failFirstSet = true
+        f.volumes = [.scalar(1): 0.9, .scalar(2): 0.8]
+        f.check()
+        #expect(f.failedSets == 1 && f.writes == [0.4])
+        try await Task.sleep(for: .milliseconds(350))
+        f.drain()
+        #expect(f.writes == [0.4, 0.5])
+        f.controller.end(f.owner); f.drain()
+    }
+
+    @Test func failedRemovalRetriesAtIdleAndAtTheNextStart() async throws {
+        for nextSession in [false, true] {
+            let f = Fixture()
+            f.begin()
+            let firstCount = f.additions
+            let old = f.staleCallback()
+            f.failRemovals = true
+            f.controller.end(f.owner); f.drain()
+            #expect(f.removals == 0)
+            f.failRemovals = false
+            let next = UUID()
+            if nextSession { f.begin(next) }
+            else { try await Task.sleep(for: .milliseconds(350)); f.drain() }
+            #expect(f.removals == firstCount)
+            let reads = f.reads
+            old?(); f.drain()
+            #expect(f.reads == reads)
+            f.controller.end(next); f.drain()
+            #expect(f.additions == f.removals)
+        }
+    }
+
+    @Test func slowSnapshotLeavesCaptureAndWarmHandoverLaneAvailable() {
+        for (enabled, warm) in [(false, false), (true, false), (false, true), (true, true)] {
+            let f = Fixture(enabled: enabled), take = UUID()
+            let started = DispatchSemaphore(value: 0)
+            f.snapshotHook = { started.signal(); Thread.sleep(forTimeInterval: 2.55) }
+            let guardController = f.controller
+            let capture = MicrophoneCapture(volumeGuard: guardController, takeID: take)
+            let clock = ContinuousClock()
+            let beginTime = clock.measure {
+                MicrophoneCapture.warmLifecycleQueue.sync {
+                    if warm { guardController.begin(f.owner, device: { 41 }, evidence: nil) }
+                    else { capture.beginVolumeGuard(outputID: 41) }
+                }
+            }
+            if enabled { #expect(started.wait(timeout: .now() + 1) == .success) }
+            let checkpointTime = clock.measure {
+                MicrophoneCapture.warmLifecycleQueue.sync {
+                    guardController.check()
+                    if warm {
+                        guardController.handover(from: f.owner, to: take)
+                        capture.beginVolumeGuard(outputID: 41)
+                    }
+                    guardController.check()
+                    guardController.end(take)
+                }
+            }
+            #expect(beginTime < .milliseconds(100) && checkpointTime < .milliseconds(100))
+            f.drain()
+            #expect(f.snapshots == (enabled ? 1 : 0))
+            print("guard_budget warm=\(warm) enabled=\(enabled) snapshot_delay_s=2.55 begin=\(beginTime) checkpoints=\(checkpointTime)")
         }
     }
 }

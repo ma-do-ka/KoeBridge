@@ -22,28 +22,26 @@ public struct OutputVolumeReading: Sendable {
     }
 }
 
-/// The acquisition closure is lazy. Even an unreadable first snapshot is final
-/// for that session: a later profile's louder setting cannot become its ceiling.
+/// A failed HAL read (nil) can be retried on the next attempt. A completed
+/// snapshot, including a device with no readable volume, lasts for the take.
 public struct OutputVolumeGuardPolicy {
     public private(set) var enabled: Bool
     public private(set) var snapshot: OutputVolumeReading?
     private var owners = Set<UUID>()
     private var originalDisconnected = false
-    public var isMonitoring: Bool { snapshot?.maximum != nil && snapshot?.muted == false }
+    public var isMonitoring: Bool { enabled && snapshot?.maximum != nil && snapshot?.muted == false }
 
     public init(enabled: Bool) { self.enabled = enabled }
 
     public mutating func setEnabled(_ value: Bool, read: () -> OutputVolumeReading?) {
         guard enabled != value else { return }
         enabled = value
-        originalDisconnected = false
-        snapshot = enabled && !owners.isEmpty ? read() : nil
+        if enabled && !owners.isEmpty && snapshot == nil { snapshot = read() }
     }
 
     public mutating func begin(_ owner: UUID, read: () -> OutputVolumeReading?) {
-        let first = owners.isEmpty
         owners.insert(owner)
-        if enabled && first { snapshot = read() }
+        if enabled && snapshot == nil { snapshot = read() }
     }
 
     public mutating func handover(from warm: UUID, to take: UUID) {

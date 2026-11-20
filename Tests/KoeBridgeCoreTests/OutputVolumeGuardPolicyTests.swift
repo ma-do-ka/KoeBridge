@@ -67,7 +67,7 @@ struct OutputVolumeGuardPolicyTests {
             == [right: 0.3, main: 0.3])
     }
 
-    @Test func missingOrEmptySnapshotIsInertUntilSessionEnds() {
+    @Test func failedReadRetriesButACompletedEmptySnapshotStaysInert() {
         for reading in [nil, sample([:])] {
             var policy = OutputVolumeGuardPolicy(enabled: true)
             let warm = UUID(), take = UUID()
@@ -75,9 +75,13 @@ struct OutputVolumeGuardPolicyTests {
             policy.begin(warm) { reads += 1; return reading }
             policy.handover(from: warm, to: take)
             policy.begin(take) { reads += 1; return sample([main: 0.9]) }
-            #expect(reads == 1)
-            #expect(!policy.isMonitoring)
-            #expect(policy.corrections(for: sample([main: 1]), settable: [main]).isEmpty)
+            if reading == nil {
+                #expect(reads == 2 && policy.isMonitoring)
+                #expect(policy.corrections(for: sample([main: 1]), settable: [main]) == [main: 0.9])
+            } else {
+                #expect(reads == 1 && !policy.isMonitoring)
+                #expect(policy.corrections(for: sample([main: 1]), settable: [main]).isEmpty)
+            }
         }
     }
 
@@ -117,7 +121,7 @@ struct OutputVolumeGuardPolicyTests {
         policy.setEnabled(false, read: read)
         #expect(!policy.isMonitoring && reads == 1)
         policy.setEnabled(true, read: read)
-        #expect(policy.isMonitoring && reads == 2)
+        #expect(policy.isMonitoring && reads == 1)
         policy.end(take)
         #expect(!policy.isMonitoring)
     }

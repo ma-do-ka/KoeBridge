@@ -34,6 +34,7 @@ import KoeBridgeCore
     func suspend(reason: String = "take", handingTo take: UUID? = nil) {
         pending?.cancelWarmPreparation()
         pending = nil
+        worker.pauseGuard()
         let worker = worker
         MicrophoneCapture.warmLifecycleQueue.async { worker.stop(reason: reason, handingTo: take) }
     }
@@ -47,6 +48,7 @@ import KoeBridgeCore
         private let volumeGuard: OutputVolumeGuard
         private let owner = UUID()
         init(volumeGuard: OutputVolumeGuard) { self.volumeGuard = volumeGuard }
+        func pauseGuard() { volumeGuard.pause(owner, attempt: owner) }
         private var observer: NSObjectProtocol?
 
         func resume(enabled: Bool, uid: String, takeActive: Bool, reason: String,
@@ -78,7 +80,8 @@ import KoeBridgeCore
                 log("mic warm stop reason=leased")
                 return
             }
-            volumeGuard.begin(owner, device: MicrophoneRouteSnapshot.defaultOutputDeviceID(), evidence: evidence)
+            volumeGuard.begin(owner, device: MicrophoneRouteSnapshot.defaultOutputDeviceID, evidence: evidence,
+                              live: { !gate.isStopped })
             lease = acquired
             activeGate = gate
             let engine = acquired.resource
@@ -115,6 +118,7 @@ import KoeBridgeCore
         func stop(reason: String, handingTo take: UUID? = nil) {
             guard let lease else { return }
             if let take { volumeGuard.handover(from: owner, to: take) }
+            else { volumeGuard.end(owner) }
             activeGate?.stop()
             activeGate = nil
             if let observer { NotificationCenter.default.removeObserver(observer) }
@@ -124,7 +128,6 @@ import KoeBridgeCore
                 engine.stop()
                 tap.removeIfOwned()
             }
-            volumeGuard.end(owner)
             target = nil
             self.lease = nil
             MicrophoneCapture.warmEngineLifetime.release(token: lease.token)
