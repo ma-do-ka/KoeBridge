@@ -122,16 +122,19 @@ final class OutputVolumeGuard: @unchecked Sendable {
         }
     }
 
-    func handover(from warm: UUID, to take: UUID) {
+    func handover(from warm: UUID, to take: UUID, attempt attemptID: UUID? = nil,
+                  live isLive: @escaping () -> Bool = { true }) {
         stateLock.withLock {
-            guard owner == warm else { return }
+            guard owner == warm, isLive() else { return }
             owner = take
-            attempt = nil
-            live = nil
+            attempt = attemptID ?? take
+            live = isLive
             generation &+= 1
+            let epoch = generation
             queue.async { [self] in
                 resetMonitoring(clearDebounce: false)
                 policy.handover(from: warm, to: take)
+                evaluate(epoch)
             }
         }
     }
@@ -157,6 +160,7 @@ final class OutputVolumeGuard: @unchecked Sendable {
             generation &+= 1
             queue.async { [self] in
                 policy.end(id)
+                evidence = nil
                 resetMonitoring()
             }
         }
@@ -168,7 +172,6 @@ final class OutputVolumeGuard: @unchecked Sendable {
         trailing = nil
         repairs.removeAll()
         if clearDebounce { lastWrite.removeAll() }
-        evidence = nil
     }
 
     func check() {

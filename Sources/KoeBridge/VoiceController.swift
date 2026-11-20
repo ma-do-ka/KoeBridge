@@ -1005,7 +1005,7 @@ import KoeBridgeCore
                 take.mic = candidate
                 DiagnosticLog.recordMicrophoneEvidence("mic_prepare_attempt take=\(take.id.uuidString) attempt=\(attempts)")
                 do {
-                    microphoneWarmKeeper.suspend(reason: "take", handingTo: candidate.volumeGuardOwner)
+                    microphoneWarmKeeper.suspend(reason: "take", handingTo: candidate)
                     let deadline = min(attemptBegan + timeout, preparationBegan + retryPolicy.totalTimeout)
                     try await candidate.start(deadline: deadline, onAudio: { [weak self, weak take] data in
                         let delivery = continuation.yield(data)

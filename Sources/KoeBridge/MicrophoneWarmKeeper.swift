@@ -31,7 +31,7 @@ import KoeBridgeCore
 
     /// Enqueued before capture.start: FIFO on the shared lane completes the
     /// handoff before capture can acquire its lease. No warm lease spans a take.
-    func suspend(reason: String = "take", handingTo take: UUID? = nil) {
+    func suspend(reason: String = "take", handingTo take: MicrophoneCapture? = nil) {
         pending?.cancelWarmPreparation()
         pending = nil
         worker.pauseGuard()
@@ -115,10 +115,10 @@ import KoeBridgeCore
             }
         }
 
-        func stop(reason: String, handingTo take: UUID? = nil) {
+        func stop(reason: String, handingTo take: MicrophoneCapture? = nil) {
             guard let lease else { return }
-            if let take { volumeGuard.handover(from: owner, to: take) }
-            else { volumeGuard.end(owner) }
+            take?.inheritVolumeGuard(from: owner)
+            volumeGuard.end(owner) // also closes a handover rejected by a cancelled take
             activeGate?.stop()
             activeGate = nil
             if let observer { NotificationCenter.default.removeObserver(observer) }

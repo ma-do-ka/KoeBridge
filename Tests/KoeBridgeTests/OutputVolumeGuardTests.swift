@@ -159,7 +159,8 @@ struct OutputVolumeGuardTests {
         f.begin()
         #expect(f.additions > 0)
         f.volumes = [.scalar(0): 0.6]
-        f.controller.handover(from: f.owner, to: take)
+        f.controller.handover(from: f.owner, to: take); f.drain()
+        #expect(f.snapshots == 1 && f.writes == [0.5])
         f.controller.end(f.owner)
         f.begin(take)
         #expect(f.snapshots == 1 && f.writes == [0.5])
@@ -330,12 +331,12 @@ struct OutputVolumeGuardTests {
     @Test func retriesReuseTheFirstValidLogicalCeiling() {
         for warm in [false, true] {
             let f = Fixture(), take = UUID(), first = UUID()
+            f.fixed = true
             if warm {
                 f.begin()
-                f.controller.handover(from: f.owner, to: take)
                 f.volumes = [.scalar(0): 0.6]
+                f.controller.handover(from: f.owner, to: take); f.drain()
             } else { f.failedReads = 1 }
-            f.fixed = true
             f.begin(take, attempt: first)
             f.controller.pause(take, attempt: first); f.drain()
             let count = f.writes.count
@@ -408,7 +409,7 @@ struct OutputVolumeGuardTests {
                 MicrophoneCapture.warmLifecycleQueue.sync {
                     guardController.check()
                     if warm {
-                        guardController.handover(from: f.owner, to: take)
+                        capture.inheritVolumeGuard(from: f.owner)
                         capture.beginVolumeGuard(outputID: 41)
                     }
                     guardController.check()

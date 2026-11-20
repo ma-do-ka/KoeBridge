@@ -83,14 +83,20 @@ final class MicrophoneCapture: @unchecked Sendable {
     private let selectedInputUID: String
     private var selectedTarget: MicrophoneSelectionTarget? // lifecycleQueue only
     private let volumeGuard: OutputVolumeGuard?
-    let volumeGuardOwner: UUID
+    private let volumeGuardOwner: UUID
     private let volumeGuardStopped = Atomic(false)
+    private var volumeGuardLive: Bool {
+        !volumeGuardStopped.load(ordering: .acquiring) && !startupGate.isStopped
+    }
+
+    func inheritVolumeGuard(from warm: UUID) {
+        volumeGuard?.handover(from: warm, to: volumeGuardOwner, attempt: diagnosticID,
+                              live: { [weak self] in self?.volumeGuardLive == true })
+    }
+
     func beginVolumeGuard(outputID: UInt32?) {
         volumeGuard?.begin(volumeGuardOwner, attempt: diagnosticID, device: { outputID }, evidence: microphoneEvidence,
-                           live: { [weak self] in
-            guard let self else { return false }
-            return !self.volumeGuardStopped.load(ordering: .acquiring) && !self.startupGate.isStopped
-        })
+                           live: { [weak self] in self?.volumeGuardLive == true })
     }
 
     func invalidateVolumeGuard() {
