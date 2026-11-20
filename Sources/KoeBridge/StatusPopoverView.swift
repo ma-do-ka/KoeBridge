@@ -47,6 +47,7 @@ private struct HistoryMenuButtonStyle: ButtonStyle {
     let onToggleMeeting: () -> Void
     let onDiscard: () -> Void
     let onCopyRecord: (UUID) -> Void
+    let onInsertRecord: (TranscriptRecord) -> Void
     let onHoverRecord: (TranscriptRecord, NSRect, NSWindow) -> Void
     let onLeaveRecord: (UUID) -> Void
     let onHideHistoryPreview: () -> Void
@@ -142,6 +143,11 @@ private struct HistoryMenuButtonStyle: ButtonStyle {
                                             if historyMenu.hovered == row { historyMenu.hovered = nil }
                                             onLeaveRecord(entry.recordID)
                                         }))
+                                    .accessibilityAction(named: "入力する") {
+                                        if let record = controller.history.first(where: { $0.id == entry.recordID }) {
+                                            onInsertRecord(record)
+                                        }
+                                    }
                             }
                         }
                     }.frame(height: min(CGFloat(entries.count) * 46, 230))
@@ -151,7 +157,7 @@ private struct HistoryMenuButtonStyle: ButtonStyle {
             }
             Divider()
             HStack {
-                Button("設定…", action: onOpenSettings).help("⌘,")
+                Button("設定…", action: onOpenSettings)
                 Button("アップデート…", action: onCheckForUpdates)
                 Button("終了", action: onQuit)
             }.font(.caption).buttonStyle(PopoverButtonStyle()).foregroundStyle(.secondary)

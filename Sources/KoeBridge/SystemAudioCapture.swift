@@ -84,12 +84,7 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         lock.lock(); defer { lock.unlock() }
         if capture === stream { capture = nil }
     }
-    private func closeStream() -> SCStream? {
-        lock.lock(); defer { lock.unlock() }
-        closeRequested = true
-        let stream = capture; capture = nil
-        return stream
-    }
+
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .audio, sampleBuffer.isValid, !stopped else { return }
@@ -162,9 +157,24 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     }
     func stream(_ stream: SCStream, didStopWithError error: Error) { queue.async { self.fail() } }
 
+    private var stopping: Task<Bool, Never>?
+
     func stop(_ reason: CaptureEnd) async -> Bool {
+        let task = lock.withLock {
+            if let stopping { return stopping }
+            closeRequested = true
+            let stream = capture
+            capture = nil
+            let task = Task { await self.finishCapture(reason, stream: stream) }
+            stopping = task
+            return task
+        }
+        return await task.value
+    }
+
+    private func finishCapture(_ reason: CaptureEnd, stream: SCStream?) async -> Bool {
         var end = reason
-        if let stream = closeStream() {
+        if let stream {
             do { try await stream.stopCapture() }
             catch { end = .interrupted }
         }

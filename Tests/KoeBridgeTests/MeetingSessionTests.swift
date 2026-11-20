@@ -6,6 +6,17 @@ import KoeBridgeCore
 @testable import KoeBridge
 
 @MainActor struct MeetingSessionTests {
+    @Test func collisionDistinguishesConnectedDevicesWithoutOfferingAmbiguousSelections() {
+        let first = MicrophoneDeviceOption(uid: "shared", name: "first", deviceID: 1)
+        let second = MicrophoneDeviceOption(uid: "shared", name: "second", deviceID: 2)
+        let unique = MicrophoneDeviceOption(uid: "unique", name: "third", deviceID: 3)
+        let snapshot = MicrophoneDevices.Snapshot(devices: [first, second, unique], defaultID: 1)
+        #expect(snapshot.devices == [unique])
+        #expect(snapshot.collidingUIDs == ["shared"])
+        #expect(!snapshot.collidingUIDs.contains("disconnected"))
+        #expect(MicrophoneDevices.Snapshot(devices: [first], defaultID: 1).devices == [first])
+    }
+
     @Test func tapCopySpareReusesOnlyCompletedMatchingBuffers() throws {
         let format = try #require(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1))
         let input = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1024))
@@ -158,8 +169,10 @@ import KoeBridgeCore
                 let capture = SystemAudioCapture(onAudio: { continuation.yield($0) },
                                                  onFailure: { Issue.record("capture failed") })
                 for _ in 0..<100 { try capture.convert(input) }
-                let drained = await capture.stop(end)
-                #expect(drained)
+                async let firstStop = capture.stop(end)
+                async let secondStop = capture.stop(end)
+                let results = await [firstStop, secondStop]
+                #expect(results == [true, true])
                 continuation.finish()
                 var bytes = 0
                 for await packet in stream { bytes += packet.count }

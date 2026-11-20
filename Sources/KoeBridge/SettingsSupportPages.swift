@@ -136,7 +136,10 @@ struct SettingsAboutPage: View {
                             VStack(alignment: .leading, spacing: 5) {
                                 Text("現在：v\(updater.installedLabel)")
                                     .font(.system(size: 14, weight: .semibold))
-                                Text(nativeUpdater.message.isEmpty ? updater.statusMessage : nativeUpdater.message)
+                                if !nativeUpdater.message.isEmpty {
+                                    Text(nativeUpdater.message).font(.caption)
+                                }
+                                Text(updater.statusMessage)
                                     .font(.caption)
                                     .foregroundStyle(updater.state == .failed ? Color.orange : Color.secondary)
                                     .fixedSize(horizontal: false, vertical: true)
@@ -187,7 +190,7 @@ struct SettingsAboutPage: View {
                                 _ = updater.copyUpdateCommand()
                             }
                             .disabled(!updater.canCopyUpdateCommand || nativeUpdater.blocksRecording)
-                            Text("KoeBridgeを終了し、ターミナルで実行してください。Swiftと署名環境が必要です。ユーザーフォルダのKoeBridgeでテスト・ビルドし、dist/KoeBridge.appを起動します。別の場所にあるアプリは置き換えません。未保存の変更がある場合は停止します。")
+                            Text("KoeBridgeを起動したままターミナルで事前確認を実行してください。終了が必要な時点で案内します。Swiftと署名環境が必要です。ユーザーフォルダのKoeBridgeでテスト・ビルドし、dist/KoeBridge.appを起動します。別の場所にあるアプリは置き換えません。未保存の変更がある場合は停止します。")
                                 .font(.caption).foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
                         }

@@ -76,7 +76,7 @@ See the [Build 30 release notes and validation limits](docs/releases/v1.1.3.md).
 3. Recover the recognized text via **認識履歴（直近10件）…** in the menu bar.
 4. For recurring failures, turn on **設定 → 履歴と記録 → 問題調査用の記録を残す**. Reproduce the problem and inspect `~/Library/Logs/KoeBridge.log` (and `.log.1` if present). v1.1.4 adds `input_summary v=2` sections to locate a recording's target and outcome even when its time is unknown. See the [diagnostic guide](docs/input-diagnostics.md) and [v1.1.4 notes](docs/releases/v1.1.4.md).
 
-Diagnostics remain off by default, store up to approximately 384 KiB across two rotated files, and **do not log transcripts, input-field contents, audio, API keys, window titles, URLs or content hashes**. Logs are not uploaded automatically. A trace from the affected Mac is required to establish the actual cause of an intermittent failure; old traces can be lost to rotation.
+Diagnostics remain off by default, use the retention limits shown in Settings, and **do not log transcripts, input-field contents, audio, API keys, window titles, URLs or content hashes**. Logs are not uploaded automatically. A trace from the affected Mac is required to establish the actual cause of an intermittent failure; old traces can be lost to rotation.
 
 ## API cost and privacy
 

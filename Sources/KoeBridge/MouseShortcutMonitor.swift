@@ -16,8 +16,8 @@ import KoeBridgeCore
         self.onEdge = onEdge
     }
 
-    func start() {
-        guard button != .none else { return }
+    func start() -> Bool {
+        guard button != .none else { return true }
         let mask = (CGEventMask(1) << CGEventType.otherMouseDown.rawValue)
             | (CGEventMask(1) << CGEventType.otherMouseUp.rawValue)
         guard let tap = CGEvent.tapCreate(tap: .cgSessionEventTap,
@@ -43,18 +43,20 @@ import KoeBridgeCore
                 return Unmanaged.passUnretained(event)
             }, userInfo: Unmanaged.passUnretained(self).toOpaque()) else {
             DiagnosticLog.record("mouse shortcut event tap registration failed; Input Monitoring permission may be required")
-            return
+            return false
         }
         guard let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0) else {
             CFMachPortInvalidate(tap)
             DiagnosticLog.record("mouse shortcut event tap run-loop source creation failed")
-            return
+            return false
         }
         self.tap = tap
         self.source = source
         active = true
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
+        guard CGEvent.tapIsEnabled(tap: tap) else { stop(); return false }
+        return true
     }
 
     deinit {

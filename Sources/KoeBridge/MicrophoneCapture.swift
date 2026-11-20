@@ -558,6 +558,7 @@ final class MicrophoneCapture: @unchecked Sendable {
             // must not make a stalled microphone appear live/ready.
             let arrivedAt = ProcessInfo.processInfo.systemUptime
             if self.startupGate.noteTapArrival(token, at: arrivedAt) {
+                self.startupDiagnostics?.note(.buffersInterrupted)
                 self.notifyInterruption(.buffersInterrupted, onDeviceChanged: onDeviceChanged)
                 return
             }

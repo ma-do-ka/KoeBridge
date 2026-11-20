@@ -10,6 +10,11 @@ struct LearnedTermsTests {
         #expect(LearnedTermPolicy.validationHint(fragment: " Wrong ", term: "Right", recordText: "wrong") == "誤りは履歴の文章に含まれる部分を入力してください")
     }
 
+    @Test func canonicallyEquivalentFragmentWithoutCaseOrAccentFolding() {
+        #expect(LearnedTermPolicy.validationHint(fragment: "か\u{3099}", term: "正", recordText: "が") == nil)
+        #expect(LearnedTermPolicy.validationHint(fragment: "cafe", term: "正", recordText: "café") != nil)
+    }
+
     @Test func normalizationValidationAndPersistence() throws {
         #expect(LearnedTermPolicy.normalized("  Café\n") == "cafe")
         #expect(LearnedTermPolicy.normalized(" \t") == "")

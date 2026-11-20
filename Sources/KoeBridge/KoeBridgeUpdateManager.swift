@@ -29,7 +29,6 @@ import KoeBridgeCore
         }
     }
 
-    let automaticInstallationAvailable = false
     let channelName = "Stable / Source"
 
     var installedLabel: String {
@@ -146,10 +145,10 @@ import KoeBridgeCore
     @discardableResult func copyUpdateCommand() -> Bool {
         guard canCopyUpdateCommand, let candidate = sourceTarget else { return false }
         NSPasteboard.general.clearContents()
-        let copied = NSPasteboard.general.setString(candidate.command, forType: .string)
+        let copied = NSPasteboard.general.setString(candidate.command(relaunchApp: Bundle.main.bundleURL), forType: .string)
         copiedCommand = copied
         sourceStatusMessage = copied
-            ? "\(candidate.label) / Build \(candidate.build) のコマンドをコピーしました。KoeBridgeを終了してターミナルで実行してください。"
+            ? "\(candidate.label) / Build \(candidate.build) のコマンドをコピーしました。まずターミナルで事前確認を実行し、案内に従ってください。"
             : "コピーに失敗しました。もう一度ボタンを押してください。"
         return copied
     }

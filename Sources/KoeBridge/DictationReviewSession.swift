@@ -61,7 +61,7 @@ import KoeBridgeCore
         }
         let budget = TranscriptReviewDeadline.available(stoppedAt: stoppedAt, now: Date())
         guard budget > 0, !audio.isEmpty, audio.count <= GeminiRecheckWire.maximumPCMBytes,
-              let key = KeychainStore.load() else {
+              let key = KeychainStore.loadForUse() else {
             record = TranscriptReview(status: .incomplete,
                                       note: "追加チェックの時間・音声サイズ・APIキーの条件を満たさないため、元の確定文を使用しました。")
             return originalText

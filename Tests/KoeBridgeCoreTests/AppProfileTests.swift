@@ -3,6 +3,15 @@ import Testing
 @testable import KoeBridgeCore
 
 struct AppProfileTests {
+    @Test func manualCorrectionUsesExistingRowAndPrefersExactMatches() {
+        let rows = [AppProfile(bundleIdentifier: "com.example.editor", displayName: "Edited name")]
+        #expect(AppProfileResolver.existingForAddition("com.example.Editor", manuallyEntered: true, profiles: rows) == 0)
+        #expect(AppProfileResolver.existingForAddition("com.example.Editor", manuallyEntered: false, profiles: rows) == nil)
+        let exact = AppProfile(bundleIdentifier: "com.example.Editor", displayName: "Exact")
+        #expect(AppProfileResolver.existingForAddition(exact.bundleIdentifier, manuallyEntered: true,
+                                                       profiles: rows + [exact]) == 1)
+    }
+
     @Test func matching() {
         let first = AppProfile(bundleIdentifier: "com.example.Editor", displayName: "First")
         let disabled = AppProfile(bundleIdentifier: first.bundleIdentifier, displayName: "Disabled", isEnabled: false)

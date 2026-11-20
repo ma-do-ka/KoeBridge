@@ -42,22 +42,23 @@ fi
 
 echo "[KoeBridge] Fetching the selected stable tag $TAG"
 git fetch --no-tags origin "refs/tags/$TAG:refs/tags/$TAG"
-git cat-file -e "$TAG^{commit}"
-if ! git show "$TAG:scripts/Info.plist" | grep -Fq "<key>KoeBridgeReleaseLabel</key><string>${TAG#v}</string>"; then
-  echo "ERROR: tag and app version metadata disagree. No source change performed." >&2
-  exit 1
-fi
-
-echo "[KoeBridge] Fast-forwarding main to the release (never force/reset)"
-git merge --ff-only "$TAG"
-
-echo "[KoeBridge] Running local tests, signing and atomic app replacement"
-bash scripts/verify_and_build.sh --open
-
-INSTALLED="$(/usr/libexec/PlistBuddy -c 'Print :KoeBridgeReleaseLabel' dist/KoeBridge.app/Contents/Info.plist)"
-if [[ "$INSTALLED" != "${TAG#v}" ]]; then
-  echo "ERROR: unexpected installed version: $INSTALLED" >&2
-  exit 1
-fi
-
-echo "[KoeBridge] Updated successfully to $TAG"
+TARGET="$(git rev-parse "$TAG^{commit}")"
+git merge-base --is-ancestor HEAD "$TARGET" || { echo "ERROR: target is behind or divergent." >&2; exit 1; }
+META="$(mktemp)"
+trap 'rm -f "$META"' EXIT
+git show "$TARGET:scripts/Info.plist" > "$META"
+read_info() { /usr/libexec/PlistBuddy -c "Print :$1" "$2"; }
+EXPECTED_BUILD="$(read_info CFBundleVersion "$META")"
+[[ "$EXPECTED_BUILD" =~ ^[1-9][0-9]*$ ]]
+check_info() {
+  test "$(read_info CFBundleIdentifier "$1")" = dev.koebridge.app &&
+    test "$(read_info KoeBridgeReleaseLabel "$1")" = "${TAG#v}" &&
+    test "$(read_info CFBundleVersion "$1")" = "$EXPECTED_BUILD"
+}
+check_info "$META"
+git merge --ff-only "$TARGET"
+test "$(git rev-parse HEAD)" = "$TARGET"
+check_info scripts/Info.plist
+bash scripts/verify_and_build.sh
+check_info dist/KoeBridge.app/Contents/Info.plist
+open dist/KoeBridge.app

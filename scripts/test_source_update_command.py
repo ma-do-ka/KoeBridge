@@ -61,11 +61,12 @@ fi
         self.sha = self.git("rev-parse", "HEAD", cwd=self.remote).strip()
         self.tools = self.root / "tools"
         self.tools.mkdir()
-        self.write_tool("git", "import os,sys,subprocess\na=[os.environ['TEST_REMOTE'] if 'fetch' in sys.argv[1:] and x=='https://github.com/ma-do-ka/KoeBridge.git' else x for x in sys.argv[1:]]\nsys.exit(subprocess.call([os.environ['TEST_REAL_GIT']]+a))\n")
+        self.write_tool("git", "import os,sys,subprocess\na=[os.environ['TEST_REMOTE'] if 'fetch' in sys.argv[1:] and x in ('https://github.com/ma-do-ka/KoeBridge.git', 'origin') else x for x in sys.argv[1:]]\nsys.exit(subprocess.call([os.environ['TEST_REAL_GIT']]+a))\n")
+        self.write_tool("codesign", "pass\n")
         self.write_tool("uname", "print('Darwin')\n")
         self.write_tool("swift", "pass\n")
         self.write_tool("pgrep", "import os,sys\nsys.exit(0 if os.environ.get('TEST_RUNNING')=='1' else 1)\n")
-        self.write_tool("open", "import os,sys,pathlib\npathlib.Path(os.environ['TEST_OPEN_LOG']).write_text(sys.argv[1])\n")
+        self.write_tool("open", "import os,sys,pathlib\nif os.environ.get('TEST_OPEN_FAIL'): sys.exit(23)\npathlib.Path(os.environ['TEST_OPEN_LOG']).write_text(sys.argv[1])\n")
         self.write_tool("PlistBuddy", "import plistlib,sys\nd=plistlib.load(open(sys.argv[-1],'rb')); print(d[sys.argv[2].split(':')[-1]])\n")
         self.env = dict(os.environ, HOME=str(self.home), PATH=str(self.tools) + os.pathsep + os.environ["PATH"],
                         TEST_REMOTE=str(self.remote), TEST_REAL_GIT=GIT, TEST_OPEN_LOG=str(self.root / "opened"),
@@ -106,9 +107,10 @@ fi
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.git("rev-parse", "HEAD", cwd=self.checkout).strip(), self.sha)
 
-    def test_running_app_stops_before_creating_checkout(self):
+    def test_running_app_preflights_without_installing(self):
         self.assert_stopped(self.run_command(TEST_RUNNING="1"))
-        self.assertFalse(self.checkout.exists())
+        self.assertTrue((self.checkout / ".git").is_dir())
+        self.assertFalse((self.checkout / "dist").exists())
 
     def test_modified_tracked_file_is_preserved(self):
         self.clone()
@@ -162,6 +164,37 @@ fi
         old.write_text("old executable")
         self.assert_stopped(self.run_command(TEST_BUILD_FAIL="1"))
         self.assertEqual(old.read_text(), "old executable")
+
+    def run_legacy(self):
+        script = (ROOT / "scripts/update_from_release.sh").read_text()
+        script = script.replace("/usr/libexec/PlistBuddy", str(self.tools / "PlistBuddy"))
+        return subprocess.run(["bash", "-s", "--", "v1.1.5"], input=script, text=True,
+                              env=self.env, capture_output=True, timeout=20)
+
+    def test_legacy_tag_checks_structured_plist_before_open(self):
+        self.git("tag", "v1.1.5", cwd=self.remote)
+        self.clone()
+        result = self.run_legacy()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.root / "opened").exists())
+
+    def test_legacy_tag_cannot_launch_newer_checkout(self):
+        self.git("tag", "v1.1.5", cwd=self.remote)
+        self.clone()
+        self.git("-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                 "commit", "--allow-empty", "-qm", "newer", cwd=self.checkout)
+        self.assert_stopped(self.run_legacy())
+        self.assertFalse((self.checkout / "dist").exists())
+
+    def test_open_failure_restores_verified_previous_bundle(self):
+        self.clone()
+        marker = self.checkout / "dist/KoeBridge.app/previous"
+        marker.parent.mkdir(parents=True)
+        marker.write_text("original")
+        result = self.run_command(TEST_OPEN_FAIL="1")
+        self.assert_stopped(result)
+        self.assertEqual(marker.read_text(), "original")
+        self.assertIn("Finder", result.stderr)
 
     def test_changed_built_version_does_not_open(self):
         self.clone()

@@ -34,12 +34,12 @@ struct SettingsAppProfilesPage: View {
         let bundle = bundleToAdd
         guard !bundle.isEmpty else { return }
         let isManualEntry = !manualBundle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        if let existing = controller.appProfiles.first(where: {
-            isManualEntry
-                ? $0.bundleIdentifier.caseInsensitiveCompare(bundle) == .orderedSame
-                : $0.bundleIdentifier == bundle
-        }) {
-            expandedProfile = existing.id
+        if let index = AppProfileResolver.existingForAddition(bundle, manuallyEntered: isManualEntry,
+                                                             profiles: controller.appProfiles) {
+            if controller.appProfiles[index].bundleIdentifier != bundle {
+                controller.appProfiles[index].bundleIdentifier = bundle
+            }
+            expandedProfile = controller.appProfiles[index].id
         } else {
             let profile = AppProfile(bundleIdentifier: bundle,
                 displayName: runningApps.first(where: { $0.id == bundle })?.name ?? bundle)

@@ -1,4 +1,5 @@
 import Foundation
+import CoreFoundation
 
 /// Only the numeric status crosses the provider trust boundary.
 public struct GeminiProviderError: LocalizedError, Equatable, Sendable {
@@ -85,11 +86,14 @@ public struct GeminiServerFrame: Equatable, Sendable {
     }
 
     private static func usage(_ metadata: [String: Any]?) -> GeminiTokenUsage? {
-        guard let metadata, let total = metadata["totalTokenCount"] as? Int, total >= 0 else { return nil }
+        guard let metadata else { return nil }
         func valid(_ key: String) -> Int? {
-            guard let value = metadata[key] as? Int, value >= 0 else { return nil }
+            guard let number = metadata[key] as? NSNumber,
+                  CFGetTypeID(number) != CFBooleanGetTypeID(),
+                  let value = number as? Int, GeminiTokenUsage.counterRange.contains(value) else { return nil }
             return value
         }
+        guard let total = valid("totalTokenCount") else { return nil }
         return GeminiTokenUsage(promptTokens: valid("promptTokenCount"),
                                 responseTokens: valid("candidatesTokenCount"),
                                 totalTokens: total)

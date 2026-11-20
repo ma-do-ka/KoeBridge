@@ -5,6 +5,7 @@ import hashlib
 import os
 import re
 import sys
+import subprocess
 
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / 'scripts' / 'public_files.txt'
@@ -40,6 +41,10 @@ def main() -> int:
     if len(set(entries)) != len(entries):
         errors.append('Duplicate entries in allowlist')
     allowed = set(entries)
+    if '--check-tracked' in sys.argv:
+        tracked = subprocess.check_output(['git', 'ls-files', '-z'], cwd=ROOT).split(b'\0')
+        if {os.fsdecode(path) for path in tracked if path} != allowed:
+            errors.append('Tracked files and publication allowlist differ')
     for name in entries:
         rel = Path(name)
         if rel.is_absolute() or '..' in rel.parts or name.startswith('.') and name not in {'.gitignore', '.github/workflows/mac-ci.yml', '.github/workflows/release-v1.0.1.yml', '.github/workflows/release-v1.0.1b.yml', '.github/workflows/release-v1.0.1c.yml', '.github/workflows/release-v1.0.1d.yml', '.github/workflows/release-v1.0.1e.yml', '.github/workflows/release-v1.0.1f.yml', '.github/workflows/release-v1.1.0.yml', '.github/workflows/release-v1.1.1.yml', '.github/workflows/release-v1.1.2.yml', '.github/workflows/release-v1.1.3.yml', '.github/workflows/release-v1.1.4.yml'}:

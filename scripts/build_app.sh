@@ -23,6 +23,15 @@ fi
 
 ROOT="$(pwd -P)"
 DIST="$ROOT/dist"
+if [ -n "${KOEBRIDGE_BUILD_OUTPUT:-}" ]; then
+  OUTPUT="$(cd "$KOEBRIDGE_BUILD_OUTPUT" && pwd -P)"
+  if [ "$(dirname "$OUTPUT")" != "$DIST" ] || [[ "$(basename "$OUTPUT")" != .package.* ]] ||
+     [ -e "$OUTPUT/KoeBridge.app" ] || [ -L "$OUTPUT/KoeBridge.app" ]; then
+    echo 'ERROR: Packaging requires a new private staging directory inside dist.' >&2
+    exit 1
+  fi
+  DIST="$OUTPUT"
+fi
 ICON_SOURCE="$ROOT/Resources/KoeBridge_AppIcon.icns"
 ICON_SHA256="10186e4ecd7927a0d25c2fc26eed8c83db1f21def23f267f4695ca45f04f10f5"
 if [ ! -s "$ICON_SOURCE" ]; then
@@ -113,7 +122,7 @@ if ! mv "$APP" "$DEST"; then
   exit 1
 fi
 
-persist_koebridge_identity_after_success
+if [ -z "${KOEBRIDGE_BUILD_OUTPUT:-}" ]; then persist_koebridge_identity_after_success; fi
 if [ "$SIGN_IDENTITY" = "-" ]; then
   echo "WARNING: Ad-hoc signing was explicitly allowed; macOS permission continuity is NOT guaranteed." >&2
 else

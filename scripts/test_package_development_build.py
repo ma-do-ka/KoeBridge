@@ -39,8 +39,9 @@ from pathlib import Path
 Path('build.json').write_text(json.dumps({name: os.environ.get(name) for name in
     ('KOEBRIDGE_SIGNING_IDENTITY', 'KOEBRIDGE_ALLOW_ADHOC', 'KOEBRIDGE_UNIVERSAL',
      'KOEBRIDGE_PACKAGE_SIGNING', 'KOEBRIDGE_PACKAGE_DEVELOPMENT')}))
-Path('dist/KoeBridge.app/Contents').mkdir(parents=True, exist_ok=True)
-shutil.copyfile('scripts/Info.plist', 'dist/KoeBridge.app/Contents/Info.plist')
+contents = Path(os.environ.get('KOEBRIDGE_BUILD_OUTPUT', 'dist')) / 'KoeBridge.app/Contents'
+contents.mkdir(parents=True)
+shutil.copyfile('scripts/Info.plist', contents / 'Info.plist')
 """)
         (self.scripts / "build_app.sh").write_text('set -eu\nbuild\n')
         self.write_tool("codesign", """import json, os, sys
@@ -94,10 +95,13 @@ Path(sys.argv[-1]).write_bytes(b'fixture archive, not a signed macOS app')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(self.archive.is_file())
         self.assertIn(self.archive.name, (self.root / "dist/SHA256SUMS.txt").read_text())
+        staged = Path(json.loads((self.root / "verified.json").read_text())[-1])
+        self.assertEqual(staged.parent.parent, self.root / "dist")
+        self.assertTrue(staged.parent.name.startswith(".package."))
         self.assertEqual(json.loads((self.root / "verified.json").read_text()),
-                         ["--verify", "--deep", "--strict", "dist/KoeBridge.app"])
+                         ["--verify", "--deep", "--strict", str(staged)])
         self.assertEqual(json.loads((self.root / "architectures.json").read_text()),
-                         ["dist/KoeBridge.app/Contents/MacOS/KoeBridge", "-verify_arch", "arm64", "x86_64"])
+                         [str(staged / "Contents/MacOS/KoeBridge"), "-verify_arch", "arm64", "x86_64"])
 
     def test_default_keeps_explicit_adhoc_universal_build(self):
         self.assert_packaged(self.run_package(KOEBRIDGE_SIGNING_IDENTITY="pinned-certificate"))
@@ -124,6 +128,17 @@ Path(sys.argv[-1]).write_bytes(b'fixture archive, not a signed macOS app')
                                              KOEBRIDGE_SIGNING_IDENTITY=certificate))
         self.assertEqual(json.loads((self.root / "build.json").read_text())
                          ["KOEBRIDGE_SIGNING_IDENTITY"], certificate)
+
+    def test_wrong_team_keeps_previous_app_and_archive(self):
+        old = self.root / "dist/KoeBridge.app/marker"
+        old.parent.mkdir(parents=True)
+        old.write_text("previous")
+        self.archive.write_bytes(b"previous archive")
+        result = self.run_package(KOEBRIDGE_PACKAGE_SIGNING="stable",
+                                  TEST_SIGNATURE="Authority=Apple Development: Fixture\nTeamIdentifier=AAAAAAAAAA")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(old.read_text(), "previous")
+        self.assertEqual(self.archive.read_bytes(), b"previous archive")
 
     def test_unknown_mode_stops_before_build(self):
         self.assert_no_archive(self.run_package(KOEBRIDGE_PACKAGE_SIGNING="stabel"))

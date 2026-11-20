@@ -14,6 +14,8 @@ final class DiagnosticWriter: @unchecked Sendable {
     private let mic: DiagnosticFileStore
     private let queue = DispatchQueue(label: "KoeBridge.diagnostic-writer")
     private let lock = NSLock()
+    private var failedBatches = 0 // writer queue only; never retain the error or event text
+    var failedBatchCount: Int { queue.sync { failedBatches } }
     private var pending: [Submission] = []
 
     init(main: DiagnosticFileStore, microphone: DiagnosticFileStore) {
@@ -46,8 +48,12 @@ final class DiagnosticWriter: @unchecked Sendable {
                 events.append(contentsOf: submission.lines.map { ($0, submission.timestamp) })
                 start += 1
             } while start < batch.count && batch[start].mirrored == mirrored
-            try? main.appendTimedBatch(events)
-            if mirrored { try? mic.appendTimedBatch(events) }
+            func append(to store: DiagnosticFileStore) {
+                do { try store.appendTimedBatch(events) }
+                catch { if failedBatches < Int.max { failedBatches += 1 } }
+            }
+            append(to: main)
+            if mirrored { append(to: mic) }
         }
     }
 
@@ -102,7 +108,7 @@ final class DiagnosticWriter: @unchecked Sendable {
     }
 
     static func microphoneEvidenceWriter() -> MicrophoneEvidenceWriter? {
-        preferenceDidChange(isEnabled)
+        synchronizeConsent()
         return MicrophoneEvidenceWriter(token: inputConsent.token, permits: { permitsInputTrace($0) }) { line in
             writer.append([line], mirrored: true)
         }
@@ -111,18 +117,25 @@ final class DiagnosticWriter: @unchecked Sendable {
     /// Called for both ON and OFF, including an OFF/ON cycle between async
     /// receipt polls. Previously buffered evidence cannot cross that boundary.
     static func preferenceDidChange(_ enabled: Bool) {
-        if inputConsent.isEnabled != enabled { flush() }
+        flush()
+        inputConsent.setEnabled(enabled)
+    }
+
+    private static func synchronizeConsent() {
+        let enabled = isEnabled
+        guard inputConsent.isEnabled != enabled else { return }
+        flush()
         inputConsent.setEnabled(enabled)
     }
 
     static func inputTrace(takeID: UUID) -> InputDiagnosticTrace? {
-        preferenceDidChange(isEnabled)
+        synchronizeConsent()
         guard let token = inputConsent.token else { return nil }
         return InputDiagnosticTrace(takeID: takeID, consent: token)
     }
 
     static func permitsInputTrace(_ token: InputDiagnosticConsent.Token) -> Bool {
-        preferenceDidChange(isEnabled)
+        synchronizeConsent()
         return inputConsent.allows(token)
     }
 
@@ -137,7 +150,7 @@ final class DiagnosticWriter: @unchecked Sendable {
     /// Streaming breadcrumbs use the SAME opt-in/revocation token and bounded
     /// stores as input diagnostics, with a longer-retained microphone mirror.
     static func microphoneTrace(captureID: UUID, explicitSelection: Bool) -> MicrophonePreparationDiagnostics? {
-        preferenceDidChange(isEnabled)
+        synchronizeConsent()
         guard let token = inputConsent.token else { return nil }
         let build = Int(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "") ?? 0
         return MicrophonePreparationDiagnostics { entry in

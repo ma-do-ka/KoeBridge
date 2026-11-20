@@ -61,11 +61,11 @@ struct SettingsPrivacyPage: View {
                                     description: "保存済みの動作記録だけを削除します。文字起こし履歴や設定は変更されません。", icon: "trash") {
                             SettingsRowActionButton("削除", role: .destructive) { requestLogDeletion() }
                         }
-                        Text("保存先：~/Library/Logs/KoeBridge.log")
+                        Text("保存先：~/Library/Logs/\(DiagnosticLog.fileURL.lastPathComponent)、\(DiagnosticLog.microphoneFileURL.lastPathComponent)")
                             .font(.system(.caption, design: .monospaced))
                             .foregroundStyle(.secondary)
                             .textSelection(.enabled)
-                        Text("1ファイル192KB、古いログ1件を含め最大約384KB。記録をオフにしても以前のログは残ります。")
+                        Text(DiagnosticLogPolicy.retentionDescription + "記録をオフにしても以前のログは残ります。")
                             .font(.system(size: 12)).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                         if !logNotice.isEmpty {
