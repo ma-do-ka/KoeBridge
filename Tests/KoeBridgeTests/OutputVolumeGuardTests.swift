@@ -16,6 +16,7 @@ struct OutputVolumeGuardTests {
         var snapshots = 0
         var additions = 0
         var removals = 0
+        var nativeStarts = 0
         var writes: [Float] = []
         var failedSets = 0
         var failFirstSet = false
@@ -78,6 +79,7 @@ struct OutputVolumeGuardTests {
                 self.beforeAdmission = nil
                 admissionHook?()
                 return try submit {
+                    self.nativeStarts += 1
                     if self.failFirstSet {
                         self.failFirstSet = false
                         self.failedSets += 1
@@ -345,34 +347,81 @@ struct OutputVolumeGuardTests {
         }
     }
 
-    @Test func invalidationCannotCompleteInTheMiddleOfNativeSubmission() {
-        for mode in 0..<3 {
-            let f = Fixture(), attempt = UUID()
-            f.begin(attempt: attempt)
+    @Test func invalidationLeavesLifecycleLaneAvailableWhileNativeSetIsInFlight() {
+        enum Stop: CaseIterable { case off, warmStop, captureCancel }
+        let lane = MicrophoneCapture.warmLifecycleQueue
+        let clock = ContinuousClock()
+        for stop in Stop.allCases {
+            let f = Fixture()
+            let capture = MicrophoneCapture(volumeGuard: f.controller, takeID: f.owner)
+            if stop == .captureCancel {
+                lane.sync { capture.beginVolumeGuard(outputID: 41) }
+                f.drain()
+            } else {
+                f.begin()
+            }
             f.volumes = [.scalar(1): 0.9, .scalar(2): 0.8]
-            let inside = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
-            let revoking = DispatchSemaphore(value: 0), revoked = DispatchSemaphore(value: 0)
+            let entered = DispatchSemaphore(value: 0), finished = DispatchSemaphore(value: 0)
             f.duringSet = {
-                inside.signal()
-                _ = release.wait(timeout: .now() + 2)
+                entered.signal()
+                Thread.sleep(forTimeInterval: 2.55)
             }
+            f.afterSet = { finished.signal() }
             f.controller.check()
-            #expect(inside.wait(timeout: .now() + 2) == .success)
-            DispatchQueue.global().async {
-                revoking.signal()
-                switch mode {
-                case 0: f.controller.changePreference(false, evidence: nil)
-                case 1: f.controller.end(f.owner)
-                default: f.controller.pause(f.owner, attempt: attempt)
+            #expect(entered.wait(timeout: .now() + 2) == .success)
+            f.controller.check() // also leave an evaluation queued behind the entered Set
+            let stopTime = clock.measure {
+                lane.sync {
+                    switch stop {
+                    case .off: f.controller.changePreference(false, evidence: nil)
+                    case .warmStop:
+                        f.controller.pause(f.owner, attempt: f.owner)
+                        f.controller.end(f.owner)
+                    case .captureCancel: capture.stop(.cancelled) { _ in }
+                    }
                 }
-                revoked.signal()
             }
-            #expect(revoking.wait(timeout: .now() + 2) == .success)
-            #expect(revoked.wait(timeout: .now() + .milliseconds(25)) == .timedOut)
-            release.signal()
-            #expect(revoked.wait(timeout: .now() + 2) == .success)
-            f.check()
-            #expect(f.writes == [0.5]) // only the already-entered first Set
+            let nextCheckpoint = clock.measure { lane.sync { f.controller.check() } }
+            #expect(stopTime < .milliseconds(100) && nextCheckpoint < .milliseconds(100))
+            #expect(finished.wait(timeout: .now()) == .timedOut)
+            f.drain()
+            #expect(f.nativeStarts == 1 && f.writes == [0.5])
+            print("guard_stop mode=\(stop) set_delay_s=2.55 stop=\(stopTime) next_checkpoint=\(nextCheckpoint) starts=\(f.nativeStarts)")
+        }
+    }
+
+    @Test func lastGenerationReadRejectsInvalidationAfterFinalHALReads() {
+        enum Stop: CaseIterable { case off, end, cancelAttempt }
+        for stop in Stop.allCases {
+            let f = Fixture()
+            let arm = DispatchSemaphore(value: 0), atGate = DispatchSemaphore(value: 0)
+            let resume = DispatchSemaphore(value: 0)
+            // Hold the last liveness query after the HAL reads. Return its old
+            // answer so only the final generation check can reject this Set.
+            f.controller.begin(f.owner, device: { 41 }, evidence: nil, live: {
+                if arm.wait(timeout: .now()) == .success {
+                    atGate.signal()
+                    _ = resume.wait(timeout: .now() + 2)
+                }
+                return true
+            })
+            f.drain()
+            f.volumes = [.scalar(1): 0.8]
+            f.afterVerificationRead = { arm.signal() }
+            f.controller.check()
+            #expect(atGate.wait(timeout: .now() + 2) == .success)
+            switch stop {
+            case .off: f.controller.changePreference(false, evidence: nil)
+            case .end: f.controller.end(f.owner)
+            case .cancelAttempt: f.controller.pause(f.owner, attempt: f.owner)
+            }
+            resume.signal(); f.drain()
+            #expect(f.nativeStarts == 0 && f.writes.isEmpty)
+            if stop == .cancelAttempt {
+                f.begin(attempt: UUID())
+                #expect(f.writes == [0.5]) // the veto left no unreflected Set behind
+                f.controller.end(f.owner); f.drain()
+            }
         }
     }
 
@@ -392,7 +441,7 @@ struct OutputVolumeGuardTests {
             default: f.controller.pause(f.owner, attempt: attempt)
             }
             resume.signal(); f.drain()
-            #expect(f.writes.isEmpty)
+            #expect(f.nativeStarts == 0 && f.writes.isEmpty)
         }
     }
 

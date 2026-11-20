@@ -2,6 +2,7 @@
 import AudioToolbox
 import Foundation
 import KoeBridgeCore
+import Synchronization
 
 final class OutputVolumeGuard: @unchecked Sendable {
     static let snapshotWaitMilliseconds = 40
@@ -15,30 +16,10 @@ final class OutputVolumeGuard: @unchecked Sendable {
     private var enabled: Bool
     private var owner: UUID?
     private var attempt: UUID?
-    // Revocation and the actual raw setter share this submission's mutex.
-    // HAL reads and listener work never hold it. Lifecycle notifications do
-    // not take it; only an invalidator of an admitted native Set can join it.
-    private final class Submission {
-        // A synchronous native callback may itself request cancellation.
-        // Only this already-entered syscall can then finish.
-        private let lock = NSRecursiveLock()
-        private var revoked = false
-
-        func revoke() { lock.withLock { revoked = true } }
-
-        func run(while authorized: () -> Bool, _ rawSet: () throws -> Void) rethrows -> Bool {
-            try lock.withLock {
-                guard !revoked, authorized() else { return false }
-                try rawSet()
-                return true
-            }
-        }
-    }
-    private var submission: Submission?
     // Both starts use the serial microphone lifecycle lane. After a timeout,
     // a warm handover need not wait a second time for the same slow read.
     private var snapshotHandoffGeneration: UInt64?
-    private var generation: UInt64 = 0
+    private let generation = Atomic<UInt64>(0)
     private var snapshotGeneration: UInt64 = 0
     private var live: (() -> Bool)?
 
@@ -104,7 +85,8 @@ final class OutputVolumeGuard: @unchecked Sendable {
     }
 
     private func permits(_ epoch: UInt64) -> Bool {
-        stateLock.withLock { generation == epoch && enabled && live?() == true }
+        let isLive = stateLock.withLock { enabled ? live : nil }
+        return generation.load(ordering: .sequentiallyConsistent) == epoch && isLive?() == true
     }
 
     private func snapshot(_ session: UInt64, device: () -> UInt32?, writer: MicrophoneEvidenceWriter?) -> OutputVolumeReading? {
@@ -115,13 +97,12 @@ final class OutputVolumeGuard: @unchecked Sendable {
     }
 
     func changePreference(_ value: Bool, evidence: MicrophoneEvidenceWriter?) {
-        let admitted: Submission? = stateLock.withLock {
-            guard enabled != value else { return nil }
+        stateLock.withLock {
+            guard enabled != value else { return }
             enabled = value
             snapshotGeneration &+= 1
             let session = snapshotGeneration
-            generation &+= 1
-            let epoch = generation
+            let epoch = generation.wrappingAdd(1, ordering: .sequentiallyConsistent).newValue
             queue.async { [self] in
                 resetMonitoring(clearDebounce: false)
                 self.evidence = evidence
@@ -130,9 +111,7 @@ final class OutputVolumeGuard: @unchecked Sendable {
                 }
                 evaluate(epoch)
             }
-            return submission
         }
-        admitted?.revoke()
     }
 
     func begin(_ id: UUID, attempt attemptID: UUID? = nil, device: @escaping () -> UInt32?,
@@ -154,8 +133,7 @@ final class OutputVolumeGuard: @unchecked Sendable {
             owner = id
             attempt = attemptID ?? id
             live = isLive
-            generation &+= 1
-            let epoch = generation
+            let epoch = generation.wrappingAdd(1, ordering: .sequentiallyConsistent).newValue
             queue.async { [self] in
                 if let previous, previous != id { policy.end(previous) }
                 self.evidence = evidence
@@ -190,8 +168,7 @@ final class OutputVolumeGuard: @unchecked Sendable {
             owner = take
             attempt = attemptID ?? take
             live = isLive
-            generation &+= 1
-            let epoch = generation
+            let epoch = generation.wrappingAdd(1, ordering: .sequentiallyConsistent).newValue
             queue.async { [self] in
                 resetMonitoring(clearDebounce: false)
                 policy.handover(from: warm, to: take)
@@ -202,33 +179,29 @@ final class OutputVolumeGuard: @unchecked Sendable {
 
     /// Retry gaps have no write authority, but retain the logical take's snapshot.
     func pause(_ id: UUID, attempt attemptID: UUID) {
-        let admitted: Submission? = stateLock.withLock {
-            guard owner == id, attempt == attemptID else { return nil }
+        stateLock.withLock {
+            guard owner == id, attempt == attemptID else { return }
             attempt = nil
             live = nil
-            generation &+= 1
+            generation.wrappingAdd(1, ordering: .sequentiallyConsistent)
             queue.async { [self] in resetMonitoring(clearDebounce: false) }
-            return submission
         }
-        admitted?.revoke()
     }
 
     func end(_ id: UUID) {
-        let admitted: Submission? = stateLock.withLock {
-            guard owner == id else { return nil }
+        stateLock.withLock {
+            guard owner == id else { return }
             owner = nil
             snapshotGeneration &+= 1
             attempt = nil
             live = nil
-            generation &+= 1
+            generation.wrappingAdd(1, ordering: .sequentiallyConsistent)
             queue.async { [self] in
                 policy.end(id)
                 evidence = nil
                 resetMonitoring()
             }
-            return submission
         }
-        admitted?.revoke()
     }
 
     private func resetMonitoring(clearDebounce: Bool = true) {
@@ -244,7 +217,7 @@ final class OutputVolumeGuard: @unchecked Sendable {
     func check() {
         stateLock.withLock {
             guard enabled, live?() == true else { return }
-            let epoch = generation
+            let epoch = generation.load(ordering: .sequentiallyConsistent)
             queue.async { [self] in evaluate(epoch) }
         }
     }
@@ -368,46 +341,45 @@ final class OutputVolumeGuard: @unchecked Sendable {
         }
     }
 
-    // Final admission and the raw setter are one synchronous submission. There
-    // is no reusable Boolean permission. OFF/stop/cancel revoke new admission
-    // and cannot complete in a gap before an admitted native Set starts.
-    // HAL can reflect an admitted Set later. An external change after this
-    // gate which no listener or readback observes cannot be reconstructed.
+    // The final atomic load is the start of a write. It and every invalidating
+    // increment have a single total order. Invalidation never drains a passed
+    // gate; that Set may complete later. HAL has no conditional Set for an
+    // external change that neither a listener nor a readback observes.
     private func submit(_ key: Control, value: Float, epoch: UInt64,
                         perform: () throws -> Void) throws -> Bool {
-        let flight = Submission()
-        let registered = stateLock.withLock {
-            guard generation == epoch else { return false }
-            submission = flight
-            return true
-        }
-        guard registered else { return false }
-        defer { stateLock.withLock { submission = nil } }
-
-        var old: PendingWrite?
+        guard permits(epoch) else { return false }
+        let old: PendingWrite?
         do {
-            return try flight.run(while: {
-                guard self.observationLock.try() else { return false }
-                defer { self.observationLock.unlock() }
-                guard self.window?.invalidated == false, self.window?.lower == nil else { return false }
-                old = self.pending[key]
-                if let old {
-                    guard old.reflected, let lower = old.lower, value <= lower else { return false }
-                }
-                guard self.permits(epoch) else { return false }
-                self.pending[key] = PendingWrite(written: value)
-                return true
-            }, perform)
-        } catch {
+            guard observationLock.try() else { return false }
+            defer { observationLock.unlock() }
+            guard window?.invalidated == false, window?.lower == nil else { return false }
+            old = pending[key]
+            if let old {
+                guard old.reflected, let lower = old.lower, value <= lower else { return false }
+            }
+            pending[key] = PendingWrite(written: value)
+        }
+
+        func rollBackPendingWrite(setFailed: Bool) {
             observationLock.withLock {
-                // A rejected repair still owes the original witnessed value.
                 let witnessed = pending[key]?.lower
                 pending[key] = old
                 if let witnessed {
-                    if pending[key] == nil { pending[key] = PendingWrite(written: value, reflected: true) }
+                    if old == nil && setFailed { pending[key] = PendingWrite(written: value, reflected: true) }
                     pending[key]?.observe(witnessed)
                 }
             }
+        }
+
+        guard generation.load(ordering: .sequentiallyConsistent) == epoch else {
+            rollBackPendingWrite(setFailed: false)
+            return false
+        }
+        do {
+            try perform()
+            return true
+        } catch {
+            rollBackPendingWrite(setFailed: true)
             throw error
         }
     }
