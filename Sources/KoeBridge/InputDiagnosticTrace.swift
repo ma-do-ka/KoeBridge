@@ -10,14 +10,17 @@ import KoeBridgeCore
     private let consent: InputDiagnosticConsent.Token
     private let beganAt = ProcessInfo.processInfo.systemUptime
     private let permits: (InputDiagnosticConsent.Token) -> Bool
+    private let write: (() -> [String], InputDiagnosticConsent.Token) -> Void
     private(set) var buffer: InputDiagnosticBuffer
     private var finished = false
 
     init(takeID: UUID, consent: InputDiagnosticConsent.Token,
-         permits: ((InputDiagnosticConsent.Token) -> Bool)? = nil) {
+         permits: ((InputDiagnosticConsent.Token) -> Bool)? = nil,
+         write: ((() -> [String], InputDiagnosticConsent.Token) -> Void)? = nil) {
         self.takeID = takeID
         self.consent = consent
         self.permits = permits ?? { DiagnosticLog.permitsInputTrace($0) }
+        self.write = write ?? { lines, token in DiagnosticLog.writeInputTrace(lines(), consent: token) }
         buffer = InputDiagnosticBuffer(takeID: takeID)
     }
 
@@ -52,7 +55,7 @@ import KoeBridgeCore
         guard !finished else { return }
         finished = true
         defer { buffer.discard() }
-        DiagnosticLog.writeInputTrace(buffer.renderedLines(), consent: consent)
+        write({ buffer.renderedLines() }, consent)
     }
 
     static func milliseconds(since start: TimeInterval) -> Int {
