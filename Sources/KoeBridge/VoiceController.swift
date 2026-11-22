@@ -522,7 +522,8 @@ import KoeBridgeCore
             refreshRetainedAudio()
             meetingSession = nil; meetingRunning = false
             meetingStatusTask?.cancel(); meetingStatusTask = nil
-            if text.isEmpty { status = "会議モードを終了しました（文字起こしなし）" }
+            if let message = session.microphoneRecoveryMessage { status = message }
+            else if text.isEmpty { status = "会議モードを終了しました（文字起こしなし）" }
             else if !historyStore.isSaved(recordID) { status = "会議の文字起こしは未保存です" }
             else { status = partial ? "会議の途中結果を履歴に保存しました" : "会議の文字起こしを履歴に保存しました" }
             meetingStatus = status
@@ -989,6 +990,7 @@ import KoeBridgeCore
         let retryPolicy = MicrophoneStartupRetryPolicy()
         let preparationBegan = ProcessInfo.processInfo.systemUptime
         var attempts = 0
+        var recoveryDisposition: MicrophoneCapture.EngineLifetime.Disposition = .normal
         do {
             var readyCapture: MicrophoneCapture?
             while readyCapture == nil {
@@ -999,7 +1001,8 @@ import KoeBridgeCore
                 let timeout = retryPolicy.timeoutForNextAttempt(elapsed: elapsed)
                 guard timeout > 0 else { throw MicrophoneCapture.CaptureError.notReady(.noBuffers) }
                 attempts += 1
-                let candidate = MicrophoneCapture(selectedInputUID: selectedInputUID, volumeGuard: volumeGuard, takeID: take.id)
+                let candidate = MicrophoneCapture(selectedInputUID: selectedInputUID, volumeGuard: volumeGuard,
+                                                  takeID: take.id, explicitStart: attempts == 1)
                 // Own preparation, not just a successfully started microphone.
                 // discard()/releaseResources() can now stop it immediately.
                 take.mic = candidate
@@ -1031,6 +1034,7 @@ import KoeBridgeCore
                     if take.mic === candidate { take.mic = nil }
                     guard active === take, phase == .preparing, !take.finished else { throw CancellationError() }
                     if error is CancellationError { throw error }
+                    recoveryDisposition = candidate.recoveryDisposition
                     // A missing explicit choice must never become another mic.
                     if error is MicrophoneSelectionError { throw error }
                     let category = (error as? MicrophoneCapture.CaptureError)?.diagnosticCategory ?? (error as? MicrophoneGraphError)?.rawValue ?? ((error as? MicrophoneDevices.DeviceError) == .enumerationFailed ? "enumeration_failed" : "engine_start_failed")
@@ -1043,7 +1047,7 @@ import KoeBridgeCore
                     }
                     DiagnosticLog.recordMicrophoneEvidence("mic_prepare_failed take=\(take.id.uuidString) attempt=\(attempts) category=\(category) code=\((error as NSError).code) elapsed_ms=\(Int(elapsed * 1_000))")
                     guard let delay = MicrophoneCapture.retryDelay(for: error, policy: retryPolicy,
-                        attempts: attempts, elapsed: elapsed) else { throw error }
+                        attempts: attempts, elapsed: elapsed, disposition: recoveryDisposition) else { throw error }
                     status = "マイクの接続準備を待っています…（\(attempts + 1)/\(retryPolicy.maximumAttempts)）"
                     try await Task.sleep(for: .seconds(delay))
                 }
@@ -1085,8 +1089,9 @@ import KoeBridgeCore
             scheduleRecordingTimeout(take)
         } catch {
             if active === take, !take.finished {
-                DiagnosticLog.record("microphone start failed: \(error.localizedDescription)")
-                resolve(take, text: nil, reason: Self.userFacingFailure(error, operation: "マイクの開始"))
+                let recoveryMessage = recoveryDisposition.message
+                DiagnosticLog.record("microphone start failed: \(recoveryMessage ?? error.localizedDescription)")
+                resolve(take, text: nil, reason: Self.microphoneStartFailureMessage(error, disposition: recoveryDisposition))
             }
         }
     }
@@ -2088,6 +2093,13 @@ import KoeBridgeCore
         objectWillChange.send()
     }
     func copyLastText() { TextInsertion.copy(history.first?.text ?? previewText) }
+
+    static func microphoneStartFailureMessage(
+        _ error: Error, disposition: MicrophoneCapture.EngineLifetime.Disposition
+    ) -> String {
+        if error is CancellationError { return userFacingFailure(error, operation: "マイクの開始") }
+        return disposition.message ?? userFacingFailure(error, operation: "マイクの開始")
+    }
 
     /// Only app-owned error types with Japanese descriptions may supply UI detail.
     /// Framework and transport errors always pass through the domain/code mapper.

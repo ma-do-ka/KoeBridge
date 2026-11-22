@@ -1,4 +1,6 @@
 import Foundation
+
+#if canImport(XCTest)
 import XCTest
 @testable import KoeBridgeCore
 
@@ -718,3 +720,34 @@ final class MicrophoneEngineLifetimeTests: XCTestCase {
         XCTAssertTrue(lifetime.release(token: active.token))
     }
 }
+#endif
+
+#if canImport(Testing)
+import Testing
+@testable import KoeBridgeCore
+
+struct MicrophoneGenerationTests {
+    @Test func verifiedReplacementCanBeLeasedNormallyButCannotBeReplacedAgain() throws {
+        let lifetime = MicrophoneEngineLifetime { NSObject() }
+        let old = try #require(try lifetime.acquire(for: .capture, canAcquire: true))
+        lifetime.retire(old, preCommitFormatException: true)
+        #expect(!lifetime.release(token: old.token))
+        #expect(lifetime.beginCleanup(old))
+        #expect(lifetime.finishCleanup(old, succeeded: true) == .replacementPending)
+        #expect((try? lifetime.acquire(for: .warm, canAcquire: true)) == nil)
+        #expect((try? lifetime.acquire(for: .capture, canAcquire: false)) == nil)
+        let next = try #require(try lifetime.acquire(for: .capture, canAcquire: true))
+        #expect(next.resource !== old.resource)
+        #expect((try? lifetime.acquire(for: .warm, canAcquire: true)) == nil)
+        lifetime.finishVerification(next)
+        #expect(lifetime.beginCleanup(next))
+        #expect(lifetime.finishCleanup(next, succeeded: true) == .normal)
+        let warm = try #require(try lifetime.acquire(for: .warm, canAcquire: true))
+        #expect(warm.resource === next.resource)
+        lifetime.retire(warm, preCommitFormatException: true)
+        #expect(lifetime.beginCleanup(warm))
+        #expect(lifetime.finishCleanup(warm, succeeded: true) == .terminal)
+        #expect((try? lifetime.acquire(for: .capture, canAcquire: true)) == nil)
+    }
+}
+#endif

@@ -12,7 +12,7 @@ package enum MicrophoneGraphError: String, LocalizedError {
     case quarantined = "tap_graph_quarantined"
 
     package var errorDescription: String? {
-        "マイクの安全な状態を確認できません。アプリを再起動してください"
+        MicrophoneEngineLifetime<AVAudioEngine>.Disposition.terminal.message
     }
 }
 
@@ -23,20 +23,21 @@ package protocol MicrophoneTapGraph {
     var hardware: AVAudioFormat { get }
     var client: AVAudioFormat { get }
     func install(_ format: AVAudioFormat, block: @escaping AVAudioNodeTapBlock) -> KBTapResult
-    func prepare()
-    func quarantine()
-    func removeOwnedTap()
+    func prepare() throws
+    func retire(preCommitFormatException: Bool)
+    var cleanupIsOwned: Bool { get }
+    func removeOwnedTap() -> Bool
 }
 
 package struct LeasedMicrophoneTapGraph: MicrophoneTapGraph {
     let lifetime: MicrophoneEngineLifetime<AVAudioEngine>
     let lease: MicrophoneEngineLifetime<AVAudioEngine>.Lease
-    let node: AVAudioInputNode
+    let node: AVAudioNode
     let selected: () -> Bool
 
     package init(lifetime: MicrophoneEngineLifetime<AVAudioEngine>,
                  lease: MicrophoneEngineLifetime<AVAudioEngine>.Lease,
-                 node: AVAudioInputNode, selected: @escaping () -> Bool) {
+                 node: AVAudioNode, selected: @escaping () -> Bool) {
         self.lifetime = lifetime
         self.lease = lease
         self.node = node
@@ -55,9 +56,19 @@ package struct LeasedMicrophoneTapGraph: MicrophoneTapGraph {
     package func install(_ format: AVAudioFormat, block: @escaping AVAudioNodeTapBlock) -> KBTapResult {
         KBInstallInputTap(node, format, block)
     }
-    package func prepare() { lease.resource.prepare() }
-    package func quarantine() { lifetime.quarantine(token: lease.token) }
-    package func removeOwnedTap() { node.removeTap(onBus: 0) }
+    package func prepare() throws {
+        guard KBPrepareMicrophoneEngine(lease.resource) else { throw PreparationError.nativeException }
+    }
+    private enum PreparationError: Error { case nativeException }
+
+    package func retire(preCommitFormatException: Bool) {
+        lifetime.retire(lease, preCommitFormatException: preCommitFormatException)
+    }
+    package var cleanupIsOwned: Bool { lifetime.ownsCleanup(lease) }
+    package func removeOwnedTap() -> Bool { KBRemoveInputTap(node) }
+
+    package static func makeEngine() -> AVAudioEngine? { KBCreateMicrophoneEngine() }
+    package static func stopEngine(_ engine: AVAudioEngine) -> Bool { KBStopMicrophoneEngine(engine) }
 }
 
 /// All methods run on the shared lifecycle lane. An install receipt belongs to
@@ -169,7 +180,7 @@ package final class MicrophoneTapInstallation {
             }
             try verifyApplied()
             diagnostics?.begin(.enginePrepare)
-            graph.prepare()
+            try graph.prepare()
             diagnostics?.end(.enginePrepare)
             try verifyApplied()
             hardwareFormat = hardware
@@ -177,16 +188,20 @@ package final class MicrophoneTapInstallation {
             return plan
         } catch {
             gate.stop(at: now())
-            if error is MicrophoneGraphError { graph.quarantine() }
+            if let graphError = error as? MicrophoneGraphError {
+                graph.retire(preCommitFormatException: graphError == .formatException && !gate.didCommit)
+            }
             throw error
         }
     }
 
-    package func removeIfOwned() {
-        if let owned, owned.leaseIsCurrent { owned.removeOwnedTap() }
+    @discardableResult package func removeIfOwned() -> Bool {
+        let receipt = owned
         owned = nil
         hardwareFormat = nil
         appliedFormat = nil
+        guard let receipt, receipt.cleanupIsOwned else { return true }
+        return receipt.removeOwnedTap()
     }
 }
 #endif

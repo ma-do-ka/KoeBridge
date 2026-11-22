@@ -26,6 +26,8 @@ private final class MeetingAudioCount: @unchecked Sendable {
     private(set) var stopping = false
     private var systemFailed = false
     private var micFailed = false
+    private var requestedMicrophone = false
+    private(set) var microphoneRecoveryMessage: String?
     private var completed = false
     private var recognitionProblems: [String] = []
     var onUsage: ((EngineUsageSample, [GeminiTokenSample]) -> Void)?
@@ -270,8 +272,15 @@ private final class MeetingAudioCount: @unchecked Sendable {
         }
         chunk.startedAt = ProcessInfo.processInfo.systemUptime
         if source == .microphone {
-            let mic = MicrophoneCapture(selectedInputUID: microphoneUID); chunk.mic = mic
-            try await mic.start(onAudio: audio, onDeviceChanged: failure)
+            let mic = MicrophoneCapture(selectedInputUID: microphoneUID, explicitStart: !requestedMicrophone)
+            requestedMicrophone = true
+            chunk.mic = mic
+            do {
+                try await mic.start(onAudio: audio, onDeviceChanged: failure)
+            } catch {
+                if !(error is CancellationError) { microphoneRecoveryMessage = mic.recoveryDisposition.message }
+                throw error
+            }
             chunk.startedAt = ProcessInfo.processInfo.systemUptime - Double(mic.totalPCMBytes) / 32_000
         } else {
             let system = SystemAudioCapture(onAudio: audio, onFailure: failure)

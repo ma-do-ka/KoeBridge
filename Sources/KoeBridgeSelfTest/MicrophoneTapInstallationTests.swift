@@ -16,7 +16,6 @@ struct MicrophoneTapInstallationTests {
         var onInstall: (() -> Void)?
         var onPrepare: (() -> Void)?
         var prepares = 0
-        var removals = 0
         var stoppedAndUnconnected = true
         init() {
             client = aggregate
@@ -33,8 +32,11 @@ struct MicrophoneTapInstallationTests {
             return result
         }
         func prepare() { prepares += 1; onPrepare?() }
-        func removeOwnedTap() { removals += 1 }
-        func quarantine() { lifetime.quarantine(token: lease.token) }
+        var cleanupIsOwned: Bool { lifetime.ownsCleanup(lease) }
+        func removeOwnedTap() -> Bool { KBRemoveInputTap(node) }
+        func retire(preCommitFormatException: Bool) {
+            lifetime.retire(lease, preCommitFormatException: preCommitFormatException)
+        }
     }
 
     private enum Scenario: CaseIterable {
@@ -47,12 +49,13 @@ struct MicrophoneTapInstallationTests {
         let old = graph.lease
         check(graph.lifetime.release(token: old.token))
         let current = graph.lifetime.acquire()!
-        graph.lifetime.quarantine(token: old.token)
+        graph.lifetime.retire(old, preCommitFormatException: true)
         check(!graph.lifetime.isQuarantined)
         check(graph.lifetime.isCurrent(token: current.token))
         check(!graph.lifetime.release(token: old.token))
-        graph.lifetime.quarantine(token: current.token)
-        check(graph.lifetime.release(token: current.token))
+        graph.lifetime.retire(current, preCommitFormatException: false)
+        check(graph.lifetime.beginCleanup(current))
+        check(graph.lifetime.finishCleanup(current, succeeded: true) == .terminal)
         check(graph.lifetime.acquire() == nil)
 
         let policy = MicrophoneStartupRetryPolicy()
@@ -86,7 +89,41 @@ struct MicrophoneTapInstallationTests {
         check(!warm.warmConfigurationChanged())
     }
 
+    private static func staleGraphCannotTouchNewOwner(warm: Bool) {
+        let lifetime = MicrophoneEngineLifetime { KBFakeMicrophoneEngine() as AVAudioEngine }
+        let old = lifetime.acquire()!
+        let node = KBFakeTapNode()
+        old.resource.attach(node)
+        check(lifetime.release(token: old.token))
+        let current = lifetime.acquire()!
+        let stale = LeasedMicrophoneTapGraph(lifetime: lifetime, lease: old, node: node) { true }
+        let gate = MicrophoneStartupGate(configuring: true)
+        let tap = MicrophoneTapInstallation()
+        let format = AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1)!
+        let sink: MicrophoneTapInstallation.Sink = warm ? .warm : .capture(
+            output: format, configure: { _, _, _ in check(false) },
+            readback: { _ in check(false) }, receive: { _, _ in check(false) })
+        do {
+            _ = try tap.installAndPrepare(graph: stale, gate: gate, deadline: 3, now: { 1 }, sink: sink)
+            check(false)
+        } catch {
+            check(error as? MicrophoneGraphError == .quarantined)
+            check((error as NSError).code == 3)
+        }
+        check(gate.isStopped)
+        check(!lifetime.beginCleanup(old))
+        check(tap.removeIfOwned())
+        check(!lifetime.release(token: old.token))
+        check(lifetime.isCurrent(token: current.token))
+        check(lifetime.disposition == .normal)
+        check(node.installs == 0 && node.removes == 0 && !tap.isInstalled)
+        check((old.resource as? KBFakeMicrophoneEngine)?.prepares == 0)
+        check((old.resource as? KBFakeMicrophoneEngine)?.stops == 0)
+        check(lifetime.release(token: current.token))
+    }
+
     static func exercise(warm: Bool) {
+        staleGraphCannotTouchNewOwner(warm: warm)
         for scenario in Scenario.allCases {
             // The warm sink has no converter setup to interrupt.
             if warm && scenario == .changedDuringConversion { continue }
@@ -170,10 +207,12 @@ struct MicrophoneTapInstallationTests {
                 check(!gate.commit(at: clock, deadline: deadline, engineRunning: true))
             }
 
-            tap.removeIfOwned()
-            tap.removeIfOwned()
-            check(graph.removals == (!beforeInstall && !partial ? 1 : 0))
-            check(graph.lifetime.release(token: graph.lease.token))
+            check(graph.lifetime.beginCleanup(graph.lease))
+            check(tap.removeIfOwned())
+            check(tap.removeIfOwned())
+            check(graph.node.removes == (!beforeInstall && !partial ? 1 : 0))
+            let disposition = graph.lifetime.finishCleanup(graph.lease, succeeded: true)
+            check(disposition == (scenario == .switched ? .replacementPending : (partial ? .terminal : .normal)))
             check(graph.lifetime.isQuarantined == partial)
             check((graph.lifetime.acquire() == nil) == partial)
         }

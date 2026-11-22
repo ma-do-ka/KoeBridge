@@ -208,10 +208,10 @@ public final class MicrophoneStartupGate: @unchecked Sendable {
 
     /// Linearize a warm start against cancellation and configuration callbacks.
     /// A warmer has no audio admission or recording commit.
-    package func finishWarmStart(deadline: TimeInterval) -> Bool {
+    package func finishWarmStart(deadline: TimeInterval, now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) -> Bool {
         lock.lock(); defer { lock.unlock() }
         guard configuring, !stopped, failure == nil, pendingSince == nil,
-              ProcessInfo.processInfo.systemUptime < deadline else { return false }
+              now() < deadline else { return false }
         configuring = false
         return true
     }
@@ -397,9 +397,10 @@ public final class MicrophoneStartupGate: @unchecked Sendable {
     }
 
     /// Sample the live clock after acquiring the lock, at the commit decision.
-    package func commitBeforeDeadline(_ deadline: TimeInterval, engineRunning: Bool, expectedEpoch: UInt64) -> Bool {
+    package func commitBeforeDeadline(_ deadline: TimeInterval, engineRunning: Bool, expectedEpoch: UInt64,
+                                      now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) -> Bool {
         lock.lock(); defer { lock.unlock() }
-        return commitLocked(at: ProcessInfo.processInfo.systemUptime, deadline: deadline,
+        return commitLocked(at: now(), deadline: deadline,
                             engineRunning: engineRunning, expectedEpoch: expectedEpoch)
     }
 
@@ -494,72 +495,172 @@ public final class MicrophoneStopLatch: @unchecked Sendable {
     }
 }
 
-/// Own one audio engine for the lifetime of this owner, independently of a
-/// recording attempt. The macOS caller keeps this owner in a process-wide static.
-/// Releasing a lease NEVER releases the resource: AVFAudio's asynchronous I/O
-/// property listeners may still be handling a route change after engine.stop().
-/// This is bounded (one engine), not a timer-based quarantine or an engine pool.
-/// Engine operations themselves must remain on the microphone lifecycle queue.
+/// Retain retired engines while AVFAudio's private I/O listeners may still
+/// reference them. All hardware operations stay on the lifecycle lane.
 public final class MicrophoneEngineLifetime<Resource: AnyObject>: @unchecked Sendable {
     public struct Lease {
         public let token: UUID
         public let resource: Resource
-        fileprivate init(token: UUID, resource: Resource) {
-            self.token = token
-            self.resource = resource
+        fileprivate let generation: Int
+    }
+
+    package enum Purpose { case capture, continuation, warm }
+
+    package enum AcquisitionError: Error {
+        case factoryFailed, retiredEngineReturned
+    }
+
+    package enum Disposition: Equatable, Sendable {
+        case normal, replacementPending, terminal
+
+        package var message: String? {
+            switch self {
+            case .normal: nil
+            case .replacementPending: "マイクの入力形式が変わりました。もう一度録音を開始してください"
+            case .terminal: "マイクの安全な状態を確認できません。アプリを再起動してください"
+            }
         }
+    }
+
+    private enum State: Equatable {
+        case available, retiring(replaceable: Bool), pending, verifying, terminal
     }
 
     private let lock = NSLock()
-    private let makeResource: () -> Resource
+    private let makeResource: () -> Resource?
+    private var state = State.available
     private var resource: Resource?
+    private var retired: Resource?
     private var activeToken: UUID?
-    private var quarantined = false
+    private var generation = 1
+    private var cleanupStarted = false
 
     public var isQuarantined: Bool {
-        lock.lock(); defer { lock.unlock() }
-        return quarantined
+        lock.withLock { state == .terminal || state == .pending || isRetiring }
+    }
+
+    package var disposition: Disposition {
+        lock.withLock { dispositionLocked }
+    }
+
+    private var dispositionLocked: Disposition {
+        switch state {
+        case .pending: .replacementPending
+        case .terminal: .terminal
+        default: .normal
+        }
+    }
+
+    private var isRetiring: Bool {
+        if case .retiring = state { return true }
+        return false
     }
 
     public func isCurrent(token: UUID) -> Bool {
-        lock.lock(); defer { lock.unlock() }
-        return !quarantined && activeToken == token
+        lock.withLock {
+            activeToken == token && !cleanupStarted && (state == .available || state == .verifying)
+        }
     }
 
-    /// AVFAudio cannot prove rollback after a partial tap installation.
-    /// Retain the one engine for process lifetime, denying both kinds of lease.
-    public func quarantine(token: UUID) {
-        lock.lock(); defer { lock.unlock() }
-        if activeToken == token { quarantined = true }
+    private func owns(_ lease: Lease) -> Bool {
+        activeToken == lease.token && generation == lease.generation && resource === lease.resource
     }
 
-    public init(makeResource: @escaping () -> Resource) {
+    package func beginCleanup(_ lease: Lease) -> Bool {
+        lock.withLock {
+            guard owns(lease), !cleanupStarted else { return false }
+            cleanupStarted = true
+            return true
+        }
+    }
+
+    package func ownsCleanup(_ lease: Lease) -> Bool {
+        lock.withLock { owns(lease) && cleanupStarted }
+    }
+
+    package func retire(_ lease: Lease, preCommitFormatException: Bool) {
+        lock.withLock {
+            guard owns(lease), !cleanupStarted, state == .available || state == .verifying else { return }
+            state = .retiring(replaceable: generation == 1 && preCommitFormatException)
+        }
+    }
+
+    public init(makeResource: @escaping () -> Resource?) {
         self.makeResource = makeResource
     }
 
-    /// A caller must stop its engine, remove its tap and drain queued conversion
-    /// work before release. A simultaneous start fails closed instead of stealing
-    /// an engine still owned by another attempt. Creation is lazy and exactly once.
-    public func acquire() -> Lease? {
-        lock.lock(); defer { lock.unlock() }
-        guard !quarantined, activeToken == nil else { return nil }
-        let retained: Resource
-        if let resource { retained = resource }
-        else {
-            retained = makeResource()
-            resource = retained
-        }
+    public func acquire() -> Lease? { try? acquire(for: .warm, canAcquire: true) }
+
+    package func acquire(for purpose: Purpose, canAcquire: Bool) throws -> Lease? {
         let token = UUID()
-        activeToken = token
-        return Lease(token: token, resource: retained)
+        let accepted = lock.withLock {
+            guard canAcquire, activeToken == nil else { return false }
+            switch state {
+            case .available: break
+            case .pending where purpose == .capture:
+                state = .verifying
+                generation = 2
+            default: return false
+            }
+            activeToken = token
+            return true
+        }
+        guard accepted else { return nil }
+
+        // The reservation rejects reentrant/concurrent acquisition while the
+        // factory is outside the lock.
+        let existing = lock.withLock { resource }
+        let candidate = existing ?? makeResource()
+        return try lock.withLock {
+            do {
+                guard let candidate else { throw AcquisitionError.factoryFailed }
+                guard candidate !== retired else { throw AcquisitionError.retiredEngineReturned }
+                resource = candidate
+                return Lease(token: token, resource: candidate, generation: generation)
+            } catch {
+                state = .terminal
+                activeToken = nil
+                throw error
+            }
+        }
     }
 
-    /// Tokens prevent a late stop from returning a newer take's lease.
-    /// A successful return is NOT permission to deallocate the resource.
+    package func cleanupEndsTake(_ lease: Lease) -> Bool {
+        lock.withLock { owns(lease) && (isRetiring || state == .verifying) }
+    }
+
+    package func finishVerification(_ lease: Lease) {
+        lock.withLock {
+            if owns(lease), state == .verifying, !cleanupStarted { state = .available }
+        }
+    }
+
+    @discardableResult package func finishCleanup(_ lease: Lease, succeeded: Bool) -> Disposition {
+        lock.withLock {
+            guard owns(lease), cleanupStarted else { return dispositionLocked }
+            switch state {
+            case .retiring(let replaceable):
+                if succeeded && replaceable {
+                    retired = resource
+                    resource = nil
+                    state = .pending
+                } else { state = .terminal }
+            case .verifying: state = .terminal
+            case .available where !succeeded: state = .terminal
+            default: break
+            }
+            activeToken = nil
+            cleanupStarted = false
+            return dispositionLocked
+        }
+    }
+
+    /// Retained for callers that return an ordinary lease without hardware.
     @discardableResult public func release(token: UUID) -> Bool {
-        lock.lock(); defer { lock.unlock() }
-        guard activeToken == token else { return false }
-        activeToken = nil
-        return true
+        lock.withLock {
+            guard activeToken == token, resource != nil, state == .available, !cleanupStarted else { return false }
+            activeToken = nil
+            return true
+        }
     }
 }

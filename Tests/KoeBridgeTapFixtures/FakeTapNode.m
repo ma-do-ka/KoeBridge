@@ -16,5 +16,55 @@
                         format:@"Failed to create tap due to format mismatch (fixture)"];
         }
     }
+    if (_fixtureClient != nil) { _fixtureClient = format; }
+    if (_afterInstall != nil) { _afterInstall(); }
+}
+
+- (AVAudioFormat *)inputFormatForBus:(AVAudioNodeBus)bus {
+    AVAudioFormat *format = _fixtureHardware ?: [super inputFormatForBus:bus];
+    if (_afterHardwareRead != nil) { _afterHardwareRead(); }
+    return format;
+}
+
+- (AVAudioFormat *)outputFormatForBus:(AVAudioNodeBus)bus {
+    return _fixtureClient ?: [super outputFormatForBus:bus];
+}
+
+- (void)removeTapOnBus:(AVAudioNodeBus)bus {
+    _removes++;
+    if (_raiseOnRemove) {
+        [NSException raise:NSInternalInconsistencyException format:@"Fixture remove failed"];
+    }
+    _partialTap = nil;
+}
+@end
+
+@implementation KBFakeMicrophoneEngine
+- (BOOL)isRunning { return _fixtureRunning; }
+
+- (void)prepare {
+    _prepares++;
+    if (_raiseOnPrepare) {
+        [NSException raise:NSInternalInconsistencyException format:@"Fixture prepare failed"];
+    }
+}
+
+- (BOOL)startAndReturnError:(NSError **)outError {
+    _starts++;
+    if (_failStart) {
+        if (outError != NULL) *outError = [NSError errorWithDomain:NSOSStatusErrorDomain code:-50 userInfo:nil];
+        return NO;
+    }
+    _fixtureRunning = YES;
+    if (_afterStart != nil) { _afterStart(); }
+    return YES;
+}
+
+- (void)stop {
+    _stops++;
+    if (_raiseOnStop) {
+        [NSException raise:NSInternalInconsistencyException format:@"Fixture stop failed"];
+    }
+    _fixtureRunning = _remainRunningAfterStop;
 }
 @end
