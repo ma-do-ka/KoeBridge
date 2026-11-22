@@ -110,10 +110,12 @@ final class MicrophoneCapture: @unchecked Sendable {
 
     init(selectedInputUID: String = "", volumeGuard: OutputVolumeGuard? = nil, takeID: UUID = UUID(), startupGate: MicrophoneStartupGate = .init(configuring: true),
          explicitStart: Bool = true, lifetime: EngineLifetime = MicrophoneCapture.engineLifetime,
-         hardware: MicrophoneHardware = .init()) {
+         hardware: MicrophoneHardware = .init(),
+         makeMicrophoneEvidence: @escaping @MainActor () -> MicrophoneEvidenceWriter? = { DiagnosticLog.microphoneEvidenceWriter() }) {
         acquisitionPurpose = explicitStart ? .capture : .continuation
         self.lifetime = lifetime
         self.hardware = hardware
+        self.makeMicrophoneEvidence = makeMicrophoneEvidence
         volumeGuardOwner = takeID
         self.volumeGuard = volumeGuard
         self.selectedInputUID = selectedInputUID
@@ -148,6 +150,7 @@ final class MicrophoneCapture: @unchecked Sendable {
     private let diagnosticID = UUID()
     @MainActor private var speechTrace: InputDiagnosticTrace?
     // Assigned once before dispatching startBlocking, then read-only across queues.
+    private let makeMicrophoneEvidence: @MainActor () -> MicrophoneEvidenceWriter?
     private var microphoneEvidence: MicrophoneEvidenceWriter?
     private var startupDiagnostics: MicrophonePreparationDiagnostics?
 
@@ -229,7 +232,7 @@ final class MicrophoneCapture: @unchecked Sendable {
         let beganAt = hardware.now()
         let deadline = requestedDeadline ?? (beganAt + MicrophoneStartupRetryPolicy().attemptTimeout)
         attemptDeadline = deadline
-        microphoneEvidence = DiagnosticLog.microphoneEvidenceWriter()
+        microphoneEvidence = makeMicrophoneEvidence()
         startupDiagnostics = DiagnosticLog.microphoneTrace(captureID: diagnosticID,
                                                            explicitSelection: !selectedInputUID.isEmpty)
         startupDiagnostics?.begin(.lifecycle)
@@ -638,7 +641,7 @@ final class MicrophoneCapture: @unchecked Sendable {
         guard hardware.now() < attemptDeadline else { throw CaptureError.notReady(.unstableBuffers) }
         let startAt = Date()
         startupDiagnostics?.begin(.engineStart)
-        try engine.start()
+        try graph.start()
         volumeGuard?.check()
         startupDiagnostics?.end(.engineStart)
         guard !startupGate.isStopped else { throw CancellationError() }
@@ -863,17 +866,21 @@ final class MicrophoneCapture: @unchecked Sendable {
         }
         startupDiagnostics?.end(.stopGate)
         let cleanupLease = engineLease.flatMap { lifetime.beginCleanup($0) ? $0 : nil }
-        var cleanupSucceeded = true
+        var cleanupEvidence: EngineLifetime.CleanupEvidence?
         if let lease = cleanupLease {
+            let hadTap = tap.isInstalled
             startupDiagnostics?.begin(.engineStop)
             let stopped = LeasedMicrophoneTapGraph.stopEngine(lease.resource)
             startupDiagnostics?.end(.engineStop)
-            let hadTap = tap.isInstalled
+            let running = lifetime.needsIndependentStopReadback(lease, hadTap: hadTap)
+                ? LeasedMicrophoneTapGraph.readEngineRunning(lease.resource) : nil
             if hadTap { startupDiagnostics?.begin(.tapRemove) }
             let removed = tap.removeIfOwned()
             if hadTap { startupDiagnostics?.end(.tapRemove) }
-            cleanupSucceeded = stopped && removed
-            if !cleanupSucceeded || lifetime.cleanupEndsTake(lease) { volumeGuard?.end(volumeGuardOwner) }
+            cleanupEvidence = .init(stopped: stopped, hadTap: hadTap, removed: removed, runningAtCleanup: running)
+            if !stopped || (hadTap && removed != true) || lifetime.cleanupEndsTake(lease) {
+                volumeGuard?.end(volumeGuardOwner)
+            }
         } else {
             tap.removeIfOwned()
         }
@@ -906,8 +913,9 @@ final class MicrophoneCapture: @unchecked Sendable {
         startupDiagnostics?.begin(.leaseRelease)
         engineLease = nil
         if !flushPendingAudio { speechDetector.cancel() }
-        if let lease = cleanupLease {
-            recoveryDisposition = lifetime.finishCleanup(lease, succeeded: cleanupSucceeded)
+        if let lease = cleanupLease, let cleanupEvidence {
+            let record: ((String) -> Void)? = microphoneEvidence.map { writer in { _ = writer.enqueue($0) } }
+            recoveryDisposition = lifetime.finishCleanup(lease, evidence: cleanupEvidence, record: record)
         }
         startupDiagnostics?.end(.leaseRelease)
         guard flushPendingAudio else {

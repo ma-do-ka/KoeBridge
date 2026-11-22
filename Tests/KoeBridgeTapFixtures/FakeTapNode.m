@@ -6,6 +6,7 @@
     _installs++;
     _requested = format;
     _partialTap = [block copy];
+    if (_afterRetainTap != nil) { _afterRetainTap(); }
     if (_raiseUnknown) {
         [NSException raise:NSInternalInconsistencyException format:@"Unexpected graph state"];
     }
@@ -40,7 +41,12 @@
 @end
 
 @implementation KBFakeMicrophoneEngine
-- (BOOL)isRunning { return _fixtureRunning; }
+- (BOOL)isRunning {
+    if (_stops > 0 && _raiseOnRunningReadAfterStop) {
+        [NSException raise:NSInternalInconsistencyException format:@"Fixture running readback failed"];
+    }
+    return _fixtureRunning;
+}
 
 - (void)prepare {
     _prepares++;

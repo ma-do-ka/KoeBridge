@@ -522,6 +522,38 @@ public final class MicrophoneEngineLifetime<Resource: AnyObject>: @unchecked Sen
         }
     }
 
+    package enum StartHistory {
+        case notCalled, calling, started
+
+        fileprivate var diagnosticValue: String {
+            switch self {
+            case .notCalled: "false"
+            case .calling: "unknown"
+            case .started: "true"
+            }
+        }
+    }
+
+    package struct CleanupEvidence {
+        let stopped: Bool
+        let hadTap: Bool
+        let removed: Bool?
+        let runningAtCleanup: Bool?
+
+        package init(stopped: Bool, hadTap: Bool, removed: Bool? = nil, runningAtCleanup: Bool? = nil) {
+            self.stopped = stopped
+            self.hadTap = hadTap
+            self.removed = removed
+            self.runningAtCleanup = runningAtCleanup
+        }
+    }
+
+    private struct LeaseHistory {
+        var preflightStopped = false
+        var start = StartHistory.notCalled
+        var preCommitFormatException = false
+    }
+
     private enum State: Equatable {
         case available, retiring(replaceable: Bool), pending, verifying, terminal
     }
@@ -534,6 +566,7 @@ public final class MicrophoneEngineLifetime<Resource: AnyObject>: @unchecked Sen
     private var activeToken: UUID?
     private var generation = 1
     private var cleanupStarted = false
+    private var history = LeaseHistory()
 
     public var isQuarantined: Bool {
         lock.withLock { state == .terminal || state == .pending || isRetiring }
@@ -578,9 +611,37 @@ public final class MicrophoneEngineLifetime<Resource: AnyObject>: @unchecked Sen
         lock.withLock { owns(lease) && cleanupStarted }
     }
 
+    // Hardware operations and these updates are serialized by the lifecycle lane.
+    package func recordPreflightStopped(_ stopped: Bool, for lease: Lease) {
+        lock.withLock {
+            guard owns(lease), !cleanupStarted, !isRetiring else { return }
+            history.preflightStopped = stopped
+        }
+    }
+
+    package func recordStart(_ start: StartHistory, for lease: Lease) {
+        lock.withLock {
+            guard owns(lease), !cleanupStarted else { return }
+            history.start = start
+        }
+    }
+
+    package func needsIndependentStopReadback(_ lease: Lease, hadTap: Bool) -> Bool {
+        lock.withLock {
+            owns(lease) && cleanupStarted && needsIndependentStopReadbackLocked(hadTap: hadTap)
+        }
+    }
+
+    // This alternative proof is limited to a permanently retiring generation
+    // eligible for replacement. Other cleanup still requires a successful stop.
+    private func needsIndependentStopReadbackLocked(hadTap: Bool) -> Bool {
+        state == .retiring(replaceable: true) && !hadTap && history.start == .notCalled
+    }
+
     package func retire(_ lease: Lease, preCommitFormatException: Bool) {
         lock.withLock {
             guard owns(lease), !cleanupStarted, state == .available || state == .verifying else { return }
+            history.preCommitFormatException = preCommitFormatException
             state = .retiring(replaceable: generation == 1 && preCommitFormatException)
         }
     }
@@ -602,6 +663,7 @@ public final class MicrophoneEngineLifetime<Resource: AnyObject>: @unchecked Sen
                 generation = 2
             default: return false
             }
+            history = LeaseHistory()
             activeToken = token
             return true
         }
@@ -635,9 +697,16 @@ public final class MicrophoneEngineLifetime<Resource: AnyObject>: @unchecked Sen
         }
     }
 
-    @discardableResult package func finishCleanup(_ lease: Lease, succeeded: Bool) -> Disposition {
-        lock.withLock {
-            guard owns(lease), cleanupStarted else { return dispositionLocked }
+    @discardableResult package func finishCleanup(_ lease: Lease, evidence: CleanupEvidence,
+                                                   record: ((String) -> Void)? = nil) -> Disposition {
+        let (disposition, diagnostic) = lock.withLock { () -> (Disposition, String?) in
+            guard owns(lease), cleanupStarted else { return (dispositionLocked, nil) }
+            let succeeded: Bool
+            if needsIndependentStopReadbackLocked(hadTap: evidence.hadTap) {
+                succeeded = history.preflightStopped && evidence.runningAtCleanup == false
+            } else {
+                succeeded = evidence.stopped && (!evidence.hadTap || evidence.removed == true)
+            }
             switch state {
             case .retiring(let replaceable):
                 if succeeded && replaceable {
@@ -649,10 +718,22 @@ public final class MicrophoneEngineLifetime<Resource: AnyObject>: @unchecked Sen
             case .available where !succeeded: state = .terminal
             default: break
             }
+            let disposition = dispositionLocked
+            let diagnostic = record.map { _ in
+                let removed = evidence.hadTap ? (evidence.removed.map { String($0) } ?? "unknown") : "not_required"
+                let running = evidence.runningAtCleanup.map { String($0) } ?? "unknown"
+                return "mic_cleanup_disposition generation=\(generation) preCommitFormatException=\(history.preCommitFormatException)"
+                    + " hadTap=\(evidence.hadTap) engineStarted=\(history.start.diagnosticValue) stopped=\(evidence.stopped)"
+                    + " removed=\(removed) preflightStopped=\(history.preflightStopped) runningAtCleanup=\(running)"
+                    + " succeeded=\(succeeded) disposition=\(disposition)"
+            }
             activeToken = nil
             cleanupStarted = false
-            return dispositionLocked
+            history = LeaseHistory()
+            return (disposition, diagnostic)
         }
+        if let diagnostic { record?(diagnostic) }
+        return disposition
     }
 
     /// Retained for callers that return an ordinary lease without hardware.
@@ -660,6 +741,7 @@ public final class MicrophoneEngineLifetime<Resource: AnyObject>: @unchecked Sen
         lock.withLock {
             guard activeToken == token, resource != nil, state == .available, !cleanupStarted else { return false }
             activeToken = nil
+            history = LeaseHistory()
             return true
         }
     }

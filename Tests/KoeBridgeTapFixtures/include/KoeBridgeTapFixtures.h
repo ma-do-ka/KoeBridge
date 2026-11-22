@@ -10,6 +10,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, readonly) unsigned removes;
 @property(nonatomic, nullable) AVAudioFormat *fixtureHardware;
 @property(nonatomic, nullable) AVAudioFormat *fixtureClient;
+@property(nonatomic, nullable, copy) void (^afterRetainTap)(void);
 @property(nonatomic, nullable, copy) void (^afterInstall)(void);
 @property(nonatomic, nullable, copy) void (^afterHardwareRead)(void);
 @property(nonatomic) unsigned currentDeviceID;
@@ -24,6 +25,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic) BOOL failStart;
 @property(nonatomic) BOOL raiseOnStop;
 @property(nonatomic) BOOL remainRunningAfterStop;
+@property(nonatomic) BOOL raiseOnRunningReadAfterStop;
 @property(nonatomic, readonly) unsigned prepares;
 @property(nonatomic, readonly) unsigned starts;
 @property(nonatomic, readonly) unsigned stops;

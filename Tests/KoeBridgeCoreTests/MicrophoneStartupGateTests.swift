@@ -730,10 +730,11 @@ struct MicrophoneGenerationTests {
     @Test func verifiedReplacementCanBeLeasedNormallyButCannotBeReplacedAgain() throws {
         let lifetime = MicrophoneEngineLifetime { NSObject() }
         let old = try #require(try lifetime.acquire(for: .capture, canAcquire: true))
+        lifetime.recordPreflightStopped(true, for: old)
         lifetime.retire(old, preCommitFormatException: true)
         #expect(!lifetime.release(token: old.token))
         #expect(lifetime.beginCleanup(old))
-        #expect(lifetime.finishCleanup(old, succeeded: true) == .replacementPending)
+        #expect(lifetime.finishCleanup(old, evidence: .init(stopped: true, hadTap: false, runningAtCleanup: false)) == .replacementPending)
         #expect((try? lifetime.acquire(for: .warm, canAcquire: true)) == nil)
         #expect((try? lifetime.acquire(for: .capture, canAcquire: false)) == nil)
         let next = try #require(try lifetime.acquire(for: .capture, canAcquire: true))
@@ -741,12 +742,12 @@ struct MicrophoneGenerationTests {
         #expect((try? lifetime.acquire(for: .warm, canAcquire: true)) == nil)
         lifetime.finishVerification(next)
         #expect(lifetime.beginCleanup(next))
-        #expect(lifetime.finishCleanup(next, succeeded: true) == .normal)
+        #expect(lifetime.finishCleanup(next, evidence: .init(stopped: true, hadTap: false)) == .normal)
         let warm = try #require(try lifetime.acquire(for: .warm, canAcquire: true))
         #expect(warm.resource === next.resource)
         lifetime.retire(warm, preCommitFormatException: true)
         #expect(lifetime.beginCleanup(warm))
-        #expect(lifetime.finishCleanup(warm, succeeded: true) == .terminal)
+        #expect(lifetime.finishCleanup(warm, evidence: .init(stopped: true, hadTap: false)) == .terminal)
         #expect((try? lifetime.acquire(for: .capture, canAcquire: true)) == nil)
     }
 }

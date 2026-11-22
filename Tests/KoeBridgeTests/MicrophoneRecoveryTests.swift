@@ -11,7 +11,7 @@ import KoeBridgeTapFixtures
 struct MicrophoneRecoveryTests {
     private enum Fault: CaseIterable {
         case none, formatException, unknownException, topologyBefore, topologyAfter, preflight, bind
-        case prepare, readback, start, noPCM, deadlineOnStart, unprovenStop, stopException, removeException
+        case prepare, readback, start, noPCM, deadlineOnStart, unprovenStop, stopException, unreadableStop, removeException
     }
 
     private final class Clock: @unchecked Sendable {
@@ -34,17 +34,16 @@ struct MicrophoneRecoveryTests {
             let staleClient = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 2)!
             node.fixtureClient = staleClient
             switch fault {
-            case .formatException, .unprovenStop, .stopException:
+            case .formatException, .unprovenStop, .stopException, .unreadableStop:
                 node.switchDeviceDuringInstall = true
                 engine.remainRunningAfterStop = fault == .unprovenStop
                 engine.raiseOnStop = fault == .stopException
+                engine.raiseOnRunningReadAfterStop = fault == .unreadableStop
             case .unknownException: node.raiseUnknown = true
             case .topologyBefore: engine.fixtureRunning = true
             case .topologyAfter, .removeException:
-                node.afterInstall = { [weak engine] in
-                    engine?.fixtureRunning = true
-                    engine?.raiseOnStop = fault == .removeException
-                }
+                node.afterInstall = { [weak engine] in engine?.fixtureRunning = true }
+                engine.raiseOnStop = fault == .removeException
                 node.raiseOnRemove = fault == .removeException
             case .preflight:
                 node.afterHardwareRead = { [weak node] in
@@ -83,6 +82,7 @@ struct MicrophoneRecoveryTests {
         var returnSameEngine = false
         var failFactory = false
         var factoryHook: (() -> Void)?
+        var configureDevice: ((Device) -> Void)?
 
         init(_ faults: Fault...) { self.faults = faults }
 
@@ -95,6 +95,7 @@ struct MicrophoneRecoveryTests {
             }
             let device = Device(faults[min(devices.count, faults.count - 1)], clock: clock)
             devices.append(device)
+            configureDevice?(device)
             return device.engine
         }
 
@@ -115,14 +116,52 @@ struct MicrophoneRecoveryTests {
         }
 
         func capture(gate: MicrophoneStartupGate = .init(configuring: true),
-                     explicitStart: Bool = true) -> MicrophoneCapture {
+                     explicitStart: Bool = true,
+                     makeEvidence: @escaping @MainActor () -> MicrophoneEvidenceWriter? = { nil }) -> MicrophoneCapture {
             MicrophoneCapture(selectedInputUID: "explicit", startupGate: gate, explicitStart: explicitStart,
-                              lifetime: lifetime, hardware: hardware)
+                              lifetime: lifetime, hardware: hardware, makeMicrophoneEvidence: makeEvidence)
         }
 
         @MainActor
         func warm(volumeGuard: OutputVolumeGuard = .init(enabled: false)) -> MicrophoneWarmKeeper {
             MicrophoneWarmKeeper(volumeGuard: volumeGuard, lifetime: lifetime, hardware: hardware, authorized: { true })
+        }
+    }
+
+    @MainActor private final class CleanupLog {
+        private let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        private let consent = InputDiagnosticConsent(enabled: true)
+        private lazy var writer = DiagnosticWriter(
+            main: .init(fileURL: root.appendingPathComponent("main")),
+            microphone: .init(fileURL: root.appendingPathComponent("mic")))
+
+        func evidence() -> MicrophoneEvidenceWriter? {
+            let writer = self.writer
+            let consent = self.consent
+            return MicrophoneEvidenceWriter(token: consent.token, permits: { consent.allows($0) }) {
+                writer.append([$0], mirrored: true)
+            }
+        }
+
+        func dispositions(count: Int) async throws -> [String] {
+            for _ in 0..<100 {
+                writer.flush()
+                let contents = try? String(contentsOf: root.appendingPathComponent("mic"), encoding: .utf8)
+                let lines = contents?.split(separator: "\n").compactMap { line -> String? in
+                    guard let event = line.split(separator: " ", maxSplits: 1).last,
+                          event.hasPrefix("mic_cleanup_disposition ") else { return nil }
+                    return String(event)
+                } ?? []
+                if lines.count >= count { return lines }
+                try await Task.sleep(for: .milliseconds(5))
+            }
+            Issue.record("Missing microphone cleanup evidence")
+            return []
+        }
+
+        func clean() {
+            writer.flush()
+            try? FileManager.default.removeItem(at: root)
         }
     }
 
@@ -252,8 +291,171 @@ struct MicrophoneRecoveryTests {
         }
     }
 
+    @Test func formatExceptionAfterCommittedTakeReplacesStoppedGeneration() async throws {
+        let rig = Rig(.none)
+        let log = CleanupLog()
+        defer { log.clean() }
+        let firstGate = MicrophoneStartupGate(configuring: true)
+        let first = rig.capture(gate: firstGate, makeEvidence: log.evidence)
+        let firstTask = Task { try await first.start(deadline: 12.5, onAudio: { _ in }) }
+        defer { firstTask.cancel() }
+        try await feedStablePCM(rig, index: 0)
+        try await awaitCommit(firstTask, clock: rig.clock)
+        #expect(firstGate.didCommit)
+        #expect(first.totalPCMBytes == 4096)
+        let losses = await withCheckedContinuation { continuation in
+            first.stop(.normal) { continuation.resume(returning: $0) }
+        }
+        #expect(losses == 0)
+        #expect(first.recoveryDisposition == .normal)
+
+        await lane {
+            let old = rig.devices[0]
+            #expect(old.engine.starts == 1)
+            #expect(old.engine.stops == 1)
+            #expect(old.node.removes == 1)
+            old.node.switchDeviceDuringInstall = true
+            old.engine.raiseOnStop = true
+        }
+        let failedGate = MicrophoneStartupGate(configuring: true)
+        let failed = rig.capture(gate: failedGate, makeEvidence: log.evidence)
+        expectGraphError(await failure(failed), .formatException, code: 0)
+        #expect(failedGate.isStopped)
+        #expect(!failedGate.didCommit)
+        #expect(failed.formatSnapshot?.appliedRate == 0)
+        #expect(failed.recoveryDisposition == .replacementPending)
+
+        let lines = try await log.dispositions(count: 2)
+        #expect(lines.count == 2)
+        #expect(lines.filter { $0.contains("preCommitFormatException=true") } == [
+            "mic_cleanup_disposition generation=1 preCommitFormatException=true hadTap=false engineStarted=false"
+            + " stopped=false removed=not_required preflightStopped=true runningAtCleanup=false"
+            + " succeeded=true disposition=\(failed.recoveryDisposition)"
+        ])
+
+        let warm = rig.warm()
+        warm.resume(enabled: true, selectedUID: "explicit", takeActive: false, reason: "test")
+        await lane {
+            #expect(rig.factoryCalls == 1)
+            #expect(rig.lifetime.disposition == .replacementPending)
+            let old = rig.devices[0]
+            #expect(old.bound == [137, 137])
+            #expect(old.node.installs == 2)
+            #expect(old.node.partialTap != nil)
+            #expect(old.engine.starts == 1)
+            #expect(old.engine.stops == 2)
+            #expect(old.node.removes == 1)
+        }
+
+        let nextGate = MicrophoneStartupGate(configuring: true)
+        let next = rig.capture(gate: nextGate)
+        let nextTask = Task {
+            try await next.start(deadline: 12.5, onAudio: { _ in Issue.record("Unexpected admitted audio") })
+        }
+        defer { nextTask.cancel() }
+        try await readyForPCM(rig, index: 1)
+        await lane {
+            let old = rig.devices[0]
+            let current = rig.devices[1]
+            #expect(old.engine !== current.engine)
+            #expect(current.bound == [137])
+            #expect(current.node.installs == 1)
+            #expect(current.engine.prepares == 1)
+            old.deliver(old.node.partialTap, value: 0.5)
+        }
+        try await feedStablePCM(rig, index: 1)
+        try await awaitCommit(nextTask, clock: rig.clock)
+        #expect(nextGate.didCommit)
+        #expect(next.totalPCMBytes == 4096)
+        #expect(next.sessionPeakAmplitude == 0)
+        #expect(failed.totalPCMBytes == 0)
+        await next.cancelAndWait()
+        await lane {
+            let lease = try? rig.lifetime.acquire(for: .capture, canAcquire: true)
+            #expect(lease?.resource === rig.devices[1].engine)
+            if let lease { #expect(rig.lifetime.release(token: lease.token)) }
+            #expect(rig.devices[0].node.installs == 2)
+            #expect(rig.factoryCalls == 2)
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func receiptRequiresBothNativeOperations(failStop: Bool) async throws {
+        let rig = Rig(.topologyAfter)
+        rig.configureDevice = { device in
+            device.engine.raiseOnStop = failStop
+            device.node.raiseOnRemove = !failStop
+        }
+        let log = CleanupLog()
+        defer { log.clean() }
+        let capture = rig.capture(makeEvidence: log.evidence)
+        expectGraphError(await failure(capture), .unexpectedTopology, code: 2)
+        #expect(capture.recoveryDisposition == .terminal)
+        await lane {
+            #expect(rig.devices[0].engine.stops == 1)
+            #expect(rig.devices[0].node.removes == 1)
+            #expect(rig.factoryCalls == 1)
+        }
+        let lines = try await log.dispositions(count: 1)
+        #expect(lines == [
+            "mic_cleanup_disposition generation=1 preCommitFormatException=false hadTap=true engineStarted=false"
+            + " stopped=\(!failStop) removed=\(failStop) preflightStopped=true runningAtCleanup=unknown"
+            + " succeeded=false disposition=\(capture.recoveryDisposition)"
+        ])
+        expectGraphError(await failure(rig.capture()), .quarantined, code: 3)
+    }
+
+    @Test(arguments: [false, true])
+    func calledStartWithoutReceiptStillRequiresSuccessfulStop(startThrows: Bool) async throws {
+        let rig = Rig(.stopException)
+        let worker = MicrophoneWarmKeeper.Worker(volumeGuard: .init(enabled: false),
+            lifetime: rig.lifetime, hardware: rig.hardware)
+        rig.configureDevice = { [weak worker] device in
+            device.engine.failStart = startThrows
+            device.node.afterRetainTap = { [weak worker, weak node = device.node] in
+                guard let lease = worker?.lease, let node else {
+                    Issue.record("Missing lease at native install boundary")
+                    return
+                }
+                let graph = LeasedMicrophoneTapGraph(lifetime: rig.lifetime, lease: lease, node: node) { true }
+                do {
+                    try graph.start()
+                    #expect(!startThrows)
+                } catch {
+                    #expect(startThrows)
+                }
+            }
+        }
+        let log = CleanupLog()
+        defer { log.clean() }
+        let evidence = log.evidence()
+        let gate = MicrophoneStartupGate(configuring: true)
+        await lane {
+            worker.resume(enabled: true, uid: "explicit", takeActive: false, reason: "test",
+                          gate: gate, deadline: 12.5, evidence: nil, cleanupEvidence: evidence, changed: {})
+            rig.configureDevice = nil
+            let device = rig.devices[0]
+            device.node.afterRetainTap = nil
+            #expect(device.engine.starts == 1)
+            #expect(device.engine.stops == 1)
+            #expect(device.node.removes == 0)
+            #expect(worker.lease == nil)
+            #expect(gate.isStopped)
+        }
+        #expect(rig.lifetime.disposition == .terminal)
+        let started = startThrows ? "unknown" : "true"
+        let lines = try await log.dispositions(count: 1)
+        #expect(lines == [
+            "mic_cleanup_disposition generation=1 preCommitFormatException=true hadTap=false engineStarted=\(started)"
+            + " stopped=false removed=not_required preflightStopped=true runningAtCleanup=unknown"
+            + " succeeded=false disposition=terminal"
+        ])
+        expectGraphError(await failure(rig.capture()), .quarantined, code: 3)
+        await lane { #expect(rig.factoryCalls == 1) }
+    }
+
     @Test(arguments: [Fault.unknownException, .topologyBefore, .topologyAfter, .removeException,
-                       .stopException, .unprovenStop, .preflight, .readback], [false, true])
+                       .stopException, .unprovenStop, .unreadableStop, .preflight, .readback], [false, true])
     private func firstGenerationFailures(_ fault: Fault, warm: Bool) async {
         let rig = Rig(fault)
         if warm {
@@ -276,7 +478,7 @@ struct MicrophoneRecoveryTests {
             switch fault {
             case .unknownException: expectGraphError(error, .unknownException, code: 1)
             case .topologyBefore, .topologyAfter, .removeException: expectGraphError(error, .unexpectedTopology, code: 2)
-            case .stopException, .unprovenStop: expectGraphError(error, .formatException, code: 0)
+            case .stopException, .unprovenStop, .unreadableStop: expectGraphError(error, .formatException, code: 0)
             case .preflight, .readback:
                 #expect((error as? MicrophoneCapture.CaptureError)?.diagnosticCategory == "format_changed")
             default: Issue.record("Unexpected fixture")
@@ -291,9 +493,14 @@ struct MicrophoneRecoveryTests {
             #expect(device.node.removes == ([.topologyAfter, .readback, .removeException].contains(fault) ? 1 : 0))
             #expect(rig.factoryCalls == 1)
         }
-        let retryable = fault == .preflight || fault == .readback
-        #expect(rig.lifetime.disposition == (retryable ? .normal : .terminal))
-        if !retryable {
+        let expected: MicrophoneCapture.EngineLifetime.Disposition
+        switch fault {
+        case .preflight, .readback: expected = .normal
+        case .stopException: expected = .replacementPending
+        default: expected = .terminal
+        }
+        #expect(rig.lifetime.disposition == expected)
+        if expected == .terminal {
             expectGraphError(await failure(rig.capture()), .quarantined, code: 3)
         }
     }
@@ -467,6 +674,9 @@ struct MicrophoneRecoveryTests {
 
     @Test func staleWarmStopDoesNotTouchNewLease() async throws {
         let rig = Rig(.none)
+        let log = CleanupLog()
+        defer { log.clean() }
+        let evidence = try #require(log.evidence())
         let gate = MicrophoneStartupGate(configuring: true)
         let guardController = OutputVolumeGuard(enabled: false)
         let worker = MicrophoneWarmKeeper.Worker(volumeGuard: guardController,
@@ -499,8 +709,17 @@ struct MicrophoneRecoveryTests {
             #expect(LeasedMicrophoneTapGraph.stopEngine(device.engine))
             // The fixture tap belonged to the stale token, so even the
             // newer owner cannot remove it.
-            #expect(rig.lifetime.finishCleanup(current, succeeded: false) == .terminal)
+            let disposition = rig.lifetime.finishCleanup(current,
+                evidence: .init(stopped: true, hadTap: true, removed: nil),
+                record: { evidence.enqueue($0) })
+            #expect(disposition == .terminal)
         }
+        let lines = try await log.dispositions(count: 1)
+        #expect(lines == [
+            "mic_cleanup_disposition generation=1 preCommitFormatException=false hadTap=true engineStarted=false"
+            + " stopped=true removed=unknown preflightStopped=false runningAtCleanup=unknown"
+            + " succeeded=false disposition=terminal"
+        ])
     }
 
     @Test func lifetimeRetainsRetiredEngineAfterTheOldLeaseIsGone() throws {
@@ -509,12 +728,13 @@ struct MicrophoneRecoveryTests {
         do {
             let first = try #require(try lifetime.acquire(for: .capture, canAcquire: true))
             retired = first.resource
+            lifetime.recordPreflightStopped(true, for: first)
             lifetime.retire(first, preCommitFormatException: true)
             #expect(!lifetime.isCurrent(token: first.token))
             #expect((try? lifetime.acquire(for: .capture, canAcquire: true)) == nil)
             #expect(lifetime.beginCleanup(first))
             #expect(!lifetime.beginCleanup(first))
-            #expect(lifetime.finishCleanup(first, succeeded: true) == .replacementPending)
+            #expect(lifetime.finishCleanup(first, evidence: .init(stopped: true, hadTap: false, runningAtCleanup: false)) == .replacementPending)
         }
         let second = try #require(try lifetime.acquire(for: .capture, canAcquire: true))
         #expect(retired != nil)

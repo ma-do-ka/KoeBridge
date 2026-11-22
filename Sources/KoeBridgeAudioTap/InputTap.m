@@ -28,6 +28,11 @@ BOOL KBStopMicrophoneEngine(AVAudioEngine *engine) {
     @catch (NSException *exception) { return NO; }
 }
 
+NSNumber *KBReadMicrophoneEngineRunning(AVAudioEngine *engine) {
+    @try { return @(engine.isRunning); }
+    @catch (NSException *exception) { return nil; }
+}
+
 BOOL KBRemoveInputTap(AVAudioNode *node) {
     @try { [node removeTapOnBus:0]; return YES; }
     @catch (NSException *exception) { return NO; }

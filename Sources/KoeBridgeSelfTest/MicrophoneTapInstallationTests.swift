@@ -31,6 +31,7 @@ struct MicrophoneTapInstallationTests {
             onInstall?()
             return result
         }
+        func recordPreflightStopped(_ stopped: Bool) { lifetime.recordPreflightStopped(stopped, for: lease) }
         func prepare() { prepares += 1; onPrepare?() }
         var cleanupIsOwned: Bool { lifetime.ownsCleanup(lease) }
         func removeOwnedTap() -> Bool { KBRemoveInputTap(node) }
@@ -55,7 +56,7 @@ struct MicrophoneTapInstallationTests {
         check(!graph.lifetime.release(token: old.token))
         graph.lifetime.retire(current, preCommitFormatException: false)
         check(graph.lifetime.beginCleanup(current))
-        check(graph.lifetime.finishCleanup(current, succeeded: true) == .terminal)
+        check(graph.lifetime.finishCleanup(current, evidence: .init(stopped: true, hadTap: false)) == .terminal)
         check(graph.lifetime.acquire() == nil)
 
         let policy = MicrophoneStartupRetryPolicy()
@@ -112,7 +113,7 @@ struct MicrophoneTapInstallationTests {
         }
         check(gate.isStopped)
         check(!lifetime.beginCleanup(old))
-        check(tap.removeIfOwned())
+        check(tap.removeIfOwned() == nil)
         check(!lifetime.release(token: old.token))
         check(lifetime.isCurrent(token: current.token))
         check(lifetime.disposition == .normal)
@@ -208,10 +209,13 @@ struct MicrophoneTapInstallationTests {
             }
 
             check(graph.lifetime.beginCleanup(graph.lease))
-            check(tap.removeIfOwned())
-            check(tap.removeIfOwned())
+            let hadTap = tap.isInstalled
+            let removed = tap.removeIfOwned()
+            check(removed == (!beforeInstall && !partial ? true : nil))
+            check(tap.removeIfOwned() == nil)
             check(graph.node.removes == (!beforeInstall && !partial ? 1 : 0))
-            let disposition = graph.lifetime.finishCleanup(graph.lease, succeeded: true)
+            let disposition = graph.lifetime.finishCleanup(graph.lease,
+                evidence: .init(stopped: true, hadTap: hadTap, removed: removed, runningAtCleanup: false))
             check(disposition == (scenario == .switched ? .replacementPending : (partial ? .terminal : .normal)))
             check(graph.lifetime.isQuarantined == partial)
             check((graph.lifetime.acquire() == nil) == partial)
