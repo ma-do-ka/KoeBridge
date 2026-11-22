@@ -556,7 +556,7 @@ import KoeBridgeCore
     @Published var replayRecordID: UUID?
     @Published var replayStatus = ""
     @Published var retentionStatus = ""
-    private let retainedAudio = RetainedAudioStore()
+    private let retainedAudio: RetainedAudioStore
     private var retentionGeneration = UUID()
     private var replayTask: Task<Void, Never>?
     private var replayLocal: LocalTranscribing?
@@ -727,14 +727,34 @@ import KoeBridgeCore
         let noInput: Bool
     }
 
-    private init() {
+    @MainActor struct PreparationEnvironment {
+        var permission: (() async -> Bool)?
+        var selectedInputUID: (() -> String)?
+        var makeCapture: ((String, OutputVolumeGuard, UUID, Bool) -> MicrophoneCapture)?
+        var now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+        var waitBeforeRetry: (TimeInterval) async throws -> Void = {
+            try await Task.sleep(for: .seconds($0))
+        }
+        var makeInputTrace: (UUID) -> InputDiagnosticTrace? = { DiagnosticLog.inputTrace(takeID: $0) }
+        var recordSession: (() -> String) -> Void = { DiagnosticLog.record($0()) }
+        var recordMicrophone: (() -> String) -> Void = { DiagnosticLog.recordMicrophoneEvidence($0()) }
+        var captureTarget: ((InputDiagnosticTrace?) -> (target: InsertionTarget?, reason: String))?
+        var consumeAudio: ((AsyncStream<Data>) async -> Void)?
+        var preparationLaunched: ((Task<Void, Never>) -> Void)?
+    }
+
+    private let preparation: PreparationEnvironment
+
+    init(preparation: PreparationEnvironment? = nil, storageDirectory: URL? = nil) {
+        self.preparation = preparation ?? PreparationEnvironment()
+
         let d = UserDefaults.standard
-        let guardEnabled = d.bool(forKey: OutputVolumeGuard.preferenceKey)
+        let guardEnabled = storageDirectory == nil && d.bool(forKey: OutputVolumeGuard.preferenceKey)
         outputVolumeGuardEnabled = guardEnabled
         let guardController = OutputVolumeGuard(enabled: guardEnabled)
         volumeGuard = guardController
         microphoneWarmKeeper = MicrophoneWarmKeeper(volumeGuard: guardController)
-        bluetoothMicWarmEnabled = d.bool(forKey: "bluetoothMicWarm")
+        bluetoothMicWarmEnabled = storageDirectory == nil && d.bool(forKey: "bluetoothMicWarm")
         shortcutActivationMode = ShortcutActivationMode(rawValue: d.string(forKey: "shortcutActivationMode") ?? "") ?? .toggle
         mouseTriggerButton = MouseTriggerButton(rawValue: d.string(forKey: "mouseTriggerButton") ?? "") ?? .none
         requestedMode = RecognitionMode(rawValue: d.string(forKey: "engine") ?? "gemini") ?? .gemini
@@ -742,7 +762,7 @@ import KoeBridgeCore
             storedStyle: d.string(forKey: "transcriptionStyle"),
             legacySmart: d.bool(forKey: "smart")
         )
-        geminiPrewarmEnabled = d.object(forKey: "geminiPrewarm") == nil ? true : d.bool(forKey: "geminiPrewarm")
+        geminiPrewarmEnabled = storageDirectory == nil && (d.object(forKey: "geminiPrewarm") == nil || d.bool(forKey: "geminiPrewarm"))
         normalizeJapaneseSpacing = d.object(forKey: "normalizeJapaneseSpacing") as? Bool ?? true
         japaneseHint = d.object(forKey: "japanese") == nil ? true : d.bool(forKey: "japanese")
         automaticPaste = d.object(forKey: "autoPaste") == nil ? true : d.bool(forKey: "autoPaste")
@@ -756,8 +776,15 @@ import KoeBridgeCore
         audioRecheckEnabled = options.audioRecheckEnabled
         audioRecheckPolicy = options.audioRecheckPolicy
         shortcutChoice = RecordingShortcut(rawValue: d.string(forKey: "recordingShortcut") ?? "") ?? .controlOptionSpace
-        historyStore = TranscriptHistoryStore()
-        usageStore = UsageMonitorStore()
+        if let storageDirectory {
+            retainedAudio = RetainedAudioStore(directory: storageDirectory.appendingPathComponent("RetainedAudio"))
+            historyStore = TranscriptHistoryStore(fileURL: storageDirectory.appendingPathComponent("history.json"))
+            usageStore = UsageMonitorStore(fileURL: storageDirectory.appendingPathComponent("usage.json"))
+        } else {
+            retainedAudio = RetainedAudioStore()
+            historyStore = TranscriptHistoryStore()
+            usageStore = UsageMonitorStore()
+        }
         history = historyStore.entries
         historyProblem = historyStore.problem
         monitorEvents = usageStore.engineEvents
@@ -765,6 +792,7 @@ import KoeBridgeCore
         monitorProblem = usageStore.problem
         retainedAudio.reconcileAtLaunch(history: &historyStore, retentionEnabled: retainAudioEnabled)
         updateRetentionStatus()
+        guard storageDirectory == nil else { return }
         scheduleWarmGemini()
         microphoneWarmKeeper.onConfigurationChange = { [weak self] in
             self?.resumeMicrophoneWarm(reason: "configuration")
@@ -911,7 +939,7 @@ import KoeBridgeCore
         take.transformSelection = selection
         take.isFixLastInput = fixingLastInput
         guard finished.begin(take.id) else { return }
-        take.inputDiagnostics = DiagnosticLog.inputTrace(takeID: take.id)
+        take.inputDiagnostics = preparation.makeInputTrace(take.id)
         take.inputDiagnostics?.record(.session, stage: .requested, [
             .pending: .integer(finished.count),
             .shouldPaste: .flag(take.shouldPaste),
@@ -940,6 +968,7 @@ import KoeBridgeCore
         status = take.appProfileName.map { "\($0)用プロファイル適用中 — マイクを準備しています…" } ?? "マイクを準備しています…"
         let focusStartedAt = ProcessInfo.processInfo.systemUptime
         let targetResult = transformTarget.map { (target: Optional($0), reason: "ok") }
+            ?? preparation.captureTarget?(take.inputDiagnostics)
             ?? InsertionTarget.capture(diagnostics: take.inputDiagnostics) // BEFORE the overlay is shown
         take.target = targetResult.target
         take.targetCaptureReason = targetResult.reason
@@ -958,10 +987,11 @@ import KoeBridgeCore
             guard let self, let take, self.active === take, self.phase == .preparing else { return }
             self.resolve(take, text: nil, reason: "マイクの準備が40秒以内に終わりませんでした")
         }
-        Task { [weak self, weak take] in
+        let startupTask = Task { [weak self, weak take] in
             guard let self, let take else { return }
             await self.startPrepared(take)
         }
+        preparation.preparationLaunched?(startupTask)
     }
 
     private func microphoneAllowed() async -> Bool {
@@ -975,8 +1005,11 @@ import KoeBridgeCore
     private func startPrepared(_ take: DictationTake) async {
         guard active === take, !take.finished else { return }
         let beforePermission = Date()
-        let selectedInputUID = MicrophoneDeviceStore.shared.selectedUID
-        guard await microphoneAllowed() else {
+        let selectedInputUID = preparation.selectedInputUID?() ?? MicrophoneDeviceStore.shared.selectedUID
+        let allowed: Bool
+        if let permission = preparation.permission { allowed = await permission() }
+        else { allowed = await microphoneAllowed() }
+        guard allowed else {
             if active === take { resolve(take, text: nil, reason: "マイクへのアクセスが許可されていません") }
             return
         }
@@ -988,7 +1021,7 @@ import KoeBridgeCore
         take.continuation = continuation
         let integrity = take.audioIntegrity // thread-safe; do not cross actor isolation in audio callback
         let retryPolicy = MicrophoneStartupRetryPolicy()
-        let preparationBegan = ProcessInfo.processInfo.systemUptime
+        let preparationBegan = preparation.now()
         var attempts = 0
         var recoveryDisposition: MicrophoneCapture.EngineLifetime.Disposition = .normal
         do {
@@ -996,17 +1029,18 @@ import KoeBridgeCore
             while readyCapture == nil {
                 try Task.checkCancellation()
                 guard active === take, phase == .preparing, !take.finished else { throw CancellationError() }
-                let attemptBegan = ProcessInfo.processInfo.systemUptime
+                let attemptBegan = preparation.now()
                 let elapsed = attemptBegan - preparationBegan
                 let timeout = retryPolicy.timeoutForNextAttempt(elapsed: elapsed)
                 guard timeout > 0 else { throw MicrophoneCapture.CaptureError.notReady(.noBuffers) }
                 attempts += 1
-                let candidate = MicrophoneCapture(selectedInputUID: selectedInputUID, volumeGuard: volumeGuard,
-                                                  takeID: take.id, explicitStart: attempts == 1)
+                let candidate = preparation.makeCapture?(selectedInputUID, volumeGuard, take.id, attempts == 1)
+                    ?? MicrophoneCapture(selectedInputUID: selectedInputUID, volumeGuard: volumeGuard,
+                                         takeID: take.id, explicitStart: attempts == 1)
                 // Own preparation, not just a successfully started microphone.
                 // discard()/releaseResources() can now stop it immediately.
                 take.mic = candidate
-                DiagnosticLog.recordMicrophoneEvidence("mic_prepare_attempt take=\(take.id.uuidString) attempt=\(attempts)")
+                preparation.recordMicrophone { "mic_prepare_attempt take=\(take.id.uuidString) attempt=\(attempts)" }
                 do {
                     microphoneWarmKeeper.suspend(reason: "take", handingTo: candidate)
                     let deadline = min(attemptBegan + timeout, preparationBegan + retryPolicy.totalTimeout)
@@ -1038,18 +1072,18 @@ import KoeBridgeCore
                     // A missing explicit choice must never become another mic.
                     if error is MicrophoneSelectionError { throw error }
                     let category = (error as? MicrophoneCapture.CaptureError)?.diagnosticCategory ?? (error as? MicrophoneGraphError)?.rawValue ?? ((error as? MicrophoneDevices.DeviceError) == .enumerationFailed ? "enumeration_failed" : "engine_start_failed")
-                    let elapsed = ProcessInfo.processInfo.systemUptime - preparationBegan
+                    let elapsed = preparation.now() - preparationBegan
                     if let route = candidate.routeSnapshot {
-                        DiagnosticLog.recordMicrophoneEvidence("mic_prepare_route take=\(take.id.uuidString) attempt=\(attempts) \(route.diagnosticFields)")
+                        preparation.recordMicrophone { "mic_prepare_route take=\(take.id.uuidString) attempt=\(attempts) \(route.diagnosticFields)" }
                     }
                     if let format = candidate.formatSnapshot {
-                        DiagnosticLog.recordMicrophoneEvidence("mic_prepare_format take=\(take.id.uuidString) attempt=\(attempts) \(format.diagnosticFields)")
+                        preparation.recordMicrophone { "mic_prepare_format take=\(take.id.uuidString) attempt=\(attempts) \(format.diagnosticFields)" }
                     }
-                    DiagnosticLog.recordMicrophoneEvidence("mic_prepare_failed take=\(take.id.uuidString) attempt=\(attempts) category=\(category) code=\((error as NSError).code) elapsed_ms=\(Int(elapsed * 1_000))")
+                    preparation.recordMicrophone { "mic_prepare_failed take=\(take.id.uuidString) attempt=\(attempts) category=\(category) code=\((error as NSError).code) elapsed_ms=\(Int(elapsed * 1_000))" }
                     guard let delay = MicrophoneCapture.retryDelay(for: error, policy: retryPolicy,
                         attempts: attempts, elapsed: elapsed, disposition: recoveryDisposition) else { throw error }
                     status = "マイクの接続準備を待っています…（\(attempts + 1)/\(retryPolicy.maximumAttempts)）"
-                    try await Task.sleep(for: .seconds(delay))
+                    try await preparation.waitBeforeRetry(delay)
                 }
             }
             guard let capture = readyCapture else { throw MicrophoneCapture.CaptureError.noInput }
@@ -1062,16 +1096,17 @@ import KoeBridgeCore
             // The stream retains the verified pre-roll until this worker starts.
             take.worker = Task { [weak self, weak take] in
                 guard let self, let take, !take.finished, !Task.isCancelled else { return }
-                await self.transmit(stream, take: take)
+                if let consumeAudio = self.preparation.consumeAudio { await consumeAudio(stream) }
+                else { await self.transmit(stream, take: take) }
             }
             if let route = capture.routeSnapshot {
-                DiagnosticLog.recordMicrophoneEvidence("mic_prepare_route take=\(take.id.uuidString) attempt=\(attempts) \(route.diagnosticFields)")
+                preparation.recordMicrophone { "mic_prepare_route take=\(take.id.uuidString) attempt=\(attempts) \(route.diagnosticFields)" }
             }
             if let format = capture.formatSnapshot {
-                DiagnosticLog.recordMicrophoneEvidence("mic_prepare_format take=\(take.id.uuidString) attempt=\(attempts) \(format.diagnosticFields)")
+                preparation.recordMicrophone { "mic_prepare_format take=\(take.id.uuidString) attempt=\(attempts) \(format.diagnosticFields)" }
             }
             if let timing = capture.startTimings {
-                DiagnosticLog.recordMicrophoneEvidence("mic_prepare_ready take=\(take.id.uuidString) attempts=\(attempts) first_pcm_ms=\(Int(timing.firstBufferDelay * 1_000)) sample_rate=\(String(format: "%.0f", timing.sampleRate)) channels=\(timing.channels)")
+                preparation.recordMicrophone { "mic_prepare_ready take=\(take.id.uuidString) attempts=\(attempts) first_pcm_ms=\(Int(timing.firstBufferDelay * 1_000)) sample_rate=\(String(format: "%.0f", timing.sampleRate)) channels=\(timing.channels)" }
             }
             take.startedAt = Date()
             take.recordingStart = .now
@@ -1082,7 +1117,7 @@ import KoeBridgeCore
             take.permissionTask?.cancel()
             take.permissionTask = nil
             if let t = capture.startTimings {
-                DiagnosticLog.recordMicrophoneEvidence("mic startup; total=\(String(format: "%.3f", t.total))s prepare=\(String(format: "%.3f", t.microphonePreparation))s engineStart=\(String(format: "%.3f", t.engineStart))s")
+                preparation.recordMicrophone { "mic startup; total=\(String(format: "%.3f", t.total))s prepare=\(String(format: "%.3f", t.microphonePreparation))s engineStart=\(String(format: "%.3f", t.engineStart))s" }
             }
             DiagnosticLog.record("session recording; recognizer=pending; pending=\(finished.count)")
             status = (take.appProfileName.map { "\($0)用プロファイル適用中 — " } ?? "") + "録音中。\(take.transformSelection == nil || take.isFixLastInput ? shortcutChoice.label : (transformShortcut?.label ?? shortcutChoice.label)) でもう一度押すと確定"
@@ -1537,7 +1572,7 @@ import KoeBridgeCore
                 sweptAfterRemember = retainedAudio.sweepIsReusable
             }
         }
-        DiagnosticLog.record("session resolved; success=\(text?.isEmpty == false) accepted=\(accepted) noInput=\(noInput) pending=\(finished.count)")
+        preparation.recordSession { "session resolved; success=\(text?.isEmpty == false) accepted=\(accepted) noInput=\(noInput) pending=\(finished.count)" }
         // Show a brief, neutral acknowledgement immediately, even if an
         // older take is still finalizing in the ordered delivery buffer.
         if noInput { showCompletionFeedback(.noInput, for: take.id) }
@@ -1969,7 +2004,7 @@ import KoeBridgeCore
 
     func discard() {
         guard let take = active else { return }
-        DiagnosticLog.record("session discarded by user")
+        preparation.recordSession { "session discarded by user" }
         resolve(take, text: nil, reason: "録音をキャンセルしました", noInput: true)
     }
 

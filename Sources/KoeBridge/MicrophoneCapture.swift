@@ -111,11 +111,19 @@ final class MicrophoneCapture: @unchecked Sendable {
     init(selectedInputUID: String = "", volumeGuard: OutputVolumeGuard? = nil, takeID: UUID = UUID(), startupGate: MicrophoneStartupGate = .init(configuring: true),
          explicitStart: Bool = true, lifetime: EngineLifetime = MicrophoneCapture.engineLifetime,
          hardware: MicrophoneHardware = .init(),
-         makeMicrophoneEvidence: @escaping @MainActor () -> MicrophoneEvidenceWriter? = { DiagnosticLog.microphoneEvidenceWriter() }) {
+         makeMicrophoneEvidence: @escaping @MainActor () -> MicrophoneEvidenceWriter? = { DiagnosticLog.microphoneEvidenceWriter() },
+         makeStartupTrace: @escaping @MainActor (UUID, Bool) -> MicrophonePreparationDiagnostics? = {
+             DiagnosticLog.microphoneTrace(captureID: $0, explicitSelection: $1)
+         },
+         makeSpeechTrace: @escaping @MainActor (UUID) -> InputDiagnosticTrace? = {
+             DiagnosticLog.inputTrace(takeID: $0)
+         }) {
         acquisitionPurpose = explicitStart ? .capture : .continuation
         self.lifetime = lifetime
         self.hardware = hardware
         self.makeMicrophoneEvidence = makeMicrophoneEvidence
+        self.makeStartupTrace = makeStartupTrace
+        self.makeSpeechTrace = makeSpeechTrace
         volumeGuardOwner = takeID
         self.volumeGuard = volumeGuard
         self.selectedInputUID = selectedInputUID
@@ -151,6 +159,8 @@ final class MicrophoneCapture: @unchecked Sendable {
     @MainActor private var speechTrace: InputDiagnosticTrace?
     // Assigned once before dispatching startBlocking, then read-only across queues.
     private let makeMicrophoneEvidence: @MainActor () -> MicrophoneEvidenceWriter?
+    private let makeStartupTrace: @MainActor (UUID, Bool) -> MicrophonePreparationDiagnostics?
+    private let makeSpeechTrace: @MainActor (UUID) -> InputDiagnosticTrace?
     private var microphoneEvidence: MicrophoneEvidenceWriter?
     private var startupDiagnostics: MicrophonePreparationDiagnostics?
 
@@ -233,8 +243,7 @@ final class MicrophoneCapture: @unchecked Sendable {
         let deadline = requestedDeadline ?? (beganAt + MicrophoneStartupRetryPolicy().attemptTimeout)
         attemptDeadline = deadline
         microphoneEvidence = makeMicrophoneEvidence()
-        startupDiagnostics = DiagnosticLog.microphoneTrace(captureID: diagnosticID,
-                                                           explicitSelection: !selectedInputUID.isEmpty)
+        startupDiagnostics = makeStartupTrace(diagnosticID, !selectedInputUID.isEmpty)
         startupDiagnostics?.begin(.lifecycle)
         // This task runs independently of a blocked native audio call. It only
         // snapshots in-memory counters: no extra HAL/device probes or recovery.
@@ -249,7 +258,7 @@ final class MicrophoneCapture: @unchecked Sendable {
             }
         } else { diagnosticWatch = nil }
         defer { diagnosticWatch?.cancel() }
-        speechTrace = DiagnosticLog.inputTrace(takeID: diagnosticID)
+        speechTrace = makeSpeechTrace(diagnosticID)
         if speechTrace?.isCollecting == true {
             self.microphoneEvidence?.write("speech_classifier_started capture=\(diagnosticID.uuidString) build=\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown")")
         }

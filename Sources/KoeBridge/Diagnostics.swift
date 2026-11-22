@@ -98,19 +98,35 @@ final class DiagnosticWriter: @unchecked Sendable {
 
     /// Evaluate the event lazily: normal use never builds diagnostic strings.
     static func record(_ event: @autoclosure () -> String) {
-        guard isEnabled else { return }
-        writer.append([event()])
+        record(event, enabled: { isEnabled }, writer: writer)
+    }
+
+    static func record(_ event: () -> String, enabled: () -> Bool, writer: @autoclosure () -> DiagnosticWriter) {
+        guard enabled() else { return }
+        writer().append([event()])
     }
 
     /// Mirror the same diagnostic event under the existing consent/token gate.
     static func recordMicrophoneEvidence(_ event: @autoclosure () -> String) {
-        microphoneEvidenceWriter()?.write(event())
+        recordMicrophoneEvidence(event, makeWriter: { microphoneEvidenceWriter() })
+    }
+
+    static func recordMicrophoneEvidence(_ event: () -> String,
+                                         makeWriter: () -> MicrophoneEvidenceWriter?) {
+        makeWriter()?.write(event())
     }
 
     static func microphoneEvidenceWriter() -> MicrophoneEvidenceWriter? {
         synchronizeConsent()
-        return MicrophoneEvidenceWriter(token: inputConsent.token, permits: { permitsInputTrace($0) }) { line in
-            writer.append([line], mirrored: true)
+        return microphoneEvidenceWriter(token: inputConsent.token, permits: { permitsInputTrace($0) }, writer: writer)
+    }
+
+    static func microphoneEvidenceWriter(token: InputDiagnosticConsent.Token?,
+                                         permits: @escaping @MainActor @Sendable (InputDiagnosticConsent.Token) -> Bool,
+                                         writer: @autoclosure @escaping @MainActor @Sendable () -> DiagnosticWriter)
+        -> MicrophoneEvidenceWriter? {
+        MicrophoneEvidenceWriter(token: token, permits: permits) { line in
+            writer().append([line], mirrored: true)
         }
     }
 
@@ -143,8 +159,14 @@ final class DiagnosticWriter: @unchecked Sendable {
                                 consent: InputDiagnosticConsent.Token) {
         // Gate again immediately before formatting/writing. No asynchronous
         // writer can append old evidence after logging is disabled or deleted.
-        guard permitsInputTrace(consent) else { return }
-        writer.append(lines())
+        writeInputTrace(lines, consent: consent, permits: { permitsInputTrace($0) }, writer: writer)
+    }
+
+    static func writeInputTrace(_ lines: () -> [String], consent: InputDiagnosticConsent.Token,
+                                permits: (InputDiagnosticConsent.Token) -> Bool,
+                                writer: @autoclosure () -> DiagnosticWriter) {
+        guard permits(consent) else { return }
+        writer().append(lines())
     }
 
     /// Streaming breadcrumbs use the SAME opt-in/revocation token and bounded
@@ -153,11 +175,22 @@ final class DiagnosticWriter: @unchecked Sendable {
         synchronizeConsent()
         guard let token = inputConsent.token else { return nil }
         let build = Int(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "") ?? 0
-        return MicrophonePreparationDiagnostics { entry in
+        return microphoneTrace(captureID: captureID, explicitSelection: explicitSelection, build: build,
+                               token: token, permits: { permitsInputTrace($0) }, writer: writer)
+    }
+
+    static func microphoneTrace(captureID: UUID, explicitSelection: Bool, build: Int,
+                                token: InputDiagnosticConsent.Token?,
+                                permits: @escaping @MainActor @Sendable (InputDiagnosticConsent.Token) -> Bool,
+                                writer: @autoclosure @escaping @MainActor @Sendable () -> DiagnosticWriter,
+                                clock: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime })
+        -> MicrophonePreparationDiagnostics? {
+        guard let token else { return nil }
+        return MicrophonePreparationDiagnostics(clock: clock) { entry in
             Task { @MainActor in
-                guard permitsInputTrace(token) else { return }
+                guard permits(token) else { return }
                 let prefix = "mic_start v=1 capture=\(captureID.uuidString) build=\(build) explicit=\(explicitSelection ? 1 : 0)"
-                writer.append(entry.logLines(prefix: prefix), mirrored: true)
+                writer().append(entry.logLines(prefix: prefix), mirrored: true)
             }
         }
     }
