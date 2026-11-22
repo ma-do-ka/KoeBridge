@@ -13,7 +13,7 @@ coreDependencies.append("KoeBridgeAudioTap")
 additionalTargets.append(.target(name: "KoeBridgeAudioTap", publicHeadersPath: "include"))
 // Exact official release bytes, also pinned by Sparkle's 2.10.1 Package.swift.
 applicationDependencies.append("Sparkle")
-applicationTestDependencies.append("Sparkle")
+applicationTestDependencies += ["Sparkle", "KoeBridgeTapFixtures"]
 additionalTargets.append(.binaryTarget(name: "Sparkle",
     url: "https://github.com/sparkle-project/Sparkle/releases/download/2.10.1/Sparkle-for-Swift-Package-Manager.zip",
     checksum: "4c2e48a3e50ebcc2c88a58a4c7264a1a99c3c31857ce754357afb9cdb323022a"))

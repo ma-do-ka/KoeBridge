@@ -12,3 +12,23 @@ KBTapResult KBInstallInputTap(AVAudioNode *node, AVAudioFormat *format, AVAudioN
         return KBTapResultUnknownException;
     }
 }
+
+AVAudioEngine *KBCreateMicrophoneEngine(void) {
+    @try { return [[AVAudioEngine alloc] init]; }
+    @catch (NSException *exception) { return nil; }
+}
+
+BOOL KBPrepareMicrophoneEngine(AVAudioEngine *engine) {
+    @try { [engine prepare]; return YES; }
+    @catch (NSException *exception) { return NO; }
+}
+
+BOOL KBStopMicrophoneEngine(AVAudioEngine *engine) {
+    @try { [engine stop]; return !engine.isRunning; }
+    @catch (NSException *exception) { return NO; }
+}
+
+BOOL KBRemoveInputTap(AVAudioNode *node) {
+    @try { [node removeTapOnBus:0]; return YES; }
+    @catch (NSException *exception) { return NO; }
+}

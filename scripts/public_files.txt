@@ -113,6 +113,7 @@ Tests/KoeBridgeTests/Build73DeliveryTests.swift
 Tests/KoeBridgeTests/GeminiLiveConnectionTests.swift
 Tests/KoeBridgeTests/HistoryHoverPanelTests.swift
 Tests/KoeBridgeTests/KoeBridgeUpdateUserDriverTests.swift
+Tests/KoeBridgeTests/MicrophoneRecoveryTests.swift
 Tests/KoeBridgeTests/OutputVolumeGuardTests.swift
 Tests/KoeBridgeTests/VoiceCommandPresentationTests.swift
 V100_RELEASE_NOTES.md

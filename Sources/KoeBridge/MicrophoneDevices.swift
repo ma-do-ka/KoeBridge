@@ -6,6 +6,30 @@ import CoreAudio
 import Combine
 import KoeBridgeCore
 
+/// Hardware boundary shared by capture and warm startup. Device selection,
+/// lease validity and the graph gates remain in their production paths.
+struct MicrophoneHardware {
+    var snapshot: () throws -> MicrophoneDevices.Snapshot = MicrophoneDevices.snapshot
+    var isBluetooth: (UInt32) -> Bool = MicrophoneDevices.isBluetooth
+    var inputNode: (AVAudioEngine) -> AVAudioNode = { $0.inputNode }
+    var bind: (MicrophoneSelectionTarget, AVAudioNode, MicrophonePreparationDiagnostics?) throws -> Void = {
+        guard let input = $1 as? AVAudioInputNode else { throw MicrophoneDevices.DeviceError.noAudioUnit }
+        try MicrophoneDevices.bind($0, to: input, diagnostics: $2)
+    }
+    var isStillSelected: (MicrophoneSelectionTarget, AVAudioNode) -> Bool = {
+        guard let input = $1 as? AVAudioInputNode else { return false }
+        return MicrophoneDevices.isStillSelected($0, node: input)
+    }
+    var route: (UInt32) -> MicrophoneRouteSnapshot? = { MicrophoneRouteSnapshot.current(inputDeviceID: $0) }
+    var defaultOutputID: () -> UInt32? = MicrophoneRouteSnapshot.defaultOutputDeviceID
+
+    let now: () -> TimeInterval
+
+    init(now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
+        self.now = now
+    }
+}
+
 /// HAL is read on a worker/lifecycle queue. This never changes the system's
 /// default device. Names/UIDs are shown locally but never enter diagnostics.
 enum MicrophoneDevices {
