@@ -4,15 +4,15 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
   <channel>
     <title>KoeBridge</title>
     <item>
-      <title>KoeBridge 1.1.32 (Build 87)</title>
-      <pubDate>Sun, 22 Nov 2026 13:25:04 +0900</pubDate>
-      <sparkle:version>87</sparkle:version>
-      <sparkle:shortVersionString>1.1.32</sparkle:shortVersionString>
+      <title>KoeBridge 1.1.33 (Build 88)</title>
+      <pubDate>Sun, 22 Nov 2026 15:17:00 +0900</pubDate>
+      <sparkle:version>88</sparkle:version>
+      <sparkle:shortVersionString>1.1.33</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>15.0.0</sparkle:minimumSystemVersion>
-      <enclosure url="https://github.com/ma-do-ka/KoeBridge/releases/download/v1.1.32/KoeBridge-v1.1.32-macOS-universal-development.zip" length="7455920" type="application/octet-stream" sparkle:edSignature="4dm6bk6LZ4294I85iCeHWYTfaK2AxQTSinMMlFjn22ZtRygzbP23dmvKX3WQEhZadVPyM8Su5g2PhmLqgR4QAg=="></enclosure>
+      <enclosure url="https://github.com/ma-do-ka/KoeBridge/releases/download/v1.1.33/KoeBridge-v1.1.33-macOS-universal-development.zip" length="7472358" type="application/octet-stream" sparkle:edSignature="x3fIQi8Qqo7XxSLEJaNj6OQ/SN8GqIpIPloqVbThPuLTI7xBl9HnG+xgLaBn09nuZ8Y8UdQnfE661HJgv7HKCA=="></enclosure>
     </item>
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: dchNNFUGx8VxgtYeBLvT8AyKlEAKfabTLPu05yxpN60C0Vwp99tUBGcly5VNQrTJOHBJrxPrw8th+IiAgdjsDw==
+edSignature: wzF5a4vRTCkiO0Rb99aKFTT+w7fpCSy9WaWIb29W7WbEWwY7vZ07WrN03xU25XDI6Uy0abjVbrUmkRcvXjI5Dg==
 length: 1066
 -->
