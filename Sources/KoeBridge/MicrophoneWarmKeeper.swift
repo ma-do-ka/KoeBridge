@@ -33,11 +33,12 @@ import KoeBridgeCore
             }
         }
         let worker = worker
-        let evidence = enabled && UserDefaults.standard.bool(forKey: OutputVolumeGuard.preferenceKey)
-            ? DiagnosticLog.microphoneEvidenceWriter() : nil
+        let cleanupEvidence = enabled && permitted && !takeActive ? DiagnosticLog.microphoneEvidenceWriter() : nil
+        let evidence = UserDefaults.standard.bool(forKey: OutputVolumeGuard.preferenceKey) ? cleanupEvidence : nil
         MicrophoneCapture.warmLifecycleQueue.async {
             worker.resume(enabled: enabled && permitted, uid: selectedUID,
-                          takeActive: takeActive, reason: reason, gate: gate, deadline: deadline, evidence: evidence, changed: changed)
+                          takeActive: takeActive, reason: reason, gate: gate, deadline: deadline,
+                          evidence: evidence, cleanupEvidence: cleanupEvidence, changed: changed)
         }
     }
 
@@ -57,6 +58,7 @@ import KoeBridgeCore
         private var target: MicrophoneSelectionTarget?
         private let tap = MicrophoneTapInstallation()
         private var activeGate: MicrophoneStartupGate?
+        private var cleanupWriter: MicrophoneEvidenceWriter?
         private let volumeGuard: OutputVolumeGuard
         private let owner = UUID()
         private let lifetime: MicrophoneCapture.EngineLifetime
@@ -71,7 +73,8 @@ import KoeBridgeCore
         private var observer: NSObjectProtocol?
 
         func resume(enabled: Bool, uid: String, takeActive: Bool, reason: String,
-                    gate: MicrophoneStartupGate, deadline: TimeInterval, evidence: MicrophoneEvidenceWriter?, changed: @escaping @Sendable () -> Void) {
+                    gate: MicrophoneStartupGate, deadline: TimeInterval, evidence: MicrophoneEvidenceWriter?,
+                    cleanupEvidence: MicrophoneEvidenceWriter? = nil, changed: @escaping @Sendable () -> Void) {
             guard !gate.isStopped else { return }
             guard enabled, !takeActive, hardware.now() < deadline else {
                 stop(reason: "policy")
@@ -105,6 +108,7 @@ import KoeBridgeCore
                               startupDeadline: deadline, live: { !gate.isStopped })
             lease = acquired
             activeGate = gate
+            cleanupWriter = cleanupEvidence
             let engine = acquired.resource
             do {
                 let node = hardware.inputNode(engine)
@@ -125,7 +129,7 @@ import KoeBridgeCore
                     stop(reason: "invalidated")
                     return
                 }
-                try engine.start()
+                try graph.start()
                 volumeGuard.check()
                 guard !gate.isStopped, hardware.now() < deadline,
                       hardware.isStillSelected(selected, node),
@@ -150,11 +154,19 @@ import KoeBridgeCore
             observer = nil
             if cleanupOwned && canHandOver { take?.inheritVolumeGuard(from: owner) }
             volumeGuard.end(owner) // also closes a handover rejected by a cancelled take
+            let hadTap = cleanupOwned && tap.isInstalled
             let stopped = cleanupOwned && LeasedMicrophoneTapGraph.stopEngine(lease.resource)
+            let running = lifetime.needsIndependentStopReadback(lease, hadTap: hadTap)
+                ? LeasedMicrophoneTapGraph.readEngineRunning(lease.resource) : nil
             let removed = tap.removeIfOwned()
             target = nil
             self.lease = nil
-            if cleanupOwned { lifetime.finishCleanup(lease, succeeded: stopped && removed) }
+            let record: ((String) -> Void)? = cleanupWriter.map { writer in { _ = writer.enqueue($0) } }
+            cleanupWriter = nil
+            if cleanupOwned {
+                lifetime.finishCleanup(lease, evidence: .init(stopped: stopped, hadTap: hadTap, removed: removed,
+                                                             runningAtCleanup: running), record: record)
+            }
             log("mic warm stop reason=\(reason)")
         }
 

@@ -20,6 +20,7 @@ package protocol MicrophoneTapGraph {
     var leaseIsCurrent: Bool { get }
     var stoppedAndUnconnected: Bool { get }
     var selectionMatches: Bool { get }
+    func recordPreflightStopped(_ stopped: Bool)
     var hardware: AVAudioFormat { get }
     var client: AVAudioFormat { get }
     func install(_ format: AVAudioFormat, block: @escaping AVAudioNodeTapBlock) -> KBTapResult
@@ -51,6 +52,15 @@ package struct LeasedMicrophoneTapGraph: MicrophoneTapGraph {
             && !engine.isRunning && engine.outputConnectionPoints(for: node, outputBus: 0).isEmpty
     }
     package var selectionMatches: Bool { selected() }
+    package func recordPreflightStopped(_ stopped: Bool) {
+        lifetime.recordPreflightStopped(stopped, for: lease)
+    }
+    package func start() throws {
+        guard leaseIsCurrent else { throw MicrophoneGraphError.quarantined }
+        lifetime.recordStart(.calling, for: lease)
+        try lease.resource.start()
+        lifetime.recordStart(.started, for: lease)
+    }
     package var hardware: AVAudioFormat { node.inputFormat(forBus: 0) }
     package var client: AVAudioFormat { node.outputFormat(forBus: 0) }
     package func install(_ format: AVAudioFormat, block: @escaping AVAudioNodeTapBlock) -> KBTapResult {
@@ -69,6 +79,9 @@ package struct LeasedMicrophoneTapGraph: MicrophoneTapGraph {
 
     package static func makeEngine() -> AVAudioEngine? { KBCreateMicrophoneEngine() }
     package static func stopEngine(_ engine: AVAudioEngine) -> Bool { KBStopMicrophoneEngine(engine) }
+    package static func readEngineRunning(_ engine: AVAudioEngine) -> Bool? {
+        KBReadMicrophoneEngineRunning(engine)?.boolValue
+    }
 }
 
 /// All methods run on the shared lifecycle lane. An install receipt belongs to
@@ -131,10 +144,12 @@ package final class MicrophoneTapInstallation {
                 throw MicrophoneStartupGate.Failure.unstableBuffers
             }
         }
-        func checkGraph() throws {
+        func checkGraph(recordPreflight: Bool = false) throws {
             try checkGeneration()
             guard graph.leaseIsCurrent else { throw MicrophoneGraphError.quarantined }
-            guard graph.stoppedAndUnconnected else { throw MicrophoneGraphError.unexpectedTopology }
+            let stopped = graph.stoppedAndUnconnected
+            if recordPreflight { graph.recordPreflightStopped(stopped) }
+            guard stopped else { throw MicrophoneGraphError.unexpectedTopology }
             guard graph.selectionMatches else { throw MicrophoneStartupGate.Failure.inputRouteChanged }
         }
         do {
@@ -155,7 +170,7 @@ package final class MicrophoneTapInstallation {
             try sink.configure(input: input, hardware: hardware, client: client)
             diagnostics?.end(.converter)
 
-            try checkGraph()
+            try checkGraph(recordPreflight: true)
             let current = graph.hardware
             _ = graph.client // A stale client is repairable by the explicit-format install.
             guard Self.sameFormat(current, hardware) else {
@@ -195,12 +210,13 @@ package final class MicrophoneTapInstallation {
         }
     }
 
-    @discardableResult package func removeIfOwned() -> Bool {
+    /// A nil result means the native remove was skipped.
+    @discardableResult package func removeIfOwned() -> Bool? {
         let receipt = owned
         owned = nil
         hardwareFormat = nil
         appliedFormat = nil
-        guard let receipt, receipt.cleanupIsOwned else { return true }
+        guard let receipt, receipt.cleanupIsOwned else { return nil }
         return receipt.removeOwnedTap()
     }
 }
