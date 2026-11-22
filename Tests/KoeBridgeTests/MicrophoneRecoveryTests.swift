@@ -674,6 +674,9 @@ struct MicrophoneRecoveryTests {
 
     @Test func staleWarmStopDoesNotTouchNewLease() async throws {
         let rig = Rig(.none)
+        let log = CleanupLog()
+        defer { log.clean() }
+        let evidence = try #require(log.evidence())
         let gate = MicrophoneStartupGate(configuring: true)
         let guardController = OutputVolumeGuard(enabled: false)
         let worker = MicrophoneWarmKeeper.Worker(volumeGuard: guardController,
@@ -706,8 +709,17 @@ struct MicrophoneRecoveryTests {
             #expect(LeasedMicrophoneTapGraph.stopEngine(device.engine))
             // The fixture tap belonged to the stale token, so even the
             // newer owner cannot remove it.
-            #expect(rig.lifetime.finishCleanup(current, evidence: .init(stopped: true, hadTap: true)) == .terminal)
+            let disposition = rig.lifetime.finishCleanup(current,
+                evidence: .init(stopped: true, hadTap: true, removed: nil),
+                record: { evidence.enqueue($0) })
+            #expect(disposition == .terminal)
         }
+        let lines = try await log.dispositions(count: 1)
+        #expect(lines == [
+            "mic_cleanup_disposition generation=1 preCommitFormatException=false hadTap=true engineStarted=false"
+            + " stopped=true removed=unknown preflightStopped=false runningAtCleanup=unknown"
+            + " succeeded=false disposition=terminal"
+        ])
     }
 
     @Test func lifetimeRetainsRetiredEngineAfterTheOldLeaseIsGone() throws {

@@ -720,7 +720,7 @@ public final class MicrophoneEngineLifetime<Resource: AnyObject>: @unchecked Sen
             }
             let disposition = dispositionLocked
             let diagnostic = record.map { _ in
-                let removed = evidence.hadTap ? String(evidence.removed == true) : "not_required"
+                let removed = evidence.hadTap ? (evidence.removed.map { String($0) } ?? "unknown") : "not_required"
                 let running = evidence.runningAtCleanup.map { String($0) } ?? "unknown"
                 return "mic_cleanup_disposition generation=\(generation) preCommitFormatException=\(history.preCommitFormatException)"
                     + " hadTap=\(evidence.hadTap) engineStarted=\(history.start.diagnosticValue) stopped=\(evidence.stopped)"

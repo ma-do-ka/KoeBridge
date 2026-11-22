@@ -156,7 +156,7 @@ import KoeBridgeCore
             volumeGuard.end(owner) // also closes a handover rejected by a cancelled take
             let hadTap = cleanupOwned && tap.isInstalled
             let stopped = cleanupOwned && LeasedMicrophoneTapGraph.stopEngine(lease.resource)
-            let running = lifetime.needsIndependentStopReadback(lease, hadTap: hadTap)
+            let running = cleanupOwned && lifetime.needsIndependentStopReadback(lease, hadTap: hadTap)
                 ? LeasedMicrophoneTapGraph.readEngineRunning(lease.resource) : nil
             let removed = tap.removeIfOwned()
             target = nil
