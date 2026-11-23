@@ -26,9 +26,11 @@ struct MicrophoneRecoveryTests {
         let node = KBFakeTapNode()
         let fault: Fault
         private(set) var bound: [UInt32] = []
+        var rejectBind: Bool
 
         init(_ fault: Fault, clock: Clock, engine: KBFakeMicrophoneEngine) {
             self.fault = fault
+            rejectBind = fault == .bind
             self.engine = engine
             engine.attach(node)
             node.fixtureHardware = AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1)!
@@ -61,7 +63,7 @@ struct MicrophoneRecoveryTests {
 
         func bind(_ target: MicrophoneSelectionTarget) throws {
             bound.append(target.deviceID)
-            if fault == .bind { throw MicrophoneDevices.DeviceError.selectionNotApplied }
+            if rejectBind { throw MicrophoneDevices.DeviceError.selectionNotApplied }
             node.currentDeviceID = target.deviceID
         }
 
@@ -118,9 +120,9 @@ struct MicrophoneRecoveryTests {
         }
 
         func capture(gate: MicrophoneStartupGate = .init(configuring: true),
-                     explicitStart: Bool = true,
+                     explicitStart: Bool = true, takeID: UUID = UUID(),
                      makeEvidence: @escaping @MainActor () -> MicrophoneEvidenceWriter? = { nil }) -> MicrophoneCapture {
-            MicrophoneCapture(selectedInputUID: "explicit", startupGate: gate, explicitStart: explicitStart,
+            MicrophoneCapture(selectedInputUID: "explicit", takeID: takeID, startupGate: gate, explicitStart: explicitStart,
                               lifetime: lifetime, hardware: hardware, makeMicrophoneEvidence: makeEvidence)
         }
 
@@ -584,7 +586,7 @@ struct MicrophoneRecoveryTests {
         await handed.cancelAndWait()
     }
 
-    @Test(arguments: [Fault.bind, .prepare, .readback, .start, .noPCM, .formatException, .deadlineOnStart])
+    @Test(arguments: [Fault.prepare, .readback, .start, .noPCM, .formatException, .deadlineOnStart])
     private func replacementVerificationFailureIsTerminal(_ fault: Fault) async throws {
         let rig = Rig(.formatException, fault)
         _ = await failure(rig.capture())
@@ -597,7 +599,6 @@ struct MicrophoneRecoveryTests {
         }
         let error = try #require(await task.value)
         switch fault {
-        case .bind: #expect(error as? MicrophoneDevices.DeviceError == .selectionNotApplied)
         case .prepare: #expect((error as NSError).code == 0)
         case .start:
             #expect((error as NSError).domain == NSOSStatusErrorDomain)
@@ -618,7 +619,7 @@ struct MicrophoneRecoveryTests {
             #expect(rig.factoryCalls == 2)
             #expect(rig.devices[0].engine.stops == 1)
             #expect(rig.devices[1].engine.stops == 1)
-            #expect(rig.devices[1].node.removes == ([.bind, .formatException].contains(fault) ? 0 : 1))
+            #expect(rig.devices[1].node.removes == (fault == .formatException ? 0 : 1))
         }
     }
 
@@ -866,18 +867,23 @@ struct MicrophoneRecoveryTests {
 
     @MainActor private final class PreparationReplay {
         let log = CleanupLog()
-        let rig = Rig(.none)
+        let rig: Rig
         private(set) var attempts: [PreparationAttempt] = []
         private(set) var task: Task<Void, Never>?
         private(set) var preparationFinished = false
         private(set) var waits: [TimeInterval] = []
         private(set) var audio: [Data] = []
         var wait: ((TimeInterval) async throws -> Void)?
+        var hardwareForAttempt: ((Int, MicrophoneHardware) -> MicrophoneHardware)?
+        var selectedUID = "explicit"
+        var recognitionResult: String?
+
+        init(rig: Rig = Rig(.none)) { self.rig = rig }
 
         lazy var controller: VoiceController = {
             var environment = VoiceController.PreparationEnvironment()
             environment.permission = { true }
-            environment.selectedInputUID = { "explicit" }
+            environment.selectedInputUID = { [unowned self] in selectedUID }
             environment.makeCapture = { [unowned self] uid, volumeGuard, id, explicit in
                 let attempt = PreparationAttempt(uid: uid, takeID: id, explicitStart: explicit)
                 var hardware = rig.hardware
@@ -893,6 +899,7 @@ struct MicrophoneRecoveryTests {
                     return .init(inputDeviceID: id, outputDeviceID: 211,
                                  inputTransport: "bluetooth", outputTransport: "built_in")
                 }
+                hardware = hardwareForAttempt?(attempts.count, hardware) ?? hardware
                 let capture = MicrophoneCapture(selectedInputUID: uid, volumeGuard: volumeGuard,
                     takeID: id, startupGate: attempt.gate, explicitStart: explicit, lifetime: rig.lifetime,
                     hardware: hardware, makeMicrophoneEvidence: log.evidence,
@@ -914,11 +921,18 @@ struct MicrophoneRecoveryTests {
             environment.recordSession = log.session
             environment.recordMicrophone = log.microphone
             environment.captureTarget = { _ in (target: nil, reason: "target_not_captured") }
+            if recognitionResult != nil { environment.shouldPaste = false }
             environment.consumeAudio = { [weak self] stream in
-                for await packet in stream { self?.audio.append(packet) }
+                var receivedAudio = false
+                for await packet in stream {
+                    receivedAudio = true
+                    self?.audio.append(packet)
+                }
+                return receivedAudio ? self?.recognitionResult : nil
             }
             environment.preparationLaunched = { [weak self] task in
                 self?.task = task
+                self?.preparationFinished = false
                 Task { [weak self] in
                     await task.value
                     self?.preparationFinished = true
@@ -1410,6 +1424,456 @@ struct MicrophoneRecoveryTests {
         #expect(evaluations == 2)
         #expect(log.read() == ["diagnostic probe", "diagnostic probe"] + expected)
         #expect(log.read("mic") == ["diagnostic probe"])
+    }
+
+    private var deferredAfterStart: String {
+        "mic_cleanup_disposition generation=2 preCommitFormatException=false hadTap=true engineStarted=true"
+            + " stopped=true removed=true preflightStopped=true runningAtCleanup=false succeeded=true disposition=verificationDeferred"
+    }
+
+    private func retireFirstEngine(_ replay: PreparationReplay, index: Int = 0) async throws {
+        replay.controller.toggle()
+        try await awaitPreparationEnd(replay)
+        let failed = try #require(replay.attempts.last)
+        #expect(failed.capture.recoveryDisposition == .replacementPending)
+        #expect(replay.rig.lifetime.disposition == .replacementPending)
+        #expect(replay.attempts.count == index + 1)
+        _ = try await awaitDelivery(replay, take: failed.takeID)
+    }
+
+    private func holdVerificationSelection(_ replay: PreparationReplay, attempt: Int) async throws
+        -> (PreparationAttempt, Device, AVAudioNodeTapBlock) {
+        let current = try await awaitEngine(replay, index: attempt)
+        let (device, block) = await lane {
+            let device = replay.rig.devices[1]
+            current.read.arm()
+            NotificationCenter.default.post(name: .AVAudioEngineConfigurationChange, object: device.engine)
+            replay.rig.clock.set(replay.rig.clock.now() + 0.08)
+            return (device, device.node.partialTap)
+        }
+        try await observe("Selection was not read during revalidation", log: replay.log) { current.read.isBlocked }
+        return (current, device, try #require(block))
+    }
+
+    private func loseSelectionDuringVerification(_ replay: PreparationReplay, attempt: Int,
+                                                 fault: (Device) -> Void = { _ in }) async throws
+        -> (PreparationAttempt, AVAudioNodeTapBlock) {
+        let (current, device, block) = try await holdVerificationSelection(replay, attempt: attempt)
+        // The lifecycle lane owns this read and is paused until complete().
+        fault(device)
+        current.read.complete(matches: false)
+        try await observe("No selection verdict", log: replay.log) {
+            replay.stage(current, "failing_component=selection").count == 1
+        }
+        return (current, block)
+    }
+
+    private func commitVerification(_ replay: PreparationReplay, attempt index: Int, device deviceIndex: Int,
+                                    value: Float = 0) async throws -> PreparationAttempt {
+        let attempt = try await awaitEngine(replay, index: index)
+        let (device, block) = await lane {
+            let device = replay.rig.devices[deviceIndex]
+            return (device, device.node.partialTap)
+        }
+        let tap = try #require(block)
+        let first = replay.rig.clock.now() + 0.01
+        replay.rig.clock.set(first)
+        device.deliver(tap, value: value)
+        replay.rig.clock.set(first + 0.17)
+        device.deliver(tap, value: value)
+        try await awaitPreparationEnd(replay)
+        #expect(replay.controller.phase == .recording)
+        #expect(attempt.gate.didCommit)
+        return attempt
+    }
+
+    @Test func verificationDefersAndRetriesTheSameGenerationThroughOrderedDelivery() async throws {
+        let replay = PreparationReplay(rig: Rig(.none, .none))
+        replay.recognitionResult = "音声入力の確認"
+        defer { replay.finish() }
+        replay.controller.toggle()
+        let first = try await commitVerification(replay, attempt: 0, device: 0)
+        replay.controller.toggle()
+        _ = try await awaitDelivery(replay, take: first.takeID)
+        let old = await lane { () -> AVAudioNodeTapBlock? in
+            let device = replay.rig.devices[0]
+            device.node.switchDeviceDuringInstall = true
+            return device.node.partialTap
+        }
+        #expect(old == nil)
+        try await retireFirstEngine(replay, index: 1)
+        let retiredTap = try #require(await lane { replay.rig.devices[0].node.partialTap })
+
+        replay.controller.toggle()
+        let (failed, failedTap) = try await loseSelectionDuringVerification(replay, attempt: 2)
+        try await observe("Gen2 was not re-acquired", log: replay.log) { replay.attempts.count == 4 }
+        let retry = replay.attempts[3]
+        #expect(retry.takeID == failed.takeID)
+        #expect(retry.capture !== failed.capture)
+        #expect(replay.waits == [0.05])
+        #expect(failed.capture.recoveryDisposition == .verificationDeferred)
+        #expect(replay.failures().last?.contains("attempt=1 category=input_route_changed") == true)
+        #expect(!failed.gate.didCommit)
+        _ = try await awaitEngine(replay, index: 3)
+        let device = await lane {
+            #expect((try? replay.rig.lifetime.acquire(for: .capture, canAcquire: true)) == nil)
+            #expect((try? replay.rig.lifetime.acquire(for: .continuation, takeID: retry.takeID, canAcquire: true)) == nil)
+            return replay.rig.devices[1]
+        }
+        device.deliver(failedTap, value: 0.9)
+        device.deliver(retiredTap, value: 0.9)
+        await failed.capture.cancelAndWait()
+        await failed.capture.cancelAndWait()
+        let committed = try await commitVerification(replay, attempt: 3, device: 1, value: 0.25)
+        #expect(committed.capture.totalPCMBytes == 4096)
+        #expect(committed.capture.sessionPeakAmplitude == 0.25)
+        #expect(failed.capture.totalPCMBytes == 0)
+        #expect(replay.rig.lifetime.disposition == .normal)
+        replay.controller.toggle()
+        let result = try await awaitDelivery(replay, take: retry.takeID)
+        #expect(result.count == 1)
+        #expect(replay.controller.history.count == 1)
+        let audio = replay.audio.reduce(into: Data()) { $0.append($1) }
+        #expect(audio.count == 4096)
+        #expect(audio.withUnsafeBytes { $0.bindMemory(to: Int16.self).allSatisfy { $0 == 8192 } })
+        let dispositions = try await replay.log.dispositions(count: 4)
+        #expect(dispositions.count == 4)
+        #expect(dispositions.filter { $0 == deferredAfterStart }.count == 1)
+        #expect(dispositions.filter { $0.hasSuffix("disposition=replacementPending") }.count == 1)
+        #expect(dispositions.last?.hasSuffix("succeeded=true disposition=normal") == true)
+        await lane {
+            #expect(replay.rig.factoryCalls == 2)
+            #expect(replay.rig.devices[0].engine.starts == 1)
+            #expect(device.engine.starts == 2)
+            #expect(device.bound == [137, 137])
+            #expect(retry.snapshots == [137])
+        }
+        replay.controller.toggle()
+        let later = try await commitVerification(replay, attempt: 4, device: 1)
+        replay.controller.toggle()
+        _ = try await awaitDelivery(replay, take: later.takeID)
+        await lane {
+            #expect(replay.rig.factoryCalls == 2)
+            #expect(device.engine.starts == 3)
+            #expect(replay.rig.devices[0].engine.starts == 1)
+        }
+    }
+
+    private func assertQuarantined(_ replay: PreparationReplay) async throws {
+        replay.controller.toggle()
+        try await awaitPreparationEnd(replay)
+        let rejected = try #require(replay.attempts.last)
+        _ = try await awaitDelivery(replay, take: rejected.takeID)
+        #expect(replay.rig.lifetime.disposition == .terminal)
+        #expect(replay.failures().last?.contains("category=tap_graph_quarantined") == true)
+        await lane { #expect(replay.rig.factoryCalls == 2) }
+    }
+
+    @Test(arguments: [Fault.formatException, .unknownException, .topologyAfter])
+    private func verificationGraphErrorsRetireEvenWithSuccessfulCleanup(_ fault: Fault) async throws {
+        let replay = PreparationReplay(rig: Rig(.formatException, fault))
+        defer { replay.finish() }
+        if fault == .topologyAfter {
+            // The installed graph becomes running and the selected ID changes.
+            replay.rig.configureDevice = { device in
+                guard device.fault == .topologyAfter else { return }
+                device.node.afterInstall = {
+                    device.engine.fixtureRunning = true
+                    device.node.currentDeviceID = 173
+                }
+            }
+        }
+        try await retireFirstEngine(replay)
+        replay.controller.toggle()
+        try await awaitPreparationEnd(replay)
+        let failed = try #require(replay.attempts.last)
+        _ = try await awaitDelivery(replay, take: failed.takeID)
+        let category = switch fault {
+        case .formatException: "tap_format_mismatch"
+        case .unknownException: "tap_unknown_exception"
+        default: "tap_graph_unexpected"
+        }
+        #expect(replay.failures().last?.contains("category=" + category) == true)
+        let cleanup = try #require((try await replay.log.dispositions(count: 2)).last)
+        #expect(cleanup.hasSuffix("succeeded=true disposition=terminal"))
+        #expect(replay.waits.isEmpty)
+        try await assertQuarantined(replay)
+    }
+
+    private enum ProofFailure: CaseIterable {
+        case stop, remove, running, unreadable
+
+        func inject(_ device: Device) {
+            switch self {
+            case .stop: device.engine.raiseAfterStopping = true
+            case .remove: device.node.raiseOnRemove = true
+            case .running: device.engine.runningOnIndependentStopReadback = true
+            case .unreadable: device.engine.raiseOnIndependentStopReadback = true
+            }
+        }
+    }
+
+    @Test(arguments: ProofFailure.allCases)
+    private func verificationRequiresEveryIndependentCleanupProof(_ fault: ProofFailure) async throws {
+        let replay = PreparationReplay(rig: Rig(.formatException, .none))
+        defer { replay.finish() }
+        try await retireFirstEngine(replay)
+        replay.controller.toggle()
+        let (failed, _) = try await loseSelectionDuringVerification(replay, attempt: 1, fault: fault.inject)
+        try await awaitPreparationEnd(replay)
+        _ = try await awaitDelivery(replay, take: failed.takeID)
+        let cleanup = try #require((try await replay.log.dispositions(count: 2)).last)
+        #expect(cleanup.contains("generation=2"))
+        #expect(cleanup.contains("stopped=\(fault != .stop) removed=\(fault != .remove)"))
+        let running = switch fault {
+        case .running: "true"
+        case .stop, .remove: "false"
+        case .unreadable: "unknown"
+        }
+        #expect(cleanup.contains("runningAtCleanup=\(running) succeeded=false disposition=terminal"))
+        #expect(replay.waits.isEmpty)
+        await lane {
+            #expect(replay.rig.devices[1].engine.stops == 1)
+            #expect(replay.rig.devices[1].node.removes == 1)
+        }
+        try await assertQuarantined(replay)
+    }
+
+    @Test func failedCleanupAfterReplacementCommitStillQuarantines() async throws {
+        let replay = PreparationReplay(rig: Rig(.formatException, .none))
+        defer { replay.finish() }
+        try await retireFirstEngine(replay)
+        replay.controller.toggle()
+        let attempt = try await commitVerification(replay, attempt: 1, device: 1)
+        await lane { replay.rig.devices[1].node.raiseOnRemove = true }
+        replay.controller.toggle()
+        _ = try await awaitDelivery(replay, take: attempt.takeID)
+        let cleanup = try #require((try await replay.log.dispositions(count: 2)).last)
+        #expect(cleanup.contains("removed=false"))
+        #expect(cleanup.hasSuffix("succeeded=false disposition=terminal"))
+        try await assertQuarantined(replay)
+    }
+
+    @Test func replacementBindMismatchKeepsTheErrorAndAllowsRecapture() async throws {
+        let rig = Rig(.formatException, .bind)
+        let log = CleanupLog()
+        defer { log.clean() }
+        _ = await failure(rig.capture())
+        let takeID = UUID()
+        let failed = rig.capture(takeID: takeID, makeEvidence: log.evidence)
+        let error = try #require(await failure(failed))
+        #expect(error as? MicrophoneDevices.DeviceError == .selectionNotApplied)
+        #expect(failed.recoveryDisposition == .verificationDeferred)
+        #expect(VoiceController.microphoneStartFailureMessage(error, disposition: failed.recoveryDisposition)
+            == MicrophoneDevices.DeviceError.selectionNotApplied.errorDescription)
+        #expect(MicrophoneCapture.retryDelay(for: error, policy: .init(), attempts: 1, elapsed: 0.1,
+            disposition: failed.recoveryDisposition) == 0.2)
+        let line = try #require((try await log.dispositions(count: 1)).first)
+        #expect(line.contains("generation=2 preCommitFormatException=false hadTap=false engineStarted=false"
+            + " stopped=true removed=not_required preflightStopped=false runningAtCleanup=false"))
+        #expect(line.hasSuffix("succeeded=true disposition=verificationDeferred"))
+        await lane { rig.devices[1].rejectBind = false }
+        let retry = rig.capture(explicitStart: false, takeID: takeID)
+        let task = Task { try await retry.start(deadline: 12.5, onAudio: { _ in }) }
+        defer { task.cancel() }
+        try await feedStablePCM(rig, index: 1)
+        try await awaitCommit(task, clock: rig.clock)
+        await retry.cancelAndWait()
+        await lane {
+            #expect(rig.factoryCalls == 2)
+            #expect(rig.devices[1].bound == [137, 137])
+            #expect(rig.devices[1].engine.stops == 2)
+            #expect(rig.devices[1].node.removes == 1)
+        }
+    }
+
+    private enum SelectionFault: CaseIterable {
+        case noSystemInput, selectedMissing, ambiguousDefault, enumerate, bind, nativeBind
+        case firstGraphCheck, beforeInstall, afterInstall, afterPrepare
+
+        var systemDefault: Bool { self == .noSystemInput || self == .ambiguousDefault }
+        var terminal: Bool { self == .enumerate || self == .nativeBind }
+        var hasReceipt: Bool { self == .afterInstall || self == .afterPrepare }
+        var passedPreflight: Bool { self == .beforeInstall || hasReceipt }
+        var graphRead: Int? {
+            switch self {
+            case .firstGraphCheck: 1
+            case .beforeInstall: 2
+            case .afterInstall: 3
+            case .afterPrepare: 4
+            default: nil
+            }
+        }
+
+        func apply(to original: MicrophoneHardware) -> MicrophoneHardware {
+            var hardware = original
+            switch self {
+            case .noSystemInput:
+                hardware.snapshot = { .init(devices: [], defaultID: nil) }
+            case .selectedMissing:
+                hardware.snapshot = { .init(devices: [], defaultID: 137) }
+            case .ambiguousDefault:
+                // Explicit UID collisions are filtered by Snapshot. The system
+                // path matches IDs and rejects two distinct UIDs for that ID.
+                hardware.snapshot = {
+                    .init(devices: [.init(uid: "a", name: "A", deviceID: 137),
+                                    .init(uid: "b", name: "B", deviceID: 137)], defaultID: 137)
+                }
+            case .enumerate:
+                hardware.snapshot = { throw MicrophoneDevices.DeviceError.enumerationFailed }
+            case .bind:
+                hardware.bind = { _, _, _ in throw MicrophoneDevices.DeviceError.selectionNotApplied }
+            case .nativeBind:
+                hardware.bind = { _, _, _ in throw MicrophoneDevices.DeviceError.selectionFailed(-50) }
+            case .firstGraphCheck, .beforeInstall, .afterInstall, .afterPrepare:
+                var reads = 0
+                hardware.isStillSelected = { target, node in
+                    reads += 1
+                    if reads == graphRead { return false }
+                    return original.isStillSelected(target, node)
+                }
+            }
+            return hardware
+        }
+    }
+
+    @Test(arguments: SelectionFault.allCases)
+    private func verificationClassifiesRealSynchronousSelectionStages(_ fault: SelectionFault) async throws {
+        let replay = PreparationReplay(rig: Rig(.formatException, .none))
+        defer { replay.finish() }
+        replay.hardwareForAttempt = { index, hardware in index == 1 ? fault.apply(to: hardware) : hardware }
+        let release = Clock()
+        replay.wait = { _ in
+            while release.now() == 10 { try await Task.sleep(for: .milliseconds(5)) }
+        }
+        defer { release.set(11) }
+        try await retireFirstEngine(replay)
+        if fault.systemDefault { replay.selectedUID = "" }
+        replay.controller.toggle()
+        let cleanup = try #require((try await replay.log.dispositions(count: 2)).last)
+        #expect(cleanup.contains("generation=2 preCommitFormatException=false hadTap=\(fault.hasReceipt) engineStarted=false"))
+        #expect(cleanup.contains("preflightStopped=\(fault.passedPreflight)"))
+        let failed = try #require(replay.attempts.last)
+        if fault.terminal {
+            try await awaitPreparationEnd(replay)
+            #expect(failed.capture.recoveryDisposition == .terminal)
+            #expect(cleanup.contains("runningAtCleanup=unknown succeeded=true disposition=terminal"))
+            #expect(replay.waits.isEmpty)
+        } else {
+            let removed = fault.hasReceipt ? "true" : "not_required"
+            #expect(cleanup.contains("stopped=true removed=\(removed)"))
+            #expect(cleanup.contains("runningAtCleanup=false succeeded=true disposition=verificationDeferred"))
+            if fault.graphRead != nil || fault == .bind {
+                try await observe("No retry for a valid pre-start selection failure", log: replay.log) { !replay.waits.isEmpty }
+                #expect(replay.waits == [fault == .bind ? 0.2 : 0.05])
+                replay.controller.toggle()
+                release.set(11)
+                try await awaitPreparationEnd(replay)
+            } else {
+                try await awaitPreparationEnd(replay)
+                let expected: MicrophoneSelectionError = switch fault {
+                case .noSystemInput: .noSystemInput
+                case .ambiguousDefault: .ambiguousDevice
+                default: .selectedDeviceMissing
+                }
+                _ = try await awaitDelivery(replay, take: failed.takeID)
+                // B89's selection errors use the existing generic display,
+                // even though they have distinct original NSError codes.
+                #expect(replay.controller.status == "マイクの開始に失敗しました。時間をおいてもう一度お試しください。")
+                let code = (expected as NSError).code
+                #expect(replay.stage(failed, "stage=start_failed").contains {
+                    $0.split(separator: " ").contains("code=\(code)")
+                })
+                #expect(replay.waits.isEmpty)
+            }
+            #expect(failed.capture.recoveryDisposition == .verificationDeferred)
+        }
+        _ = try await awaitDelivery(replay, take: failed.takeID)
+        #expect(replay.attempts.count == 2)
+        await lane {
+            #expect(replay.rig.factoryCalls == 2)
+            #expect(replay.rig.devices[1].node.installs == (fault.hasReceipt ? 1 : 0))
+            #expect(replay.rig.devices[1].node.removes == (fault.hasReceipt ? 1 : 0))
+            #expect(replay.rig.devices[1].engine.starts == 0)
+        }
+    }
+
+    @Test func verificationReadinessLossLeavesDeferralForTheNextExplicitTakeAfterBudgetExhaustion() async throws {
+        let replay = PreparationReplay(rig: Rig(.formatException, .none))
+        defer { replay.finish() }
+        try await retireFirstEngine(replay)
+        replay.controller.toggle()
+        for index in 1...4 {
+            let attempt = try await awaitEngine(replay, index: index)
+            attempt.read.arm()
+            try await observe("Readiness did not poll selection", log: replay.log) { attempt.read.isBlocked }
+            attempt.read.complete(matches: false)
+        }
+        try await awaitPreparationEnd(replay)
+        let timedOut = try #require(replay.attempts.last)
+        _ = try await awaitDelivery(replay, take: timedOut.takeID)
+        #expect(replay.controller.status == "マイクの接続切り替えが安定しませんでした")
+        #expect(replay.waits == [0.05, 0.05, 0.05])
+        #expect(replay.attempts.count == 5)
+        #expect(replay.attempts.dropFirst().allSatisfy { $0.capture.recoveryDisposition == .verificationDeferred })
+        let cleanup = try await replay.log.dispositions(count: 5)
+        #expect(cleanup.filter { $0 == deferredAfterStart }.count == 4)
+        #expect(replay.rig.lifetime.disposition == .verificationDeferred)
+
+        let warmer = replay.rig.warm()
+        warmer.resume(enabled: true, selectedUID: "explicit", takeActive: false, reason: "test")
+        let otherTake = UUID()
+        await lane {
+            #expect(replay.rig.lifetime.acquire() == nil)
+            #expect((try? replay.rig.lifetime.acquire(for: .continuation, takeID: otherTake, canAcquire: true)) == nil)
+            #expect(replay.rig.lifetime.disposition == .verificationDeferred)
+            #expect(replay.rig.devices[1].engine.starts == 4)
+        }
+        warmer.suspend()
+        let cancelled = MicrophoneStartupGate(configuring: true)
+        cancelled.stop()
+        #expect(await failure(replay.rig.capture(gate: cancelled)) is CancellationError)
+        #expect(await failure(replay.rig.capture(), deadline: replay.rig.clock.now()) != nil)
+        #expect(replay.rig.lifetime.disposition == .verificationDeferred)
+        #expect(try await replay.log.dispositions(count: 5) == cleanup)
+
+        replay.controller.toggle()
+        let later = try await commitVerification(replay, attempt: 5, device: 1)
+        #expect(later.takeID != timedOut.takeID)
+        replay.controller.toggle()
+        _ = try await awaitDelivery(replay, take: later.takeID)
+        await lane {
+            #expect(replay.rig.factoryCalls == 2)
+            #expect(replay.rig.devices[1].engine.starts == 5)
+        }
+    }
+
+    private enum VerificationVeto: CaseIterable { case cancelled, deadline, stoppedEngine }
+
+    @Test(arguments: VerificationVeto.allCases)
+    private func revalidationCannotDeferAnUnadoptedOrUnsafeSelectionFailure(_ veto: VerificationVeto) async throws {
+        let replay = PreparationReplay(rig: Rig(.formatException, .none))
+        defer { replay.finish() }
+        try await retireFirstEngine(replay)
+        replay.controller.toggle()
+        let (attempt, device, _) = try await holdVerificationSelection(replay, attempt: 1)
+        switch veto {
+        case .cancelled: replay.controller.toggle()
+        case .deadline: replay.rig.clock.set(replay.rig.clock.now() + 2.5)
+        case .stoppedEngine: device.engine.fixtureRunning = false
+        }
+        attempt.read.complete(matches: false)
+        try await awaitPreparationEnd(replay)
+        _ = try await awaitDelivery(replay, take: attempt.takeID)
+        let cleanup = try #require((try await replay.log.dispositions(count: 2)).last)
+        #expect(cleanup.contains("runningAtCleanup=unknown succeeded=true disposition=terminal"))
+        #expect(attempt.capture.recoveryDisposition == .terminal)
+        if veto != .cancelled {
+            #expect(replay.failures().last?.contains("category=input_route_changed") == true)
+        }
+        #expect(replay.attempts.count == 2)
+        #expect(replay.waits.isEmpty)
+        try await assertQuarantined(replay)
     }
 
     private func expectationFlag() -> Clock {

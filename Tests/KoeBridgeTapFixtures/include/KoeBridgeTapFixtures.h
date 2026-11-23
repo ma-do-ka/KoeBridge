@@ -24,8 +24,11 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic) BOOL raiseOnPrepare;
 @property(nonatomic) BOOL failStart;
 @property(nonatomic) BOOL raiseOnStop;
+@property(nonatomic) BOOL raiseAfterStopping;
 @property(nonatomic) BOOL remainRunningAfterStop;
 @property(nonatomic) BOOL raiseOnRunningReadAfterStop;
+@property(nonatomic) BOOL runningOnIndependentStopReadback;
+@property(nonatomic) BOOL raiseOnIndependentStopReadback;
 @property(nonatomic, readonly) unsigned prepares;
 @property(nonatomic, readonly) unsigned starts;
 @property(nonatomic, readonly) unsigned stops;
