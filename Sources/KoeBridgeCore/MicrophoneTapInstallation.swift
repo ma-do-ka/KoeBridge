@@ -64,7 +64,8 @@ package struct LeasedMicrophoneTapGraph: MicrophoneTapGraph {
     package var hardware: AVAudioFormat { node.inputFormat(forBus: 0) }
     package var client: AVAudioFormat { node.outputFormat(forBus: 0) }
     package func install(_ format: AVAudioFormat, block: @escaping AVAudioNodeTapBlock) -> KBTapResult {
-        KBInstallInputTap(node, format, block)
+        lifetime.recordInstall(for: lease)
+        return KBInstallInputTap(node, format, block)
     }
     package func prepare() throws {
         guard KBPrepareMicrophoneEngine(lease.resource) else { throw PreparationError.nativeException }
@@ -134,7 +135,8 @@ package final class MicrophoneTapInstallation {
                                    deadline: TimeInterval,
                                    diagnostics: MicrophonePreparationDiagnostics? = nil,
                                    now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
-                                   sink: Sink) throws -> MicrophoneTapFormatPlan {
+                                   sink: Sink,
+                                   selectionFailed: () -> Void = {}) throws -> MicrophoneTapFormatPlan {
         func checkGeneration() throws {
             if gate.isStopped { throw CancellationError() }
             guard gate.configuringWithoutChurn else {
@@ -150,7 +152,10 @@ package final class MicrophoneTapInstallation {
             let stopped = graph.stoppedAndUnconnected
             if recordPreflight { graph.recordPreflightStopped(stopped) }
             guard stopped else { throw MicrophoneGraphError.unexpectedTopology }
-            guard graph.selectionMatches else { throw MicrophoneStartupGate.Failure.inputRouteChanged }
+            guard graph.selectionMatches else {
+                selectionFailed()
+                throw MicrophoneStartupGate.Failure.inputRouteChanged
+            }
         }
         do {
             try checkGraph()

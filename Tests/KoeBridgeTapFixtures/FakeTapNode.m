@@ -40,8 +40,17 @@
 }
 @end
 
-@implementation KBFakeMicrophoneEngine
+@implementation KBFakeMicrophoneEngine {
+    BOOL _didReadStopResult;
+}
 - (BOOL)isRunning {
+    if (_stops > 0 && _didReadStopResult) {
+        if (_raiseOnIndependentStopReadback) {
+            [NSException raise:NSInternalInconsistencyException format:@"Fixture independent readback failed"];
+        }
+        if (_runningOnIndependentStopReadback) { return YES; }
+    }
+    if (_stops > 0) { _didReadStopResult = YES; }
     if (_stops > 0 && _raiseOnRunningReadAfterStop) {
         [NSException raise:NSInternalInconsistencyException format:@"Fixture running readback failed"];
     }
@@ -68,9 +77,13 @@
 
 - (void)stop {
     _stops++;
+    _didReadStopResult = NO;
     if (_raiseOnStop) {
         [NSException raise:NSInternalInconsistencyException format:@"Fixture stop failed"];
     }
     _fixtureRunning = _remainRunningAfterStop;
+    if (_raiseAfterStopping) {
+        [NSException raise:NSInternalInconsistencyException format:@"Fixture stop returned no proof"];
+    }
 }
 @end

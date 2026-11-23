@@ -739,7 +739,8 @@ import KoeBridgeCore
         var recordSession: (() -> String) -> Void = { DiagnosticLog.record($0()) }
         var recordMicrophone: (() -> String) -> Void = { DiagnosticLog.recordMicrophoneEvidence($0()) }
         var captureTarget: ((InputDiagnosticTrace?) -> (target: InsertionTarget?, reason: String))?
-        var consumeAudio: ((AsyncStream<Data>) async -> Void)?
+        var consumeAudio: ((AsyncStream<Data>) async -> String?)?
+        var shouldPaste: Bool?
         var preparationLaunched: ((Task<Void, Never>) -> Void)?
     }
 
@@ -924,7 +925,7 @@ import KoeBridgeCore
                                 style: profile?.style.flatMap(TranscriptionStyle.init(rawValue:)) ?? transcriptionStyle,
                                 japaneseHint: japaneseHint,
                                 vocabulary: selectedVocabulary,
-                                shouldPaste: automaticPaste, options: options,
+                                shouldPaste: preparation.shouldPaste ?? automaticPaste, options: options,
                                 normalizeJapaneseSpacing: normalizeJapaneseSpacing, snippets: snippets)
         take.retainAudioGeneration = retainAudioEnabled ? retentionGeneration : nil
         take.appBundleIdentifier = bundleIdentifier
@@ -1096,8 +1097,13 @@ import KoeBridgeCore
             // The stream retains the verified pre-roll until this worker starts.
             take.worker = Task { [weak self, weak take] in
                 guard let self, let take, !take.finished, !Task.isCancelled else { return }
-                if let consumeAudio = self.preparation.consumeAudio { await consumeAudio(stream) }
-                else { await self.transmit(stream, take: take) }
+                if let consumeAudio = self.preparation.consumeAudio {
+                    if let text = await consumeAudio(stream), take.captureDrainedCleanly, !Task.isCancelled {
+                        self.resolve(take, text: text, reason: nil, postProcessed: true)
+                    }
+                } else {
+                    await self.transmit(stream, take: take)
+                }
             }
             if let route = capture.routeSnapshot {
                 preparation.recordMicrophone { "mic_prepare_route take=\(take.id.uuidString) attempt=\(attempts) \(route.diagnosticFields)" }

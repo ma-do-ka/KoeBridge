@@ -370,10 +370,25 @@ public final class MicrophoneStartupGate: @unchecked Sendable {
     @discardableResult
     public func invalidate(_ reason: Failure, expectedEpoch: UInt64? = nil, at now: TimeInterval? = nil) -> Bool {
         lock.lock(); defer { lock.unlock() }
+        return recordFailureLocked(reason, expectedEpoch: expectedEpoch, at: now) && committed
+    }
+
+    private func recordFailureLocked(_ reason: Failure, expectedEpoch: UInt64?, at now: TimeInterval?) -> Bool {
         guard failure == nil, !stopped, expectedEpoch == nil || expectedEpoch == stabilityEpoch else { return false }
         failure = reason
         if let now, now.isFinite, settlingEndedAt == nil { settlingEndedAt = now }
-        return committed
+        return true
+    }
+
+    /// Report whether this write was accepted as a live, pre-commit failure.
+    /// A late failure still uses the existing outward reason, but cannot defer.
+    package func invalidateForVerification(_ reason: Failure, expectedEpoch: UInt64? = nil,
+                                           at now: TimeInterval, deadline: TimeInterval) -> Bool {
+        lock.withLock {
+            guard recordFailureLocked(reason, expectedEpoch: expectedEpoch, at: now) else { return false }
+            return !committed && now.isFinite && now < deadline
+                && (pendingSince == nil || settlingBudgetAllowsLocked(at: now, deadline: deadline))
+        }
     }
 
     public func stop(at now: TimeInterval? = nil) {
@@ -502,6 +517,12 @@ public final class MicrophoneEngineLifetime<Resource: AnyObject>: @unchecked Sen
         public let token: UUID
         public let resource: Resource
         fileprivate let generation: Int
+        fileprivate let takeID: UUID?
+    }
+
+    package enum VerificationFailure {
+        case deviceResolution(MicrophoneSelectionError)
+        case binding, preStartSelection, revalidationSelection, readinessSelection
     }
 
     package enum Purpose { case capture, continuation, warm }
@@ -511,11 +532,11 @@ public final class MicrophoneEngineLifetime<Resource: AnyObject>: @unchecked Sen
     }
 
     package enum Disposition: Equatable, Sendable {
-        case normal, replacementPending, terminal
+        case normal, replacementPending, verificationDeferred, terminal
 
         package var message: String? {
             switch self {
-            case .normal: nil
+            case .normal, .verificationDeferred: nil
             case .replacementPending: "マイクの入力形式が変わりました。もう一度録音を開始してください"
             case .terminal: "マイクの安全な状態を確認できません。アプリを再起動してください"
             }
@@ -550,12 +571,14 @@ public final class MicrophoneEngineLifetime<Resource: AnyObject>: @unchecked Sen
 
     private struct LeaseHistory {
         var preflightStopped = false
+        var installCalled = false
+        var verificationFailure: VerificationFailure?
         var start = StartHistory.notCalled
         var preCommitFormatException = false
     }
 
     private enum State: Equatable {
-        case available, retiring(replaceable: Bool), pending, verifying, terminal
+        case available, retiring(replaceable: Bool), pending, verifying, verificationDeferred(takeID: UUID?), terminal
     }
 
     private let lock = NSLock()
@@ -569,7 +592,10 @@ public final class MicrophoneEngineLifetime<Resource: AnyObject>: @unchecked Sen
     private var history = LeaseHistory()
 
     public var isQuarantined: Bool {
-        lock.withLock { state == .terminal || state == .pending || isRetiring }
+        lock.withLock {
+            if case .verificationDeferred = state { return true }
+            return state == .terminal || state == .pending || isRetiring
+        }
     }
 
     package var disposition: Disposition {
@@ -579,6 +605,7 @@ public final class MicrophoneEngineLifetime<Resource: AnyObject>: @unchecked Sen
     private var dispositionLocked: Disposition {
         switch state {
         case .pending: .replacementPending
+        case .verificationDeferred: .verificationDeferred
         case .terminal: .terminal
         default: .normal
         }
@@ -619,6 +646,25 @@ public final class MicrophoneEngineLifetime<Resource: AnyObject>: @unchecked Sen
         }
     }
 
+    package func recordInstall(for lease: Lease) {
+        lock.withLock {
+            guard owns(lease), !cleanupStarted else { return }
+            history.installCalled = true
+        }
+    }
+
+    package func isVerifying(_ lease: Lease) -> Bool {
+        lock.withLock { owns(lease) && !cleanupStarted && state == .verifying }
+    }
+
+    package func recordVerificationFailure(_ cause: VerificationFailure, for lease: Lease) {
+        lock.withLock {
+            guard owns(lease), !cleanupStarted, state == .verifying,
+                  history.verificationFailure == nil else { return }
+            history.verificationFailure = cause
+        }
+    }
+
     package func recordStart(_ start: StartHistory, for lease: Lease) {
         lock.withLock {
             guard owns(lease), !cleanupStarted else { return }
@@ -628,13 +674,18 @@ public final class MicrophoneEngineLifetime<Resource: AnyObject>: @unchecked Sen
 
     package func needsIndependentStopReadback(_ lease: Lease, hadTap: Bool) -> Bool {
         lock.withLock {
-            owns(lease) && cleanupStarted && needsIndependentStopReadbackLocked(hadTap: hadTap)
+            owns(lease) && cleanupStarted &&
+                (attemptsDeferralLocked || usesRetiringStopProofLocked(hadTap: hadTap))
         }
     }
 
-    // This alternative proof is limited to a permanently retiring generation
-    // eligible for replacement. Other cleanup still requires a successful stop.
-    private func needsIndependentStopReadbackLocked(hadTap: Bool) -> Bool {
+    private var attemptsDeferralLocked: Bool {
+        state == .verifying && history.verificationFailure != nil
+    }
+
+    // Only the permanently retiring first generation may substitute readback
+    // for the raw stop result. Reusable engines require both.
+    private func usesRetiringStopProofLocked(hadTap: Bool) -> Bool {
         state == .retiring(replaceable: true) && !hadTap && history.start == .notCalled
     }
 
@@ -652,22 +703,39 @@ public final class MicrophoneEngineLifetime<Resource: AnyObject>: @unchecked Sen
 
     public func acquire() -> Lease? { try? acquire(for: .warm, canAcquire: true) }
 
-    package func acquire(for purpose: Purpose, canAcquire: Bool) throws -> Lease? {
+    package func acquire(for purpose: Purpose, takeID: UUID? = nil,
+                         canAcquire: @autoclosure () -> Bool) throws -> Lease? {
         let token = UUID()
-        let accepted = lock.withLock {
-            guard canAcquire, activeToken == nil else { return false }
+        let reservation = try lock.withLock { () -> (accepted: Bool, existing: Lease?) in
+            guard activeToken == nil, canAcquire() else { return (false, nil) }
             switch state {
             case .available: break
             case .pending where purpose == .capture:
                 state = .verifying
                 generation = 2
-            default: return false
+            case .verificationDeferred(let owner):
+                guard purpose == .capture || (purpose == .continuation && takeID != nil && takeID == owner)
+                else { return (false, nil) }
+                guard generation == 2, let resource else {
+                    state = .terminal
+                    throw AcquisitionError.factoryFailed
+                }
+                guard let retired, resource !== retired else {
+                    state = .terminal
+                    throw AcquisitionError.retiredEngineReturned
+                }
+                state = .verifying
+                history = LeaseHistory()
+                activeToken = token
+                return (true, Lease(token: token, resource: resource, generation: generation, takeID: takeID))
+            default: return (false, nil)
             }
             history = LeaseHistory()
             activeToken = token
-            return true
+            return (true, nil)
         }
-        guard accepted else { return nil }
+        guard reservation.accepted else { return nil }
+        if let existing = reservation.existing { return existing }
 
         // The reservation rejects reentrant/concurrent acquisition while the
         // factory is outside the lock.
@@ -678,7 +746,7 @@ public final class MicrophoneEngineLifetime<Resource: AnyObject>: @unchecked Sen
                 guard let candidate else { throw AcquisitionError.factoryFailed }
                 guard candidate !== retired else { throw AcquisitionError.retiredEngineReturned }
                 resource = candidate
-                return Lease(token: token, resource: candidate, generation: generation)
+                return Lease(token: token, resource: candidate, generation: generation, takeID: takeID)
             } catch {
                 state = .terminal
                 activeToken = nil
@@ -702,7 +770,13 @@ public final class MicrophoneEngineLifetime<Resource: AnyObject>: @unchecked Sen
         let (disposition, diagnostic) = lock.withLock { () -> (Disposition, String?) in
             guard owns(lease), cleanupStarted else { return (dispositionLocked, nil) }
             let succeeded: Bool
-            if needsIndependentStopReadbackLocked(hadTap: evidence.hadTap) {
+            let deferring = attemptsDeferralLocked
+            if deferring {
+                let tapProven = evidence.hadTap
+                    ? history.installCalled && evidence.removed == true
+                    : !history.installCalled && history.start == .notCalled
+                succeeded = evidence.stopped && evidence.runningAtCleanup == false && tapProven
+            } else if usesRetiringStopProofLocked(hadTap: evidence.hadTap) {
                 succeeded = history.preflightStopped && evidence.runningAtCleanup == false
             } else {
                 succeeded = evidence.stopped && (!evidence.hadTap || evidence.removed == true)
@@ -714,7 +788,8 @@ public final class MicrophoneEngineLifetime<Resource: AnyObject>: @unchecked Sen
                     resource = nil
                     state = .pending
                 } else { state = .terminal }
-            case .verifying: state = .terminal
+            case .verifying:
+                state = deferring && succeeded ? .verificationDeferred(takeID: lease.takeID) : .terminal
             case .available where !succeeded: state = .terminal
             default: break
             }
