@@ -3,6 +3,7 @@ import Foundation
 import AVFAudio
 import Testing
 import KoeBridgeCore
+import KoeBridgeEngines
 @testable import KoeBridge
 
 @MainActor struct MeetingSessionTests {
@@ -134,6 +135,206 @@ import KoeBridgeCore
         session.start()
         session.microphonePermissionDenied()
         #expect(completions.count == 1)
+    }
+
+    @Test func amiVoiceMeetingRecordsSpeechSecondsEngineVariantAndDeadline() async throws {
+        #expect(MeetingSession.chunkDurationSeconds(for: .local) == 50.0)
+        #expect(MeetingSession.chunkDurationSeconds(for: .gemini) == 480.0)
+        #expect(MeetingSession.chunkDurationSeconds(for: .amivoice) == 480.0)
+
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        var store = TranscriptHistoryStore(fileURL: folder.appendingPathComponent("history.json"))
+
+        let session = MeetingSession(
+            engine: .amivoice,
+            vocabulary: ["KoeBridge"],
+            style: .verbatim,
+            japaneseHint: true,
+            apiKey: nil,
+            microphoneUID: "",
+            amiVoiceKey: "fixture-amivoice-key",
+            amiVoiceEngine: .hybridJapaneseInput
+        )
+        var started = 0
+        var completedChunks = 0
+        var events: [EngineUsageSample] = []
+        var savedID: UUID?
+        session.onUsage = { event, tokens in
+            events.append(event)
+            #expect(tokens.isEmpty)
+        }
+        await withCheckedContinuation { done in
+            session.onFinished = { text, partial in
+                savedID = session.save(text, partial: partial, to: &store)
+                done.resume()
+            }
+            session.start { chunk, source in
+                started += 1
+                while started < 2 && !session.stopping && !Task.isCancelled { await Task.yield() }
+                let isMic = source == .microphone
+                let connection = AmiVoiceWebSocketConnection(
+                    apiKey: "fixture-amivoice-key",
+                    engine: .hybridJapaneseInput,
+                    vocabulary: ["KoeBridge"],
+                    finalBudget: nil
+                ) { request in
+                    ScriptedAmiVoiceSocket(request: request) { message, ws in
+                        guard case .string(let text) = message else { return }
+                        if text.hasPrefix("s ") {
+                            ws.feed("s")
+                        } else if text == "e" {
+                            if isMic {
+                                ws.feed("S 200")
+                                ws.feed("E 2200")
+                                ws.feed(#"A {"text":"マイク発話","code":""}"#)
+                            } else {
+                                ws.feed("S 100")
+                                ws.feed("E 1600")
+                                ws.feed(#"A {"text":"相手発話","code":""}"#)
+                            }
+                            ws.feed("e")
+                        }
+                    }
+                }
+                chunk.amiVoice = connection
+                try await connection.sendAudio(Data(count: isMic ? 96_000 : 64_000))
+                chunk.finalText = try await connection.endAudioAndAwaitFinal()
+                completedChunks += 1
+                while completedChunks < 2 && !session.stopping && !Task.isCancelled { await Task.yield() }
+                session.stop()
+            }
+        }
+
+        let sorted = events.sorted { $0.audioSeconds < $1.audioSeconds }
+        #expect(sorted.count == 2)
+        #expect(sorted.map(\.audioSeconds) == [2.0, 3.0])
+        #expect(sorted.map(\.speechSeconds) == [1.5, 2.0])
+        #expect(sorted.allSatisfy {
+            $0.engine == .amivoice
+                && $0.outcome == .success
+                && $0.engineVariant == AmiVoiceEngine.hybridJapaneseInput.rawValue
+        })
+        let record = try #require(store.entries.first { $0.id == savedID })
+        #expect(record.engine == RecognitionMode.amivoice.label)
+        #expect(record.kind == "meeting")
+    }
+
+    @Test func amiVoiceMeetingSilenceOnlyAndInterruptedUsageSamplesAndPartialRecovery() async throws {
+        // Silence-only cleanly acknowledged chunk records speechSeconds == 0.0 (no audioSeconds fallback).
+        let silenceSession = MeetingSession(
+            engine: .amivoice,
+            vocabulary: [],
+            style: .verbatim,
+            japaneseHint: true,
+            apiKey: nil,
+            microphoneUID: "",
+            amiVoiceKey: "fixture-amivoice-key",
+            amiVoiceEngine: .e2eJapaneseGeneral
+        )
+        var silenceEvents: [EngineUsageSample] = []
+        silenceSession.onUsage = { event, tokens in
+            silenceEvents.append(event)
+            #expect(tokens.isEmpty)
+        }
+        await withCheckedContinuation { done in
+            silenceSession.onFinished = { _, _ in done.resume() }
+            silenceSession.start { chunk, source in
+                guard source == .microphone else {
+                    while !silenceSession.stopping && !Task.isCancelled { await Task.yield() }
+                    return
+                }
+                let connection = AmiVoiceWebSocketConnection(
+                    apiKey: "fixture-amivoice-key",
+                    engine: .e2eJapaneseGeneral,
+                    finalBudget: nil
+                ) { request in
+                    ScriptedAmiVoiceSocket(request: request) { message, ws in
+                        guard case .string(let text) = message else { return }
+                        if text.hasPrefix("s ") {
+                            ws.feed("s")
+                        } else if text == "e" {
+                            ws.feed(#"A {"text":"","code":"o"}"#)
+                            ws.feed("e")
+                        }
+                    }
+                }
+                chunk.amiVoice = connection
+                try await connection.sendAudio(Data(count: 32_000))
+                chunk.finalText = try await connection.endAudioAndAwaitFinal()
+            }
+        }
+        let silenceMic = try #require(silenceEvents.first { $0.audioSeconds == 1.0 })
+        #expect(silenceMic.engine == .amivoice)
+        #expect(silenceMic.speechSeconds == 0.0)
+        #expect(silenceMic.engineVariant == AmiVoiceEngine.e2eJapaneseGeneral.rawValue)
+        #expect(silenceMic.outcome == .failure)
+
+        // Mid-speech interruption before E/e preserves partial text, cancels socket, and leaves speechSeconds nil.
+        let interruptSession = MeetingSession(
+            engine: .amivoice,
+            vocabulary: [],
+            style: .verbatim,
+            japaneseHint: true,
+            apiKey: nil,
+            microphoneUID: "",
+            amiVoiceKey: "fixture-amivoice-key",
+            amiVoiceEngine: .e2eJapaneseGeneral
+        )
+        var interruptEvents: [EngineUsageSample] = []
+        var capturedSocket: ScriptedAmiVoiceSocket?
+        var finishedText = ""
+        var finishedPartial = false
+        interruptSession.onUsage = { event, tokens in
+            interruptEvents.append(event)
+            #expect(tokens.isEmpty)
+        }
+        await withCheckedContinuation { done in
+            interruptSession.onFinished = { text, partial in
+                finishedText = text
+                finishedPartial = partial
+                done.resume()
+            }
+            interruptSession.start { chunk, source in
+                guard source == .microphone else {
+                    while !interruptSession.stopping && !Task.isCancelled { await Task.yield() }
+                    return
+                }
+                let connection = AmiVoiceWebSocketConnection(
+                    apiKey: "fixture-amivoice-key",
+                    engine: .e2eJapaneseGeneral,
+                    finalBudget: nil
+                ) { request in
+                    let socket = ScriptedAmiVoiceSocket(request: request) { message, ws in
+                        guard case .string(let text) = message else { return }
+                        if text.hasPrefix("s ") {
+                            ws.feed("s")
+                        }
+                    }
+                    capturedSocket = socket
+                    return socket
+                }
+                chunk.amiVoice = connection
+                try await connection.sendAudio(Data(count: 32_000))
+                let socket = try #require(capturedSocket)
+                socket.feed("S 100")
+                socket.feed(#"U {"text":"途中経過"}"#)
+                let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+                while connection.assembler.interim.isEmpty && ContinuousClock.now < deadline {
+                    await Task.yield()
+                }
+                interruptSession.interrupt("システム中断")
+            }
+        }
+        #expect(finishedPartial)
+        #expect(finishedText.contains("途中経過"))
+        #expect(finishedText.contains("システム中断"))
+        #expect(capturedSocket?.closeCodes.isEmpty == false)
+        let interruptedMic = try #require(interruptEvents.first { $0.audioSeconds == 1.0 })
+        #expect(interruptedMic.engine == .amivoice)
+        #expect(interruptedMic.speechSeconds == nil)
+        #expect(interruptedMic.engineVariant == AmiVoiceEngine.e2eJapaneseGeneral.rawValue)
+        #expect(interruptedMic.outcome == .cancelled)
     }
 }
 

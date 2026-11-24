@@ -4,11 +4,37 @@ import KoeBridgeCore
 import KoeBridgeEngines
 
 enum RecognitionMode: String, CaseIterable, Identifiable {
-    case gemini, local
+    case gemini, amivoice, local
     var id: String { rawValue }
-    var label: String { self == .gemini ? "Gemini 3.5 Transcribe Live" : "Apple オンデバイス（無料）" }
+    var shortLabel: String {
+        switch self {
+        case .gemini: return "Gemini"
+        case .amivoice: return "AmiVoice"
+        case .local: return "Apple"
+        }
+    }
+    var label: String {
+        switch self {
+        case .gemini: return "Gemini 3.5 Transcribe Live"
+        case .amivoice: return "AmiVoice API"
+        case .local: return "Apple オンデバイス（無料）"
+        }
+    }
     /// Human-readable picker label only: keep persisted engine identifiers and history names unchanged.
-    var settingsLabel: String { self == .gemini ? "Gemini API（オンライン認識）" : "Apple（Mac内で認識・無料）" }
+    var settingsLabel: String {
+        switch self {
+        case .gemini: return "Gemini API（オンライン認識）"
+        case .amivoice: return "AmiVoice API（日本語クラウド）"
+        case .local: return "Apple（Mac内で認識・無料）"
+        }
+    }
+    var diagnosticToken: InputDiagnosticEvent.Token {
+        switch self {
+        case .gemini: return .gemini
+        case .amivoice: return .amivoice
+        case .local: return .apple
+        }
+    }
 }
 
 /// All mutable resources belong to one utterance, not to the UI singleton.
@@ -76,7 +102,12 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
     var recordingStart: ContinuousClock.Instant?
     var effectiveMode: RecognitionMode?
     var recordingDeadline: ContinuousClock.Instant? {
-        let seconds = transformSelection != nil ? 30 : ((effectiveMode ?? preferred) == .gemini ? 480 : 50)
+        let modeSeconds: Int
+        switch effectiveMode ?? preferred {
+        case .gemini, .amivoice: modeSeconds = 480
+        case .local: modeSeconds = 50
+        }
+        let seconds = transformSelection != nil ? 30 : modeSeconds
         return recordingStart?.advanced(by: .seconds(seconds))
     }
     var recordingTimeout: Task<Void, Never>?
@@ -90,6 +121,7 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
     }
     var finalizationTimeout: Task<Void, Never>?
     var cloud: GeminiLiveConnection?
+    var amiVoice: AmiVoiceWebSocketConnection?
     var local: LocalTranscribing?
     var audioIntegrity = AudioIntegrityState()
     var retainAudioGeneration: UUID?
@@ -97,8 +129,35 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
     var captureDrainedCleanly = false
     static let maximumRescueBytes = 50 * 32_000
 
-    func transcribeLive(_ stream: AsyncStream<Data>, send: (Data) async throws -> Void,
-                        finish: () async throws -> String, rescue: () async throws -> String) async throws -> String {
+    func transcribeLive(
+        _ stream: AsyncStream<Data>,
+        cloudEngine: RecognitionMode = .gemini,
+        budgetExceeded: (@MainActor () -> Bool)? = nil,
+        send: (Data) async throws -> Void,
+        finish: () async throws -> String,
+        rescue: () async throws -> String
+    ) async throws -> String {
+        func isBudgetExceeded() -> Bool {
+            if let budgetExceeded { return budgetExceeded() }
+            switch cloudEngine {
+            case .gemini: return cloud?.assembler.exceededFinalBudget == true
+            case .amivoice: return amiVoice?.assembler.exceededFinalBudget == true
+            case .local: return false
+            }
+        }
+        func isBudgetExceededError(_ error: Error) -> Bool {
+            if case GeminiLiveConnection.ConnectionError.finalBudgetExceeded = error { return true }
+            if case AmiVoiceWebSocketConnection.ConnectionError.finalBudgetExceeded = error { return true }
+            return false
+        }
+        func budgetExceededError() -> Error {
+            switch cloudEngine {
+            case .gemini: return GeminiLiveConnection.ConnectionError.finalBudgetExceeded
+            case .amivoice: return AmiVoiceWebSocketConnection.ConnectionError.finalBudgetExceeded
+            case .local: return VoiceController.AppError.connectionLost
+            }
+        }
+
         var sendFailed = false
         for await chunk in stream {
             guard !finished, !Task.isCancelled else { throw CancellationError() }
@@ -107,11 +166,15 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
                 do { try await send(chunk) }
                 catch {
                     try Task.checkCancellation()
-                    if cloud?.assembler.exceededFinalBudget == true { throw GeminiLiveConnection.ConnectionError.finalBudgetExceeded }
+                    if isBudgetExceeded() || isBudgetExceededError(error) { throw budgetExceededError() }
                     sendFailed = true
+                    if cloudEngine == .amivoice { amiVoice?.cancel() }
                 }
             }
-            if sendFailed && audioBackup.count > Self.maximumRescueBytes { throw VoiceController.AppError.localRecoveryTooLong }
+            if sendFailed && audioBackup.count > Self.maximumRescueBytes {
+                guard audioIntegrity.droppedChunks == 0 else { throw VoiceController.AppError.audioDropped }
+                throw VoiceController.AppError.localRecoveryTooLong
+            }
         }
         try Task.checkCancellation()
         guard !finished else { throw CancellationError() }
@@ -119,23 +182,33 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
         if !sendFailed {
             do {
                 let text = try await finish()
-                successfulEngine = .gemini
+                successfulEngine = cloudEngine
                 return text
-            } catch { try Task.checkCancellation() }
+            } catch {
+                try Task.checkCancellation()
+                if isBudgetExceeded() || isBudgetExceededError(error) { throw budgetExceededError() }
+                if cloudEngine == .amivoice { amiVoice?.cancel() }
+            }
         }
-        if cloud?.assembler.exceededFinalBudget == true { throw GeminiLiveConnection.ConnectionError.finalBudgetExceeded }
-        guard !finished, captureDrainedCleanly, stoppingAt != nil, audioIntegrity.droppedChunks == 0 else {
+        if isBudgetExceeded() { throw budgetExceededError() }
+        guard !finished else { throw CancellationError() }
+        guard captureDrainedCleanly, stoppingAt != nil, audioIntegrity.droppedChunks == 0 else {
             throw VoiceController.AppError.audioDropped
         }
-        DiagnosticLog.record("gemini transmit failed; attempting Apple on-device recovery")
+        guard audioBackup.count <= Self.maximumRescueBytes else {
+            throw VoiceController.AppError.localRecoveryTooLong
+        }
+        DiagnosticLog.record("\(cloudEngine.rawValue) transmit failed; attempting Apple on-device recovery")
         let text = try await rescue()
         successfulEngine = .local
         return text
     }
     var geminiAttempted = false
+    var amiVoiceAttempted = false
     var appleAttempted = false
     var fellBackToApple = false
     var geminiStartedAt: Date?
+    var amiVoiceStartedAt: Date?
     var appleStartedAt: Date?
     var appleAudioBytes = 0
     var successfulEngine: RecognitionMode?
@@ -172,9 +245,12 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
     }
 
     var recoverableText: String {
-        TranscriptRecovery.text(preferred: appleAttempted ? .local : .cloud,
-                                cloud: cloud?.assembler.recoveryText,
-                                local: local?.transcript, preview: partialText)
+        let cloudRecovery = [cloud?.assembler.recoveryText, amiVoice?.assembler.recoveryText]
+            .compactMap { $0 }
+            .first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        return TranscriptRecovery.text(preferred: appleAttempted ? .local : .cloud,
+                                       cloud: cloudRecovery,
+                                       local: local?.transcript, preview: partialText)
     }
 
     var review: TranscriptReview? {
@@ -200,6 +276,18 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
             rows.append(EngineUsageSample(at: geminiStartedAt ?? fallbackTime, engine: .gemini,
                                           audioSeconds: Double(cloud?.sentAudioBytes ?? 0) / 32_000,
                                           outcome: outcome(for: .gemini)))
+        }
+        if amiVoiceAttempted {
+            let speechSeconds: Double? = amiVoice.flatMap { conn -> Double? in
+                if conn.speechDurationMS > 0 { return conn.speechDurationSeconds }
+                if conn.assembler.endAcknowledged && conn.assembler.finalCount == 0 { return 0.0 }
+                return nil
+            }
+            rows.append(EngineUsageSample(at: amiVoiceStartedAt ?? fallbackTime, engine: .amivoice,
+                                          audioSeconds: Double(amiVoice?.sentAudioBytes ?? 0) / 32_000,
+                                          outcome: outcome(for: .amivoice),
+                                          speechSeconds: speechSeconds,
+                                          engineVariant: amiVoice?.engine.rawValue))
         }
         if appleAttempted {
             rows.append(EngineUsageSample(at: appleStartedAt ?? fallbackTime, engine: .apple,
@@ -237,6 +325,8 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
         continuation = nil
         cloud?.cancel()
         cloud = nil
+        amiVoice?.cancel()
+        amiVoice = nil
         local?.cancel()
         local = nil
         audioBackup.removeAll(keepingCapacity: false)

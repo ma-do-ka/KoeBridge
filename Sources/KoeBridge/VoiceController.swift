@@ -43,11 +43,18 @@ import KoeBridgeEngines
     @Published var requestedMode: RecognitionMode {
         didSet {
             UserDefaults.standard.set(requestedMode.rawValue, forKey: "engine")
-            if requestedMode != .gemini {
+            switch requestedMode {
+            case .gemini:
+                scheduleWarmGemini()
+            case .amivoice, .local:
                 warmScheduleTask?.cancel()
                 prewarmer.shutdown()
             }
-            else { scheduleWarmGemini() }
+        }
+    }
+    @Published var amiVoiceEngine: AmiVoiceEngine {
+        didSet {
+            UserDefaults.standard.set(amiVoiceEngine.rawValue, forKey: "amiVoiceEngine")
         }
     }
     @Published var outputVolumeGuardEnabled: Bool {
@@ -504,13 +511,34 @@ import KoeBridgeEngines
         guard phase == .idle, active == nil, inFlight.isEmpty, !textOperationRunning else {
             status = "音声入力・処理の完了後に会議モードを開始してください"; return
         }
-        if requestedMode == .gemini, KeychainStore.loadForUse() == nil { status = AppError.noKey.localizedDescription; return }
+        let geminiKey: String?
+        let amiVoiceKey: String?
+        switch requestedMode {
+        case .gemini:
+            guard let key = loadKeyForUse(provider: .gemini) else {
+                status = AppError.noKey.localizedDescription
+                return
+            }
+            geminiKey = key
+            amiVoiceKey = nil
+        case .amivoice:
+            guard let key = loadKeyForUse(provider: .amivoice) else {
+                status = AppError.noAmiVoiceKey.localizedDescription
+                return
+            }
+            geminiKey = nil
+            amiVoiceKey = key
+        case .local:
+            geminiKey = nil
+            amiVoiceKey = nil
+        }
         meetingRunning = true
         microphoneWarmKeeper.suspend(reason: "meeting")
         warmScheduleTask?.cancel(); prewarmer.shutdown()
         let session = MeetingSession(engine: requestedMode, vocabulary: currentAudioVocabulary,
-            style: transcriptionStyle, japaneseHint: japaneseHint, apiKey: KeychainStore.loadForUse(),
-            microphoneUID: MicrophoneDeviceStore.shared.selectedUID)
+            style: transcriptionStyle, japaneseHint: japaneseHint, apiKey: geminiKey,
+            microphoneUID: MicrophoneDeviceStore.shared.selectedUID,
+            amiVoiceKey: amiVoiceKey, amiVoiceEngine: amiVoiceEngine)
         meetingSession = session
         meetingStatus = session.liveStatus
         session.onStatus = { [weak self] in self?.meetingStatus = $0 }
@@ -561,6 +589,19 @@ import KoeBridgeEngines
     private var retentionGeneration = UUID()
     private var replayTask: Task<Void, Never>?
     private var replayLocal: LocalTranscribing?
+    private var replayAmiVoice: AmiVoiceWebSocketConnection?
+    static let amiVoiceReplayChunkBytes = 16 * 1_024
+
+    static func streamReplayPCM(_ pcm: Data, through connection: AmiVoiceWebSocketConnection) async throws -> String {
+        for offset in stride(from: pcm.startIndex, to: pcm.endIndex, by: amiVoiceReplayChunkBytes) {
+            try Task.checkCancellation()
+            let end = min(offset + amiVoiceReplayChunkBytes, pcm.endIndex)
+            try await connection.sendAudio(Data(pcm[offset..<end]))
+            await Task.yield()
+        }
+        try Task.checkCancellation()
+        return try await connection.endAudioAndAwaitFinal()
+    }
 
     func clearRetainedAudio() {
         retentionGeneration = UUID()
@@ -587,6 +628,7 @@ import KoeBridgeEngines
         replayJob = UUID()
         replayTask?.cancel(); replayTask = nil
         replayLocal?.cancel(); replayLocal = nil
+        replayAmiVoice?.cancel(); replayAmiVoice = nil
         replayRecordID = nil
         if wasRunning { replayStatus = "再文字起こしをキャンセルしました" }
     }
@@ -599,7 +641,12 @@ import KoeBridgeEngines
         replayTask = Task { [weak self] in
             guard let self else { return }
             defer {
-                if replayJob == job { replayRecordID = nil; replayLocal?.cancel(); replayLocal = nil; replayTask = nil }
+                if replayJob == job {
+                    replayRecordID = nil
+                    replayLocal?.cancel(); replayLocal = nil
+                    replayAmiVoice?.cancel(); replayAmiVoice = nil
+                    replayTask = nil
+                }
             }
             do {
                 let source = try retainedAudio.prepareRead(record.id, history: &historyStore)
@@ -616,9 +663,10 @@ import KoeBridgeEngines
                 if historyRevision == revision && retainedAudio.sweepIsReusable { updateRetentionStatus() } else { refreshRetainedAudio() }
                 guard replayJob == job, !Task.isCancelled else { return }
                 let text: String
-                if engine == .local {
+                switch engine {
+                case .local:
                     guard pcm.count <= 50 * 32_000 else { throw RetainedAudioStore.ReplayError.localLimit }
-                    let local = LocalTranscriberFactory.make()
+                    let local = makeLocalTranscriber()
                     replayLocal = local
                     try await local.start()
                     for offset in stride(from: 0, to: pcm.count, by: 3_200) {
@@ -627,11 +675,21 @@ import KoeBridgeEngines
                         await Task.yield()
                     }
                     text = try await local.endAudioAndAwaitFinal()
-                } else {
-                    guard let key = KeychainStore.loadForUse() else { throw AppError.noKey }
+                case .gemini:
+                    guard let key = loadKeyForUse(provider: .gemini) else { throw AppError.noKey }
                     text = try await GeminiAudioRechecker.recognize(pcm16LE: pcm,
                         vocabulary: currentAudioVocabulary, style: transcriptionStyle,
                         japaneseHint: japaneseHint, apiKey: key, timeout: 60).text
+                case .amivoice:
+                    guard let key = loadKeyForUse(provider: .amivoice) else { throw AppError.noAmiVoiceKey }
+                    let connection = preparation.makeAmiVoiceConnection?(key, amiVoiceEngine, currentAudioVocabulary)
+                        ?? AmiVoiceWebSocketConnection(apiKey: key, engine: amiVoiceEngine, vocabulary: currentAudioVocabulary)
+                    replayAmiVoice = connection
+                    defer {
+                        connection.cancel()
+                        if replayAmiVoice === connection { replayAmiVoice = nil }
+                    }
+                    text = try await Self.streamReplayPCM(pcm, through: connection)
                 }
                 try Task.checkCancellation()
                 guard replayJob == job, historyStore.entries.contains(where: { $0.id == record.id }) else { return }
@@ -743,9 +801,22 @@ import KoeBridgeEngines
         var consumeAudio: ((AsyncStream<Data>) async -> String?)?
         var shouldPaste: Bool?
         var preparationLaunched: ((Task<Void, Never>) -> Void)?
+        var loadKeyForUse: (@MainActor (CredentialProvider) -> String?)?
+        var keyRegistered: (@MainActor (CredentialProvider) -> Bool)?
+        var makeLocalTranscriber: (@MainActor () -> LocalTranscribing)?
+        var makeAmiVoiceConnection: (@MainActor (String, AmiVoiceEngine, [String]) -> AmiVoiceWebSocketConnection)?
     }
 
     private let preparation: PreparationEnvironment
+
+    private func loadKeyForUse(provider: CredentialProvider) -> String? {
+        if let load = preparation.loadKeyForUse { return load(provider) }
+        return KeychainStore.loadForUse(provider: provider)
+    }
+
+    private func makeLocalTranscriber() -> LocalTranscribing {
+        preparation.makeLocalTranscriber?() ?? LocalTranscriberFactory.make()
+    }
 
     init(preparation: PreparationEnvironment? = nil, storageDirectory: URL? = nil) {
         self.preparation = preparation ?? PreparationEnvironment()
@@ -760,6 +831,7 @@ import KoeBridgeEngines
         shortcutActivationMode = ShortcutActivationMode(rawValue: d.string(forKey: "shortcutActivationMode") ?? "") ?? .toggle
         mouseTriggerButton = MouseTriggerButton(rawValue: d.string(forKey: "mouseTriggerButton") ?? "") ?? .none
         requestedMode = RecognitionMode(rawValue: d.string(forKey: "engine") ?? "gemini") ?? .gemini
+        amiVoiceEngine = AmiVoiceEngine(rawValue: d.string(forKey: "amiVoiceEngine") ?? "") ?? .e2eJapaneseGeneral
         transcriptionStyle = TranscriptionStyle.restoring(
             storedStyle: d.string(forKey: "transcriptionStyle"),
             legacySmart: d.bool(forKey: "smart")
@@ -832,17 +904,39 @@ import KoeBridgeEngines
     }
 
     private var cachedKeyRegistration: Bool?
+    private var cachedAmiVoiceKeyRegistration: Bool?
     var hasKey: Bool {
-        guard KeychainStore.observingChanges else { return KeychainStore.load() != nil }
+        if let keyRegistered = preparation.keyRegistered {
+            if let cachedKeyRegistration { return cachedKeyRegistration }
+            let registered = keyRegistered(.gemini)
+            cachedKeyRegistration = registered
+            return registered
+        }
+        guard KeychainStore.observingChanges else { return KeychainStore.load(provider: .gemini) != nil }
         if let cachedKeyRegistration { return cachedKeyRegistration }
-        let registered = KeychainStore.load() != nil
+        let registered = KeychainStore.load(provider: .gemini) != nil
         cachedKeyRegistration = registered
         return registered
     }
 
+    var hasAmiVoiceKey: Bool {
+        if let keyRegistered = preparation.keyRegistered {
+            if let cachedAmiVoiceKeyRegistration { return cachedAmiVoiceKeyRegistration }
+            let registered = keyRegistered(.amivoice)
+            cachedAmiVoiceKeyRegistration = registered
+            return registered
+        }
+        guard KeychainStore.observingChanges else { return KeychainStore.load(provider: .amivoice) != nil }
+        if let cachedAmiVoiceKeyRegistration { return cachedAmiVoiceKeyRegistration }
+        let registered = KeychainStore.load(provider: .amivoice) != nil
+        cachedAmiVoiceKeyRegistration = registered
+        return registered
+    }
+
     func invalidateKeyRegistration() {
-        guard cachedKeyRegistration != nil else { return }
+        guard cachedKeyRegistration != nil || cachedAmiVoiceKeyRegistration != nil else { return }
         cachedKeyRegistration = nil
+        cachedAmiVoiceKeyRegistration = nil
         objectWillChange.send()
     }
     var busy: Bool { active != nil }
@@ -950,7 +1044,7 @@ import KoeBridgeEngines
             .vocabularyCount: .integer(take.vocabulary.count),
             .registeredTerms: .flag(take.options.registeredVocabularyEnabled),
             .topicTerms: .flag(take.options.topicVocabularyEnabled),
-            .engine: .token(take.preferred == .gemini ? .gemini : .apple),
+            .engine: .token(take.preferred.diagnosticToken),
             .style: .token(take.style == .agent ? .agent : (take.style == .readable ? .readable : .verbatim)),
             .build: .integer(Int(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "") ?? 0),
             .osMajor: .integer(ProcessInfo.processInfo.operatingSystemVersion.majorVersion),
@@ -1146,10 +1240,11 @@ import KoeBridgeEngines
         }
     }
 
-    private func prepareRecognizer(_ take: DictationTake) async throws -> RecognitionMode {
+    func prepareRecognizer(_ take: DictationTake) async throws -> RecognitionMode {
         var actual = take.preferred
-        if actual == .gemini {
-            if let key = KeychainStore.loadForUse() {
+        switch take.preferred {
+        case .gemini:
+            if let key = loadKeyForUse(provider: .gemini) {
                 let snapshot = GeminiPrewarmSnapshot(
                     vocabulary: take.vocabulary, style: take.style, japaneseHint: take.japaneseHint,
                     apiKeyFingerprint: GeminiPrewarmSnapshot.fingerprint(apiKey: key))
@@ -1202,12 +1297,51 @@ import KoeBridgeEngines
                 take.fellBackToApple = true
                 actual = .local
             }
+        case .amivoice:
+            if let key = loadKeyForUse(provider: .amivoice) {
+                let connection = preparation.makeAmiVoiceConnection?(key, amiVoiceEngine, take.vocabulary)
+                    ?? AmiVoiceWebSocketConnection(apiKey: key, engine: amiVoiceEngine, vocabulary: take.vocabulary)
+                take.amiVoiceAttempted = true
+                take.amiVoiceStartedAt = Date()
+                take.amiVoice = connection
+                connection.onUpdate = { [weak self, weak take, weak connection] preview in
+                    guard let self, let take, let connection, take.amiVoice === connection, !take.finished else { return }
+                    take.partialText = preview.text
+                    take.previewFinalizedText = preview.finalizedPrefix
+                    take.previewVolatileText = preview.volatileTail
+                    if take.firstPreviewAt == nil, !preview.text.isEmpty {
+                        take.firstPreviewAt = Date()
+                    }
+                    if self.active === take {
+                        let isFinal = !preview.finalizedPrefix.isEmpty && preview.volatileTail.isEmpty
+                        self.updatePreview(for: take, isFinal: isFinal)
+                    }
+                }
+                connection.onError = { [weak self, weak take, weak connection] error in
+                    guard let self, let take, let connection, take.amiVoice === connection, !take.finished else { return }
+                    if connection.assembler.exceededFinalBudget || error == .finalBudgetExceeded {
+                        self.resolve(take, text: nil, reason: Self.userFacingFailure(error, operation: "音声認識"))
+                        return
+                    }
+                    take.resetPreviewPublication()
+                    DiagnosticLog.record("amivoice receiver failure during take; \(AmiVoiceWebSocketConnection.diagnosticFailure(error))")
+                }
+            } else {
+                DiagnosticLog.record("amivoice key unavailable; using local for THIS take")
+                take.fellBackToApple = true
+                actual = .local
+            }
+        case .local:
+            break
         }
         guard !take.finished, !Task.isCancelled else { throw CancellationError() }
         take.effectiveMode = actual
         scheduleRecordingTimeout(take)
-        if actual == .local {
-            var recognizer: LocalTranscribing = LocalTranscriberFactory.make()
+        switch actual {
+        case .gemini, .amivoice:
+            break
+        case .local:
+            var recognizer: LocalTranscribing = makeLocalTranscriber()
             take.appleAttempted = true
             take.appleStartedAt = Date()
             take.local = recognizer
@@ -1381,7 +1515,7 @@ import KoeBridgeEngines
         defer { localRecoveryBusy = false }
         // Never bring up a permission prompt during a following dictation.
         // The legacy backend requires a prior grant; SpeechAnalyzer does not.
-        let local = LocalTranscriberFactory.make()
+        let local = makeLocalTranscriber()
         guard !local.requiresSpeechAuthorization ||
                 SFSpeechRecognizer.authorizationStatus() == .authorized else {
             DiagnosticLog.record("local recovery unavailable; speech permission not granted")
@@ -1395,7 +1529,7 @@ import KoeBridgeEngines
         take.fellBackToApple = true
         take.appleAttempted = true
         take.appleStartedAt = Date()
-        take.usedMode = "Appleオンデバイス（Gemini失敗時の救済）"
+        take.usedMode = Self.localRescueModeLabel(for: take.effectiveMode ?? take.preferred)
         try await local.start()
         try Task.checkCancellation()
         guard !take.finished else { throw CancellationError() }
@@ -1413,17 +1547,43 @@ import KoeBridgeEngines
         return result
     }
 
+    static func localRescueModeLabel(for failedEngine: RecognitionMode) -> String {
+        switch failedEngine {
+        case .gemini: return "Appleオンデバイス（Gemini失敗時の救済）"
+        case .amivoice: return "Appleオンデバイス（AmiVoice失敗時の救済）"
+        case .local: return "Appleオンデバイス（救済）"
+        }
+    }
+
     private func transmit(_ stream: AsyncStream<Data>, take: DictationTake) async {
         do {
             let mode = try await prepareRecognizer(take)
             let result: String
-            if mode == .gemini {
+            switch mode {
+            case .gemini:
                 guard let remote = take.cloud else { throw AppError.connectionLost }
-                result = try await take.transcribeLive(stream, send: remote.sendAudio, finish: {
-                    try await remote.endAudio()
-                    return try await remote.awaitFinal()
-                }, rescue: { try await self.retryLocally(take) })
-            } else {
+                result = try await take.transcribeLive(
+                    stream,
+                    cloudEngine: .gemini,
+                    budgetExceeded: { remote.assembler.exceededFinalBudget },
+                    send: remote.sendAudio,
+                    finish: {
+                        try await remote.endAudio()
+                        return try await remote.awaitFinal()
+                    },
+                    rescue: { try await self.retryLocally(take) }
+                )
+            case .amivoice:
+                guard let amiVoice = take.amiVoice else { throw AppError.connectionLost }
+                result = try await take.transcribeLive(
+                    stream,
+                    cloudEngine: .amivoice,
+                    budgetExceeded: { amiVoice.assembler.exceededFinalBudget },
+                    send: amiVoice.sendAudio,
+                    finish: { try await amiVoice.endAudioAndAwaitFinal() },
+                    rescue: { try await self.retryLocally(take) }
+                )
+            case .local:
                 guard let recognizer = take.local else { throw AppError.connectionLost }
                 for await chunk in stream {
                     guard !take.finished, !Task.isCancelled else { return }
@@ -1538,8 +1698,13 @@ import KoeBridgeEngines
             if expansion.budgetExhausted { DiagnosticLog.record("snippet expansion stopped reason=byte_budget") }
         }
         let partial = take.recoverableText
-        let actualEngine: InputDiagnosticEvent.Token = take.successfulEngine == .gemini ? .gemini
-            : (take.successfulEngine == .local ? .apple : .unknown)
+        let actualEngine: InputDiagnosticEvent.Token
+        switch take.successfulEngine {
+        case .gemini: actualEngine = .gemini
+        case .amivoice: actualEngine = .amivoice
+        case .local: actualEngine = .apple
+        case nil: actualEngine = .unknown
+        }
         take.inputDiagnostics?.record(.session, stage: .result, [
             .engine: .token(actualEngine),
             .recognizedUTF16: .integer(text?.utf16.count ?? 0),
@@ -2042,7 +2207,7 @@ import KoeBridgeEngines
         status = reason
     }
 
-    private static func failureCategory(_ error: Error) -> String {
+    static func failureCategory(_ error: Error) -> String {
         if let e = error as? GeminiLiveConnection.ConnectionError {
             switch e {
             case .finalBudgetExceeded: return "gemini.final_budget"
@@ -2052,6 +2217,30 @@ import KoeBridgeEngines
             case .noFinal: return "gemini.no_final"
             case .stalled: return "gemini.stalled"
             case .finalizationTimeout: return "gemini.finalization_timeout"
+            }
+        }
+        if let e = error as? AmiVoiceWebSocketConnection.ConnectionError {
+            switch e {
+            case .badURL: return "amivoice.bad_url"
+            case .setup: return "amivoice.setup"
+            case .setupTimeout: return "amivoice.setup_timeout"
+            case .sendTimeout: return "amivoice.send_timeout"
+            case .provider(let providerError): return "amivoice.provider.\(providerError.kind.rawValue)"
+            case .receiveFailed: return "amivoice.receive_failed"
+            case .disconnected: return "amivoice.disconnected"
+            case .noSpeech: return "amivoice.no_speech"
+            case .finalizationTimeout: return "amivoice.finalization_timeout"
+            case .finalBudgetExceeded: return "amivoice.final_budget"
+            }
+        }
+        if let e = error as? AmiVoiceProviderError {
+            return "amivoice.provider.\(e.kind.rawValue)"
+        }
+        if let e = error as? AmiVoiceWireError {
+            switch e {
+            case .emptyFrame: return "amivoice.wire.empty_frame"
+            case .malformedFrame: return "amivoice.wire.malformed_frame"
+            case .invalidJSON: return "amivoice.wire.invalid_json"
             }
         }
         if let e = error as? AppleLocalTranscriber.LocalError {
@@ -2120,7 +2309,7 @@ import KoeBridgeEngines
     func clearUsageMonitor() { usageStore.deleteAll() }
 
     func saveKey(_ key: String) throws {
-        try KeychainStore.save(key)
+        try KeychainStore.save(key, provider: .gemini)
         invalidateKeyRegistration()
         warmScheduleTask?.cancel()
         prewarmer.shutdown()
@@ -2128,10 +2317,20 @@ import KoeBridgeEngines
         objectWillChange.send()
     }
     func deleteKey() throws {
-        try KeychainStore.delete()
+        try KeychainStore.delete(provider: .gemini)
         invalidateKeyRegistration()
         warmScheduleTask?.cancel()
         prewarmer.shutdown()
+        objectWillChange.send()
+    }
+    func saveAmiVoiceKey(_ key: String) throws {
+        try KeychainStore.save(key, provider: .amivoice)
+        invalidateKeyRegistration()
+        objectWillChange.send()
+    }
+    func deleteAmiVoiceKey() throws {
+        try KeychainStore.delete(provider: .amivoice)
+        invalidateKeyRegistration()
         objectWillChange.send()
     }
     func copyLastText() { TextInsertion.copy(history.first?.text ?? previewText) }
@@ -2145,12 +2344,15 @@ import KoeBridgeEngines
 
     /// Only app-owned error types with Japanese descriptions may supply UI detail.
     /// Framework and transport errors always pass through the domain/code mapper.
-    private static func userFacingFailure(_ error: Error, operation: String) -> String {
+    static func userFacingFailure(_ error: Error, operation: String) -> String {
         let description: String?
         switch error {
         case let error as AppError: description = error.errorDescription
         case let error as AppleLocalTranscriber.LocalError: description = error.errorDescription
         case let error as GeminiLiveConnection.ConnectionError: description = error.errorDescription
+        case let error as AmiVoiceWebSocketConnection.ConnectionError: description = error.errorDescription
+        case let error as AmiVoiceProviderError: description = error.errorDescription
+        case let error as AmiVoiceWireError: description = error.errorDescription
         case let error as MicrophoneDevices.DeviceError: description = error.errorDescription
         case let error as MicrophoneCapture.CaptureError: description = error.errorDescription
         case let error as RetainedAudioStore.ReplayError: description = error.errorDescription
@@ -2160,10 +2362,11 @@ import KoeBridgeEngines
     }
 
     enum AppError: Error, LocalizedError {
-        case noKey, connectionLost, audioDropped, localRecoveryBusy, localRecoveryTooLong
+        case noKey, noAmiVoiceKey, connectionLost, audioDropped, localRecoveryBusy, localRecoveryTooLong
         var errorDescription: String? {
             switch self {
             case .noKey: return "Gemini APIキーが未登録です。設定画面でキーチェーンへ保存してください"
+            case .noAmiVoiceKey: return "AmiVoice APIキーが未登録です。設定画面でキーチェーンへ保存してください"
             case .connectionLost: return "音声認識エンジンが終了しました"
             case .audioDropped: return "音声チャンクが欠落したため認識結果を破棄しました"
             case .localRecoveryBusy: return "別の録音のローカル復旧処理が実行中です。多重起動を避けるため認識を中止しました"

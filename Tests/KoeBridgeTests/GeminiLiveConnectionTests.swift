@@ -55,6 +55,46 @@ private final class ScriptedLiveSocket: GeminiSocket, @unchecked Sendable {
         #expect(expirations == [.local])
     }
 
+    @Test func exhaustiveModeDeadlinesAndLabelsCoverAllThreeEngines() async {
+        #expect(RecognitionMode.allCases == [.gemini, .amivoice, .local])
+        #expect(RecognitionMode.gemini.rawValue == "gemini")
+        #expect(RecognitionMode.amivoice.rawValue == "amivoice")
+        #expect(RecognitionMode.local.rawValue == "local")
+        #expect(RecognitionMode.gemini.shortLabel == "Gemini")
+        #expect(RecognitionMode.amivoice.shortLabel == "AmiVoice")
+        #expect(RecognitionMode.local.shortLabel == "Apple")
+        #expect(RecognitionMode.amivoice.label == "AmiVoice API")
+        #expect(RecognitionMode.amivoice.settingsLabel == "AmiVoice API（日本語クラウド）")
+        #expect(RecognitionMode.gemini.diagnosticToken == .gemini)
+        #expect(RecognitionMode.amivoice.diagnosticToken == .amivoice)
+        #expect(RecognitionMode.local.diagnosticToken == .apple)
+
+        let start = ContinuousClock.now
+        for mode in RecognitionMode.allCases {
+            let take = DictationTake(preferred: mode, style: .verbatim, japaneseHint: false,
+                                     vocabulary: [], shouldPaste: true, options: .init())
+            take.recordingStart = start
+            let expectedSeconds = mode == .local ? 50 : 480
+            #expect(take.recordingDeadline == start.advanced(by: .seconds(expectedSeconds)))
+            take.transformSelection = "selected"
+            #expect(take.recordingDeadline == start.advanced(by: .seconds(30)))
+        }
+
+        // AmiVoice missing-key fallback transitions effectiveMode from .amivoice (480 s) to .local (50 s).
+        let fallbackTake = DictationTake(preferred: .amivoice, style: .verbatim, japaneseHint: false,
+                                         vocabulary: [], shouldPaste: true, options: .init())
+        fallbackTake.recordingStart = .now.advanced(by: .seconds(-51))
+        var expirations: [RecognitionMode] = []
+        fallbackTake.scheduleRecordingTimeout { expirations.append(.amivoice) }
+        let cloudTimer = fallbackTake.recordingTimeout
+        fallbackTake.effectiveMode = .local
+        #expect(fallbackTake.recordingDeadline == fallbackTake.recordingStart?.advanced(by: .seconds(50)))
+        fallbackTake.scheduleRecordingTimeout { expirations.append(.local) }
+        #expect(cloudTimer?.isCancelled == true)
+        await fallbackTake.recordingTimeout?.value
+        #expect(expirations == [.local])
+    }
+
     @Test func failedFinalSendUsesOnlyCompleteSameTakeAudio() async throws {
         for (drained, dropped, rescueExpected) in [(true, false, true), (false, false, false), (true, true, false)] {
             let take = makeTake()

@@ -43,7 +43,14 @@ import KoeBridgeCore
         defer { audio = Data() }
         guard !ended, !Task.isCancelled,
               options.textContextCheckEnabled || options.audioRecheckEnabled else { return originalText }
-        guard engine == .gemini else {
+        switch engine {
+        case .gemini:
+            break
+        case .amivoice:
+            record = TranscriptReview(status: .incomplete,
+                                      note: "AmiVoiceの認識結果にはGemini用の追加チェックを実行していません。")
+            return originalText
+        case .local, nil:
             record = TranscriptReview(status: .incomplete,
                                       note: "Appleの認識結果にはGemini用の追加チェックを実行していません。")
             return originalText
