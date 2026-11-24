@@ -5,12 +5,12 @@ import Speech
 import KoeBridgeCore
 
 @available(macOS 26, *)
-@MainActor final class SpeechAnalyzerTranscriber: LocalTranscribing {
+@MainActor public final class SpeechAnalyzerTranscriber: LocalTranscribing {
     private typealias LocalError = AppleLocalTranscriber.LocalError
-    let requiresSpeechAuthorization = false
+    public let requiresSpeechAuthorization = false
     private var state = LocalRecognitionState()
-    var transcript: String { state.transcript }
-    var onUpdate: ((RecognitionPreview) -> Void)?
+    public var transcript: String { state.transcript }
+    public var onUpdate: ((RecognitionPreview) -> Void)?
     private var analyzer: SpeechAnalyzer?
     private var continuation: AsyncStream<AnalyzerInput>.Continuation?
     private var resultsTask: Task<Void, Never>?
@@ -19,7 +19,9 @@ import KoeBridgeCore
     private let audioFormat = AVAudioFormat(commonFormat: .pcmFormatInt16,
                                             sampleRate: 16_000, channels: 1, interleaved: true)!
 
-    func start() async throws {
+    public init() {}
+
+    public func start() async throws {
         guard state.beginAuthorization() else {
             if state.phase == .cancelled { throw CancellationError() }
             throw LocalError.unavailable
@@ -36,13 +38,13 @@ import KoeBridgeCore
             do {
                 if let installation = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
                     try checkStartupCancellation()
-                    DiagnosticLog.record("speechAnalyzer asset install")
+                    EngineDiagnostics.record("speechAnalyzer asset install")
                     try await installation.downloadAndInstall()
                 }
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
-                DiagnosticLog.record("speechAnalyzer failed: \(error.localizedDescription)")
+                EngineDiagnostics.record("speechAnalyzer failed: \(error.localizedDescription)")
                 throw LocalError.recognitionFailure(UserFacingErrorMessage.message(for: error, operation: "ローカル音声認識"))
             }
             try checkStartupCancellation()
@@ -71,7 +73,7 @@ import KoeBridgeCore
                         self.state.receiveFailure(LocalError.endedBeforeAudio.localizedDescription)
                     }
                 } catch {
-                    DiagnosticLog.record("speechAnalyzer results failed: \(error.localizedDescription)")
+                    EngineDiagnostics.record("speechAnalyzer results failed: \(error.localizedDescription)")
                     self?.state.receiveFailure(UserFacingErrorMessage.message(for: error, operation: "ローカル音声認識"))
                 }
             }
@@ -95,7 +97,7 @@ import KoeBridgeCore
         }
     }
 
-    func appendPCM16(_ data: Data) throws {
+    public func appendPCM16(_ data: Data) throws {
         if state.phase == .cancelled { throw CancellationError() }
         if let failure = state.failure { throw LocalError.recognitionFailure(failure) }
         guard let continuation, let converter else { throw LocalError.unavailable }
@@ -117,7 +119,7 @@ import KoeBridgeCore
     private struct ConversionFailure: Error { let cause: NSError }
 
     private func report(_ failure: ConversionFailure) -> LocalError {
-        DiagnosticLog.record("speechAnalyzer audio conversion failed: \(failure.cause.localizedDescription)")
+        EngineDiagnostics.record("speechAnalyzer audio conversion failed: \(failure.cause.localizedDescription)")
         return .recognitionFailure(UserFacingErrorMessage.message(for: failure.cause, operation: "音声データの変換"))
     }
 
@@ -167,7 +169,7 @@ import KoeBridgeCore
         if case .terminated = continuation.yield(input) { throw LocalError.endedBeforeAudio }
     }
 
-    func appendRecoveryPCM(_ data: Data, range: Range<Int>) async throws {
+    public func appendRecoveryPCM(_ data: Data, range: Range<Int>) async throws {
         if state.phase == .cancelled { throw CancellationError() }
         if let failure = state.failure { throw LocalError.recognitionFailure(failure) }
         guard let converter, let continuation else { throw LocalError.unavailable }
@@ -184,14 +186,14 @@ import KoeBridgeCore
         for input in converted { try Self.yield(input, to: continuation) }
     }
 
-    func endAudioAndAwaitFinal() async throws -> String {
+    public func endAudioAndAwaitFinal() async throws -> String {
         if state.phase == .cancelled { throw CancellationError() }
         guard let analyzer, let continuation, let converter else { throw LocalError.unavailable }
         if state.endAudio() {
             do {
                 try convertAndYield(nil, converter: converter, continuation: continuation)
             } catch {
-                DiagnosticLog.record("speechAnalyzer audio drain failed: \(error.localizedDescription)")
+                EngineDiagnostics.record("speechAnalyzer audio drain failed: \(error.localizedDescription)")
                 state.receiveFailure((error as? LocalError)?.errorDescription
                     ?? UserFacingErrorMessage.message(for: error, operation: "音声データの変換"))
                 continuation.finish()
@@ -205,7 +207,7 @@ import KoeBridgeCore
                     try await analyzer.finalizeAndFinishThroughEndOfInput()
                     if let self, self.state.analyzerFinished(.finalizeSucceeded) { self.onUpdate?(self.state.preview) }
                 } catch {
-                    DiagnosticLog.record("speechAnalyzer finalization failed: \(error.localizedDescription)")
+                    EngineDiagnostics.record("speechAnalyzer finalization failed: \(error.localizedDescription)")
                     self?.state.receiveFailure(UserFacingErrorMessage.message(for: error, operation: "ローカル音声認識の確定"))
                 }
             }
@@ -223,7 +225,7 @@ import KoeBridgeCore
         return transcript
     }
 
-    func cancel() {
+    public func cancel() {
         // Mark cancellation before the framework can issue its final callback.
         state.cancel()
         resultsTask?.cancel()

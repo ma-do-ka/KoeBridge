@@ -11,6 +11,10 @@ selfTestDependencies += ["KoeBridgeAudioTap", "KoeBridgeTapFixtures"]
 additionalTargets.append(.target(name: "KoeBridgeTapFixtures", path: "Tests/KoeBridgeTapFixtures", publicHeadersPath: "include"))
 coreDependencies.append("KoeBridgeAudioTap")
 additionalTargets.append(.target(name: "KoeBridgeAudioTap", publicHeadersPath: "include"))
+applicationDependencies.append("KoeBridgeEngines")
+applicationTestDependencies.append("KoeBridgeEngines")
+additionalTargets.append(.target(name: "KoeBridgeEngines", dependencies: ["KoeBridgeCore"],
+                                 swiftSettings: [.swiftLanguageMode(.v5)]))
 // Exact official release bytes, also pinned by Sparkle's 2.10.1 Package.swift.
 applicationDependencies.append("Sparkle")
 applicationTestDependencies += ["Sparkle", "KoeBridgeTapFixtures"]

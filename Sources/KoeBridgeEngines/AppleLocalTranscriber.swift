@@ -6,18 +6,20 @@ import KoeBridgeCore
 
 /// Offline fallback for macOS 15+. Not all locales/devices have an on-device model.
 /// Never silently invoke Apple's server-side recognition.
-@MainActor final class AppleLocalTranscriber: LocalTranscribing {
-    let requiresSpeechAuthorization = true
+@MainActor public final class AppleLocalTranscriber: LocalTranscribing {
+    public let requiresSpeechAuthorization = true
     private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "ja-JP"))
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
     private var state = LocalRecognitionState()
-    var transcript: String { state.transcript }
-    var onUpdate: ((RecognitionPreview) -> Void)?
+    public var transcript: String { state.transcript }
+    public var onUpdate: ((RecognitionPreview) -> Void)?
     private let audioFormat = AVAudioFormat(commonFormat: .pcmFormatInt16,
                                             sampleRate: 16_000, channels: 1, interleaved: true)!
 
-    func start() async throws {
+    public init() {}
+
+    public func start() async throws {
         guard state.beginAuthorization() else {
             if state.phase == .cancelled { throw CancellationError() }
             throw LocalError.unavailable
@@ -49,7 +51,7 @@ import KoeBridgeCore
                                                      isFinal: result.isFinal)
                     }
                     if let error {
-                        DiagnosticLog.record("apple recognition failed: \(error.localizedDescription)")
+                        EngineDiagnostics.record("apple recognition failed: \(error.localizedDescription)")
                         self.state.receiveFailure(UserFacingErrorMessage.message(for: error, operation: "ローカル音声認識"))
                     }
                     if updated { self.onUpdate?(self.state.preview) }
@@ -61,7 +63,7 @@ import KoeBridgeCore
         }
     }
 
-    func appendPCM16(_ data: Data) throws {
+    public func appendPCM16(_ data: Data) throws {
         if state.phase == .cancelled { throw CancellationError() }
         if let failure = state.failure { throw LocalError.recognitionFailure(failure) }
         guard let request else { throw LocalError.unavailable }
@@ -73,7 +75,7 @@ import KoeBridgeCore
         request.append(buffer)
     }
 
-    func appendRecoveryPCM(_ data: Data, range: Range<Int>) async throws {
+    public func appendRecoveryPCM(_ data: Data, range: Range<Int>) async throws {
         if state.phase == .cancelled { throw CancellationError() }
         if let failure = state.failure { throw LocalError.recognitionFailure(failure) }
         guard request != nil else { throw LocalError.unavailable }
@@ -87,7 +89,7 @@ import KoeBridgeCore
         request.append(buffer)
     }
 
-    func endAudioAndAwaitFinal() async throws -> String {
+    public func endAudioAndAwaitFinal() async throws -> String {
         if state.phase == .cancelled { throw CancellationError() }
         guard let request else { throw LocalError.unavailable }
         if state.endAudio() { request.endAudio() }
@@ -106,7 +108,7 @@ import KoeBridgeCore
         return transcript
     }
 
-    func cancel() {
+    public func cancel() {
         // Mark cancellation before the framework can issue its final callback.
         state.cancel()
         recognitionTask?.cancel()
@@ -115,9 +117,9 @@ import KoeBridgeCore
         onUpdate = nil
     }
 
-    enum LocalError: Error, LocalizedError {
+    public enum LocalError: Error, LocalizedError {
         case permission, unavailable, empty(String?), finalizationTimeout, recognitionFailure(String), endedBeforeAudio
-        var errorDescription: String? {
+        public var errorDescription: String? {
             switch self {
             case .permission: return "macOSの音声認識許可が必要です"
             case .unavailable: return "このMacでは日本語のオンデバイス音声認識が利用できません。OS・言語パックを確認してください"

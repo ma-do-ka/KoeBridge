@@ -1,6 +1,7 @@
 #if os(macOS)
 import Foundation
 import KoeBridgeCore
+import KoeBridgeEngines
 
 enum RecognitionMode: String, CaseIterable, Identifiable {
     case gemini, local

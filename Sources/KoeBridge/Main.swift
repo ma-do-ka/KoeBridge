@@ -7,6 +7,7 @@ import KoeBridgePOSIX
 import CoreGraphics
 import SwiftUI
 import KoeBridgeCore
+import KoeBridgeEngines
 
 /// Presets verified against shipped source / official shortcut documentation.
 /// Existing persisted keys (including F8/F9) are preserved by their raw values.
@@ -161,6 +162,7 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
     private var popoverActivationObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        EngineDiagnostics.record = { DiagnosticLog.record($0) }
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "KoeBridge")
         if let button = item.button {
