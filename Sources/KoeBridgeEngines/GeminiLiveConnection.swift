@@ -3,7 +3,7 @@ import Foundation
 import KoeBridgeCore
 
 // Inject the wire transport so setup, receive, and adoption can be exercised offline.
-protocol GeminiSocket: Sendable {
+public protocol GeminiSocket: Sendable {
     var state: URLSessionTask.State { get }
     func resume()
     func receive() async throws -> URLSessionWebSocketTask.Message
@@ -37,19 +37,19 @@ private final class GeminiPingCompletion: @unchecked Sendable {
 
 /// One socket and one manual activity per take. Setup does not assert speech.
 /// Start, admitted PCM, and end markers all share the same ordered send queue.
-@MainActor final class GeminiLiveConnection {
-    var onEvent: ((TranscribeEvent) -> Void)?
+@MainActor public final class GeminiLiveConnection {
+    public var onEvent: ((TranscribeEvent) -> Void)?
     private var socket: (any GeminiSocket)?
     private var receiver: Task<Void, Never>?
     private var heartbeat: Task<Void, Never>?
     private var sendTail: Task<Void, Error>?
     private var endTask: Task<Void, Error>?
-    private(set) var assembler: TranscriptAssembler
+    public private(set) var assembler: TranscriptAssembler
     private var receivedGoAway = false
     private let makeSocket: (URL) -> any GeminiSocket
 
-    init(finalBudget: TranscriptAssembler.FinalBudget? = .dictation,
-         makeSocket: @escaping (URL) -> any GeminiSocket = { URLSession.shared.webSocketTask(with: $0) }) {
+    public init(finalBudget: TranscriptAssembler.FinalBudget? = .dictation,
+                makeSocket: @escaping (URL) -> any GeminiSocket = { URLSession.shared.webSocketTask(with: $0) }) {
         assembler = TranscriptAssembler(budget: finalBudget)
         self.makeSocket = makeSocket
     }
@@ -65,17 +65,17 @@ private final class GeminiPingCompletion: @unchecked Sendable {
     private var completedText: String?
     private var lastTranscriptionAt: ContinuousClock.Instant?
     private var sentAudioChunks = 0
-    private(set) var sentAudioBytes = 0
-    private(set) var tokenSamples: [GeminiTokenSample] = []
+    public private(set) var sentAudioBytes = 0
+    public private(set) var tokenSamples: [GeminiTokenSample] = []
     private var interimEvents = 0
     private var finalEvents = 0
     private var duplicateFinalEvents = 0
     private var receivedFrames = 0
     private var unrecognizedFrames = 0
 
-    var isUsableForPrewarm: Bool { ready && !receivedGoAway && !closedByClient && failure == nil && socket?.state == .running }
+    public var isUsableForPrewarm: Bool { ready && !receivedGoAway && !closedByClient && failure == nil && socket?.state == .running }
 
-    func connect(apiKey: String, vocabulary: [String], style: TranscriptionStyle, japaneseHint: Bool) async throws {
+    public func connect(apiKey: String, vocabulary: [String], style: TranscriptionStyle, japaneseHint: Bool) async throws {
         guard !started, !closedByClient else { throw ConnectionError.disconnected }
         started = true
         try Task.checkCancellation()
@@ -115,22 +115,22 @@ private final class GeminiPingCompletion: @unchecked Sendable {
                 ready = true
             } onCancel: { ws.cancel(with: .goingAway, reason: nil) }
         } catch {
-            DiagnosticLog.record("gemini connection failed; \(Self.diagnosticFailure(error))")
+            EngineDiagnostics.record("gemini connection failed; \(Self.diagnosticFailure(error))")
             let reason = failure ?? Self.connectionFailureReason(for: error)
             cancel()
             if Task.isCancelled || error is CancellationError { throw CancellationError() }
             throw ConnectionError.setup(reason)
         }
         heartbeat = Task { [weak self] in await self?.heartbeatLoop() }
-        DiagnosticLog.record("gemini connected; speechStartDeferred=true setupSeconds=\(String(format: "%.3f", Date().timeIntervalSince(connectionBeganAt)))")
+        EngineDiagnostics.record("gemini connected; speechStartDeferred=true setupSeconds=\(String(format: "%.3f", Date().timeIntervalSince(connectionBeganAt)))")
     }
 
-    static func diagnosticFailure(_ error: Error) -> String {
+    public static func diagnosticFailure(_ error: Error) -> String {
         if let provider = error as? GeminiProviderError { return provider.diagnostic }
         return "kind=connection code=\((error as NSError).code)"
     }
 
-    static func connectionFailureReason(for error: Error) -> String {
+    public static func connectionFailureReason(for error: Error) -> String {
         if let provider = error as? GeminiProviderError { return provider.localizedDescription }
         if let connectionError = error as? ConnectionError {
             if case .setup = connectionError {
@@ -154,12 +154,12 @@ private final class GeminiPingCompletion: @unchecked Sendable {
                 if frame.events.isEmpty && !gotUsage {
                     unrecognizedFrames += 1
                     if unrecognizedFrames <= 3 {
-                        DiagnosticLog.record("gemini frame without transcription event; shape=\(frame.diagnosticKind)")
+                        EngineDiagnostics.record("gemini frame without transcription event; shape=\(frame.diagnosticKind)")
                     }
                 }
                 for event in frame.events {
                     if case .providerError(let failure) = event {
-                        DiagnosticLog.record("gemini API error; \(Self.diagnosticFailure(failure))")
+                        EngineDiagnostics.record("gemini API error; \(Self.diagnosticFailure(failure))")
                         handle(.error(failure.localizedDescription),
                             segmentIdentity: frame.finalSegmentIdentity)
                     } else {
@@ -168,7 +168,7 @@ private final class GeminiPingCompletion: @unchecked Sendable {
                 }
             } catch {
                 if !closedByClient && !Task.isCancelled {
-                    DiagnosticLog.record("gemini receive failed; \(Self.diagnosticFailure(error))")
+                    EngineDiagnostics.record("gemini receive failed; \(Self.diagnosticFailure(error))")
                     handle(.error(UserFacingErrorMessage.message(for: error, operation: "Geminiの受信")))
                 }
                 return
@@ -308,11 +308,11 @@ private final class GeminiPingCompletion: @unchecked Sendable {
         }
     }
 
-    nonisolated static func audioMessage(_ data: Data) async throws -> String {
+    public nonisolated static func audioMessage(_ data: Data) async throws -> String {
         try GeminiWire.audio(data)
     }
 
-    func sendAudio(_ data: Data) async throws {
+    public func sendAudio(_ data: Data) async throws {
         try checkOpen()
         guard ready, !inputEnded else { throw ConnectionError.disconnected }
         guard !data.isEmpty else { return }
@@ -325,7 +325,7 @@ private final class GeminiPingCompletion: @unchecked Sendable {
         sentAudioChunks += 1
         sentAudioBytes += data.count
     }
-    func endAudio() async throws {
+    public func endAudio() async throws {
         if let endTask { try await awaitSend(endTask); return }
         try checkOpen()
         guard ready else { throw ConnectionError.disconnected }
@@ -334,10 +334,10 @@ private final class GeminiPingCompletion: @unchecked Sendable {
         let task = try enqueue(.control(GeminiWire.activityEnd()), ending: true)
         endTask = task
         try await awaitSend(task)
-        DiagnosticLog.record("gemini activityEnd; audioBytes=\(sentAudioBytes) audioChunks=\(sentAudioChunks) interimEvents=\(interimEvents) finalEvents=\(finalEvents) duplicateFinals=\(duplicateFinalEvents) hasPendingInterim=\(!assembler.interim.isEmpty) receivedFrames=\(receivedFrames) unrecognizedFrames=\(unrecognizedFrames)")
+        EngineDiagnostics.record("gemini activityEnd; audioBytes=\(sentAudioBytes) audioChunks=\(sentAudioChunks) interimEvents=\(interimEvents) finalEvents=\(finalEvents) duplicateFinals=\(duplicateFinalEvents) hasPendingInterim=\(!assembler.interim.isEmpty) receivedFrames=\(receivedFrames) unrecognizedFrames=\(unrecognizedFrames)")
     }
 
-    func awaitFinal() async throws -> String {
+    public func awaitFinal() async throws -> String {
         if let completedText { return completedText }
         defer { if completedText == nil { cancel() } }
         try checkOpen()
@@ -355,18 +355,18 @@ private final class GeminiPingCompletion: @unchecked Sendable {
                 let text = assembler.committedText
                 guard !text.isEmpty else { throw ConnectionError.noFinal }
                 completedText = text
-                DiagnosticLog.record("gemini finalized; waitSeconds=\(endedAt.duration(to: .now)) finalEvents=\(finalEvents)")
+                EngineDiagnostics.record("gemini finalized; waitSeconds=\(endedAt.duration(to: .now)) finalEvents=\(finalEvents)")
                 cancel()
                 return text
             }
             try await Task.sleep(for: .milliseconds(25))
         }
         let lastFinalAge = lastFinalAt.map { $0.duration(to: endedAt).description } ?? "none"
-        DiagnosticLog.record("gemini finalization timeout; finalEvents=\(finalEvents) interimEvents=\(interimEvents) pendingInterim=\(!assembler.interim.isEmpty) lastFinalAgeAtStop=\(lastFinalAge) sentChunks=\(sentAudioChunks)")
+        EngineDiagnostics.record("gemini finalization timeout; finalEvents=\(finalEvents) interimEvents=\(interimEvents) pendingInterim=\(!assembler.interim.isEmpty) lastFinalAgeAtStop=\(lastFinalAge) sentChunks=\(sentAudioChunks)")
         cancel()
         throw ConnectionError.finalizationTimeout
     }
-    func cancel() {
+    public func cancel() {
         closedByClient = true; ready = false
         endpointState.cancel()
         receiver?.cancel(); heartbeat?.cancel(); sendTail?.cancel(); endTask?.cancel()
@@ -380,9 +380,9 @@ private final class GeminiPingCompletion: @unchecked Sendable {
         @unknown default: throw WireError.invalidResponse
         }
     }
-    enum ConnectionError: Error, LocalizedError {
+    public enum ConnectionError: Error, LocalizedError {
         case badURL, setup(String), disconnected, noFinal, stalled, finalizationTimeout, finalBudgetExceeded
-        var errorDescription: String? {
+        public var errorDescription: String? {
             switch self {
             case .finalBudgetExceeded: return "認識結果の上限に達したため中断しました。取得済みの文字は途中結果として確認できます"
             case .badURL: return "Gemini接続先URLが不正です"

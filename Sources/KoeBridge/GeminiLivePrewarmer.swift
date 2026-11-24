@@ -1,6 +1,7 @@
 #if os(macOS)
 import Foundation
 import KoeBridgeCore
+import KoeBridgeEngines
 
 /// Owns only an unused setup connection. Adoption transfers all ownership to a take.
 @MainActor final class GeminiLivePrewarmer {

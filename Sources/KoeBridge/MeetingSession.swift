@@ -1,6 +1,7 @@
 #if os(macOS)
 import Foundation
 import KoeBridgeCore
+import KoeBridgeEngines
 
 private final class MeetingAudioCount: @unchecked Sendable {
     private let lock = NSLock()

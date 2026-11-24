@@ -2,6 +2,7 @@
 import Foundation
 import Testing
 import KoeBridgeCore
+import KoeBridgeEngines
 @testable import KoeBridge
 
 private final class ScriptedLiveSocket: GeminiSocket, @unchecked Sendable {

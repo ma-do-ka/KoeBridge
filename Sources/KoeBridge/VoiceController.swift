@@ -5,6 +5,7 @@ import Speech
 import Combine
 import SwiftUI
 import KoeBridgeCore
+import KoeBridgeEngines
 
 /// Memoizes derived display values without publishing from a SwiftUI body.
 @MainActor final class DisplayCache<Key: Equatable, Value> {

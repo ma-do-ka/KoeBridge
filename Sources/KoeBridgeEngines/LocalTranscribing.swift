@@ -3,7 +3,7 @@ import Foundation
 import AVFAudio
 import KoeBridgeCore
 
-@MainActor protocol LocalTranscribing: AnyObject {
+@MainActor public protocol LocalTranscribing: AnyObject {
     var transcript: String { get }
     var onUpdate: ((RecognitionPreview) -> Void)? { get set }
     var requiresSpeechAuthorization: Bool { get }
@@ -37,13 +37,13 @@ enum LocalPCM {
     }
 }
 
-@MainActor enum LocalTranscriberFactory {
-    static func make() -> LocalTranscribing {
+@MainActor public enum LocalTranscriberFactory {
+    public static func make() -> LocalTranscribing {
         if #available(macOS 26, *) {
-            DiagnosticLog.record("local backend: speechAnalyzer")
+            EngineDiagnostics.record("local backend: speechAnalyzer")
             return SpeechAnalyzerTranscriber()
         }
-        DiagnosticLog.record("local backend: sfSpeech")
+        EngineDiagnostics.record("local backend: sfSpeech")
         return AppleLocalTranscriber()
     }
 }
