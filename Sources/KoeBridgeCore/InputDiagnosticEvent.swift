@@ -150,7 +150,7 @@ public struct InputDiagnosticEvent: Equatable, Sendable {
         case selectedMarker = "selected_marker"
         case role, editable, subrole, value, owner, rebased, blocked, unchanged
         case verified, unconfirmed, partial, cancelled, skipped
-        case gemini, apple, agent, verbatim, readable
+        case gemini, apple, amivoice, agent, verbatim, readable
         case nearSilence = "near_silence"
         case uncertain, activity
         case preflight, posting, receipt
