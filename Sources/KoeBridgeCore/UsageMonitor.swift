@@ -22,11 +22,12 @@ public struct GeminiTokenUsage: Equatable, Sendable {
 }
 
 public enum UsageEngine: String, Codable, Sendable, CaseIterable {
-    case gemini, apple
+    case gemini, apple, amivoice
     public var label: String {
         switch self {
         case .gemini: return "Gemini API"
         case .apple: return "Apple オンデバイス"
+        case .amivoice: return "AmiVoice API"
         }
     }
 }
@@ -37,6 +38,8 @@ public enum UsageOutcome: String, Codable, Sendable {
 
 public struct EngineUsageSample: Codable, Equatable, Identifiable, Sendable {
     public enum Purpose: String, Codable, Sendable { case audioRecheck }
+    public static let maximumEngineVariantBytes = 64
+
     public let id: UUID
     public let at: Date
     public let engine: UsageEngine
@@ -44,20 +47,43 @@ public struct EngineUsageSample: Codable, Equatable, Identifiable, Sendable {
     /// This includes silence and is not "speech-only" time.
     public let audioSeconds: Double
     public let outcome: UsageOutcome
-    /// Apple only: whether the user chose Gemini but Apple was used instead.
+    /// Apple only: whether the user chose a cloud engine (Gemini or AmiVoice)
+    /// but Apple was used instead.
     public let fallback: Bool
     /// Absent in older records; distinguish optional non-Live rechecks from
     /// primary recognition so a Live-only cost estimate cannot price both.
     public let purpose: Purpose?
+    /// Absent in older records; AmiVoice S/E VAD speech-segment duration in seconds.
+    public let speechSeconds: Double?
+    /// Absent in older records; provider engine variant (e.g. "-a2-ja-general")
+    /// for per-engine monthly quota accounting.
+    public let engineVariant: String?
 
-    // A single sample cannot cover more audio than the entire retention period.
+    // A single sample cannot cover more audio than the entire retention period,
+    // and reported VAD speech cannot exceed audioSeconds + 5 s or retention bounds.
     var hasValidDuration: Bool {
-        (0...Double(UsageMonitorArchive.retentionDays * 86_400)).contains(audioSeconds)
+        let maximumSeconds = Double(UsageMonitorArchive.retentionDays * 86_400)
+        guard (0...maximumSeconds).contains(audioSeconds) else { return false }
+        if let speechSeconds {
+            let upperBound = min(maximumSeconds, max(audioSeconds + 5, 0))
+            guard (0...upperBound).contains(speechSeconds) else { return false }
+        }
+        if let engineVariant {
+            let bytes = engineVariant.utf8
+            guard !bytes.isEmpty, bytes.count <= Self.maximumEngineVariantBytes,
+                  bytes.allSatisfy({ byte in
+                      (65...90).contains(byte) || (97...122).contains(byte)
+                          || (48...57).contains(byte) || byte == 45 || byte == 95 || byte == 46
+                  }) else { return false }
+        }
+        return true
     }
 
     public init(id: UUID = UUID(), at: Date, engine: UsageEngine,
                 audioSeconds: Double, outcome: UsageOutcome, fallback: Bool = false,
-                purpose: Purpose? = nil) {
+                purpose: Purpose? = nil,
+                speechSeconds: Double? = nil,
+                engineVariant: String? = nil) {
         self.id = id
         self.at = at
         self.engine = engine
@@ -65,6 +91,8 @@ public struct EngineUsageSample: Codable, Equatable, Identifiable, Sendable {
         self.outcome = outcome
         self.fallback = fallback
         self.purpose = purpose
+        self.speechSeconds = speechSeconds
+        self.engineVariant = engineVariant
     }
 }
 
