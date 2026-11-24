@@ -4,8 +4,9 @@ import Testing
 
 struct SettingsNavigationTests {
     @Test func sidebarCoversEveryPageInClearGroups() {
-        #expect(SettingsSection.allCases.map(\.title) == ["一般", "音声入力", "AI・Gemini", "ショートカット", "アプリ別", "履歴とデータ", "権限", "KoeBridgeについて"])
+        #expect(SettingsSection.allCases.map(\.title) == ["一般", "音声入力", "AI・Gemini", "AmiVoice", "ショートカット", "アプリ別", "履歴とデータ", "権限", "KoeBridgeについて"])
         #expect(SettingsSection.voice.group == "基本")
+        #expect(SettingsSection.amivoice.group == "基本")
         #expect(SettingsSection.permissions.group == "データと安全")
         #expect(SettingsSection.about.group == "サポート")
         #expect(SettingsSection.allCases.allSatisfy { !$0.title.isEmpty && !$0.symbol.isEmpty })
@@ -22,6 +23,9 @@ struct SettingsNavigationTests {
         #expect(SettingsSearchCatalog.find("開発 IT").contains { $0.section == .gemini && $0.id == "vocabulary-assistance" })
         #expect(SettingsSearchCatalog.find("Mac内の句読点整理").contains { $0.section == .gemini && $0.id == "context-check" })
         #expect(SettingsSearchCatalog.find("音声 照合").contains { $0.section == .gemini && $0.id == "context-check" })
+        #expect(SettingsSearchCatalog.find("AmiVoice APIキー").contains { $0.section == .amivoice && $0.id == "amivoice-apikey" })
+        #expect(SettingsSearchCatalog.find("AmiVoice エンジン").contains { $0.section == .amivoice && $0.id == "amivoice-engine" })
+        #expect(SettingsSearchCatalog.find("AmiVoice nolog").contains { $0.section == .amivoice && $0.id == "amivoice-privacy" })
         #expect(SettingsSearchCatalog.find("  ").isEmpty)
         #expect(SettingsSearchCatalog.find("never_present_keyword_123").isEmpty)
     }
@@ -34,6 +38,7 @@ struct SettingsNavigationTests {
             .general: ["SettingsGeneralPage.swift"],
             .voice: ["SettingsVoicePage.swift", "MicrophoneSettingsRow.swift"],
             .gemini: ["SettingsGeminiPage.swift", "SettingsTransformPresets.swift"],
+            .amivoice: ["SettingsAmiVoicePage.swift"],
             .shortcuts: ["SettingsShortcutsPage.swift", "SettingsInputControls.swift"],
             .profiles: ["SettingsView.swift"],
             .history: ["SettingsPrivacyPage.swift", "UsageMonitorView.swift"],

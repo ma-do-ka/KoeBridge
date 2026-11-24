@@ -118,6 +118,7 @@ Tests/KoeBridgeTests/HistoryHoverPanelTests.swift
 Tests/KoeBridgeTests/KoeBridgeUpdateUserDriverTests.swift
 Tests/KoeBridgeTests/MicrophoneRecoveryTests.swift
 Tests/KoeBridgeTests/OutputVolumeGuardTests.swift
+Tests/KoeBridgeTests/UsageMonitorAggregationTests.swift
 Tests/KoeBridgeTests/VoiceCommandPresentationTests.swift
 V100_RELEASE_NOTES.md
 scripts/Info.plist
@@ -178,6 +179,7 @@ scripts/test_package_development_build.py
 Sources/KoeBridge/DictationDelivery.swift
 Sources/KoeBridge/DictationReviewSession.swift
 Sources/KoeBridge/InsertionTarget.swift
+Sources/KoeBridge/SettingsAmiVoicePage.swift
 Sources/KoeBridge/SettingsControls.swift
 Sources/KoeBridge/SettingsGeminiPage.swift
 Sources/KoeBridge/SettingsGeneralPage.swift

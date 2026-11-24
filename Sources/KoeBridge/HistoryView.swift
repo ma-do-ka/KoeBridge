@@ -142,13 +142,14 @@ struct HistoryView: View {
                                     Menu("音声から再文字起こし") {
                                         Button("Apple（このMac内・50秒以内）") { controller.replay(selected, engine: .local) }
                                         Button("Gemini（Googleへ音声＋辞書語句を送信）") { controller.replay(selected, engine: .gemini) }
+                                        Button("AmiVoice（AmiVoice APIへ音声を送信）") { controller.replay(selected, engine: .amivoice) }
                                     }.disabled(controller.replayRecordID != nil)
                                     if controller.replayRecordID == selected.id {
                                         ProgressView().controlSize(.small)
                                         Button("キャンセル") { controller.cancelReplay() }
                                     }
                                 }
-                                Text("Apple：このMac内で再認識。Gemini：保存音声と現在の辞書語句をGoogleへ送信します。")
+                                Text("Apple：このMac内で再認識。Gemini / AmiVoice：保存音声と現在の辞書語句（AmiVoiceはE2Eのみ）を各APIへ送信します。")
                                     .font(.caption2).foregroundStyle(.secondary)
                             } else if let reason = selected.audioUnavailableReason {
                                 Text(reason).font(.caption).foregroundStyle(.secondary)

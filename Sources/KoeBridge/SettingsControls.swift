@@ -150,8 +150,9 @@ struct SettingsRecognitionPicker: View {
 
     var body: some View {
         Picker(title, selection: $selection) {
-            Text("Gemini API").tag(RecognitionMode.gemini)
-            Text("Apple（Mac内）").tag(RecognitionMode.local)
+            Text("Gemini").tag(RecognitionMode.gemini)
+            Text("AmiVoice").tag(RecognitionMode.amivoice)
+            Text("Apple").tag(RecognitionMode.local)
         }
         .labelsHidden()
     }

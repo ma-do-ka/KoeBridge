@@ -189,12 +189,14 @@ private struct HistoryMenuButtonStyle: ButtonStyle {
                 Circle().fill(controller.isRecording ? Color.red : Color.green).frame(width: 6, height: 6)
                 Text(controller.status).font(.caption2).lineLimit(2)
             }
-            // Two explicit engine buttons avoid nested AppKit menu tracking.
+            // Three explicit engine buttons avoid nested AppKit menu tracking.
             HStack(spacing: 6) {
                 ForEach(RecognitionMode.allCases) { mode in
                     Button { controller.requestedMode = mode } label: {
-                        Text(mode == .gemini ? "Gemini" : "Apple")
-                            .font(.caption).frame(maxWidth: .infinity)
+                        Text(mode.shortLabel)
+                            .font(.caption)
+                            .lineLimit(1)
+                            .frame(maxWidth: .infinity)
                             .foregroundStyle(controller.requestedMode == mode ? Color.accentColor : Color.secondary)
                     }
                     .buttonStyle(PopoverButtonStyle(appearance: .bordered, selected: controller.requestedMode == mode))
@@ -230,7 +232,9 @@ private struct HistoryMenuButtonStyle: ButtonStyle {
                 Spacer()
                 stat(String(format: "%.0f", today.totalSeconds / 60), caption: "音声分")
                 Spacer()
-                stat(String(format: "$%.2f", UsageSummary.estimatedCostUSD(geminiSeconds: today.geminiSeconds)), caption: "推定")
+                stat(String(format: "%.1f", today.amiVoiceSeconds / 60), caption: "AmiVoice分")
+                Spacer()
+                stat(String(format: "$%.2f", UsageSummary.estimatedCostUSD(geminiSeconds: today.geminiSeconds)), caption: "Gemini推定")
             }
             if controller.monitorEvents.isEmpty {
                 Text("まだ利用記録がありません").font(.caption2).foregroundStyle(.secondary)
