@@ -23,6 +23,8 @@ USD_PER_MINUTE = 0.009  # Google Gemini 3.5 Transcribe Live, paid-tier illustrat
 AMIVOICE_NOLOG_JPY_PER_SECOND = 0.04125  # AmiVoice WebSocket/Sync nolog General (tax-included)
 AMIVOICE_FREE_SECONDS_PER_MONTH = 3600.0  # 60 min/month free VAD speech per individual engine
 AMIVOICE_SPEECH_TOLERANCE_SECONDS = 5.0
+RETENTION_DAYS = 30
+MAX_RETENTION_SECONDS = float(RETENTION_DAYS * 86_400)  # 2,592,000 s (matches UsageMonitorArchive.retentionDays * 86_400)
 ENGINE_VARIANT_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 SCALAR_ROW_KEYS = (
     "gemini_calls", "gemini_seconds", "gemini_failures",
@@ -88,12 +90,15 @@ def summarize(payload: object, now: datetime, days: int = 30) -> dict[str, dict[
         if engine not in ("gemini", "apple", "amivoice"):
             raise ValueError("unknown engine")
         seconds = number(event.get("audioSeconds"))
+        if seconds > MAX_RETENTION_SECONDS:
+            raise ValueError("audioSeconds exceeds retention window")
         raw_speech = event.get("speechSeconds")
         speech: float | None = None
         if raw_speech is not None:
             speech = number(raw_speech)
-            if speech > seconds + AMIVOICE_SPEECH_TOLERANCE_SECONDS:
-                raise ValueError("speechSeconds exceeds audioSeconds tolerance")
+            speech_upper_bound = min(MAX_RETENTION_SECONDS, seconds + AMIVOICE_SPEECH_TOLERANCE_SECONDS)
+            if speech > speech_upper_bound:
+                raise ValueError("speechSeconds exceeds allowed bound")
         variant = engine_variant(event.get("engineVariant"))
         row = rows[at.astimezone(JST).date().isoformat()]
         row[engine + "_calls"] += 1

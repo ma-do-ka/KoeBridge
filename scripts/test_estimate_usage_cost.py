@@ -2,7 +2,7 @@
 """Synthetic fixtures only. Never access a user's actual usage records."""
 from __future__ import annotations
 
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta, timezone
 import io
 import json
@@ -14,6 +14,7 @@ from estimate_usage_cost import (
     AMIVOICE_NOLOG_JPY_PER_SECOND,
     APPLE_EPOCH,
     JST,
+    MAX_RETENTION_SECONDS,
     amivoice_monthly_summary,
     main,
     render,
@@ -249,6 +250,128 @@ class CostEstimateTests(unittest.TestCase):
                 {"engineEvents": [dict(sample(self.now, "amivoice", 10), purpose="audioRecheck")], "tokenEvents": []},
                 self.now,
             )
+
+    def test_accepts_durations_exactly_at_retention_cap_and_per_record_aggregate(self) -> None:
+        self.assertEqual(MAX_RETENTION_SECONDS, 2_592_000.0)
+        at = self.now - timedelta(hours=1)
+        rows = summarize({
+            "engineEvents": [
+                sample(at, "amivoice", MAX_RETENTION_SECONDS, speech_seconds=MAX_RETENTION_SECONDS, engine_variant="-a2-ja-general"),
+                sample(at, "amivoice", MAX_RETENTION_SECONDS, engine_variant="-a2b-ja-general"),
+                sample(at, "gemini", MAX_RETENTION_SECONDS),
+                sample(at, "apple", MAX_RETENTION_SECONDS),
+            ],
+            "tokenEvents": [],
+        }, self.now)
+        row = next(iter(rows.values()))
+        self.assertEqual(row["amivoice_seconds"], 2 * MAX_RETENTION_SECONDS)
+        self.assertEqual(row["amivoice_speech_seconds"], 2 * MAX_RETENTION_SECONDS)
+        self.assertEqual(row["amivoice_speech_fallback_calls"], 1)
+        self.assertEqual(row["gemini_seconds"], MAX_RETENTION_SECONDS)
+        self.assertEqual(row["apple_seconds"], MAX_RETENTION_SECONDS)
+
+        monthly = amivoice_monthly_summary(rows)
+        self.assertEqual(len(monthly), 2)
+        expected_billable = int(MAX_RETENTION_SECONDS) - 3600
+        for bucket in monthly:
+            self.assertEqual(bucket["billable_seconds"], expected_billable)
+            self.assertAlmostEqual(bucket["estimated_jpy"], expected_billable * AMIVOICE_NOLOG_JPY_PER_SECOND, places=9)
+
+        # Cap is per-record (matching Swift EngineUsageSample.hasValidDuration), not aggregate.
+        multi_rows = summarize({
+            "engineEvents": [
+                sample(at, "amivoice", 2_000_000, speech_seconds=2_000_000, engine_variant="-a2-ja-general"),
+                sample(at, "amivoice", 2_000_000, speech_seconds=2_000_000, engine_variant="-a2-ja-general"),
+            ],
+            "tokenEvents": [],
+        }, self.now)
+        multi_monthly = amivoice_monthly_summary(multi_rows)
+        self.assertEqual(multi_monthly[0]["speech_seconds"], 4_000_000.0)
+        self.assertEqual(multi_monthly[0]["billable_seconds"], 4_000_000 - 3600)
+
+    def test_rejects_durations_over_retention_cap_by_one_second(self) -> None:
+        over_cap = MAX_RETENTION_SECONDS + 1
+        # Reported finding: audioSeconds at cap, speechSeconds 1s over cap (within +5s tolerance)
+        for bad_event in (
+            sample(self.now, "amivoice", MAX_RETENTION_SECONDS, speech_seconds=over_cap, engine_variant="-a2-ja-general"),
+            sample(self.now, "amivoice", MAX_RETENTION_SECONDS, speech_seconds=MAX_RETENTION_SECONDS + 0.01),
+            sample(self.now, "amivoice", MAX_RETENTION_SECONDS - 2, speech_seconds=over_cap),
+            sample(self.now, "amivoice", over_cap),
+            sample(self.now, "amivoice", over_cap, speech_seconds=10),
+            sample(self.now, "amivoice", over_cap, speech_seconds=MAX_RETENTION_SECONDS),
+            sample(self.now, "gemini", over_cap),
+            sample(self.now, "apple", over_cap),
+            sample(self.now, "gemini", MAX_RETENTION_SECONDS, speech_seconds=over_cap),
+        ):
+            with self.subTest(event=bad_event):
+                with self.assertRaises(ValueError):
+                    summarize({"engineEvents": [bad_event], "tokenEvents": []}, self.now)
+
+        # Retention cap is fixed at 30 days even when --days is larger than 30.
+        with self.assertRaises(ValueError):
+            summarize(
+                {"engineEvents": [sample(self.now, "amivoice", MAX_RETENTION_SECONDS, speech_seconds=over_cap)], "tokenEvents": []},
+                self.now,
+                days=365,
+            )
+        with self.assertRaises(ValueError):
+            summarize(
+                {"engineEvents": [sample(self.now, "amivoice", over_cap)], "tokenEvents": []},
+                self.now,
+                days=365,
+            )
+
+        # CLI fails closed with no billed output on an over-cap record.
+        now = datetime.now(timezone.utc)
+        with tempfile.TemporaryDirectory() as tmp:
+            bad_file = Path(tmp) / "over_cap.json"
+            bad_file.write_text(json.dumps({
+                "engineEvents": [
+                    sample(now - timedelta(minutes=1), "amivoice", MAX_RETENTION_SECONDS, speech_seconds=over_cap, engine_variant="-a2-ja-general"),
+                ],
+                "tokenEvents": [],
+            }), encoding="utf-8")
+            out = io.StringIO()
+            err = io.StringIO()
+            with redirect_stdout(out), redirect_stderr(err):
+                code = main(["--file", str(bad_file), "--days", "30"])
+            self.assertEqual(code, 2)
+            self.assertEqual(out.getvalue(), "")
+            self.assertIn("読み取りに失敗しました", err.getvalue())
+
+    def test_speech_seconds_greater_than_audio_seconds_boundaries(self) -> None:
+        at = self.now - timedelta(hours=1)
+        # Valid when speechSeconds > audioSeconds within +5s tolerance and <= retention cap.
+        rows = summarize({
+            "engineEvents": [
+                sample(at, "amivoice", 10, speech_seconds=15, engine_variant="-a2-ja-general"),
+                sample(at, "amivoice", 0, speech_seconds=5, engine_variant="-a2-ja-general"),
+                sample(at, "amivoice", MAX_RETENTION_SECONDS - 2, speech_seconds=MAX_RETENTION_SECONDS, engine_variant="-a2b-ja-general"),
+            ],
+            "tokenEvents": [],
+        }, self.now)
+        monthly = amivoice_monthly_summary(rows)
+        self.assertEqual(monthly[0]["engine_variant"], "-a2-ja-general")
+        self.assertEqual(monthly[0]["audio_seconds"], 10.0)
+        self.assertEqual(monthly[0]["speech_seconds"], 20.0)
+        self.assertEqual(monthly[1]["engine_variant"], "-a2b-ja-general")
+        self.assertEqual(monthly[1]["audio_seconds"], MAX_RETENTION_SECONDS - 2)
+        self.assertEqual(monthly[1]["speech_seconds"], MAX_RETENTION_SECONDS)
+
+        # Rejected when speechSeconds exceeds audioSeconds + 5 or the retention cap.
+        for audio_s, speech_s in (
+            (10, 15.01),
+            (10, 16),
+            (0, 5.01),
+            (MAX_RETENTION_SECONDS - 2, MAX_RETENTION_SECONDS + 1),
+            (MAX_RETENTION_SECONDS, MAX_RETENTION_SECONDS + 1),
+        ):
+            with self.subTest(audio_seconds=audio_s, speech_seconds=speech_s):
+                with self.assertRaises(ValueError):
+                    summarize(
+                        {"engineEvents": [sample(self.now, "amivoice", audio_s, speech_seconds=speech_s)], "tokenEvents": []},
+                        self.now,
+                    )
 
     def test_legacy_rows_without_amivoice_keys_render_cleanly(self) -> None:
         legacy_rows = {
