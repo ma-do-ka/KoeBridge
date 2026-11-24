@@ -390,6 +390,16 @@ struct KoeBridgeSelfTest {
         await run("AppProfileTests.matching", { AppProfileTests().matching() })
         await run("AppProfileTests.vocabularyMerge", { AppProfileTests().vocabularyMerge() })
         await run("AppProfileTests.persistenceRoundTrip", { try AppProfileTests().persistenceRoundTrip() })
+        await run("AmiVoiceWireTests.nologEndpointPreservesMandatoryTrailingSlash", { try AmiVoiceWireTests().nologEndpointPreservesMandatoryTrailingSlash() })
+        await run("AmiVoiceWireTests.engineMetadataAndCodableRoundTrip", { try AmiVoiceWireTests().engineMetadataAndCodableRoundTrip() })
+        await run("AmiVoiceWireTests.startAudioAndEndCommandsMatchProtocol", { AmiVoiceWireTests().startAudioAndEndCommandsMatchProtocol() })
+        await run("AmiVoiceWireTests.profileIdSanitizationRejectsReservedAndUnsafeValues", { AmiVoiceWireTests().profileIdSanitizationRejectsReservedAndUnsafeValues() })
+        await run("AmiVoiceWireTests.profileWordsSanitizationDeduplicationAndCaps", { try AmiVoiceWireTests().profileWordsSanitizationDeduplicationAndCaps() })
+        await run("AmiVoiceWireTests.decodeServerFrameRoundTripsAndMalformedRejection", { try AmiVoiceWireTests().decodeServerFrameRoundTripsAndMalformedRejection() })
+        await run("AmiVoiceWireTests.interimEllipsisStrippingAndEmptyInterimHandling", { try AmiVoiceWireTests().interimEllipsisStrippingAndEmptyInterimHandling() })
+        await run("AmiVoiceWireTests.providerErrorClassificationAndZeroLeakBoundary", { try AmiVoiceWireTests().providerErrorClassificationAndZeroLeakBoundary() })
+        await run("AmiVoiceWireTests.assemblerInterleavedSpeechDurationAndNoSpeechSegmentPolicy", { try AmiVoiceWireTests().assemblerInterleavedSpeechDurationAndNoSpeechSegmentPolicy() })
+        await run("AmiVoiceWireTests.assemblerDictationBudgetFailClosedAndMeetingUnlimited", { AmiVoiceWireTests().assemblerDictationBudgetFailClosedAndMeetingUnlimited() })
         print("KoeBridge portable self-test: \(testCount) cases, \(TestRecorder.checked) assertions, \(TestRecorder.failures) failures")
         if TestRecorder.failures > 0 { exit(1) }
     }

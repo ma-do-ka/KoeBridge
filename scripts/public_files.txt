@@ -33,6 +33,7 @@ Sources/KoeBridge/VoiceController.swift
 Sources/KoeBridge/Windows.swift
 Sources/KoeBridgeAudioTap/InputTap.m
 Sources/KoeBridgeAudioTap/include/KoeBridgeAudioTap.h
+Sources/KoeBridgeCore/AmiVoiceWire.swift
 Sources/KoeBridgeCore/AudioDurationPolicy.swift
 Sources/KoeBridgeCore/AudioIntegrityState.swift
 Sources/KoeBridgeCore/DiagnosticFileStore.swift
@@ -59,6 +60,7 @@ Sources/KoeBridgeCore/UnicodeTypingPlan.swift
 Sources/KoeBridgeCore/UserFacingErrorMessage.swift
 Sources/KoeBridgePOSIX/FileLock.c
 Sources/KoeBridgePOSIX/include/KoeBridgePOSIX.h
+Sources/KoeBridgeSelfTest/AmiVoiceWireTests.swift
 Sources/KoeBridgeSelfTest/AudioDurationTests.swift
 Sources/KoeBridgeSelfTest/DiagnosticLogPolicyTests.swift
 Sources/KoeBridgeSelfTest/DirectInputObservationTests.swift
@@ -84,6 +86,7 @@ Sources/KoeBridgeSelfTest/StressTests.swift
 Sources/KoeBridgeSelfTest/TranscriptionStyleSelfTests.swift
 Sources/KoeBridgeSelfTest/UserFacingErrorMessageTests.swift
 TEST_REPORT.md
+Tests/KoeBridgeCoreTests/AmiVoiceWireTests.swift
 Tests/KoeBridgeCoreTests/AudioDurationTests.swift
 Tests/KoeBridgeCoreTests/DiagnosticLogPolicyTests.swift
 Tests/KoeBridgeCoreTests/DirectInputObservationTests.swift
