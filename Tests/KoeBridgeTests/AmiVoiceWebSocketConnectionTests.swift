@@ -3,8 +3,9 @@ import Foundation
 import Testing
 import KoeBridgeCore
 import KoeBridgeEngines
+@testable import KoeBridge
 
-private final class ScriptedAmiVoiceSocket: AmiVoiceSocket, @unchecked Sendable {
+final class ScriptedAmiVoiceSocket: AmiVoiceSocket, @unchecked Sendable {
     private let lock = NSLock()
     let request: URLRequest
     private var _state: URLSessionTask.State = .suspended
@@ -1122,6 +1123,518 @@ private final class ScriptedAmiVoiceSocket: AmiVoiceSocket, @unchecked Sendable 
         #expect(presented == "AmiVoice API: \(mapped)")
         #expect(!presented.contains("AmiVoice API: AmiVoice API:"))
         #expect(!presented.contains(marker))
+    }
+}
+
+@MainActor private final class FakeLocalTranscriber: LocalTranscribing {
+    var transcript = ""
+    var onUpdate: ((RecognitionPreview) -> Void)?
+    let requiresSpeechAuthorization = false
+    var startCount = 0
+    var cancelCount = 0
+    func start() async throws { startCount += 1 }
+    func appendPCM16(_ data: Data) throws {}
+    func appendRecoveryPCM(_ data: Data, range: Range<Int>) async throws {}
+    func endAudioAndAwaitFinal() async throws -> String { transcript }
+    func cancel() { cancelCount += 1 }
+}
+
+@MainActor struct AmiVoiceTakePipelineTests {
+    private func makeTake(preferred: RecognitionMode = .amivoice) -> DictationTake {
+        DictationTake(preferred: preferred, style: .verbatim, japaneseHint: true,
+                      vocabulary: ["KoeBridge"], shouldPaste: false, options: .init())
+    }
+
+    @Test func missingAmiVoiceKeyFallsBackImmediatelyToApple() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let local = FakeLocalTranscriber()
+        var env = VoiceController.PreparationEnvironment()
+        env.loadKeyForUse = { _ in nil }
+        env.makeLocalTranscriber = { local }
+        let controller = VoiceController(preparation: env, storageDirectory: root)
+
+        let take = makeTake(preferred: .amivoice)
+        let start = ContinuousClock.now
+        take.recordingStart = start
+
+        let mode = try await controller.prepareRecognizer(take)
+        #expect(mode == .local)
+        #expect(take.effectiveMode == .local)
+        #expect(take.fellBackToApple)
+        #expect(!take.amiVoiceAttempted)
+        #expect(take.amiVoice == nil)
+        #expect(take.appleAttempted)
+        #expect(take.local === local)
+        #expect(local.startCount == 1)
+        #expect(take.usedMode == RecognitionMode.local.label)
+        #expect(take.recordingDeadline == start.advanced(by: .seconds(50)))
+
+        take.successfulEngine = .local
+        take.appleAudioBytes = 32_000
+        let usage = take.usageSamples(recognizedText: "救済テキスト", cancelled: false)
+        #expect(usage.tokens.isEmpty)
+        #expect(usage.engines.count == 1)
+        #expect(usage.engines[0].engine == .apple)
+        #expect(usage.engines[0].fallback)
+        #expect(usage.engines[0].outcome == .success)
+        #expect(usage.engines[0].audioSeconds == 1.0)
+        take.releaseResources()
+    }
+
+    @Test func presentAmiVoiceKeyPreparesLazyConnectionAndReleaseClearsIt() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        var sockets: [ScriptedAmiVoiceSocket] = []
+        var env = VoiceController.PreparationEnvironment()
+        env.loadKeyForUse = { $0 == .amivoice ? "fixture-amivoice-key" : nil }
+        env.makeAmiVoiceConnection = { key, engine, vocab in
+            AmiVoiceWebSocketConnection(apiKey: key, engine: engine, vocabulary: vocab) { request in
+                let ws = ScriptedAmiVoiceSocket(request: request) { message, socket in
+                    if case .string(let text) = message, text.hasPrefix("s ") {
+                        socket.feed("s")
+                    }
+                }
+                sockets.append(ws)
+                return ws
+            }
+        }
+        let controller = VoiceController(preparation: env, storageDirectory: root)
+        let take = makeTake(preferred: .amivoice)
+        let start = ContinuousClock.now
+        take.recordingStart = start
+
+        let mode = try await controller.prepareRecognizer(take)
+        #expect(mode == .amivoice)
+        #expect(take.effectiveMode == .amivoice)
+        #expect(!take.fellBackToApple)
+        #expect(take.amiVoiceAttempted)
+        #expect(!take.appleAttempted)
+        #expect(take.amiVoice != nil)
+        #expect(take.amiVoice?.didOpenSocket == false)
+        #expect(sockets.isEmpty)
+        #expect(take.usedMode == RecognitionMode.amivoice.label)
+        #expect(take.recordingDeadline == start.advanced(by: .seconds(480)))
+
+        try await take.amiVoice?.sendAudio(Data([0x01, 0x02]))
+        #expect(sockets.count == 1)
+        #expect(take.amiVoice?.didOpenSocket == true)
+
+        take.releaseResources()
+        #expect(take.amiVoice == nil)
+        #expect(sockets[0].closeCodes.isEmpty == false)
+    }
+
+    @Test func amiVoiceRescueEligibilityBoundaries() async throws {
+        let exactLimit = DictationTake.maximumRescueBytes
+        #expect(exactLimit == 50 * 32_000)
+
+        // 1. Exactly 50 s + mid-take s-ack error + clean drain + 0 dropped -> rescue allowed.
+        do {
+            let take = makeTake(preferred: .amivoice)
+            let connection = AmiVoiceWebSocketConnection(apiKey: "fixture-amivoice-key") { request in
+                ScriptedAmiVoiceSocket(request: request) { message, ws in
+                    if case .string(let text) = message, text.hasPrefix("s ") {
+                        ws.feed("s Authentication failed")
+                    }
+                }
+            }
+            take.amiVoice = connection
+            take.captureDrainedCleanly = true
+            take.stoppingAt = Date()
+            let half = Data(count: exactLimit / 2)
+            let stream = AsyncStream<Data> { output in
+                output.yield(half)
+                output.yield(half)
+                output.finish()
+            }
+            var rescues = 0
+            let text = try await take.transcribeLive(
+                stream,
+                cloudEngine: .amivoice,
+                budgetExceeded: { connection.assembler.exceededFinalBudget },
+                send: connection.sendAudio,
+                finish: {
+                    Issue.record("Should not finalize after mid-take send failure")
+                    return ""
+                },
+                rescue: {
+                    rescues += 1
+                    #expect(take.audioBackup.count == exactLimit)
+                    return "境界救済"
+                }
+            )
+            #expect(text == "境界救済")
+            #expect(rescues == 1)
+            #expect(take.successfulEngine == .local)
+        }
+
+        // 2. Exactly 50 s + finish() failure + clean drain + 0 dropped -> rescue allowed.
+        do {
+            let take = makeTake(preferred: .amivoice)
+            let connection = AmiVoiceWebSocketConnection(apiKey: "fixture-amivoice-key") { request in
+                ScriptedAmiVoiceSocket(request: request) { message, ws in
+                    guard case .string(let text) = message else { return }
+                    if text.hasPrefix("s ") {
+                        ws.feed("s")
+                    } else if text == "e" {
+                        ws.feedError(NSError(domain: NSURLErrorDomain, code: -1005))
+                    }
+                }
+            }
+            take.amiVoice = connection
+            take.captureDrainedCleanly = true
+            take.stoppingAt = Date()
+            let chunk = Data(count: exactLimit / 4)
+            let stream = AsyncStream<Data> { output in
+                for _ in 0..<4 { output.yield(chunk) }
+                output.finish()
+            }
+            var rescues = 0
+            let text = try await take.transcribeLive(
+                stream,
+                cloudEngine: .amivoice,
+                budgetExceeded: { connection.assembler.exceededFinalBudget },
+                send: connection.sendAudio,
+                finish: { try await connection.endAudioAndAwaitFinal() },
+                rescue: {
+                    rescues += 1
+                    #expect(take.audioBackup.count == exactLimit)
+                    return "完了失敗救済"
+                }
+            )
+            #expect(text == "完了失敗救済")
+            #expect(rescues == 1)
+            #expect(take.successfulEngine == .local)
+        }
+
+        // 3. 50 s + epsilon (2 bytes) + mid-take send failure -> no rescue, localRecoveryTooLong.
+        do {
+            let take = makeTake(preferred: .amivoice)
+            let connection = AmiVoiceWebSocketConnection(apiKey: "fixture-amivoice-key") { request in
+                ScriptedAmiVoiceSocket(request: request) { message, ws in
+                    if case .string(let text) = message, text.hasPrefix("s ") {
+                        ws.feed("s Server busy")
+                    }
+                }
+            }
+            take.amiVoice = connection
+            take.captureDrainedCleanly = true
+            take.stoppingAt = Date()
+            let stream = AsyncStream<Data> { output in
+                output.yield(Data(count: exactLimit))
+                output.yield(Data([0x01, 0x02]))
+                output.finish()
+            }
+            var rescues = 0
+            do {
+                _ = try await take.transcribeLive(
+                    stream,
+                    cloudEngine: .amivoice,
+                    budgetExceeded: { connection.assembler.exceededFinalBudget },
+                    send: connection.sendAudio,
+                    finish: { try await connection.endAudioAndAwaitFinal() },
+                    rescue: {
+                        rescues += 1
+                        return "unexpected"
+                    }
+                )
+                Issue.record("Expected localRecoveryTooLong for 50 s + epsilon send failure")
+            } catch VoiceController.AppError.localRecoveryTooLong {}
+            #expect(rescues == 0)
+        }
+
+        // 4. 50 s + epsilon (2 bytes) + finish() failure -> no rescue, localRecoveryTooLong.
+        do {
+            let take = makeTake(preferred: .amivoice)
+            let connection = AmiVoiceWebSocketConnection(apiKey: "fixture-amivoice-key") { request in
+                ScriptedAmiVoiceSocket(request: request) { message, ws in
+                    guard case .string(let text) = message else { return }
+                    if text.hasPrefix("s ") {
+                        ws.feed("s")
+                    } else if text == "e" {
+                        ws.feedError(NSError(domain: NSURLErrorDomain, code: -1005))
+                    }
+                }
+            }
+            take.amiVoice = connection
+            take.captureDrainedCleanly = true
+            take.stoppingAt = Date()
+            let stream = AsyncStream<Data> { output in
+                output.yield(Data(count: exactLimit))
+                output.yield(Data([0x01, 0x02]))
+                output.finish()
+            }
+            var rescues = 0
+            do {
+                _ = try await take.transcribeLive(
+                    stream,
+                    cloudEngine: .amivoice,
+                    budgetExceeded: { connection.assembler.exceededFinalBudget },
+                    send: connection.sendAudio,
+                    finish: { try await connection.endAudioAndAwaitFinal() },
+                    rescue: {
+                        rescues += 1
+                        return "unexpected"
+                    }
+                )
+                Issue.record("Expected localRecoveryTooLong for 50 s + epsilon finish failure")
+            } catch VoiceController.AppError.localRecoveryTooLong {}
+            #expect(rescues == 0)
+        }
+
+        // 5. droppedChunks > 0 blocks rescue even when <= 50 s and cleanly drained.
+        do {
+            let take = makeTake(preferred: .amivoice)
+            take.captureDrainedCleanly = true
+            take.stoppingAt = Date()
+            take.audioIntegrity.markDropped()
+            let stream = AsyncStream<Data> { output in
+                output.yield(Data([0x01, 0x02, 0x03, 0x04]))
+                output.finish()
+            }
+            var rescues = 0
+            do {
+                _ = try await take.transcribeLive(
+                    stream,
+                    cloudEngine: .amivoice,
+                    send: { _ in throw VoiceController.AppError.connectionLost },
+                    finish: { return "" },
+                    rescue: {
+                        rescues += 1
+                        return "unexpected"
+                    }
+                )
+                Issue.record("Expected audioDropped when droppedChunks > 0")
+            } catch VoiceController.AppError.audioDropped {}
+            #expect(rescues == 0)
+        }
+
+        // 6. Unclean drain or missing stoppingAt blocks rescue.
+        for (drained, hasStop) in [(false, true), (true, false)] {
+            let take = makeTake(preferred: .amivoice)
+            take.captureDrainedCleanly = drained
+            take.stoppingAt = hasStop ? Date() : nil
+            let stream = AsyncStream<Data> { output in
+                output.yield(Data([0x01, 0x02]))
+                output.finish()
+            }
+            var rescues = 0
+            do {
+                _ = try await take.transcribeLive(
+                    stream,
+                    cloudEngine: .amivoice,
+                    send: { _ in throw VoiceController.AppError.connectionLost },
+                    finish: { return "" },
+                    rescue: {
+                        rescues += 1
+                        return "unexpected"
+                    }
+                )
+                Issue.record("Expected audioDropped when drain or stoppingAt is incomplete")
+            } catch VoiceController.AppError.audioDropped {}
+            #expect(rescues == 0)
+        }
+    }
+
+    @Test func amiVoiceOverBudgetClosesSocketPreservesBoundedPrefixAndSkipsRescue() async throws {
+        for budget in [TranscriptAssembler.FinalBudget(bytes: 12, identities: 100),
+                       TranscriptAssembler.FinalBudget(bytes: 1000, identities: 1)] {
+            var capturedSocket: ScriptedAmiVoiceSocket?
+            let connection = AmiVoiceWebSocketConnection(
+                apiKey: "fixture-amivoice-key",
+                finalBudget: budget
+            ) { request in
+                let ws = ScriptedAmiVoiceSocket(request: request) { message, socket in
+                    if case .string(let text) = message, text.hasPrefix("s ") {
+                        socket.feed("s")
+                    }
+                }
+                capturedSocket = ws
+                return ws
+            }
+            var budgetErrors = 0
+            connection.onError = { error in
+                if error == .finalBudgetExceeded { budgetErrors += 1 }
+            }
+            try await connection.sendAudio(Data([0x01, 0x02]))
+            let socket = try #require(capturedSocket)
+            for _ in 0..<8 {
+                socket.feed(#"A {"text":"ab","code":""}"#)
+            }
+            let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+            while !connection.assembler.exceededFinalBudget && ContinuousClock.now < deadline {
+                await Task.yield()
+            }
+            #expect(connection.assembler.exceededFinalBudget)
+            #expect(budgetErrors == 1)
+            #expect(connection.assembler.committedText.isEmpty)
+            #expect(socket.closeCodes.isEmpty == false)
+
+            let take = makeTake(preferred: .amivoice)
+            take.amiVoice = connection
+            take.captureDrainedCleanly = true
+            take.stoppingAt = Date()
+            let stream = AsyncStream<Data> { output in
+                output.yield(Data([0x03, 0x04]))
+                output.finish()
+            }
+            var delivered: [String] = []
+            do {
+                delivered.append(try await take.transcribeLive(
+                    stream,
+                    cloudEngine: .amivoice,
+                    budgetExceeded: { connection.assembler.exceededFinalBudget },
+                    send: connection.sendAudio,
+                    finish: { try await connection.endAudioAndAwaitFinal() },
+                    rescue: {
+                        Issue.record("Over-budget AmiVoice take must never enter Apple rescue")
+                        return "unexpected"
+                    }
+                ))
+                Issue.record("Expected finalBudgetExceeded")
+            } catch AmiVoiceWebSocketConnection.ConnectionError.finalBudgetExceeded {}
+            #expect(delivered.isEmpty)
+            #expect(!take.recoverableText.isEmpty)
+            #expect(take.recoverableText == connection.assembler.recoveryText)
+        }
+    }
+
+    @Test func reviewSessionMessageSwitchesExhaustivelyForAmiVoiceAndLocal() async {
+        let options = TranscriptionOptions(
+            textContextCheckEnabled: true,
+            audioRecheckEnabled: true,
+            audioRecheckPolicy: .always
+        )
+
+        var amivoiceRechecked = false
+        let amiVoiceReview = DictationReviewSession(
+            originalText: "テスト結果",
+            engine: .amivoice,
+            options: options,
+            stoppedAt: Date(),
+            audio: Data(count: 3_200),
+            vocabulary: [],
+            style: .verbatim,
+            japaneseHint: true
+        )
+        let amiVoiceOutput = await amiVoiceReview.run { amivoiceRechecked = true }
+        #expect(amiVoiceOutput == "テスト結果")
+        #expect(!amivoiceRechecked)
+        #expect(amiVoiceReview.record?.status == .incomplete)
+        #expect(amiVoiceReview.record?.note == "AmiVoiceの認識結果にはGemini用の追加チェックを実行していません。")
+
+        for nonCloudEngine in [RecognitionMode?.some(.local), RecognitionMode?.none] {
+            var rechecked = false
+            let review = DictationReviewSession(
+                originalText: "ローカル結果",
+                engine: nonCloudEngine,
+                options: options,
+                stoppedAt: Date(),
+                audio: Data(count: 3_200),
+                vocabulary: [],
+                style: .verbatim,
+                japaneseHint: true
+            )
+            let output = await review.run { rechecked = true }
+            #expect(output == "ローカル結果")
+            #expect(!rechecked)
+            #expect(review.record?.status == .incomplete)
+            #expect(review.record?.note == "Appleの認識結果にはGemini用の追加チェックを実行していません。")
+        }
+    }
+
+    @Test func amiVoiceReplayChunks16KBKeyCacheUsageSamplesAndErrorMappings() async throws {
+        // 16 KiB p-chunk replay streaming
+        var capturedSocket: ScriptedAmiVoiceSocket?
+        let connection = AmiVoiceWebSocketConnection(
+            apiKey: "fixture-amivoice-key",
+            engine: .e2eJapaneseGeneral
+        ) { request in
+            let ws = ScriptedAmiVoiceSocket(request: request) { message, socket in
+                guard case .string(let text) = message else { return }
+                if text.hasPrefix("s ") {
+                    socket.feed("s")
+                } else if text == "e" {
+                    socket.feed("S 500")
+                    socket.feed("E 2000")
+                    socket.feed(#"A {"text":"再文字起こし結果","code":""}"#)
+                    socket.feed("e")
+                }
+            }
+            capturedSocket = ws
+            return ws
+        }
+        let pcm = Data(count: 40_000)
+        let replayed = try await VoiceController.streamReplayPCM(pcm, through: connection)
+        #expect(replayed == "再文字起こし結果")
+        let socket = try #require(capturedSocket)
+        let binarySizes: [Int] = socket.sentMessages.compactMap { message in
+            if case .data(let data) = message {
+                #expect(data.first == 0x70)
+                return data.count - 1
+            }
+            return nil
+        }
+        #expect(binarySizes == [16_384, 16_384, 7_232])
+
+        // DictationTake AmiVoice usageSamples
+        let take = makeTake(preferred: .amivoice)
+        take.amiVoiceAttempted = true
+        take.amiVoiceStartedAt = Date()
+        take.amiVoice = connection
+        take.successfulEngine = .amivoice
+        let usage = take.usageSamples(recognizedText: replayed, cancelled: false)
+        #expect(usage.tokens.isEmpty)
+        #expect(usage.engines.count == 1)
+        #expect(usage.engines[0].engine == .amivoice)
+        #expect(usage.engines[0].outcome == .success)
+        #expect(usage.engines[0].audioSeconds == Double(40_000) / 32_000)
+        #expect(usage.engines[0].speechSeconds == 1.5)
+        #expect(usage.engines[0].engineVariant == AmiVoiceEngine.e2eJapaneseGeneral.rawValue)
+
+        // VoiceController key cache covers both Gemini and AmiVoice and clears both on invalidate
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        var geminiRegistered = false
+        var amiVoiceRegistered = true
+        var reads: [CredentialProvider: Int] = [:]
+        var env = VoiceController.PreparationEnvironment()
+        env.keyRegistered = { provider in
+            reads[provider, default: 0] += 1
+            switch provider {
+            case .gemini: return geminiRegistered
+            case .amivoice: return amiVoiceRegistered
+            }
+        }
+        let controller = VoiceController(preparation: env, storageDirectory: root)
+        #expect(!controller.hasKey)
+        #expect(!controller.hasKey)
+        #expect(controller.hasAmiVoiceKey)
+        #expect(controller.hasAmiVoiceKey)
+        #expect(reads[.gemini] == 1)
+        #expect(reads[.amivoice] == 1)
+        geminiRegistered = true
+        amiVoiceRegistered = false
+        controller.invalidateKeyRegistration()
+        #expect(controller.hasKey)
+        #expect(!controller.hasAmiVoiceKey)
+        #expect(reads[.gemini] == 2)
+        #expect(reads[.amivoice] == 2)
+
+        // Local rescue labels and error mappings
+        #expect(VoiceController.localRescueModeLabel(for: .gemini) == "Appleオンデバイス（Gemini失敗時の救済）")
+        #expect(VoiceController.localRescueModeLabel(for: .amivoice) == "Appleオンデバイス（AmiVoice失敗時の救済）")
+        #expect(VoiceController.localRescueModeLabel(for: .local) == "Appleオンデバイス（救済）")
+
+        let authErr = AmiVoiceProviderError(resultCode: "-")
+        #expect(VoiceController.failureCategory(AmiVoiceWebSocketConnection.ConnectionError.provider(authErr)) == "amivoice.provider.authentication")
+        #expect(VoiceController.failureCategory(AmiVoiceWebSocketConnection.ConnectionError.finalBudgetExceeded) == "amivoice.final_budget")
+        #expect(VoiceController.failureCategory(AmiVoiceWebSocketConnection.ConnectionError.finalizationTimeout) == "amivoice.finalization_timeout")
+        #expect(VoiceController.failureCategory(AmiVoiceWebSocketConnection.ConnectionError.noSpeech) == "amivoice.no_speech")
+        #expect(VoiceController.failureCategory(AmiVoiceWireError.malformedFrame) == "amivoice.wire.malformed_frame")
+        #expect(VoiceController.userFacingFailure(VoiceController.AppError.noAmiVoiceKey, operation: "音声認識").contains("AmiVoice"))
+        #expect(VoiceController.userFacingFailure(AmiVoiceWebSocketConnection.ConnectionError.provider(authErr), operation: "音声認識") == authErr.errorDescription)
     }
 }
 #endif

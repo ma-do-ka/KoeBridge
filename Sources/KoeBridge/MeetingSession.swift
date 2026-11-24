@@ -20,6 +20,8 @@ private final class MeetingAudioCount: @unchecked Sendable {
     private let style: TranscriptionStyle
     private let japaneseHint: Bool
     private let apiKey: String?
+    private let amiVoiceKey: String?
+    private let amiVoiceEngine: AmiVoiceEngine
     private let microphoneUID: String
     private var transcript = MeetingTranscript()
     private var tasks: [Task<Void, Never>] = []
@@ -40,6 +42,7 @@ private final class MeetingAudioCount: @unchecked Sendable {
         var system: SystemAudioCapture?
         var local: LocalTranscribing?
         var cloud: GeminiLiveConnection?
+        var amiVoice: AmiVoiceWebSocketConnection?
         var stopRequested = false
         var captureEnd: CaptureEnd = .normal
         var captureEnded = false
@@ -59,13 +62,22 @@ private final class MeetingAudioCount: @unchecked Sendable {
             if losses > 0 { integrity.markDropped() }
         }
         var finalText: String?
-        var partial: String { finalText ?? local?.transcript ?? cloud?.assembler.recoveryText ?? "" }
+        var partial: String { finalText ?? local?.transcript ?? cloud?.assembler.recoveryText ?? amiVoice?.assembler.recoveryText ?? "" }
     }
 
     init(engine: RecognitionMode, vocabulary: [String], style: TranscriptionStyle,
-         japaneseHint: Bool, apiKey: String?, microphoneUID: String) {
+         japaneseHint: Bool, apiKey: String?, microphoneUID: String,
+         amiVoiceKey: String? = nil, amiVoiceEngine: AmiVoiceEngine = .e2eJapaneseGeneral) {
         self.engine = engine; self.vocabulary = vocabulary; self.style = style
         self.japaneseHint = japaneseHint; self.apiKey = apiKey; self.microphoneUID = microphoneUID
+        self.amiVoiceKey = amiVoiceKey; self.amiVoiceEngine = amiVoiceEngine
+    }
+
+    static func chunkDurationSeconds(for engine: RecognitionMode) -> TimeInterval {
+        switch engine {
+        case .local: return 50.0
+        case .gemini, .amivoice: return 480.0
+        }
     }
 
     func start() {
@@ -112,7 +124,7 @@ private final class MeetingAudioCount: @unchecked Sendable {
             // Stop during model download/connection setup must not wait for
             // preparation to finish. Active captures still drain normally.
             if chunk.worker == nil {
-                chunk.local?.cancel(); chunk.cloud?.cancel()
+                chunk.local?.cancel(); chunk.cloud?.cancel(); chunk.amiVoice?.cancel()
                 let index = source == .microphone ? 0 : 1
                 if tasks.indices.contains(index) { tasks[index].cancel() }
             }
@@ -129,7 +141,7 @@ private final class MeetingAudioCount: @unchecked Sendable {
             recordUsage(chunk, interrupted: true)
             snapshot.append(source: source, offset: segmentOffset(chunk, source: source), text: chunk.partial)
             chunk.timer?.cancel(); chunk.worker?.cancel()
-            chunk.cloud?.cancel(); chunk.local?.cancel()
+            chunk.cloud?.cancel(); chunk.amiVoice?.cancel(); chunk.local?.cancel()
             Task { await self.endCapture(chunk) }
         }
         tasks.forEach { $0.cancel() }
@@ -197,7 +209,7 @@ private final class MeetingAudioCount: @unchecked Sendable {
             recordChunk(source: source, offset: segmentOffset(chunk, source: source), text: chunk.partial,
                         recognitionFailed: chunk.failed, dropped: chunk.integrity.droppedChunks)
             recordUsage(chunk, interrupted: completed)
-            chunk.cloud?.cancel(); chunk.local?.cancel()
+            chunk.cloud?.cancel(); chunk.amiVoice?.cancel(); chunk.local?.cancel()
             chunks[source] = nil
             if chunk.failed { break }
         }
@@ -206,14 +218,37 @@ private final class MeetingAudioCount: @unchecked Sendable {
     private func recordUsage(_ chunk: Chunk, interrupted: Bool) {
         guard !chunk.usageRecorded else { return }
         chunk.usageRecorded = true
-        let bytes = engine == .local ? chunk.localProcessedBytes : chunk.cloud?.sentAudioBytes ?? 0
         let outcome: UsageOutcome
         if interrupted { outcome = .cancelled }
         else if chunk.failed || chunk.integrity.droppedChunks > 0 { outcome = .failure }
         else { outcome = chunk.finalText == nil ? .cancelled : .success }
-        onUsage?(EngineUsageSample(at: chunk.requestedAt, engine: engine == .local ? .apple : .gemini,
-                                   audioSeconds: Double(bytes) / 32_000, outcome: outcome),
-                 chunk.cloud?.tokenSamples ?? [])
+        let sample: EngineUsageSample
+        let tokens: [GeminiTokenSample]
+        switch engine {
+        case .local:
+            sample = EngineUsageSample(at: chunk.requestedAt, engine: .apple,
+                                       audioSeconds: Double(chunk.localProcessedBytes) / 32_000,
+                                       outcome: outcome)
+            tokens = []
+        case .gemini:
+            sample = EngineUsageSample(at: chunk.requestedAt, engine: .gemini,
+                                       audioSeconds: Double(chunk.cloud?.sentAudioBytes ?? 0) / 32_000,
+                                       outcome: outcome)
+            tokens = chunk.cloud?.tokenSamples ?? []
+        case .amivoice:
+            let speechSeconds: Double? = chunk.amiVoice.flatMap { conn -> Double? in
+                if conn.speechDurationMS > 0 { return conn.speechDurationSeconds }
+                if conn.assembler.endAcknowledged && conn.assembler.finalCount == 0 { return 0.0 }
+                return nil
+            }
+            sample = EngineUsageSample(at: chunk.requestedAt, engine: .amivoice,
+                                       audioSeconds: Double(chunk.amiVoice?.sentAudioBytes ?? 0) / 32_000,
+                                       outcome: outcome,
+                                       speechSeconds: speechSeconds,
+                                       engineVariant: chunk.amiVoice?.engine.rawValue ?? amiVoiceEngine.rawValue)
+            tokens = []
+        }
+        onUsage?(sample, tokens)
     }
 
     private func recordChunk(source: MeetingTranscript.Source, offset: TimeInterval, text: String,
@@ -226,13 +261,23 @@ private final class MeetingAudioCount: @unchecked Sendable {
     }
 
     private func runChunk(_ chunk: Chunk, source: MeetingTranscript.Source) async throws {
-        if engine == .local {
+        switch engine {
+        case .local:
             let local = LocalTranscriberFactory.make(); chunk.local = local
             try await local.start()
-        } else {
+        case .gemini:
             guard let apiKey else { throw VoiceController.AppError.noKey }
             let cloud = GeminiLiveConnection(finalBudget: nil); chunk.cloud = cloud
             try await cloud.connect(apiKey: apiKey, vocabulary: vocabulary, style: style, japaneseHint: japaneseHint)
+        case .amivoice:
+            guard let amiVoiceKey else { throw VoiceController.AppError.noAmiVoiceKey }
+            // Lazy open on first non-empty PCM chunk; unlimited finalBudget for meeting chunks.
+            chunk.amiVoice = AmiVoiceWebSocketConnection(
+                apiKey: amiVoiceKey,
+                engine: amiVoiceEngine,
+                vocabulary: vocabulary,
+                finalBudget: nil
+            )
         }
         guard !stopping, !chunk.stopRequested else { return }
         let (stream, continuation) = AsyncStream<Data>.makeStream(bufferingPolicy: .bufferingOldest(480))
@@ -255,16 +300,29 @@ private final class MeetingAudioCount: @unchecked Sendable {
             do {
                 for await data in stream {
                     chunk.admittedBytes += data.count
-                    if let cloud = chunk.cloud { try await cloud.sendAudio(data) }
-                    else if let local = chunk.local {
-                        try local.appendPCM16(data)
-                        chunk.localProcessedBytes += data.count
+                    switch self.engine {
+                    case .gemini:
+                        if let cloud = chunk.cloud { try await cloud.sendAudio(data) }
+                    case .amivoice:
+                        if let amiVoice = chunk.amiVoice { try await amiVoice.sendAudio(data) }
+                    case .local:
+                        if let local = chunk.local {
+                            try local.appendPCM16(data)
+                            chunk.localProcessedBytes += data.count
+                        }
                     }
                 }
                 guard integrity.droppedChunks == 0 else { throw VoiceController.AppError.audioDropped }
                 guard chunk.admittedBytes > 0 else { return "" }
-                if let cloud = chunk.cloud { try await cloud.endAudio(); return try await cloud.awaitFinal() }
-                return try await chunk.local?.endAudioAndAwaitFinal() ?? ""
+                switch self.engine {
+                case .gemini:
+                    if let cloud = chunk.cloud { try await cloud.endAudio(); return try await cloud.awaitFinal() }
+                    return ""
+                case .amivoice:
+                    return try await chunk.amiVoice?.endAudioAndAwaitFinal() ?? ""
+                case .local:
+                    return try await chunk.local?.endAudioAndAwaitFinal() ?? ""
+                }
             } catch {
                 chunk.captureEnd = .interrupted
                 chunk.stopRequested = true
@@ -290,7 +348,7 @@ private final class MeetingAudioCount: @unchecked Sendable {
         }
         try Task.checkCancellation()
         if stopping { chunk.stopRequested = true }
-        let deadline = chunk.startedAt + (engine == .local ? 50.0 : 480.0)
+        let deadline = chunk.startedAt + Self.chunkDurationSeconds(for: engine)
         chunk.timer = Task {
             do { try await Task.sleep(for: .seconds(max(0, deadline - ProcessInfo.processInfo.systemUptime))) }
             catch { return }
