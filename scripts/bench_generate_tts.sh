@@ -64,6 +64,28 @@ for clip in clips:
     print(f"{cid}\t{voice}\t{reference}")
 PY
 
+check_destination() {
+  local target="$1"
+  if [ -L "$target" ]; then
+    echo "ERROR: destination path must not be a symlink: $target" >&2
+    exit 2
+  fi
+  if [ -d "$target" ]; then
+    echo "ERROR: destination path must not be a directory: $target" >&2
+    exit 2
+  fi
+  if [ -e "$target" ] && [ ! -f "$target" ]; then
+    echo "ERROR: destination path must be a regular file: $target" >&2
+    exit 2
+  fi
+  local target_real
+  target_real="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$target")"
+  if [ "$target_real" = "$ROOT_ABS" ] || [[ "$target_real" == "$ROOT_ABS"/* ]]; then
+    echo "ERROR: destination path resolves inside the repository: $target" >&2
+    exit 2
+  fi
+}
+
 generated=0
 while IFS=$'\t' read -r clip_id voice reference; do
   [ -n "$clip_id" ] || continue
@@ -72,6 +94,7 @@ while IFS=$'\t' read -r clip_id voice reference; do
   canonical_tmp="$TMP/$clip_id.canonical.wav"
   final="$OUT_ABS/$clip_id.wav"
 
+  check_destination "$final"
   say -v "$voice" -o "$aiff" "$reference"
   afconvert -f WAVE -d LEI16@16000 -c 1 "$aiff" "$converted"
   python3 - "$converted" "$canonical_tmp" <<'PY'
@@ -133,7 +156,8 @@ canonical = b"".join([
 target.write_bytes(canonical)
 PY
   pcm_sha="$(python3 -c 'import hashlib,sys; data=open(sys.argv[1],"rb").read(); print(hashlib.sha256(data[44:]).hexdigest())' "$canonical_tmp")"
-  mv "$canonical_tmp" "$final"
+  check_destination "$final"
+  mv -f "$canonical_tmp" "$final"
   file_sha="$(shasum -a 256 "$final" | awk '{print $1}')"
   printf '%s\tvoice=%s\tpcm_sha256=%s\tfile_sha256=%s\tpath=%s\n' "$clip_id" "$voice" "$pcm_sha" "$file_sha" "$final"
   generated=$((generated + 1))

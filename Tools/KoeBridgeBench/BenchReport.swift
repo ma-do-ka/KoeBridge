@@ -22,7 +22,8 @@ enum BenchReportBuilder {
         manifest: CorpusManifest,
         results: [BenchResultRecord],
         options: BenchOptions,
-        gitCommit: String
+        gitCommit: String,
+        missingKeySources: [BenchEngine: String] = [:]
     ) -> String {
         var lines: [String] = []
         lines.append("# KoeBridgeBench レポート")
@@ -33,6 +34,16 @@ enum BenchReportBuilder {
         lines.append("- Apple backend: `\(BenchIO.appleBackend())`")
         lines.append("- pacing: `\(options.pacing.rawValue)`, order: `\(options.order.rawValue)`")
         lines.append("- engines: `\(options.engines.map(\.rawValue).joined(separator: ","))`")
+        let keyStatusSummary = options.engines.map { engine in
+            if engine == .apple {
+                return "\(engine.rawValue)=不要"
+            }
+            if let source = missingKeySources[engine] {
+                return "\(engine.rawValue)=missing_key（\(source)）"
+            }
+            return "\(engine.rawValue)=ok"
+        }.joined(separator: ", ")
+        lines.append("- API keys: `\(keyStatusSummary)`")
         lines.append("- AmiVoice engine: `\(options.amivoiceEngine)`")
         lines.append("- vocabulary arm: `\(options.vocabFile == nil ? "baseline" : "vocab-ablation")`（Apple は語彙指定非対応）")
         lines.append("- 同一音声検査: 全エンジンの結果に同じ `pcm_sha256` を記録し、集計前に一致を確認")
@@ -80,7 +91,7 @@ enum BenchReportBuilder {
         lines.append("| **全体** | **\(referenceLength(totalClips))** | \(totalCells.joined(separator: " | ")) |")
         lines.append("")
 
-        lines.append("### エンジン別 CER 概要（失敗クリップは100%削除ペナルティ）")
+        lines.append("### エンジン別 CER 概要（失敗クリップは成功分と100%削除ペナルティ込みを併記）")
         lines.append("")
         lines.append("| エンジン | 成功クリップ | cer_norm | cer_strict | cer_strict（日本語スペース適用後） |")
         lines.append("| --- | ---: | ---: | ---: | ---: |")
@@ -95,13 +106,10 @@ enum BenchReportBuilder {
             let spacingTransform: @Sendable (String) -> String = {
                 JapaneseDictationSpacing.adopt($0, enabled: true, protectedTerms: [])
             }
-            let norm = BenchmarkCER.corpusMicroAverageWithFailurePenalty(clips: clips, mode: .normalized)
-            let strict = BenchmarkCER.corpusMicroAverageWithFailurePenalty(clips: clips, mode: .strict)
-            let spacing = BenchmarkCER.corpusMicroAverageWithFailurePenalty(
-                clips: clips,
-                mode: .strictTransformed(spacingTransform)
-            )
-            lines.append("| \(markdown(item.label)) | \(succeeded)/\(total) | \(percent(norm)) | \(percent(strict)) | \(percent(spacing)) |")
+            let norm = cerCell(clips: clips, mode: .normalized)
+            let strict = cerCell(clips: clips, mode: .strict)
+            let spacing = cerCell(clips: clips, mode: .strictTransformed(spacingTransform))
+            lines.append("| \(markdown(item.label)) | \(succeeded)/\(total) | \(norm) | \(strict) | \(spacing) |")
         }
         lines.append("")
     }
@@ -190,7 +198,7 @@ enum BenchReportBuilder {
         lines.append("- `connect_ms`: 接続またはローカル認識器の準備時間。AmiVoiceは共有実装が遅延接続のため、最初の音声送信呼び出しに含まれる準備時間を呼び出し側で測定。")
         lines.append("- `ttfi_ms`: 最初の音声送信から最初の途中または確定テキストまで。`-a2b-ja-general` では途中結果がないため N/A。")
         lines.append("- `stop_to_final_ms`: 音声終了の送信開始から最終確定テキスト取得まで。")
-        lines.append("- 失敗クリップはカテゴリ表で成功分とペナルティ込み値を併記し、概要表では100%削除ペナルティを適用。")
+        lines.append("- 失敗クリップはカテゴリ表・概要表ともに、成功分と100%削除ペナルティ込み値を併記。")
         lines.append("")
     }
 
@@ -208,10 +216,15 @@ enum BenchReportBuilder {
         }
         guard !rows.isEmpty else { return "—" }
         let clips = benchmarkClips(rows: rows, manifest: manifest)
+        return cerCell(clips: clips, mode: .normalized)
+    }
+
+    private static func cerCell(clips: [BenchmarkClip], mode: BenchmarkCER.Mode) -> String {
         let total = clips.count
+        guard total > 0 else { return "—" }
         let succeeded = BenchmarkCER.succeededCount(clips: clips)
-        let successValue = BenchmarkCER.corpusMicroAverage(clips: clips, mode: .normalized)
-        let penaltyValue = BenchmarkCER.corpusMicroAverageWithFailurePenalty(clips: clips, mode: .normalized)
+        let successValue = BenchmarkCER.corpusMicroAverage(clips: clips, mode: mode)
+        let penaltyValue = BenchmarkCER.corpusMicroAverageWithFailurePenalty(clips: clips, mode: mode)
         // corpusMicroAverage is nil exactly when every clip failed (Chunk 6 fix);
         // in the two branches below at least one clip succeeded, so the value
         // exists — the map fallback is unreachable and only satisfies the type.

@@ -1,6 +1,8 @@
 import Foundation
 import CryptoKit
+import Darwin
 import KoeBridgeCore
+import KoeBridgePOSIX
 
 /// Small lock-protected probe for provider callbacks. Callbacks can cross tasks even
 /// though the benchmark runner itself is MainActor-isolated.
@@ -81,6 +83,14 @@ enum BenchIO {
         cacheRoot.appendingPathComponent("quota-ledger.json")
     }
 
+    static var quotaLockURL: URL {
+        cacheRoot.appendingPathComponent("quota-ledger.lock")
+    }
+
+    static var quotaReservationsDir: URL {
+        cacheRoot.appendingPathComponent("quota-reservations", isDirectory: true)
+    }
+
     static func loadLedger() throws -> QuotaLedger {
         let url = quotaLedgerURL
         guard FileManager.default.fileExists(atPath: url.path) else { return QuotaLedger() }
@@ -109,6 +119,210 @@ enum BenchIO {
         } catch {
             throw BenchFailure.quota("quota-ledger.json を更新できません。以降のネットワーク呼び出しを中止します")
         }
+    }
+
+    static func withQuotaLock<T>(_ body: () throws -> T) throws -> T {
+        do {
+            try FileManager.default.createDirectory(at: cacheRoot, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: quotaReservationsDir, withIntermediateDirectories: true)
+        } catch {
+            throw BenchFailure.quota("quotaキャッシュディレクトリを作成できません。ライブ実行を中止してください")
+        }
+        let lockFD = open(quotaLockURL.path, O_CREAT | O_RDWR | O_CLOEXEC, mode_t(0o600))
+        guard lockFD >= 0 else {
+            throw BenchFailure.quota("quota-ledger.lock を開けません (errno=\(errno))")
+        }
+        defer { close(lockFD) }
+
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        while true {
+            if KBFileLockTryExclusive(lockFD) == 0 {
+                break
+            }
+            let err = errno
+            if err == EINTR { continue }
+            if err == EWOULDBLOCK || err == EAGAIN {
+                if ContinuousClock.now >= deadline {
+                    throw BenchFailure.quota("quota-ledger.lock の取得がタイムアウトしました。他の実行が停止していないか確認してください")
+                }
+                Thread.sleep(forTimeInterval: 0.01)
+                continue
+            }
+            throw BenchFailure.quota("quota-ledger.lock を取得できません (errno=\(err))")
+        }
+        return try body()
+    }
+
+    static func writeReservation(_ reservation: QuotaReservation, to url: URL) throws {
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(reservation)
+            try data.write(to: url, options: .atomic)
+        } catch {
+            throw BenchFailure.quota("quota予約ファイルを書き込めません。ライブ実行を中止します")
+        }
+    }
+
+    static func reserveAmiVoiceQuota(
+        runID: String,
+        month: String,
+        engine: String,
+        plannedSeconds: Double,
+        monthlyCapSeconds: Double
+    ) throws -> QuotaReservationSession? {
+        try withQuotaLock {
+            let activeReserved = try reconcileAndSumActiveReservations(
+                month: month,
+                engine: engine,
+                excludingRunID: runID
+            )
+            let ledger = try loadLedger()
+            let committed = ledger.months[month]?[engine] ?? 0.0
+            let projected = committed + activeReserved + plannedSeconds
+            guard projected <= monthlyCapSeconds else {
+                if activeReserved > 0 {
+                    throw BenchFailure.quota(String(
+                        format: "AmiVoice月次上限を超えるためネットワーク呼び出し前に中止します: ledger=%.1fs reserved=%.1fs planned=%.1fs cap=%.1fs",
+                        committed, activeReserved, plannedSeconds, monthlyCapSeconds
+                    ))
+                }
+                throw BenchFailure.quota(String(
+                    format: "AmiVoice月次上限を超えるためネットワーク呼び出し前に中止します: ledger=%.1fs planned=%.1fs cap=%.1fs",
+                    committed, plannedSeconds, monthlyCapSeconds
+                ))
+            }
+
+            guard plannedSeconds > 0 else {
+                return nil
+            }
+
+            let lockURL = quotaReservationsDir.appendingPathComponent("\(runID).lock")
+            let reservationURL = quotaReservationsDir.appendingPathComponent("\(runID).json")
+            let runLockFD = open(lockURL.path, O_CREAT | O_RDWR | O_CLOEXEC, mode_t(0o600))
+            guard runLockFD >= 0 else {
+                throw BenchFailure.quota("quota予約ロックファイルを作成できません (errno=\(errno))")
+            }
+            if KBFileLockTryExclusive(runLockFD) != 0 {
+                let err = errno
+                close(runLockFD)
+                throw BenchFailure.quota("quota予約ロックを取得できません (errno=\(err))")
+            }
+
+            let nowEpoch = Date().timeIntervalSince1970
+            let reservation = QuotaReservation(
+                schema_version: 1,
+                run_id: runID,
+                month: month,
+                engine: engine,
+                pid: ProcessInfo.processInfo.processIdentifier,
+                reserved_seconds: plannedSeconds,
+                remaining_seconds: plannedSeconds,
+                created_at_epoch: nowEpoch
+            )
+            do {
+                try writeReservation(reservation, to: reservationURL)
+            } catch {
+                try? FileManager.default.removeItem(at: lockURL)
+                close(runLockFD)
+                throw error
+            }
+            return QuotaReservationSession(
+                runID: runID,
+                month: month,
+                engine: engine,
+                reservationURL: reservationURL,
+                lockURL: lockURL,
+                runLockFD: runLockFD,
+                reservedSeconds: plannedSeconds,
+                createdAtEpoch: nowEpoch
+            )
+        }
+    }
+
+    private static func reconcileAndSumActiveReservations(
+        month: String,
+        engine: String,
+        excludingRunID: String
+    ) throws -> Double {
+        let entries: [URL]
+        do {
+            entries = try FileManager.default.contentsOfDirectory(
+                at: quotaReservationsDir,
+                includingPropertiesForKeys: nil
+            )
+        } catch {
+            throw BenchFailure.quota("quota予約ディレクトリを読めません。ライブ実行を中止してください")
+        }
+
+        var activeTotal = 0.0
+        var liveReservationBasenames = Set<String>()
+
+        for entry in entries where entry.pathExtension == "json" {
+            let base = entry.deletingPathExtension().lastPathComponent
+            if base == excludingRunID { continue }
+            let lockURL = quotaReservationsDir.appendingPathComponent("\(base).lock")
+            let probeFD = open(lockURL.path, O_RDONLY | O_CLOEXEC)
+            if probeFD < 0 {
+                if errno == ENOENT {
+                    try? FileManager.default.removeItem(at: entry)
+                    continue
+                }
+                throw BenchFailure.quota("quota予約ロック状態を確認できません: \(lockURL.lastPathComponent)")
+            }
+            let lockResult = KBFileLockTryExclusive(probeFD)
+            let lockErr = errno
+            close(probeFD)
+
+            if lockResult == 0 {
+                // Previous holder exited/crashed without releasing; reclaim stale reservation.
+                try? FileManager.default.removeItem(at: entry)
+                try? FileManager.default.removeItem(at: lockURL)
+                continue
+            }
+            if lockErr != EWOULDBLOCK && lockErr != EAGAIN {
+                throw BenchFailure.quota("quota予約ロック検証に失敗しました (errno=\(lockErr))")
+            }
+
+            liveReservationBasenames.insert(base)
+            let reservation: QuotaReservation
+            do {
+                let data = try Data(contentsOf: entry)
+                reservation = try JSONDecoder().decode(QuotaReservation.self, from: data)
+                guard reservation.schema_version == 1 else {
+                    throw BenchFailure.quota("quota予約ファイルの schema_version が不正です: \(entry.lastPathComponent)")
+                }
+            } catch let failure as BenchFailure {
+                throw failure
+            } catch {
+                throw BenchFailure.quota("実行中のquota予約ファイルを読めません: \(entry.lastPathComponent)")
+            }
+
+            if reservation.month == month,
+               reservation.engine == engine,
+               reservation.remaining_seconds.isFinite,
+               reservation.remaining_seconds > 0 {
+                activeTotal += reservation.remaining_seconds
+            }
+        }
+
+        for entry in entries where entry.pathExtension == "lock" {
+            let base = entry.deletingPathExtension().lastPathComponent
+            if base == excludingRunID || liveReservationBasenames.contains(base) { continue }
+            let jsonURL = quotaReservationsDir.appendingPathComponent("\(base).json")
+            if !FileManager.default.fileExists(atPath: jsonURL.path) {
+                let probeFD = open(entry.path, O_RDONLY | O_CLOEXEC)
+                if probeFD >= 0 {
+                    let lockResult = KBFileLockTryExclusive(probeFD)
+                    close(probeFD)
+                    if lockResult == 0 {
+                        try? FileManager.default.removeItem(at: entry)
+                    }
+                }
+            }
+        }
+
+        return activeTotal
     }
 
     static func jstMonthKey(now: Date = Date()) -> String {
@@ -221,5 +435,90 @@ enum BenchIO {
     static func errorMessage(_ error: Error) -> String {
         let message = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
         return message.isEmpty ? String(describing: type(of: error)) : message
+    }
+}
+
+final class QuotaReservationSession {
+    let runID: String
+    let month: String
+    let engine: String
+    private let reservationURL: URL
+    private let lockURL: URL
+    private var runLockFD: Int32
+    private let initialReservedSeconds: Double
+    private var remainingSeconds: Double
+    private let createdAtEpoch: Double
+    private var isReleased = false
+
+    init(
+        runID: String,
+        month: String,
+        engine: String,
+        reservationURL: URL,
+        lockURL: URL,
+        runLockFD: Int32,
+        reservedSeconds: Double,
+        createdAtEpoch: Double
+    ) {
+        self.runID = runID
+        self.month = month
+        self.engine = engine
+        self.reservationURL = reservationURL
+        self.lockURL = lockURL
+        self.runLockFD = runLockFD
+        self.initialReservedSeconds = reservedSeconds
+        self.remainingSeconds = reservedSeconds
+        self.createdAtEpoch = createdAtEpoch
+    }
+
+    deinit {
+        if runLockFD >= 0 {
+            close(runLockFD)
+            runLockFD = -1
+        }
+    }
+
+    func recordClip(plannedClipSeconds: Double, actualConsumedSeconds: Double) throws {
+        guard !isReleased else { return }
+        try BenchIO.withQuotaLock {
+            if actualConsumedSeconds > 0 {
+                var ledger = try BenchIO.loadLedger()
+                var monthEntries = ledger.months[month] ?? [:]
+                monthEntries[engine] = (monthEntries[engine] ?? 0.0) + actualConsumedSeconds
+                ledger.months[month] = monthEntries
+                try BenchIO.saveLedger(ledger)
+            }
+            remainingSeconds = max(0.0, remainingSeconds - max(0.0, plannedClipSeconds))
+            let updated = QuotaReservation(
+                schema_version: 1,
+                run_id: runID,
+                month: month,
+                engine: engine,
+                pid: ProcessInfo.processInfo.processIdentifier,
+                reserved_seconds: initialReservedSeconds,
+                remaining_seconds: remainingSeconds,
+                created_at_epoch: createdAtEpoch
+            )
+            try BenchIO.writeReservation(updated, to: reservationURL)
+        }
+    }
+
+    func release() throws {
+        guard !isReleased else { return }
+        isReleased = true
+        defer {
+            if runLockFD >= 0 {
+                close(runLockFD)
+                runLockFD = -1
+            }
+        }
+        try BenchIO.withQuotaLock {
+            try? FileManager.default.removeItem(at: reservationURL)
+            try? FileManager.default.removeItem(at: lockURL)
+        }
+    }
+
+    func releaseBestEffort() {
+        try? release()
     }
 }

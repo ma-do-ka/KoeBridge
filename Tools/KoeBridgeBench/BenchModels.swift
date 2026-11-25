@@ -436,3 +436,14 @@ struct QuotaLedger: Codable {
         self.months = months
     }
 }
+
+struct QuotaReservation: Codable {
+    var schema_version: Int
+    var run_id: String
+    var month: String
+    var engine: String
+    var pid: Int32
+    var reserved_seconds: Double
+    var remaining_seconds: Double
+    var created_at_epoch: Double
+}

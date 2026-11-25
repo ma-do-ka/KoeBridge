@@ -374,3 +374,4 @@ Tools/KoeBridgeBench/corpus/manifest.json
 Tools/KoeBridgeBench/main.swift
 docs/amivoice-and-benchmark.md
 scripts/bench_generate_tts.sh
+scripts/test_bench_generate_tts.py

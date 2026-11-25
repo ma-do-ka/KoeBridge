@@ -16,7 +16,7 @@ applicationTestDependencies.append("KoeBridgeEngines")
 additionalTargets.append(.target(name: "KoeBridgeEngines", dependencies: ["KoeBridgeCore"],
                                  swiftSettings: [.swiftLanguageMode(.v5)]))
 additionalTargets.append(.executableTarget(name: "KoeBridgeBench",
-                                           dependencies: ["KoeBridgeCore", "KoeBridgeEngines"],
+                                           dependencies: ["KoeBridgeCore", "KoeBridgeEngines", "KoeBridgePOSIX"],
                                            path: "Tools/KoeBridgeBench",
                                            exclude: ["corpus"],
                                            swiftSettings: [.swiftLanguageMode(.v5)]))

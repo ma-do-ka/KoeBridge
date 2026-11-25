@@ -13,12 +13,12 @@ final class BenchRunner {
 
     func run() async throws -> Int32 {
         let manifest = try CorpusManifest.load(from: options.manifestPath)
-        let vocabulary = try BenchIO.loadVocabulary(path: options.vocabFile)
         var audioStates: [String: AudioLoadState] = [:]
         for clip in manifest.clips {
             audioStates[clip.id] = BenchIO.inspectAudio(clip: clip, audioDir: options.audioDir)
         }
         if options.live {
+            let vocabulary = try BenchIO.loadVocabulary(path: options.vocabFile)
             return try await runLive(manifest: manifest, audioStates: audioStates, vocabulary: vocabulary)
         }
         return runDry(manifest: manifest, audioStates: audioStates)
@@ -89,6 +89,15 @@ final class BenchRunner {
             print("quota: ledger_unreadable (\(BenchIO.errorMessage(error)))")
         }
 
+        if let vocabPath = options.vocabFile {
+            do {
+                let words = try BenchIO.loadVocabulary(path: vocabPath)
+                print("vocab: ok entries=\(words.count) path=\(vocabPath)")
+            } catch {
+                print("vocab: unreadable (\(BenchIO.errorMessage(error)))")
+            }
+        }
+
         // The adjudicated dry-run contract reserves non-zero exits for manifest corruption
         // (already thrown) and locked-hash mismatches. Missing audio is a reported state.
         return mismatches == 0 ? 0 : 1
@@ -99,23 +108,24 @@ final class BenchRunner {
         audioStates: [String: AudioLoadState],
         vocabulary: [String]
     ) async throws -> Int32 {
-        var ledger = try BenchIO.loadLedger()
+        let runID = BenchIO.runID()
         let month = BenchIO.jstMonthKey()
         let plannedSeconds = plannedAudioSeconds(manifest: manifest, audioStates: audioStates, includeEstimatedForMissing: false)
+        var quotaReservation: QuotaReservationSession?
         if options.engines.contains(.amivoice) {
             // AmiVoice bills VAD speech time, but that measurement does not exist before
             // the run. The planned value therefore uses canonical wall-audio seconds as
             // the conservative estimate required by the brief; missing/unreadable clips
             // are not planned because no network call will be made for them.
-            let consumed = ledger.months[month]?[options.amivoiceEngine] ?? 0.0
-            let projected = consumed + plannedSeconds
-            guard projected <= options.monthlyCapSeconds else {
-                throw BenchFailure.quota(String(
-                    format: "AmiVoice月次上限を超えるためネットワーク呼び出し前に中止します: ledger=%.1fs planned=%.1fs cap=%.1fs",
-                    consumed, plannedSeconds, options.monthlyCapSeconds
-                ))
-            }
+            quotaReservation = try BenchIO.reserveAmiVoiceQuota(
+                runID: runID,
+                month: month,
+                engine: options.amivoiceEngine,
+                plannedSeconds: plannedSeconds,
+                monthlyCapSeconds: options.monthlyCapSeconds
+            )
         }
+        defer { quotaReservation?.releaseBestEffort() }
 
         try validateOutputLocation()
         try FileManager.default.createDirectory(
@@ -124,10 +134,20 @@ final class BenchRunner {
         )
 
         var apiKeys: [BenchEngine: String] = [:]
-        if options.engines.contains(.gemini), let key = BenchIO.geminiAPIKey() { apiKeys[.gemini] = key }
-        if options.engines.contains(.amivoice), let key = BenchIO.amiVoiceAPIKey() { apiKeys[.amivoice] = key }
+        if options.engines.contains(.gemini), let key = BenchIO.geminiAPIKey(), !key.isEmpty { apiKeys[.gemini] = key }
+        if options.engines.contains(.amivoice), let key = BenchIO.amiVoiceAPIKey(), !key.isEmpty { apiKeys[.amivoice] = key }
 
-        let runID = BenchIO.runID()
+        var missingKeySources: [BenchEngine: String] = [:]
+        for engine in options.engines {
+            if let source = missingKeySource(for: engine, apiKeys: apiKeys) {
+                missingKeySources[engine] = source
+            }
+        }
+        if options.engines.contains(.amivoice), apiKeys[.amivoice] == nil {
+            try quotaReservation?.release()
+            quotaReservation = nil
+        }
+
         let gitCommit = BenchIO.gitCommit(manifestPath: options.manifestPath)
         var results: [BenchResultRecord] = []
         var needsEngineCooldown = false
@@ -136,8 +156,14 @@ final class BenchRunner {
             let orderedEngines = executionOrder(forClipAt: clipIndex)
             let state = audioStates[clip.id] ?? .missing
             guard case .loaded(let audio) = state else {
-                let outcome = audioFailureOutcome(state)
+                let audioOutcome = audioFailureOutcome(state)
                 for engine in orderedEngines {
+                    let outcome: EngineOutcome
+                    if let keySource = missingKeySources[engine] {
+                        outcome = combinedAudioAndMissingKeyOutcome(audioOutcome: audioOutcome, keySource: keySource)
+                    } else {
+                        outcome = audioOutcome
+                    }
                     results.append(makeRecord(
                         clip: clip,
                         engine: engine,
@@ -173,15 +199,16 @@ final class BenchRunner {
 
                 if engine == .amivoice, outcome.status != "missing_key" {
                     let consumed = outcome.speechSeconds ?? outcome.sentAudioSeconds ?? 0.0
-                    if consumed > 0 {
-                        var monthEntries = ledger.months[month] ?? [:]
-                        monthEntries[options.amivoiceEngine] = (monthEntries[options.amivoiceEngine] ?? 0.0) + consumed
-                        ledger.months[month] = monthEntries
-                        try BenchIO.saveLedger(ledger)
-                    }
+                    try quotaReservation?.recordClip(
+                        plannedClipSeconds: audio.seconds,
+                        actualConsumedSeconds: consumed
+                    )
                 }
             }
         }
+
+        try quotaReservation?.release()
+        quotaReservation = nil
 
         try assertIdenticalHashes(results)
         let jsonlURL = URL(fileURLWithPath: options.outDir, isDirectory: true)
@@ -194,7 +221,8 @@ final class BenchRunner {
             manifest: manifest,
             results: results,
             options: options,
-            gitCommit: gitCommit
+            gitCommit: gitCommit,
+            missingKeySources: missingKeySources
         )
         try Data(report.utf8).write(to: reportURL, options: .atomic)
         print("run_id: \(runID)")
@@ -255,10 +283,35 @@ final class BenchRunner {
         }
     }
 
+    private func missingKeySource(for engine: BenchEngine, apiKeys: [BenchEngine: String]) -> String? {
+        switch engine {
+        case .apple:
+            return nil
+        case .gemini:
+            guard let key = apiKeys[.gemini], !key.isEmpty else {
+                return "GEMINI_API_KEY または Keychain dev.koebridge.gemini-api/personal-key"
+            }
+            return nil
+        case .amivoice:
+            guard let key = apiKeys[.amivoice], !key.isEmpty else {
+                return "AMIVOICE_API_KEY または Keychain dev.koebridge.amivoice-api/api-key"
+            }
+            return nil
+        }
+    }
+
     private func missingKeyOutcome(_ source: String) -> EngineOutcome {
         var outcome = EngineOutcome()
         outcome.status = "missing_key"
         outcome.error = "APIキーがありません: \(source)"
+        return outcome
+    }
+
+    private func combinedAudioAndMissingKeyOutcome(audioOutcome: EngineOutcome, keySource: String) -> EngineOutcome {
+        var outcome = EngineOutcome()
+        outcome.status = "\(audioOutcome.status)+missing_key"
+        let audioReason = audioOutcome.error ?? audioOutcome.status
+        outcome.error = "\(audioReason); APIキーがありません: \(keySource)"
         return outcome
     }
 
