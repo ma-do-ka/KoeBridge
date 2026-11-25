@@ -129,6 +129,10 @@ struct SettingsGeneralPage: View {
                     Label("Gemini APIキーが未登録です。Apple認識への切替が必要な場合があります。",
                           systemImage: "exclamationmark.circle.fill")
                         .foregroundStyle(.orange)
+                } else if controller.requestedMode == .amivoice && !controller.hasAmiVoiceKey {
+                    Label("AmiVoice APIキーが未登録です。Apple認識への切替が必要な場合があります。",
+                          systemImage: "exclamationmark.circle.fill")
+                        .foregroundStyle(.orange)
                 } else if #unavailable(macOS 26), controller.requestedMode == .local &&
                             SFSpeechRecognizer.authorizationStatus() != .authorized {
                     Label("Appleの音声認識への許可を確認してください。マイク許可とは別に管理されます。",
@@ -164,10 +168,16 @@ struct SettingsGeneralPage: View {
                                 .font(.caption).foregroundStyle(.secondary)
                             Button("APIキー設定") { navigate(.gemini) }.settingsControlFocus("general")
                         }
+                    } else if controller.requestedMode == .amivoice {
+                        HStack {
+                            Label(controller.hasAmiVoiceKey ? "AmiVoiceキー登録済み" : "AmiVoiceキー未登録", systemImage: "key")
+                                .font(.caption).foregroundStyle(.secondary)
+                            Button("AmiVoice設定") { navigate(.amivoice) }.settingsControlFocus("general")
+                        }
                     }
                     HStack(spacing: 10) {
                         Button("音声入力の設定") { navigate(.voice) }
-                            .settingsControlFocus(ids: controller.requestedMode == .gemini ? [] : ["general"])
+                            .settingsControlFocus(ids: (controller.requestedMode == .gemini || controller.requestedMode == .amivoice) ? [] : ["general"])
                         Button("許可を再確認") {
                             guide.refreshFromSettings()
                             generalPermissionCheckedAt = Date()

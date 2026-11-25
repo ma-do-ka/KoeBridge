@@ -25,9 +25,12 @@ struct SettingsView: View {
     @StateObject private var presetEditor = TransformPresetEditorState()
     @State private var apiKeyDraft = ""
     @State private var apiKeyNotice = ""
+    @State private var amiVoiceKeyDraft = ""
+    @State private var amiVoiceKeyNotice = ""
     @State private var logNotice = ""
     @State private var confirmDeleteLog = false
     @State private var confirmDeleteKey = false
+    @State private var confirmDeleteAmiVoiceKey = false
     @State private var navigation = SettingsNavigation()
     @State private var searchText = ""
     @State private var generalPermissionCheckedAt: Date?
@@ -106,6 +109,25 @@ struct SettingsView: View {
             Button("キャンセル", role: .cancel) {}
         } message: {
             Text("macOSのキーチェーン内に保存したKoeBridge用APIキーを削除します。")
+        }
+        .alert("AmiVoice APIキーを削除しますか？", isPresented: $confirmDeleteAmiVoiceKey) {
+            Button("削除", role: .destructive) {
+                do {
+                    try controller.deleteAmiVoiceKey()
+                    amiVoiceKeyDraft = ""
+                    amiVoiceKeyNotice = "APIキーを削除しました"
+                } catch {
+                    DiagnosticLog.record("AmiVoice API key deletion failed: \(error.localizedDescription)")
+                    let mappedError: Error
+                    if let keyError = error as? KeychainStore.KeyError, case .security(let status) = keyError {
+                        mappedError = NSError(domain: NSOSStatusErrorDomain, code: Int(status))
+                    } else { mappedError = error }
+                    amiVoiceKeyNotice = UserFacingErrorMessage.message(for: mappedError, operation: "APIキーの削除")
+                }
+            }
+            Button("キャンセル", role: .cancel) {}
+        } message: {
+            Text("macOSのキーチェーン内に保存したKoeBridge用AmiVoice APIキーを削除します。")
         }
         // The menu can open Settings before SwiftUI subscribes.
         // Handle that pending request on view appearance as well.
@@ -232,7 +254,7 @@ struct SettingsView: View {
             SettingsIndicatedScrollView {
                 VStack(alignment: .leading, spacing: 17) {
                     if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        sidebarGroup("基本", pages: [.general, .voice, .gemini, .shortcuts, .profiles])
+                        sidebarGroup("基本", pages: [.general, .voice, .gemini, .amivoice, .shortcuts, .profiles])
                         Divider().padding(.horizontal, 16)
                         sidebarGroup("データと安全", pages: [.history, .permissions])
                         Divider().padding(.horizontal, 16)
@@ -336,6 +358,16 @@ struct SettingsView: View {
             SettingsGeminiPage(
                 controller: controller, presetEditor: presetEditor, apiKeyDraft: $apiKeyDraft, apiKeyNotice: $apiKeyNotice,
                 focusRequest: navigation.focusRequest, requestKeyDeletion: { confirmDeleteKey = true }
+            )
+        case .amivoice:
+            SettingsAmiVoicePage(
+                controller: controller, apiKeyDraft: $amiVoiceKeyDraft, apiKeyNotice: $amiVoiceKeyNotice,
+                focusRequest: navigation.focusRequest, requestKeyDeletion: { confirmDeleteAmiVoiceKey = true },
+                navigateToTerms: {
+                    if let entry = SettingsSearchCatalog.entries.first(where: { $0.id == "words" }) {
+                        navigation.focus(entry)
+                    }
+                }
             )
         case .shortcuts:
             SettingsShortcutsPage(controller: controller, focusRequest: navigation.focusRequest)

@@ -12,11 +12,11 @@ struct SettingsVoicePage: View {
                 GroupBox {
                     VStack(spacing: 0) {
                         SettingsRow("文字起こしの方法",
-                                    description: "音声を文字に変換する方法を選びます。GeminiはGoogleのAPIを使用し、AppleはこのMac内で処理します。") {
+                                    description: "音声を文字に変換する方法を選びます。GeminiとAmiVoiceはクラウドAPIを使用し、AppleはこのMac内で処理します。") {
                             SettingsRecognitionPicker("文字起こしの方法", selection: $controller.requestedMode)
                             .settingsControlFocus("engine")
                             .pickerStyle(.segmented)
-                            .frame(width: 245)
+                            .frame(width: 300)
                         }
                         .settingsTarget("engine")
                         Divider()

@@ -2,13 +2,14 @@ import Foundation
 
 /// Presentation-only sections. This catalog never owns recording or permission state.
 public enum SettingsSection: String, CaseIterable, Sendable, Hashable {
-    case general, voice, gemini, shortcuts, profiles, history, permissions, about
+    case general, voice, gemini, amivoice, shortcuts, profiles, history, permissions, about
 
     public var title: String {
         switch self {
         case .general: return "一般"
         case .voice: return "音声入力"
         case .gemini: return "AI・Gemini"
+        case .amivoice: return "AmiVoice"
         case .shortcuts: return "ショートカット"
         case .history: return "履歴とデータ"
         case .permissions: return "権限"
@@ -22,6 +23,7 @@ public enum SettingsSection: String, CaseIterable, Sendable, Hashable {
         case .general: return "gearshape"
         case .voice: return "mic.fill"
         case .gemini: return "sparkles"
+        case .amivoice: return "waveform"
         case .shortcuts: return "keyboard"
         case .history: return "clock.arrow.circlepath"
         case .permissions: return "checkmark.shield"
@@ -32,7 +34,7 @@ public enum SettingsSection: String, CaseIterable, Sendable, Hashable {
 
     public var group: String {
         switch self {
-        case .general, .voice, .gemini, .shortcuts, .profiles: return "基本"
+        case .general, .voice, .gemini, .amivoice, .shortcuts, .profiles: return "基本"
         case .history, .permissions: return "データと安全"
         case .about: return "サポート"
         }
@@ -62,6 +64,9 @@ public enum SettingsSearchCatalog {
         .init(id: "shortcut", section: .shortcuts, title: "録音の開始・終了キー", keywords: "recording shortcut ホットキー ショートカット Command Fn F8"),
         .init(id: "autopaste", section: .voice, title: "認識した文章を自動入力する", keywords: "autoPaste safety 貼り付け 文字入力 クリップボード"),
         .init(id: "apikey", section: .gemini, title: "Gemini APIキー", keywords: "API key Keychain 接続 登録 更新 削除 キーチェーン"),
+        .init(id: "amivoice-apikey", section: .amivoice, title: "AmiVoice APIキー", keywords: "AmiVoice APPKEY API key Keychain 接続 登録 更新 削除 キーチェーン"),
+        .init(id: "amivoice-engine", section: .amivoice, title: "AmiVoice 認識エンジン", keywords: "AmiVoice エンジン E2E Hybrid 汎用 会話 バッチ -a2-ja-general"),
+        .init(id: "amivoice-privacy", section: .amivoice, title: "AmiVoice プライバシーと料金", keywords: "AmiVoice プライバシー 料金 nolog ログ保存なし 無料枠 60分 0.04125 2.475"),
         .init(id: "japanese", section: .gemini, title: "日本語での認識を優先する", keywords: "Japanese hint ja-JP 日本語ヒント 言語"),
         .init(id: "smart", section: .gemini, title: "文字起こしスタイル", keywords: "style SMART VERBATIM 逐語 読みやすく AIエージェント指示 プロンプト 技術用語 命令 文章整形"),
         .init(id: "vocabulary-assistance", section: .gemini, title: "専門用語の補助", keywords: "登録した用語を使う 開発 IT 話題 辞書 チェックボックス"),

@@ -1,7 +1,7 @@
 import SwiftUI
 import KoeBridgeCore
 
-// Presentation-only metadata for the eight real settings pages.
+// Presentation-only metadata for the settings pages.
 // Do not put persisted configuration or microphone state in this file.
 extension SettingsSection {
     var iconTint: Color {
@@ -9,6 +9,7 @@ extension SettingsSection {
         case .general: return Color(red: 0.53, green: 0.55, blue: 0.60)
         case .voice: return Color(red: 0.06, green: 0.61, blue: 0.99)
         case .gemini: return Color(red: 0.56, green: 0.31, blue: 0.99)
+        case .amivoice: return Color(red: 0.95, green: 0.45, blue: 0.13)
         case .shortcuts: return Color(red: 0.16, green: 0.78, blue: 0.36)
         case .history: return Color(red: 0.08, green: 0.73, blue: 0.81)
         case .permissions: return Color(red: 0.95, green: 0.27, blue: 0.33)
@@ -22,6 +23,7 @@ extension SettingsSection {
         case .general: return "起動状態、準備状況と直近の処理時間を確認できます。"
         case .voice: return "話した内容を文字に変換し、元の入力欄への入力を試みます。"
         case .gemini: return "Gemini接続、辞書、再照合と変換を設定します。LLM後処理はApple認識にも適用できます（エージェントスタイルを除く）。"
+        case .amivoice: return "AmiVoice Cloud PlatformのAPIキー、認識エンジン、専門用語の補助、プライバシーと料金を確認できます。"
         case .shortcuts: return "録音・変換・翻訳・直前入力修正のキーと操作方法を設定します。"
         case .history: return "文字起こし履歴の確認と、不具合調査用の動作記録を管理します。"
         case .permissions: return "録音と文字入力に必要なmacOSの許可状態を確認します。許可はmacOSが管理します。"

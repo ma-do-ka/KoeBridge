@@ -131,6 +131,7 @@ private struct AppProfileFields: View {
             Picker("エンジン", selection: $profile.engine) {
                 Text("グローバルに従う").tag(nil as String?)
                 Text("Gemini").tag(Optional("gemini"))
+                Text("AmiVoice").tag(Optional("amivoice"))
                 Text("Apple").tag(Optional("local"))
             }
             .accessibilityLabel("プロファイル「\(profile.displayName)」のエンジン")
@@ -146,7 +147,7 @@ private struct AppProfileFields: View {
                 .frame(minHeight: 72, maxHeight: 120)
                 .border(Color.secondary.opacity(0.25))
                 .accessibilityLabel("プロファイル「\(profile.displayName)」の追加の用語")
-            Text("追加の用語は、グローバルの登録用語がオフでも使用します。用語・文体の補助はGeminiで使用します。")
+            Text("追加の用語は、グローバルの登録用語がオフでも使用します。用語の補助はGeminiとAmiVoice（E2E）で、文体はGeminiで使用します。")
                 .font(.caption).foregroundStyle(.secondary)
             ProfileOverridePicker(title: "登録した用語を使う", selection: $profile.registeredVocabularyEnabled)
                 .accessibilityLabel("プロファイル「\(profile.displayName)」の登録した用語を使う")

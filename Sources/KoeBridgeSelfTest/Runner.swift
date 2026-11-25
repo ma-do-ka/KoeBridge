@@ -377,6 +377,7 @@ struct KoeBridgeSelfTest {
         await run("TranscriptRecoveryTests.emptyFallbackKeepsEarlierRecoverableSpeech", { TranscriptRecoveryTests().emptyFallbackKeepsEarlierRecoverableSpeech() })
         await run("SettingsNavigationSelfTests.repeatedSearchAndUpdateRequestsStillScroll", { try SettingsNavigationSelfTests().repeatedSearchAndUpdateRequestsStillScroll() })
         await run("SettingsNavigationSelfTests.pageChangesDoNotReplayAStaleSearch", { try SettingsNavigationSelfTests().pageChangesDoNotReplayAStaleSearch() })
+        await run("SettingsNavigationSelfTests.amiVoiceSectionAndSearchCatalogEntriesRouteCorrectly", { try SettingsNavigationSelfTests().amiVoiceSectionAndSearchCatalogEntriesRouteCorrectly() })
         await run("TranscriptReviewSelfTests.mixedLiteralBoundariesKeepStableUnicodeOffsets", { TranscriptReviewSelfTests().mixedLiteralBoundariesKeepStableUnicodeOffsets() })
         await run("UsageSummaryTests.zeroFillsThroughToday", { UsageSummaryTests().zeroFillsThroughToday() })
         await run("UsageSummaryTests.bucketsAtCalendarDayBoundaries", { UsageSummaryTests().bucketsAtCalendarDayBoundaries() })
