@@ -38,6 +38,10 @@ private struct HistoryMenuButtonStyle: ButtonStyle {
     @ObservedObject var guide: PermissionGuide
     let historyMenu: RecentHistoryMenuState
     let onOpenSettings: () -> Void
+    let onOpenMicrophoneSettings: () -> Void
+    let onOpenSoundSettings: () -> Void
+    let onOpenSystemMicrophoneSettings: () -> Void
+    let onRestartApplication: () -> Void
     let onOpenHistory: () -> Void
     let onOpenPermissions: () -> Void
     let onOpenUsage: () -> Void
@@ -56,6 +60,9 @@ private struct HistoryMenuButtonStyle: ButtonStyle {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
+            if let notice = controller.microphoneNotice {
+                microphoneNoticeBanner(notice)
+            }
             VStack(spacing: 5) {
                 Button(action: onToggleRecording) {
                     VStack(spacing: 3) {
@@ -186,7 +193,7 @@ private struct HistoryMenuButtonStyle: ButtonStyle {
                     .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
                 Text("KoeBridge").fontWeight(.semibold)
                 Spacer(minLength: 4)
-                Circle().fill(controller.isRecording ? Color.red : Color.green).frame(width: 6, height: 6)
+                Circle().fill(headerStatusColor).frame(width: 6, height: 6)
                 Text(controller.status).font(.caption2).lineLimit(2)
             }
             // Three explicit engine buttons avoid nested AppKit menu tracking.
@@ -207,6 +214,60 @@ private struct HistoryMenuButtonStyle: ButtonStyle {
             }
             Text(controller.requestedMode.label).font(.caption2).foregroundStyle(.secondary)
         }
+    }
+
+
+    private var headerStatusColor: Color {
+        if controller.isRecording { return .red }
+        guard let state = controller.microphoneNotice?.state else { return .green }
+        return state.severity == .critical ? .red : .orange
+    }
+
+    private func performNoticeAction(_ action: MicrophoneNoticeAction) {
+        switch action {
+        case .restartApplication: onRestartApplication()
+        case .openSystemSettings: onOpenSystemMicrophoneSettings()
+        case .openMicrophoneSettings: onOpenMicrophoneSettings()
+        case .openSoundSettings: onOpenSoundSettings()
+        case .retryRecording: onToggleRecording()
+        case .dismiss: controller.dismissMicrophoneNotice()
+        }
+    }
+
+    private func microphoneNoticeBanner(_ notice: MicrophoneNotice) -> some View {
+        let color: Color = notice.state.severity == .critical ? .red : .orange
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: notice.state.severity == .critical ? "xmark.octagon.fill" : "exclamationmark.triangle.fill")
+                    .foregroundStyle(color)
+                    .accessibilityLabel(notice.state.severity == .critical ? "重大" : "警告")
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(notice.title)
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .lineLimit(1)
+                    Text(notice.message)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            HStack(spacing: 8) {
+                Button(notice.primaryAction.title) { performNoticeAction(notice.primaryAction) }
+                    .font(.caption)
+                    .buttonStyle(PopoverButtonStyle(appearance: .bordered))
+                if let secondary = notice.secondaryAction {
+                    Button(secondary.title) { performNoticeAction(secondary) }
+                        .font(.caption)
+                        .buttonStyle(PopoverButtonStyle(appearance: .bordered))
+                }
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(color.opacity(0.14), in: RoundedRectangle(cornerRadius: 10))
+        .accessibilityElement(children: .contain)
     }
 
     private struct WeekKey: Equatable {

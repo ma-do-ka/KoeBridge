@@ -157,7 +157,7 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
     private let statusPopover = NSPopover()
     private let historyMenu = RecentHistoryMenuState()
     private let historyHoverPanel = HistoryHoverPanelController()
-    private var recordingObservation: AnyCancellable?
+    private var statusItemObservations: [AnyCancellable] = []
     private var popoverMonitors: [Any] = []
     private var popoverActivationObserver: NSObjectProtocol?
 
@@ -178,6 +178,10 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
         let content = StatusPopoverView(
             controller: controller, guide: PermissionGuide.shared, historyMenu: historyMenu,
             onOpenSettings: { [weak self] in self?.showSettings() },
+            onOpenMicrophoneSettings: { [weak self] in self?.showSettingsDestination("microphone-device") },
+            onOpenSoundSettings: { [weak self] in self?.openSoundSettings() },
+            onOpenSystemMicrophoneSettings: { [weak self] in self?.openSystemMicrophoneSettings() },
+            onRestartApplication: { [weak self] in self?.quit() },
             onOpenHistory: { [weak self] in self?.showHistory() },
             onOpenPermissions: { [weak self] in self?.showSettingsDestination("accessibility") },
             onOpenUsage: { [weak self] in self?.showSettingsDestination("usage") },
@@ -206,11 +210,13 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
         let hosting = NSViewController()
         hosting.view = FirstMouseHostingView(rootView: content)
         statusPopover.contentViewController = hosting
-        recordingObservation = controller.$isRecording.sink { [weak self] recording in
-            self?.item.button?.image = NSImage(
-                systemSymbolName: recording ? "record.circle" : "waveform",
-                accessibilityDescription: "KoeBridge")
-        }
+        controller.$isRecording.sink { [weak self] _ in
+            self?.updateStatusItemAppearance()
+        }.store(in: &statusItemObservations)
+        controller.$microphoneNotice.sink { [weak self] _ in
+            self?.updateStatusItemAppearance()
+        }.store(in: &statusItemObservations)
+        updateStatusItemAppearance()
 
         // This never activates KoeBridge or takes keyboard focus from the text field.
         controller.onShowPreview = { [weak self] in self?.windows.showPreview() }
@@ -447,6 +453,44 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
             popoverActivationObserver = nil
         }
+    }
+
+
+    private func updateStatusItemAppearance() {
+        guard let button = item.button else { return }
+        let notice = controller.microphoneNotice
+        let symbolName: String
+        let fallbackSymbol: String?
+        if controller.isRecording {
+            symbolName = "record.circle"
+            fallbackSymbol = nil
+        } else if notice != nil {
+            symbolName = "waveform.badge.exclamationmark"
+            fallbackSymbol = "exclamationmark.triangle.fill"
+        } else {
+            symbolName = "waveform"
+            fallbackSymbol = nil
+        }
+        var image = NSImage(systemSymbolName: symbolName, accessibilityDescription: "KoeBridge")
+        if image == nil, let fallbackSymbol {
+            image = NSImage(systemSymbolName: fallbackSymbol, accessibilityDescription: "KoeBridge")
+        }
+        button.image = image
+        button.toolTip = notice?.menuBarTooltip
+    }
+
+    private func openSystemMicrophoneSettings() {
+        statusPopover.performClose(nil)
+        PermissionGuide.shared.requestMicrophone()
+    }
+
+    private func openSoundSettings() {
+        statusPopover.performClose(nil)
+        if let url = URL(string: "x-apple.systempreferences:com.apple.Sound-Settings.extension"),
+           NSWorkspace.shared.open(url) {
+            return
+        }
+        showSettingsDestination("microphone-device")
     }
 
     private func showSettingsDestination(_ id: String) {

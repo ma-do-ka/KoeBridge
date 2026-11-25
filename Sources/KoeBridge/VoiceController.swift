@@ -37,6 +37,7 @@ import KoeBridgeEngines
         didSet { UserDefaults.standard.set(progressivePreviewEnabled, forKey: "progressivePreviewEnabled") }
     }
     @Published var isRecording = false
+    @Published private(set) var microphoneNotice: MicrophoneNotice?
     @Published private(set) var overlayFeedback: OverlayFeedback = .hidden
     @Published private(set) var lastStartupSeconds: TimeInterval?
     @Published private(set) var lastStopToInputSeconds: TimeInterval?
@@ -545,6 +546,16 @@ import KoeBridgeEngines
         session.onUsage = { [weak self] event, tokens in
             self?.usageStore.append(engineEvents: [event], tokenEvents: tokens)
         }
+        session.onMicrophoneStarted = { [weak self] in
+            self?.clearMicrophoneNoticeForSuccessfulStart()
+        }
+        session.onMicrophoneDisconnect = { [weak self] in
+            self?.recordMicrophoneNotice(.recordingDeviceDisconnected, timing: .finalFailure, context: .meeting)
+        }
+        session.onMicrophoneFailure = { [weak self] error, disposition in
+            self?.recordMicrophoneNotice(MicrophoneNoticeBinding.state(for: error, disposition: disposition),
+                timing: .finalFailure, context: .meeting)
+        }
         session.onFinished = { [weak self, weak session] text, partial in
             guard let self, let session, meetingSession === session else { return }
             let recordID = session.save(text, partial: partial, to: &historyStore)
@@ -564,6 +575,7 @@ import KoeBridgeEngines
             guard meetingSession === session else { return }
             guard allowed else {
                 // Stop and save through the meeting's mic-failure completion without starting chunks.
+                recordMicrophoneNotice(.permissionDenied, timing: .finalFailure, context: .meeting)
                 session.microphonePermissionDenied()
                 return
             }
@@ -738,6 +750,7 @@ import KoeBridgeEngines
     private let prewarmer = GeminiLivePrewarmer()
     private var warmScheduleTask: Task<Void, Never>?
     private var active: DictationTake?
+    private var microphoneNoticeStore = MicrophoneNoticeStore()
     private lazy var postingGate = TextInsertion.PostingGate { [unowned self] report, sourceID in
         reconcileDelivery(report, sourceTakeID: sourceID)
     }
@@ -939,6 +952,25 @@ import KoeBridgeEngines
         cachedAmiVoiceKeyRegistration = nil
         objectWillChange.send()
     }
+    private func recordMicrophoneNotice(
+        _ state: MicrophoneNoticeState?,
+        timing: MicrophoneNoticeFailureTiming,
+        context: MicrophoneNoticeContext = .standard
+    ) {
+        guard let state else { return }
+        if microphoneNoticeStore.recordFailure(state, timing: timing, context: context) {
+            microphoneNotice = microphoneNoticeStore.current
+        }
+    }
+
+    private func clearMicrophoneNoticeForSuccessfulStart() {
+        if microphoneNoticeStore.recordSuccessfulStart() { microphoneNotice = nil }
+    }
+
+    func dismissMicrophoneNotice() {
+        if microphoneNoticeStore.dismissCurrent() { microphoneNotice = nil }
+    }
+
     var busy: Bool { active != nil }
     func reserveHistoryInsertion() -> UUID? { postingGate.reserveHistory() }
     func performHistoryIntent(_ ticket: UUID, deadline: ContinuousClock.Instant, perform: () async -> Void) async {
@@ -1106,7 +1138,10 @@ import KoeBridgeEngines
         if let permission = preparation.permission { allowed = await permission() }
         else { allowed = await microphoneAllowed() }
         guard allowed else {
-            if active === take { resolve(take, text: nil, reason: "マイクへのアクセスが許可されていません") }
+            if active === take {
+                recordMicrophoneNotice(.permissionDenied, timing: .finalFailure)
+                resolve(take, text: nil, reason: "マイクへのアクセスが許可されていません")
+            }
             return
         }
         DiagnosticLog.record("mic permission ready; elapsed=\(String(format: "%.3f", Date().timeIntervalSince(beforePermission)))s")
@@ -1155,6 +1190,7 @@ import KoeBridgeEngines
                                   self.active === take, take.mic === candidate else { return }
                             // Covers the narrow ready-to-UI handoff as well as
                             // recording; preparing-only events stay inside start().
+                            self.recordMicrophoneNotice(.recordingDeviceDisconnected, timing: .finalFailure)
                             self.resolve(take, text: nil, reason: "マイク入力が変更または中断されたため録音を終了しました")
                         }
                     })
@@ -1179,6 +1215,8 @@ import KoeBridgeEngines
                     guard let delay = MicrophoneCapture.retryDelay(for: error, policy: retryPolicy,
                         attempts: attempts, elapsed: elapsed, disposition: recoveryDisposition) else { throw error }
                     status = "マイクの接続準備を待っています…（\(attempts + 1)/\(retryPolicy.maximumAttempts)）"
+                    recordMicrophoneNotice(MicrophoneNoticeBinding.state(for: error, disposition: recoveryDisposition),
+                        timing: .retryInProgress)
                     try await preparation.waitBeforeRetry(delay)
                 }
             }
@@ -1214,6 +1252,7 @@ import KoeBridgeEngines
             lastStartupSeconds = take.startedAt?.timeIntervalSince(take.requestedAt)
             phase = .recording
             isRecording = true
+            clearMicrophoneNoticeForSuccessfulStart()
             if overlayOwner == take.id { overlayFeedback = .recording }
             take.permissionTask?.cancel()
             take.permissionTask = nil
@@ -1227,6 +1266,8 @@ import KoeBridgeEngines
             if active === take, !take.finished {
                 let recoveryMessage = recoveryDisposition.message
                 DiagnosticLog.record("microphone start failed: \(recoveryMessage ?? error.localizedDescription)")
+                recordMicrophoneNotice(MicrophoneNoticeBinding.state(for: error, disposition: recoveryDisposition),
+                    timing: .finalFailure)
                 resolve(take, text: nil, reason: Self.microphoneStartFailureMessage(error, disposition: recoveryDisposition))
             }
         }

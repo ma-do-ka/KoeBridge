@@ -36,6 +36,9 @@ private final class MeetingAudioCount: @unchecked Sendable {
     var onUsage: ((EngineUsageSample, [GeminiTokenSample]) -> Void)?
     var onStatus: ((String) -> Void)?
     var onFinished: ((String, Bool) -> Void)?
+    var onMicrophoneStarted: (() -> Void)?
+    var onMicrophoneDisconnect: (() -> Void)?
+    var onMicrophoneFailure: ((Error, MicrophoneCapture.EngineLifetime.Disposition) -> Void)?
 
     @MainActor final class Chunk {
         var mic: MicrophoneCapture?
@@ -292,7 +295,11 @@ private final class MeetingAudioCount: @unchecked Sendable {
             Task { @MainActor in
                 guard let self, let chunk, !chunk.captureEnded else { return }
                 chunk.failed = true; chunk.stopRequested = true
-                if source == .microphone { self.micFailed = true; self.stop() }
+                if source == .microphone {
+                    self.micFailed = true
+                    self.onMicrophoneDisconnect?()
+                    self.stop()
+                }
                 else { self.systemFailed = true }
             }
         }
@@ -337,9 +344,13 @@ private final class MeetingAudioCount: @unchecked Sendable {
             do {
                 try await mic.start(onAudio: audio, onDeviceChanged: failure)
             } catch {
-                if !(error is CancellationError) { microphoneRecoveryMessage = mic.recoveryDisposition.message }
+                if !(error is CancellationError) {
+                    microphoneRecoveryMessage = mic.recoveryDisposition.message
+                    onMicrophoneFailure?(error, mic.recoveryDisposition)
+                }
                 throw error
             }
+            onMicrophoneStarted?()
             chunk.startedAt = ProcessInfo.processInfo.systemUptime - Double(mic.totalPCMBytes) / 32_000
         } else {
             let system = SystemAudioCapture(onAudio: audio, onFailure: failure)

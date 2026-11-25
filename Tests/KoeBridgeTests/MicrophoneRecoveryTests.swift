@@ -1187,9 +1187,11 @@ struct MicrophoneRecoveryTests {
         replay.controller.toggle()
         for index in 0..<4 {
             let (attempt, _, _) = try await resumeAndHoldSelection(replay, index: index)
+            if index == 3 { #expect(replay.controller.microphoneNotice == nil) }
             attempt.read.complete(matches: false)
         }
         try await awaitPreparationEnd(replay)
+        #expect(replay.controller.microphoneNotice?.state == .buffersUnstable)
         let take = replay.attempts[0].takeID
         let result = try await awaitDelivery(replay, take: take)
         #expect(replay.controller.status == "マイクの接続切り替えが安定しませんでした")

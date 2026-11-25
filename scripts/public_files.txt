@@ -360,4 +360,9 @@ Tests/KoeBridgeCoreTests/MicrophoneRevalidationPolicyTests.swift
 Tests/KoeBridgeCoreTests/MicrophoneStartupGateSettlingTests.swift
 Tests/KoeBridgeCoreTests/StartupPreviewPolicyTests.swift
 Tests/KoeBridgeTests/TextInsertionTransportTests.swift
+Sources/KoeBridge/MicrophoneNoticeBindings.swift
+Sources/KoeBridgeCore/MicrophoneNotice.swift
+Sources/KoeBridgeSelfTest/MicrophoneNoticeTests.swift
+Tests/KoeBridgeCoreTests/MicrophoneNoticeTests.swift
+Tests/KoeBridgeTests/MicrophoneNoticeBindingTests.swift
 AGENTS.md
