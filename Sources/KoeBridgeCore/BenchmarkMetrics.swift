@@ -182,13 +182,17 @@ public enum BenchmarkCER {
         )
     }
 
-    /// Raw edit score for `cer_strict` after applying `transform` uniformly to both texts.
+    /// Raw edit score for `cer_strict` after NFC-normalizing both texts and applying
+    /// `transform` uniformly to them.
     public static func scoreStrict(
         ref: String,
         hyp: String,
         transform: (String) -> String
     ) -> BenchmarkEditScore {
-        scoreStrict(ref: transform(ref), hyp: transform(hyp))
+        scoreStrict(
+            ref: transform(BenchmarkNormalize.forStrictCER(ref)),
+            hyp: transform(BenchmarkNormalize.forStrictCER(hyp))
+        )
     }
 
     /// Clip-level `cer_norm` (primary metric).
@@ -201,7 +205,7 @@ public enum BenchmarkCER {
         scoreStrict(ref: ref, hyp: hyp).cer
     }
 
-    /// Clip-level `cer_strict` after applying `transform` uniformly to both `ref` and `hyp`.
+    /// Clip-level `cer_strict` after NFC-normalizing both texts and applying `transform` uniformly to them.
     public static func clipStrict(
         ref: String,
         hyp: String,
@@ -213,10 +217,18 @@ public enum BenchmarkCER {
     /// Corpus micro-average (`Σedits / ΣN_ref`) over succeeded clips (`hypothesis != nil`) using raw sums.
     /// Failed clips are reported separately via `completionRate(clips:)` / `failedCount(clips:)`
     /// and penalized in `corpusMicroAverageWithFailurePenalty(clips:)`.
+    /// Returns `nil` when all clips failed so a fully failed corpus is not reported as CER 0.0;
+    /// empty input remains `0.0`.
     public static func corpusMicroAverage(
         clips: [BenchmarkClip],
         mode: Mode = .normalized
-    ) -> Double {
+    ) -> Double? {
+        let succeeded = succeededCount(clips: clips)
+        let failed = clips.count - succeeded
+        if succeeded == 0 && failed > 0 {
+            return nil
+        }
+
         var totalEdits = 0
         var totalRef = 0
         for clip in clips {
@@ -251,10 +263,11 @@ public enum BenchmarkCER {
     }
 
     /// Per-category corpus micro-average over succeeded clips.
+    /// A category whose clips all failed maps to `nil` rather than CER 0.0.
     public static func perCategoryMicroAverage(
         clips: [BenchmarkClip],
         mode: Mode = .normalized
-    ) -> [String: Double] {
+    ) -> [String: Double?] {
         let grouped = Dictionary(grouping: clips, by: \.category)
         return grouped.mapValues { corpusMicroAverage(clips: $0, mode: mode) }
     }
@@ -326,7 +339,8 @@ public enum BenchmarkCER {
         case .strict:
             return clip.strictReferenceLength
         case .strictTransformed(let transform):
-            return BenchmarkNormalize.forStrictCER(transform(clip.reference)).count
+            let normalizedReference = BenchmarkNormalize.forStrictCER(clip.reference)
+            return BenchmarkNormalize.forStrictCER(transform(normalizedReference)).count
         }
     }
 }

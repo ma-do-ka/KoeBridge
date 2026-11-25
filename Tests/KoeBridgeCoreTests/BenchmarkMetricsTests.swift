@@ -7,6 +7,29 @@ struct BenchmarkMetricsTests {
         abs(lhs - rhs) < tolerance
     }
 
+    private func approxEqual(_ lhs: Double?, _ rhs: Double, tolerance: Double = 1e-12) -> Bool {
+        guard let lhs else { return false }
+        return abs(lhs - rhs) < tolerance
+    }
+
+    private func categoryValue(_ values: [String: Double?], _ key: String) -> Double? {
+        switch values[key] {
+        case .some(let value):
+            return value
+        case .none:
+            return nil
+        }
+    }
+
+    private func hasNilCategoryValue(_ values: [String: Double?], _ key: String) -> Bool {
+        switch values[key] {
+        case .some(.none):
+            return true
+        default:
+            return false
+        }
+    }
+
     @Test func kanjiKanaCERIdenticalSubstitutionInsertionDeletion() {
         #expect(BenchmarkCER.clipNorm(ref: "今日は晴れです", hyp: "今日は晴れです") == 0.0)
         #expect(BenchmarkCER.clipStrict(ref: "今日は晴れです", hyp: "今日は晴れです") == 0.0)
@@ -54,7 +77,7 @@ struct BenchmarkMetricsTests {
         let fullwidth = "アイウエオガギグゲゴパ"
         #expect(BenchmarkNormalize.forCER(halfwidth) == fullwidth)
         #expect(BenchmarkCER.clipNorm(ref: halfwidth, hyp: fullwidth) == 0.0)
-        #expect(BenchmarkCER.clipStrict(ref: halfwidth, hyp: fullwidth) > 0.0)
+        #expect(BenchmarkCER.clipStrict(ref: halfwidth, hyp: fullwidth) == 1.0)
 
         // NFC canonical equivalence holds even under cer_strict (decomposed NFD vs composed NFC).
         #expect(BenchmarkCER.clipStrict(ref: "が", hyp: "か\u{3099}") == 0.0)
@@ -104,7 +127,9 @@ struct BenchmarkMetricsTests {
 
         // Corpus micro-average empty-reference edges (Premise 4):
         // (1) ΣN_ref == 0, Σedits == 0 -> 0.0
-        #expect(BenchmarkCER.corpusMicroAverage(clips: []) == 0.0)
+        let emptyCorpusAverage = BenchmarkCER.corpusMicroAverage(clips: [])
+        #expect(emptyCorpusAverage != nil)
+        #expect(emptyCorpusAverage == 0.0)
         #expect(BenchmarkCER.corpusMicroAverage(clips: [
             BenchmarkClip(category: "empty", reference: "", hypothesis: "")
         ]) == 0.0)
@@ -168,8 +193,8 @@ struct BenchmarkMetricsTests {
 
         let byCategory = BenchmarkCER.perCategoryMicroAverage(clips: clips)
         #expect(byCategory.count == 2)
-        #expect(approxEqual(byCategory["short"] ?? -1, 0.5))
-        #expect(approxEqual(byCategory["long"] ?? -1, 0.0))
+        #expect(approxEqual(categoryValue(byCategory, "short"), 0.5))
+        #expect(approxEqual(categoryValue(byCategory, "long"), 0.0))
     }
 
     @Test func failurePenaltyAndCompletionRate() {
@@ -197,10 +222,29 @@ struct BenchmarkMetricsTests {
         // All-failed and empty corpus boundaries.
         let allFailed = [BenchmarkClip(category: "x", reference: "テスト", hypothesis: nil)]
         #expect(BenchmarkCER.completionRate(clips: allFailed) == 0.0)
-        #expect(BenchmarkCER.corpusMicroAverage(clips: allFailed) == 0.0)
+        #expect(BenchmarkCER.corpusMicroAverage(clips: allFailed) == nil)
         #expect(BenchmarkCER.corpusMicroAverageWithFailurePenalty(clips: allFailed) == 1.0)
         #expect(BenchmarkCER.completionRate(clips: []) == 0.0)
         #expect(BenchmarkCER.corpusMicroAverageWithFailurePenalty(clips: []) == 0.0)
+    }
+
+    @Test func allFailedCorpusMicroAverageIsNil() {
+        let allFailed = [
+            BenchmarkClip(category: "x", reference: "テスト", hypothesis: nil),
+            BenchmarkClip(category: "x", reference: "失敗", hypothesis: nil)
+        ]
+        #expect(BenchmarkCER.corpusMicroAverage(clips: allFailed) == nil)
+    }
+
+    @Test func perCategoryMicroAverageDistinguishesAllFailedCategories() {
+        let clips = [
+            BenchmarkClip(category: "a", reference: "あいうえおかきくけこ", hypothesis: "あいうえおかきくけさ"),
+            BenchmarkClip(category: "b", reference: "たちつてとなにぬねの", hypothesis: nil)
+        ]
+        let byCategory = BenchmarkCER.perCategoryMicroAverage(clips: clips)
+        #expect(byCategory.count == 2)
+        #expect(approxEqual(categoryValue(byCategory, "a"), 0.1))
+        #expect(hasNilCategoryValue(byCategory, "b"))
     }
 
     @Test func nearestRankPercentilesLatencySummaryAndClipIQR() throws {
@@ -362,6 +406,10 @@ struct BenchmarkMetricsTests {
         #expect(partialEstimate.tokenUSD == nil)
         #expect(partialEstimate.tokenJPY == nil)
 
+        let symmetricPartialEstimate = BenchmarkCost.geminiEstimate(audioSeconds: 60, promptTokens: nil, candidateTokens: 10_000)
+        #expect(symmetricPartialEstimate.tokenUSD == nil)
+        #expect(symmetricPartialEstimate.tokenJPY == nil)
+
         // Apple is always ¥0.
         #expect(BenchmarkCost.appleCostJPY(audioSeconds: 0) == 0.0)
         #expect(BenchmarkCost.appleCostJPY(audioSeconds: 3_600) == 0.0)
@@ -414,6 +462,26 @@ struct BenchmarkMetricsTests {
         #expect(approxEqual(
             BenchmarkCER.clipStrict(ref: "今日 は 晴れ。", hyp: "今日は雨。", transform: adoptTransform),
             1.0 / 3.0
+        ))
+    }
+
+    @Test func strictTransformPreservesCanonicalEquivalenceBeforeAdopt() {
+        let adoptTransform: @Sendable (String) -> String = {
+            JapaneseDictationSpacing.adopt($0, enabled: true, protectedTerms: [])
+        }
+
+        #expect(BenchmarkCER.clipStrict(ref: "が 駅", hyp: "か\u{3099} 駅", transform: adoptTransform) == 0.0)
+
+        let nfdScore = BenchmarkCER.scoreStrict(ref: "か\u{3099} 駅", hyp: "", transform: adoptTransform)
+        #expect(nfdScore.referenceLength == 2)
+
+        let penaltyClips = [
+            BenchmarkClip(category: "nfd", reference: "たち", hypothesis: "たち"),
+            BenchmarkClip(category: "nfd", reference: "か\u{3099} 駅", hypothesis: nil)
+        ]
+        #expect(approxEqual(
+            BenchmarkCER.corpusMicroAverageWithFailurePenalty(clips: penaltyClips, mode: .strictTransformed(adoptTransform)),
+            0.5
         ))
     }
 }

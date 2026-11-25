@@ -407,9 +407,12 @@ struct KoeBridgeSelfTest {
         await run("BenchmarkMetricsTests.emojiAndZWJExtendedGraphemeClusters", { BenchmarkMetricsTests().emojiAndZWJExtendedGraphemeClusters() })
         await run("BenchmarkMetricsTests.corpusMicroAverageDiffersFromMeanOfClipCERs", { BenchmarkMetricsTests().corpusMicroAverageDiffersFromMeanOfClipCERs() })
         await run("BenchmarkMetricsTests.failurePenaltyAndCompletionRate", { BenchmarkMetricsTests().failurePenaltyAndCompletionRate() })
+        await run("BenchmarkMetricsTests.allFailedCorpusMicroAverageIsNil", { BenchmarkMetricsTests().allFailedCorpusMicroAverageIsNil() })
+        await run("BenchmarkMetricsTests.perCategoryMicroAverageDistinguishesAllFailedCategories", { BenchmarkMetricsTests().perCategoryMicroAverageDistinguishesAllFailedCategories() })
         await run("BenchmarkMetricsTests.nearestRankPercentilesLatencySummaryAndClipIQR", { try BenchmarkMetricsTests().nearestRankPercentilesLatencySummaryAndClipIQR() })
         await run("BenchmarkMetricsTests.costAndFreeQuotaLogic", { try BenchmarkMetricsTests().costAndFreeQuotaLogic() })
         await run("BenchmarkMetricsTests.strictCERTransformInjection", { BenchmarkMetricsTests().strictCERTransformInjection() })
+        await run("BenchmarkMetricsTests.strictTransformPreservesCanonicalEquivalenceBeforeAdopt", { BenchmarkMetricsTests().strictTransformPreservesCanonicalEquivalenceBeforeAdopt() })
         print("KoeBridge portable self-test: \(testCount) cases, \(TestRecorder.checked) assertions, \(TestRecorder.failures) failures")
         if TestRecorder.failures > 0 { exit(1) }
     }
