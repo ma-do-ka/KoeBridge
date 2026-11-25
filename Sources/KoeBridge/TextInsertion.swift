@@ -685,6 +685,9 @@ import KoeBridgeCore
             if let receipt, !receipt.proof.retainsContentEvidence {
                 storedTarget = receipt.target
             }
+            if let currentTarget = storedTarget {
+                storedTarget = currentTarget.removingTextSnapshotUnlessNormal()
+            }
             return Report(outcome: outcome, reason: reason, receipt: receipt,
                           eventsPosted: sent > 0, target: storedTarget, diagnostics: diagnostics,
                           resultUptimeMS: resultUptimeMS, valueUnsupported: receiptEligibility == .valueUnsupported,

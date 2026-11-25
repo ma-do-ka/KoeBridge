@@ -181,7 +181,7 @@ public enum InsertionReceiptPolicy {
 
     public static func verify(before: Snapshot, inserted: String, after: Snapshot?,
                               sameTarget: Bool, cancelled: Bool = false,
-                              fieldNature: FieldNature = .normal) -> Receipt? {
+                              fieldNature: FieldNature = .unknown) -> Receipt? {
         guard sameTarget, !cancelled,
               let after, isValid(after),
               let expected = expectedAfter(before: before, inserted: inserted),

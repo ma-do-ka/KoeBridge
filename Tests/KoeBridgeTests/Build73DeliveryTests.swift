@@ -38,6 +38,10 @@ import KoeBridgeCore
         var initialSnapshot: InsertionReceiptPolicy.Snapshot?
         var before: InsertionReceiptPolicy.Snapshot?
         var value = Read(value: nil, status: .attributeUnsupported)
+        var title = Read(value: nil, status: .noValue)
+        var fieldDescription = Read(value: nil, status: .noValue)
+        var placeholder = Read(value: nil, status: .noValue)
+        var captureNature: InsertionReceiptPolicy.FieldNature = .normal
         var attributes: [String] = []
         var checkpoints: [InputDiagnosticEvent.Stage] = []
         var onCheck: ((InputDiagnosticEvent.Stage) -> Void)?
@@ -79,6 +83,9 @@ import KoeBridgeCore
             case "AXSelectedTextMarkerRange": return marker
             case "AXEditable": return editable
             case kAXValueAttribute: return value
+            case "AXTitle": return title
+            case "AXDescription": return fieldDescription
+            case "AXPlaceholderValue": return placeholder
             default: Issue.record("unexpected AX attribute"); return Read(value: nil, status: .failure)
             }
         }
@@ -110,7 +117,7 @@ import KoeBridgeCore
                     pid: self.pid, focused: self.field, window: self.currentWindow, selectionAttribute: name,
                     selection: self.selection.value ?? self.marker.value, textSnapshot: self.initialSnapshot,
                     capturedAt: self.now, blockedReason: nil)
-                    .withReceiptFieldNature(.normal)
+                    .withReceiptFieldNature(self.captureNature)
                 let gate = InsertionTarget.DeliveryGateRead(role: self.role, subrole: self.subrole,
                     selectedRange: self.selection, selectedMarker: self.marker, editable: self.editable)
                 let rejection = DeliveryRejection(target: target, gate: gate, rejectedAt: self.now,
@@ -1007,6 +1014,193 @@ import KoeBridgeCore
         }
     }
 
+    @Test func recoveryClassifiesFieldNatureFromRecoveredElementEvidence() async throws {
+        do {
+            let f = Fixture()
+            f.captureNature = .unknown
+            f.onWait = { f.recover("AXTextField") }
+            let report = await f.deliver()
+            #expect(report.outcome == .inserted)
+            #expect(report.target?.receiptFieldNature == .normal)
+        }
+
+        do {
+            let f = Fixture()
+            f.captureNature = .unknown
+            let before = InsertionReceiptPolicy.Snapshot(text: "ab", selection: .init(location: 0, length: 0))
+            let after = try #require(InsertionReceiptPolicy.expectedAfter(before: before, inserted: "x"))
+            f.onWait = {
+                f.recover("AXTextField")
+                f.value = Read(value: "ab" as CFString, status: .success)
+            }
+            var t = f.transport()
+            t.waitForReceiptPoll = readyReceiptPoll
+            let checkFocus = t.checkFocus
+            t.receiptFocus = { target, _, trace, ordinal in
+                checkFocus(target, false, trace, .receipt, ordinal)
+            }
+            t.receiptSnapshot = { _, _, _ in after }
+            let report = await TextInsertion.deliver("x", to: nil, transport: t)
+            #expect(report.outcome == .verifiedInserted)
+            let receipt = try #require(report.receipt)
+            #expect(receipt.proof.fieldNature == .normal)
+            #expect(receipt.proof.retainsContentEvidence)
+            #expect(report.target?.receiptFieldNature == .normal)
+            #expect(report.target?.textSnapshot == before)
+        }
+
+        do {
+            let f = Fixture()
+            f.captureNature = .unknown
+            let before = InsertionReceiptPolicy.Snapshot(text: "ab", selection: .init(location: 0, length: 0))
+            let after = try #require(InsertionReceiptPolicy.expectedAfter(before: before, inserted: "x"))
+            f.onWait = {
+                f.recover("AXTextField")
+                f.placeholder = Read(value: "Passcode" as CFString, status: .success)
+                f.value = Read(value: "ab" as CFString, status: .success)
+            }
+            var t = f.transport()
+            t.waitForReceiptPoll = readyReceiptPoll
+            let checkFocus = t.checkFocus
+            t.receiptFocus = { target, _, trace, ordinal in
+                checkFocus(target, false, trace, .receipt, ordinal)
+            }
+            t.receiptSnapshot = { _, _, _ in after }
+            let report = await TextInsertion.deliver("x", to: nil, transport: t)
+            #expect(report.outcome == .verifiedInserted)
+            let receipt = try #require(report.receipt)
+            #expect(receipt.proof.fieldNature == .protected)
+            #expect(!receipt.proof.retainsContentEvidence)
+            #expect(report.target?.receiptFieldNature == .protected)
+            #expect(report.target?.textSnapshot == nil)
+            #expect(receipt.target.textSnapshot == nil)
+        }
+
+        do {
+            let f = Fixture()
+            f.captureNature = .unknown
+            f.onWait = {
+                f.recover("AXTextField")
+                f.title = Read(value: "パスワード" as CFString, status: .success)
+            }
+            let report = await f.deliver()
+            #expect(report.outcome == .inserted)
+            #expect(report.target?.receiptFieldNature == .protected)
+            #expect(report.target?.textSnapshot == nil)
+        }
+
+        do {
+            let f = Fixture()
+            f.captureNature = .unknown
+            f.onWait = {
+                f.recover("AXTextField")
+                f.title = Read(value: nil, status: .cannotComplete)
+            }
+            let report = await f.deliver()
+            #expect(report.outcome == .inserted)
+            #expect(report.target?.receiptFieldNature == .unknown)
+            #expect(report.target?.textSnapshot == nil)
+        }
+
+        do {
+            let f = Fixture()
+            f.captureNature = .protected
+            f.onWait = { f.recover("AXTextField") }
+            let report = await f.deliver()
+            #expect(report.outcome == .inserted)
+            #expect(report.target?.receiptFieldNature == .protected)
+            #expect(report.target?.textSnapshot == nil)
+        }
+
+        for (descriptionRead, expectedNature) in [
+            (Read(value: nil, status: .noValue), InsertionReceiptPolicy.FieldNature.normal),
+            (Read(value: "OTP" as CFString, status: .success), InsertionReceiptPolicy.FieldNature.protected)
+        ] {
+            let f = Fixture()
+            f.bundle = "com.google.Chrome"
+            f.currentField = nil
+            var t = f.transport()
+            t.capture = { _ in
+                f.captures += 1
+                return .unavailable(.focusedTextElementUnavailable, pid: f.pid, focused: nil, ownerStatus: nil)
+            }
+            f.onWait = {
+                f.currentField = f.field
+                f.role = "AXTextArea"
+                f.selection = f.range(0, 0)
+                f.fieldDescription = descriptionRead
+            }
+            let report = await TextInsertion.deliver("x", to: nil, transport: t)
+            #expect(report.outcome == .inserted)
+            #expect(report.target?.receiptFieldNature == expectedNature)
+            if expectedNature != .normal {
+                #expect(report.target?.textSnapshot == nil)
+            }
+        }
+    }
+
+    @Test func unverifiedNonNormalReportsDoNotRetainPlaintextSnapshots() async {
+        for nature in [InsertionReceiptPolicy.FieldNature.protected, .unknown] {
+            let f = Fixture()
+            f.recover("AXTextField")
+            f.captureNature = nature
+            let snapshot = InsertionReceiptPolicy.Snapshot(text: "ab", selection: .init(location: 0, length: 0))
+            f.initialSnapshot = snapshot
+            f.before = snapshot
+            f.selection = f.range(0, 0)
+            var transport = f.transport()
+            transport.waitForReceiptPoll = readyReceiptPoll
+            let checkFocus = transport.checkFocus
+            transport.receiptFocus = { target, _, trace, ordinal in
+                checkFocus(target, false, trace, .receipt, ordinal)
+            }
+            transport.receiptSnapshot = { _, _, _ in snapshot }
+            let report = await TextInsertion.deliver("x", to: nil, transport: transport)
+            #expect(report.outcome == .inserted)
+            #expect(report.reason == "posted_receipt_timeout")
+            #expect(report.eventsPosted && f.posts == 1)
+            #expect(report.receipt == nil)
+            #expect(report.target?.receiptFieldNature == nature)
+            #expect(report.target?.textSnapshot == nil)
+            #expect(report.unverifiedTarget?.textSnapshot == nil)
+            #expect(report.unverifiedTarget?.hasHardPredecessorBlock == true)
+
+            let partial = Fixture()
+            partial.recover("AXTextField")
+            partial.captureNature = nature
+            partial.initialSnapshot = snapshot
+            partial.before = snapshot
+            partial.selection = partial.range(0, 0)
+            partial.onPost = { partial.allowed = false }
+            let partialReport = await TextInsertion.deliver(
+                String(repeating: "a", count: 29), to: nil, transport: partial.transport()
+            ) { partial.allowed }
+            #expect(partialReport.outcome == .partiallySubmitted)
+            #expect(partialReport.reason == "delivery_cancelled_after_partial_post")
+            #expect(partialReport.eventsPosted && partial.posts == 1)
+            #expect(partialReport.receipt == nil)
+            #expect(partialReport.target?.receiptFieldNature == nature)
+            #expect(partialReport.target?.textSnapshot == nil)
+            #expect(partialReport.unverifiedTarget?.textSnapshot == nil)
+
+            let focusChanged = Fixture()
+            focusChanged.recover("AXTextField")
+            focusChanged.captureNature = nature
+            focusChanged.initialSnapshot = snapshot
+            focusChanged.before = snapshot
+            focusChanged.selection = focusChanged.range(0, 0)
+            let blockedStart = focusChanged.transport().capture(nil).resolution.target?.blockedByPriorInput(hard: true)
+            let focusReport = await TextInsertion.deliver("x", to: blockedStart, transport: focusChanged.transport())
+            #expect(focusReport.outcome == .focusChanged)
+            #expect(focusReport.reason == "prior_input_unverified")
+            #expect(!focusReport.eventsPosted)
+            #expect(focusReport.receipt == nil)
+            #expect(focusReport.target?.receiptFieldNature == nature)
+            #expect(focusReport.target?.textSnapshot == nil)
+            #expect(focusReport.unverifiedTarget == nil)
+        }
+    }
+
     @Test func reviewerProbesI1aI1bI6aI6bI7aI7bI7cI8() async throws {
         // I1a: Unavailable-recovery multi-chunk delivery must reject element identity swap on chunk >= 1.
         do {
@@ -1302,6 +1496,84 @@ import KoeBridgeCore
         let report = await gate.post(.dictation("B"), from: sender.source(.take), transport: transport) { true }
         #expect(report.eventsPosted && report.postSendFocusVerified)
         #expect(report.settledUnconfirmedPredecessor == nil && report.unverifiedTarget?.hasHardPredecessorBlock == true)
+    }
+
+    @Test func nonNormalVerifiedReceiptsAreDegradedAndDoNotCreateAnchors() async throws {
+        for nature in [InsertionReceiptPolicy.FieldNature.protected, .unknown] {
+            let gate = TextInsertion.PostingGate { _, _ in }
+            let sender = Sender(ticket: try #require(gate.historyTicket))
+            sender.f.captureNature = nature
+            var anchor: LastDeliveryAnchor?
+            let report = await gate.post(.dictation("B"), from: sender.source(.take), transport: sender.transport(), finalize: { report in
+                if let receipt = report.receipt, receipt.proof.retainsContentEvidence {
+                    anchor = LastDeliveryAnchor(receipt: receipt, sourceRecordID: nil)
+                }
+            }) { true }
+
+            #expect(report.outcome == .verifiedInserted)
+            let receipt = try #require(report.receipt)
+            #expect(receipt.proof.fieldNature == .protected)
+            #expect(!receipt.proof.retainsContentEvidence)
+            #expect(!receipt.proof.retainsInserted)
+            #expect(!receipt.proof.before.retainsText)
+            #expect(!receipt.proof.after.retainsText)
+            #expect(receipt.proof.before.text.isEmpty)
+            #expect(receipt.proof.after.text.isEmpty)
+            #expect(receipt.proof.inserted.isEmpty)
+            #expect(receipt.proof.before.textSHA256?.count == 64)
+            #expect(receipt.proof.after.textSHA256?.count == 64)
+            #expect(receipt.proof.insertedSHA256?.count == 64)
+            #expect(report.target?.receiptFieldNature == nature)
+            #expect(report.target?.textSnapshot == nil)
+            #expect(receipt.target.textSnapshot == nil)
+            #expect(receipt.rebased(sender.start) == nil)
+            #expect(anchor == nil)
+
+            let directSender = Sender(ticket: UUID())
+            directSender.f.captureNature = nature
+            let directReport = await TextInsertion.deliver("B", to: nil, transport: directSender.transport())
+            #expect(directReport.outcome == .verifiedInserted)
+            let directReceipt = try #require(directReport.receipt)
+            #expect(directReceipt.proof.fieldNature == .protected)
+            #expect(!directReceipt.proof.retainsContentEvidence)
+            #expect(directReport.target?.receiptFieldNature == nature)
+            #expect(directReport.target?.textSnapshot == nil)
+            #expect(directReceipt.target.textSnapshot == nil)
+        }
+    }
+
+    @Test func takeStartTargetStripsPlaintextSnapshotUnlessNormal() async throws {
+        let f = Fixture()
+        f.recover("AXTextField")
+        let snapshot = InsertionReceiptPolicy.Snapshot(text: "secret", selection: .init(location: 0, length: 0))
+        f.initialSnapshot = snapshot
+        f.selection = f.range(0, 0)
+        for nature in [InsertionReceiptPolicy.FieldNature.unknown, .protected, .normal] {
+            f.captureNature = nature
+            let captured = try #require(f.transport().capture(nil).resolution.target)
+            #expect(captured.textSnapshot == snapshot)
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("kb-take-target-\(UUID().uuidString)")
+            defer { try? FileManager.default.removeItem(at: root) }
+            var env = VoiceController.PreparationEnvironment()
+            env.permission = { false }
+            env.makeInputTrace = { _ in nil }
+            env.recordSession = { _ in }
+            env.recordMicrophone = { _ in }
+            env.shouldPaste = false
+            env.captureTarget = { _ in (captured, "ok") }
+            var launched: Task<Void, Never>?
+            env.preparationLaunched = { launched = $0 }
+            let controller = VoiceController(preparation: env, storageDirectory: root)
+            controller.toggle()
+            let stored = try #require(controller.active?.target)
+            #expect(stored.receiptFieldNature == nature)
+            if nature == .normal {
+                #expect(stored.textSnapshot == snapshot)
+            } else {
+                #expect(stored.textSnapshot == nil)
+            }
+            await launched?.value
+        }
     }
 
     @Test func monotonicExpiryAndQuietTimeIgnoreWallClockSteps() async throws {

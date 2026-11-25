@@ -221,7 +221,7 @@ import KoeBridgeCore
             || (status == .success && (value == nil || value is String))
     }
 
-    private static func fieldHintStatusReadable(_ status: AXError) -> Bool {
+    static func fieldHintStatusReadable(_ status: AXError) -> Bool {
         let succeeded: Bool = status == .success
         let noValue: Bool = status == .noValue
         let unsupported: Bool = status == .attributeUnsupported
@@ -705,6 +705,10 @@ import KoeBridgeCore
         var updated = self
         updated.textSnapshot = nil
         return updated
+    }
+
+    func removingTextSnapshotUnlessNormal() -> InsertionTarget {
+        receiptFieldNature == .normal ? self : removingTextSnapshot()
     }
 
     func rebased(to snapshot: InsertionReceiptPolicy.Snapshot) -> InsertionTarget? {

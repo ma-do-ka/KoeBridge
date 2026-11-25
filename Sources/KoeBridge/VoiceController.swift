@@ -1066,7 +1066,7 @@ import KoeBridgeEngines
         let targetResult = transformTarget.map { (target: Optional($0), reason: "ok") }
             ?? preparation.captureTarget?(take.inputDiagnostics)
             ?? InsertionTarget.capture(diagnostics: take.inputDiagnostics) // BEFORE the overlay is shown
-        take.target = targetResult.target
+        take.target = targetResult.target?.removingTextSnapshotUnlessNormal()
         take.targetCaptureReason = targetResult.reason
         if recheckContextEnabled && selection == nil {
             take.capturedContext = ContextCapture.capture(target: take.target, app: contextAppEnabled,

@@ -68,6 +68,17 @@ import KoeBridgeCore
             .withReceiptFieldNature(.normal)
     }
 
+    @Test func textSnapshotRetentionRequiresPositiveNormalFieldNature() {
+        let base = target()
+        #expect(base.receiptFieldNature == .normal)
+        #expect(base.removingTextSnapshotUnlessNormal().textSnapshot != nil)
+        for nature in [InsertionReceiptPolicy.FieldNature.unknown, .protected] {
+            let stripped = base.withReceiptFieldNature(nature).removingTextSnapshotUnlessNormal()
+            #expect(stripped.receiptFieldNature == nature)
+            #expect(stripped.textSnapshot == nil)
+        }
+    }
+
     @Test func deliveryAcceptsEditorsWithNoNumericOrMarkerSelection() throws {
         let attributes: [String?] = [nil, kAXSelectedTextRangeAttribute as String, "AXSelectedTextMarkerRange"]
         let controls = ["AXButton", "AXCheckBox", "AXRadioButton", "AXPopUpButton",
@@ -191,7 +202,7 @@ import KoeBridgeCore
             let after = try #require(InsertionReceiptPolicy.expectedAfter(before: before, inserted: "語"))
             #expect(after.selection.location == current.textSnapshot!.selection.location + 1)
             #expect(after.text == (before.text == "ab" ? "ab語" : "a\n語b"))
-            #expect(InsertionReceiptPolicy.verify(before: before, inserted: "語", after: after, sameTarget: true) != nil)
+            #expect(InsertionReceiptPolicy.verify(before: before, inserted: "語", after: after, sameTarget: true, fieldNature: .normal) != nil)
         }
     }
 
@@ -376,7 +387,7 @@ import KoeBridgeCore
         let current = target()
         let before = try #require(current.textSnapshot)
         let after = try #require(InsertionReceiptPolicy.expectedAfter(before: before, inserted: "B"))
-        let proof = try #require(InsertionReceiptPolicy.verify(before: before, inserted: "B", after: after, sameTarget: true))
+        let proof = try #require(InsertionReceiptPolicy.verify(before: before, inserted: "B", after: after, sameTarget: true, fieldNature: .normal))
         for (posted, verified, expected) in [(1.0, 2.0, true), (0.0, 1.0, true), (1.1, 2.0, false)] {
             let diagnostics = try trace()
             let report = TextInsertion.Report(outcome: .verifiedInserted, reason: "verified_value_and_selection",
@@ -449,7 +460,7 @@ import KoeBridgeCore
         let delivery = target(pid: 10_002, caret: 2)
         let before = try #require(delivery.textSnapshot)
         let after = try #require(InsertionReceiptPolicy.expectedAfter(before: before, inserted: "語"))
-        let proof = try #require(InsertionReceiptPolicy.verify(before: before, inserted: "語", after: after, sameTarget: true))
+        let proof = try #require(InsertionReceiptPolicy.verify(before: before, inserted: "語", after: after, sameTarget: true, fieldNature: .normal))
         let receipt = TextInsertion.Receipt(target: delivery, proof: proof, postedAt: 1, verifiedAt: 2)
         let verified = TextInsertion.Report(outcome: .verifiedInserted, reason: "verified_value_and_selection",
                                            receipt: receipt, eventsPosted: true, target: delivery, diagnostics: nil, resultUptimeMS: 2_000)
@@ -621,7 +632,7 @@ import KoeBridgeCore
         let verifiedBefore = try #require(numericFieldA.textSnapshot)
         let verifiedAfter = try #require(InsertionReceiptPolicy.expectedAfter(before: verifiedBefore, inserted: "B"))
         let verifiedProof = try #require(InsertionReceiptPolicy.verify(before: verifiedBefore, inserted: "B",
-                                                                       after: verifiedAfter, sameTarget: true))
+                                                                       after: verifiedAfter, sameTarget: true, fieldNature: .normal))
         let verifiedReport = TextInsertion.Report(
             outcome: .verifiedInserted, reason: "verified_value_and_selection",
             receipt: .init(target: numericFieldA, proof: verifiedProof, postedAt: 1.060, verifiedAt: 1.090),

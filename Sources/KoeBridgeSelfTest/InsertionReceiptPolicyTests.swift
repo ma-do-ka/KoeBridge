@@ -12,7 +12,7 @@ struct InsertionReceiptPolicyTests {
     func verifiesJapaneseAtTheActualUTF16Caret() throws {
         let before = state("📎案：", 4)
         let after = state("📎案：明日", 6)
-        let receipt = try require(Policy.verify(before: before, inserted: "明日", after: after, sameTarget: true))
+        let receipt = try require(Policy.verify(before: before, inserted: "明日", after: after, sameTarget: true, fieldNature: .normal))
         check(receipt.before == before)
         check(receipt.after == after)
         check(Policy.reconcile(before, using: receipt, sameTarget: true, eventsPosted: true) == .rebased(after))
@@ -22,16 +22,16 @@ struct InsertionReceiptPolicyTests {
         let before = state("A旧文😀Z", 1, 4)
         let inserted = "予定👨‍👩‍👧‍👦"
         let after = state("A" + inserted + "Z", 1 + inserted.utf16.count)
-        let receipt = try require(Policy.verify(before: before, inserted: inserted, after: after, sameTarget: true))
+        let receipt = try require(Policy.verify(before: before, inserted: inserted, after: after, sameTarget: true, fieldNature: .normal))
         check(Policy.reconcile(before, using: receipt, sameTarget: true, eventsPosted: true) == .rebased(after))
         check(Policy.reconcile(after, using: receipt, sameTarget: true, eventsPosted: true) == .rebased(after))
     }
 
     func repeatedTextStillRequiresTheCorrectPosition() throws {
         let before = state("aaaa", 2)
-        let receipt = try require(Policy.verify(before: before, inserted: "a", after: state("aaaaa", 3), sameTarget: true))
+        let receipt = try require(Policy.verify(before: before, inserted: "a", after: state("aaaaa", 3), sameTarget: true, fieldNature: .normal))
         for wrongCaret in [0, 1, 2, 4, 5] {
-            check(Policy.verify(before: before, inserted: "a", after: state("aaaaa", wrongCaret), sameTarget: true) == nil)
+            check(Policy.verify(before: before, inserted: "a", after: state("aaaaa", wrongCaret), sameTarget: true, fieldNature: .normal) == nil)
         }
         check(Policy.reconcile(state("aaaaa", 4), using: receipt, sameTarget: true, eventsPosted: true) == .blocked)
     }
@@ -43,8 +43,8 @@ struct InsertionReceiptPolicyTests {
         check(exact.text == composed.text)
         check(!Policy.sameText(exact.text, composed.text))
         check(exact != composed)
-        check(Policy.verify(before: before, inserted: "😀", after: composed, sameTarget: true) == nil)
-        let receipt = try require(Policy.verify(before: before, inserted: "😀", after: exact, sameTarget: true))
+        check(Policy.verify(before: before, inserted: "😀", after: composed, sameTarget: true, fieldNature: .normal) == nil)
+        let receipt = try require(Policy.verify(before: before, inserted: "😀", after: exact, sameTarget: true, fieldNature: .normal))
         check(Policy.reconcile(composed, using: receipt, sameTarget: true, eventsPosted: true) == .blocked)
     }
 
@@ -62,7 +62,7 @@ struct InsertionReceiptPolicyTests {
     func rebasesCapturesBeforeDuringAndAfterSubmission() throws {
         let before = state("headOLDtail", 4, 3)
         let after = state("head一二😀三tail", 9)
-        let receipt = try require(Policy.verify(before: before, inserted: "一二😀三", after: after, sameTarget: true))
+        let receipt = try require(Policy.verify(before: before, inserted: "一二😀三", after: after, sameTarget: true, fieldNature: .normal))
         for candidate in [before, after] {
             check(Policy.reconcile(candidate, using: receipt, sameTarget: true, eventsPosted: true) == .rebased(after))
         }
@@ -77,14 +77,14 @@ struct InsertionReceiptPolicyTests {
     func humanEditsOrFocusChangesDoNotBecomeOwnInput() throws {
         let before = state("abcDEFghi", 3, 3)
         let after = state("abcXYZghi", 6)
-        let receipt = try require(Policy.verify(before: before, inserted: "XYZ", after: after, sameTarget: true))
+        let receipt = try require(Policy.verify(before: before, inserted: "XYZ", after: after, sameTarget: true, fieldNature: .normal))
         for candidate in [state("abcXghi!", 4), state("abcXghi", 0), state("abcQghi", 4), state("abcXYZghi", 2)] {
             check(Policy.reconcile(candidate, using: receipt, sameTarget: true, eventsPosted: true,
                                    capturedDuringSubmission: true) == .blocked)
         }
         check(Policy.reconcile(before, using: receipt, sameTarget: false, eventsPosted: true) == .unchanged)
-        check(Policy.verify(before: before, inserted: "XYZ", after: after, sameTarget: false) == nil)
-        check(Policy.verify(before: before, inserted: "XYZ", after: state("abcXYZghi!", 6), sameTarget: true) == nil)
+        check(Policy.verify(before: before, inserted: "XYZ", after: after, sameTarget: false, fieldNature: .normal) == nil)
+        check(Policy.verify(before: before, inserted: "XYZ", after: state("abcXYZghi!", 6), sameTarget: true, fieldNature: .normal) == nil)
     }
 
     func chainsThreeRepeatedTakesWithoutDroppingOrDuplicatingText() throws {
@@ -92,7 +92,7 @@ struct InsertionReceiptPolicyTests {
         var third = next
         for expectedText in ["はいはい", "はいはいはい", "はいはいはいはい"] {
             let after = state(expectedText, expectedText.utf16.count)
-            let receipt = try require(Policy.verify(before: next, inserted: "はい", after: after, sameTarget: true))
+            let receipt = try require(Policy.verify(before: next, inserted: "はい", after: after, sameTarget: true, fieldNature: .normal))
             let secondResult = Policy.reconcile(next, using: receipt, sameTarget: true, eventsPosted: true)
             let thirdResult = Policy.reconcile(third, using: receipt, sameTarget: true, eventsPosted: true)
             check(secondResult == .rebased(after))
@@ -107,19 +107,19 @@ struct InsertionReceiptPolicyTests {
     func unknownPartialOrCancelledDeliveryNeverUnlocksTheNextTake() throws {
         let before = state("", 0)
         let after = state("入力", 2)
-        let receipt = try require(Policy.verify(before: before, inserted: "入力", after: after, sameTarget: true))
+        let receipt = try require(Policy.verify(before: before, inserted: "入力", after: after, sameTarget: true, fieldNature: .normal))
         check(Policy.reconcile(before, using: nil, sameTarget: true, eventsPosted: true) == .blocked)
         check(Policy.reconcile(state("入", 1), using: nil, sameTarget: true, eventsPosted: true,
                                capturedDuringSubmission: true) == .blocked)
         check(Policy.reconcile(nil, using: receipt, sameTarget: true, eventsPosted: true) == .blocked)
         check(Policy.reconcile(before, using: nil, sameTarget: true, eventsPosted: false) == .unchanged)
         check(Policy.reconcile(before, using: receipt, sameTarget: true, eventsPosted: true, cancelled: true) == .blocked)
-        check(Policy.verify(before: before, inserted: "入力", after: after, sameTarget: true, cancelled: true) == nil)
+        check(Policy.verify(before: before, inserted: "入力", after: after, sameTarget: true, cancelled: true, fieldNature: .normal) == nil)
     }
 
     func ambiguousWindowIdentityCannotUnlockAConcurrentTake() throws {
         let before = state("", 0)
-        let receipt = try require(Policy.verify(before: before, inserted: "入力", after: state("入力", 2), sameTarget: true))
+        let receipt = try require(Policy.verify(before: before, inserted: "入力", after: state("入力", 2), sameTarget: true, fieldNature: .normal))
         // The pid/element agrees but only one capture has a readable window.
         check(Policy.reconcile(before, using: nil, sameTarget: false, eventsPosted: true,
                                mayShareTarget: true) == .blocked)
@@ -133,7 +133,7 @@ struct InsertionReceiptPolicyTests {
         let before = state("same", 0, 4)
         let after = try require(Policy.expectedAfter(before: before, inserted: "same"))
         check(after == state("same", 4))
-        check(Policy.verify(before: before, inserted: "same", after: after, sameTarget: true) == nil)
+        check(Policy.verify(before: before, inserted: "same", after: after, sameTarget: true, fieldNature: .normal) == nil)
         check(Policy.expectedAfter(before: before, inserted: "") == nil)
     }
 
@@ -143,8 +143,8 @@ struct InsertionReceiptPolicyTests {
         let before = state(">", 1)
         let after = state(">a b c ", 7)
         check(safe == "a b c ")
-        _ = try require(Policy.verify(before: before, inserted: safe, after: after, sameTarget: true))
-        check(Policy.verify(before: before, inserted: original, after: after, sameTarget: true) == nil)
+        _ = try require(Policy.verify(before: before, inserted: safe, after: after, sameTarget: true, fieldNature: .normal))
+        check(Policy.verify(before: before, inserted: original, after: after, sameTarget: true, fieldNature: .normal) == nil)
     }
 
     func readbackSizeAndIntermediateScalarBoundariesAreBounded() throws {
@@ -154,7 +154,7 @@ struct InsertionReceiptPolicyTests {
         check(Policy.expectedAfter(before: full, inserted: "x") == nil)
         check(!Policy.isValid(state(full.text + "x", maximum + 1)))
         let receipt = try require(Policy.verify(before: state("", 0), inserted: "😀A",
-                                                after: state("😀A", 3), sameTarget: true))
+                                                after: state("😀A", 3), sameTarget: true, fieldNature: .normal))
         check(Policy.reconcile(state("X", 1), using: receipt, sameTarget: true, eventsPosted: true,
                                capturedDuringSubmission: true) == .blocked)
         check(Policy.reconcile(state("😀", 2), using: receipt, sameTarget: true, eventsPosted: true,
@@ -169,7 +169,7 @@ struct InsertionReceiptPolicyTests {
         let beforeCaret0 = state(suffix9, 0)
         let afterBlock0 = state(inserted26, 26)
         let receiptBlock0 = try require(Policy.verify(before: beforeCaret0, inserted: inserted26,
-                                                      after: afterBlock0, sameTarget: true))
+                                                      after: afterBlock0, sameTarget: true, fieldNature: .normal))
         check(receiptBlock0.mode == .blockScoped)
         check(receiptBlock0.after == afterBlock0)
         // Reconcile accepts before or observed block-scoped after, and blocks unverified full expectedAfter (I5).
@@ -179,7 +179,7 @@ struct InsertionReceiptPolicyTests {
         check(Policy.reconcile(fullAfter0, using: receiptBlock0, sameTarget: true, eventsPosted: true) == .blocked)
         // Reviewer probe I5: before = "pZ"@1, inserted = "X", observed = "pX"@2 (block-scoped), candidate = "pXZ"@2 -> .blocked.
         let probeReceiptI5 = try require(Policy.verify(before: state("pZ", 1), inserted: "X",
-                                                       after: state("pX", 2), sameTarget: true))
+                                                       after: state("pX", 2), sameTarget: true, fieldNature: .normal))
         check(probeReceiptI5.mode == .blockScoped)
         check(Policy.reconcile(state("pXZ", 2), using: probeReceiptI5, sameTarget: true,
                                eventsPosted: true, capturedDuringSubmission: false) == .blocked)
@@ -191,48 +191,48 @@ struct InsertionReceiptPolicyTests {
         let inserted10 = "０１２３４５６７８９"
         let afterMidBlock = state("アイウエオ" + inserted10, 15)
         let receiptMid = try require(Policy.verify(before: beforeMid, inserted: inserted10,
-                                                   after: afterMidBlock, sameTarget: true))
+                                                   after: afterMidBlock, sameTarget: true, fieldNature: .normal))
         check(receiptMid.mode == .blockScoped)
 
         // 3. Trailing-newline normalization (\n stripped, \r\n stripped, up to 2 trailing newline code units).
         let beforeTrailingLF = state("先行テキスト\n後続段落\n", 6)
         let afterStrippedLF = state("先行テキスト追加文\n後続段落", 9)
         let receiptLF = try require(Policy.verify(before: beforeTrailingLF, inserted: "追加文",
-                                                  after: afterStrippedLF, sameTarget: true))
+                                                  after: afterStrippedLF, sameTarget: true, fieldNature: .normal))
         check(receiptLF.mode == .trailingNewlineNormalized)
 
         let beforeTrailingCRLF = state("A\nB\r\n", 1)
         let afterStrippedCRLF = state("AX\nB", 2)
         let receiptCRLF = try require(Policy.verify(before: beforeTrailingCRLF, inserted: "X",
-                                                    after: afterStrippedCRLF, sameTarget: true))
+                                                    after: afterStrippedCRLF, sameTarget: true, fieldNature: .normal))
         check(receiptCRLF.mode == .trailingNewlineNormalized)
 
         // 4. Legitimate failure cases must still fail closed (return nil):
         // (a) Non-newline suffix character mutated or truncated ("abc" -> "ab").
         check(Policy.verify(before: state("headabc", 4), inserted: "INS",
-                            after: state("headINSab", 7), sameTarget: true) == nil)
+                            after: state("headINSab", 7), sameTarget: true, fieldNature: .normal) == nil)
         // (b) Partial suffix truncation when observed suffix is non-empty ("123456789" -> "1234").
         check(Policy.verify(before: beforeCaret0, inserted: inserted26,
-                            after: state(inserted26 + "1234", 26), sameTarget: true) == nil)
+                            after: state(inserted26 + "1234", 26), sameTarget: true, fieldNature: .normal) == nil)
         // (c) Prefix mismatch before caret.
         check(Policy.verify(before: state("ABCDtail", 4), inserted: "XY",
-                            after: state("ABCE" + "XY", 6), sameTarget: true) == nil)
+                            after: state("ABCE" + "XY", 6), sameTarget: true, fieldNature: .normal) == nil)
         // (d) Inserted span mismatch.
         check(Policy.verify(before: beforeCaret0, inserted: "期待文",
-                            after: state("別テキスト", 3), sameTarget: true) == nil)
+                            after: state("別テキスト", 3), sameTarget: true, fieldNature: .normal) == nil)
         // (e) Caret location mismatch even when block-scoped text matches.
         check(Policy.verify(before: beforeCaret0, inserted: inserted26,
-                            after: state(inserted26, 25), sameTarget: true) == nil)
+                            after: state(inserted26, 25), sameTarget: true, fieldNature: .normal) == nil)
         check(Policy.verify(before: beforeCaret0, inserted: inserted26,
-                            after: state(inserted26, 26, 1), sameTarget: true) == nil)
+                            after: state(inserted26, 26, 1), sameTarget: true, fieldNature: .normal) == nil)
         // (f) Non-zero initial selection (selection replacement) requires strict suffix preservation.
         check(Policy.verify(before: state("ABCDtail", 0, 4), inserted: "XY",
-                            after: state("XY", 2), sameTarget: true) == nil)
+                            after: state("XY", 2), sameTarget: true, fieldNature: .normal) == nil)
         check(Policy.verify(before: state("ABCDtail\n", 0, 4), inserted: "XY",
-                            after: state("XYtail", 2), sameTarget: true) == nil)
+                            after: state("XYtail", 2), sameTarget: true, fieldNature: .normal) == nil)
         // (g) More than 2 trailing newlines stripped fails closed.
         check(Policy.verify(before: state("A\nB\n\n\n", 1), inserted: "X",
-                            after: state("AX\nB", 2), sameTarget: true) == nil)
+                            after: state("AX\nB", 2), sameTarget: true, fieldNature: .normal) == nil)
     }
 
     func settledUnconfirmedPredecessorAndTargetScopedLatchGateFollowUpTakes() {
@@ -457,6 +457,14 @@ struct InsertionReceiptPolicyTests {
         check(unknown.before.text.isEmpty)
         check(unknown.after.text.isEmpty)
         check(unknown.insertedSHA256?.count == 64)
+
+        let defaulted = try require(Policy.verify(before: before, inserted: inserted, after: after,
+                                                  sameTarget: true))
+        check(defaulted.fieldNature == .protected)
+        check(!defaulted.retainsContentEvidence)
+        check(defaulted.before.text.isEmpty)
+        check(defaulted.after.text.isEmpty)
+        check(defaulted.insertedSHA256?.count == 64)
     }
 
     func fieldNatureClassificationIsExplicitAndFailsClosed() {

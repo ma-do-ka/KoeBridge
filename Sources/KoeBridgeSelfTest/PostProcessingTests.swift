@@ -39,25 +39,38 @@ struct PostProcessingTests {
     }
 
     func shorteningGuard() {
+        func adoption(originalCount: Int, processedCount: Int) -> (text: String, rejection: PostProcessingPolicy.Rejection?) {
+            let original = String(repeating: "あ", count: originalCount)
+            let processed = String(repeating: "い", count: processedCount)
+            return PostProcessingPolicy.adoption(original: original, processed: processed)
+        }
         func usesProcessed(originalCount: Int, processedCount: Int) -> Bool {
             let original = String(repeating: "あ", count: originalCount)
             let processed = String(repeating: "い", count: processedCount)
-            return PostProcessingPolicy.adoption(original: original, processed: processed).text == processed
+            let result = adoption(originalCount: originalCount, processedCount: processedCount)
+            return result.text == processed && result.rejection == nil
+        }
+        func rejectsAsLength(originalCount: Int, processedCount: Int) -> Bool {
+            let original = String(repeating: "あ", count: originalCount)
+            let result = adoption(originalCount: originalCount, processedCount: processedCount)
+            return result.text == original && result.rejection == .length
         }
 
-        check(!usesProcessed(originalCount: 5, processedCount: 0))
-        check(!usesProcessed(originalCount: 200, processedCount: 0))
+        check(rejectsAsLength(originalCount: 5, processedCount: 0))
+        check(rejectsAsLength(originalCount: 200, processedCount: 0))
         check(usesProcessed(originalCount: 19, processedCount: 1))
         check(usesProcessed(originalCount: 30, processedCount: 11))
 
-        check(!usesProcessed(originalCount: 100, processedCount: 55))
+        check(rejectsAsLength(originalCount: 100, processedCount: 55))
         check(usesProcessed(originalCount: 100, processedCount: 56))
-        check(!usesProcessed(originalCount: 40, processedCount: 20))
+        check(rejectsAsLength(originalCount: 40, processedCount: 20))
         check(usesProcessed(originalCount: 40, processedCount: 21))
 
-        check(!usesProcessed(originalCount: 400, processedCount: 300))
+        check(rejectsAsLength(originalCount: 400, processedCount: 300))
         check(usesProcessed(originalCount: 400, processedCount: 301))
-        check(!usesProcessed(originalCount: 200, processedCount: 120))
+        check(rejectsAsLength(originalCount: 199, processedCount: 109))
+        check(usesProcessed(originalCount: 199, processedCount: 110))
+        check(rejectsAsLength(originalCount: 200, processedCount: 120))
         check(usesProcessed(originalCount: 200, processedCount: 121))
         check(usesProcessed(originalCount: 100, processedCount: 100))
         check(usesProcessed(originalCount: 100, processedCount: 101))

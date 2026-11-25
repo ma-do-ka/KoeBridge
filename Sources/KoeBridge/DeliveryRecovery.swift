@@ -324,19 +324,40 @@ struct RecoveryAX {
             guard InsertionTarget.secureExclusionReadable(finalSubrole.value, status: finalSubrole.status),
                   finalSubrole.value as? String != "AXSecureTextField", ax.frontPID() == original.pid,
                   ax.now() < limit else { return .rejected }
+            let titleRead = try read("AXTitle")
+            let descriptionRead = try read("AXDescription")
+            let placeholderRead = try read("AXPlaceholderValue")
+            let fieldHints: [String?] = [
+                original.localizedName,
+                titleRead.value as? String,
+                descriptionRead.value as? String,
+                placeholderRead.value as? String
+            ]
+            let titleHintReadable: Bool = InsertionTarget.fieldHintStatusReadable(titleRead.status)
+            let descriptionHintReadable: Bool = InsertionTarget.fieldHintStatusReadable(descriptionRead.status)
+            let placeholderHintReadable: Bool = InsertionTarget.fieldHintStatusReadable(placeholderRead.status)
+            let titleAndDescriptionHintsReadable: Bool = titleHintReadable && descriptionHintReadable
+            let hintReadsReadable: Bool = titleAndDescriptionHintsReadable && placeholderHintReadable
+            let roleAttributeReadable: Bool = finalRole.status == .success
+            let subroleAttributeReadable: Bool = InsertionTarget.secureExclusionReadable(
+                finalSubrole.value, status: finalSubrole.status
+            )
+            let roleAndHintsReadable: Bool = roleAttributeReadable && hintReadsReadable
+            let attributesReadable: Bool = roleAndHintsReadable && subroleAttributeReadable
             let observedNature = InsertionReceiptPolicy.fieldNature(
                 role: role,
                 subrole: finalSubrole.value as? String,
                 editable: editableValue,
                 hasTextSelection: true,
                 bundleIdentifier: original.bundleIdentifier,
-                labelHints: [original.localizedName],
-                secureInputEnabled: IsSecureEventInputEnabled()
+                labelHints: fieldHints,
+                secureInputEnabled: IsSecureEventInputEnabled(),
+                attributesReadable: attributesReadable
             )
             let recoveredNature: InsertionReceiptPolicy.FieldNature
             if observedNature == .protected || original.receiptFieldNature == .protected {
                 recoveredNature = .protected
-            } else if observedNature == .normal && original.receiptFieldNature == .normal {
+            } else if observedNature == .normal {
                 recoveredNature = .normal
             } else {
                 recoveredNature = .unknown

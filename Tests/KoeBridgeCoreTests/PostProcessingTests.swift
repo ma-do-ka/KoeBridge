@@ -58,25 +58,38 @@ struct PostProcessingTests {
     }
 
     @Test func shorteningGuard() {
+        func adoption(originalCount: Int, processedCount: Int) -> (text: String, rejection: PostProcessingPolicy.Rejection?) {
+            let original = String(repeating: "あ", count: originalCount)
+            let processed = String(repeating: "い", count: processedCount)
+            return PostProcessingPolicy.adoption(original: original, processed: processed)
+        }
         func usesProcessed(originalCount: Int, processedCount: Int) -> Bool {
             let original = String(repeating: "あ", count: originalCount)
             let processed = String(repeating: "い", count: processedCount)
-            return PostProcessingPolicy.adoption(original: original, processed: processed).text == processed
+            let result = adoption(originalCount: originalCount, processedCount: processedCount)
+            return result.text == processed && result.rejection == nil
+        }
+        func rejectsAsLength(originalCount: Int, processedCount: Int) -> Bool {
+            let original = String(repeating: "あ", count: originalCount)
+            let result = adoption(originalCount: originalCount, processedCount: processedCount)
+            return result.text == original && result.rejection == .length
         }
 
-        #expect(!usesProcessed(originalCount: 5, processedCount: 0))
-        #expect(!usesProcessed(originalCount: 200, processedCount: 0))
+        #expect(rejectsAsLength(originalCount: 5, processedCount: 0))
+        #expect(rejectsAsLength(originalCount: 200, processedCount: 0))
         #expect(usesProcessed(originalCount: 19, processedCount: 1))
         #expect(usesProcessed(originalCount: 30, processedCount: 11))
 
-        #expect(!usesProcessed(originalCount: 100, processedCount: 55))
+        #expect(rejectsAsLength(originalCount: 100, processedCount: 55))
         #expect(usesProcessed(originalCount: 100, processedCount: 56))
-        #expect(!usesProcessed(originalCount: 40, processedCount: 20))
+        #expect(rejectsAsLength(originalCount: 40, processedCount: 20))
         #expect(usesProcessed(originalCount: 40, processedCount: 21))
 
-        #expect(!usesProcessed(originalCount: 400, processedCount: 300))
+        #expect(rejectsAsLength(originalCount: 400, processedCount: 300))
         #expect(usesProcessed(originalCount: 400, processedCount: 301))
-        #expect(!usesProcessed(originalCount: 200, processedCount: 120))
+        #expect(rejectsAsLength(originalCount: 199, processedCount: 109))
+        #expect(usesProcessed(originalCount: 199, processedCount: 110))
+        #expect(rejectsAsLength(originalCount: 200, processedCount: 120))
         #expect(usesProcessed(originalCount: 200, processedCount: 121))
         #expect(usesProcessed(originalCount: 100, processedCount: 100))
         #expect(usesProcessed(originalCount: 100, processedCount: 101))
