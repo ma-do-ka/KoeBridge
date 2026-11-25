@@ -17,6 +17,27 @@ extension Notification.Name {
     static var pending: String?
 }
 
+enum StatusPopoverPermissionCardPolicy {
+    static func suppressesMicrophoneWarning(noticeState: MicrophoneNoticeState?) -> Bool {
+        noticeState == .permissionDenied
+    }
+
+    static func needsAttention(noticeState: MicrophoneNoticeState?, automationGranted: Bool,
+                               guideNeedsAttention: Bool) -> Bool {
+        suppressesMicrophoneWarning(noticeState: noticeState) ? !automationGranted : guideNeedsAttention
+    }
+
+    static func title(noticeState: MicrophoneNoticeState?, automationGranted: Bool,
+                      guideNeedsAttention: Bool) -> String {
+        let attentionNeeded = needsAttention(noticeState: noticeState, automationGranted: automationGranted,
+                                             guideNeedsAttention: guideNeedsAttention)
+        if suppressesMicrophoneWarning(noticeState: noticeState) && !attentionNeeded {
+            return "自動入力の権限は正常"
+        }
+        return attentionNeeded ? "権限の確認が必要です" : "権限はすべて正常"
+    }
+}
+
 private struct HistoryMenuButtonStyle: ButtonStyle {
     let highlighted: Bool
 
@@ -92,17 +113,22 @@ private struct HistoryMenuButtonStyle: ButtonStyle {
             Button(action: onOpenUsage) { usageCard }.buttonStyle(PopoverButtonStyle())
             Button(action: onOpenPermissions) {
                 VStack(alignment: .leading, spacing: 5) {
-                    Label(guide.needsAttention ? "権限の確認が必要です" : "権限はすべて正常",
-                          systemImage: guide.needsAttention ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                        .foregroundStyle(guide.needsAttention ? Color.orange : Color.green)
+                    Label(permissionCardTitle,
+                          systemImage: permissionCardNeedsAttention ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                        .foregroundStyle(permissionCardNeedsAttention ? Color.orange : Color.green)
                     HStack {
-                        permissionLabel("マイク", granted: guide.microphoneStatus == .authorized)
-                        Spacer()
-                        permissionLabel("自動入力", granted: guide.accessibilityGranted && guide.postEventGranted)
+                        if permissionCardMicrophoneWarningSuppressed {
+                            permissionLabel("自動入力", granted: permissionCardAutomationGranted)
+                            Spacer()
+                        } else {
+                            permissionLabel("マイク", granted: guide.microphoneStatus == .authorized)
+                            Spacer()
+                            permissionLabel("自動入力", granted: permissionCardAutomationGranted)
+                        }
                     }.font(.caption2)
                 }.frame(maxWidth: .infinity, alignment: .leading)
                     .padding(8)
-                    .background(guide.needsAttention ? Color.orange.opacity(0.14) : Color.clear,
+                    .background(permissionCardNeedsAttention ? Color.orange.opacity(0.14) : Color.clear,
                                 in: RoundedRectangle(cornerRadius: 10))
             }.buttonStyle(PopoverButtonStyle())
             Divider()
@@ -178,6 +204,28 @@ private struct HistoryMenuButtonStyle: ButtonStyle {
                     .onChange(of: geometry.size) { _, size in onContentSizeChange(size) }
             }
         }
+    }
+
+    private var permissionCardAutomationGranted: Bool {
+        guide.accessibilityGranted && guide.postEventGranted
+    }
+
+    private var permissionCardMicrophoneWarningSuppressed: Bool {
+        StatusPopoverPermissionCardPolicy.suppressesMicrophoneWarning(noticeState: controller.microphoneNotice?.state)
+    }
+
+    private var permissionCardNeedsAttention: Bool {
+        StatusPopoverPermissionCardPolicy.needsAttention(
+            noticeState: controller.microphoneNotice?.state,
+            automationGranted: permissionCardAutomationGranted,
+            guideNeedsAttention: guide.needsAttention)
+    }
+
+    private var permissionCardTitle: String {
+        StatusPopoverPermissionCardPolicy.title(
+            noticeState: controller.microphoneNotice?.state,
+            automationGranted: permissionCardAutomationGranted,
+            guideNeedsAttention: guide.needsAttention)
     }
 
     private var header: some View {

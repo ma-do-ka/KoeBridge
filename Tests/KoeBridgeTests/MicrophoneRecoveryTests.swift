@@ -786,7 +786,7 @@ struct MicrophoneRecoveryTests {
         let interrupted = expectationFlag()
         let take = Task {
             try await capture.start(deadline: 12.5, onAudio: { _ in },
-                                    onDeviceChanged: { interrupted.set(1) })
+                                    onDeviceChanged: { interruption in interrupted.set(interruption == .inputChange ? 1 : 2) })
         }
         defer { take.cancel() }
         try await feedStablePCM(rig, index: 1)
@@ -802,6 +802,29 @@ struct MicrophoneRecoveryTests {
         #expect(capture.lostBufferCount == 1)
         await capture.cancelAndWait()
         #expect(rig.lifetime.disposition == .normal)
+    }
+
+    @Test func committedInputRouteLossReportsDeviceRemoval() async throws {
+        let rig = Rig(.none)
+        let capture = rig.capture()
+        let interrupted = expectationFlag()
+        let take = Task {
+            try await capture.start(deadline: 12.5, onAudio: { _ in },
+                onDeviceChanged: { interruption in interrupted.set(interruption == .deviceRemoval ? 1 : 2) })
+        }
+        defer { take.cancel() }
+        try await feedStablePCM(rig, index: 0)
+        try await awaitCommit(take, clock: rig.clock)
+        await lane {
+            rig.devices[0].node.currentDeviceID = 173
+        }
+        for _ in 0..<200 {
+            if interrupted.now() != 0 { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(interrupted.now() == 1)
+        #expect(capture.lostBufferCount == 1)
+        await capture.cancelAndWait()
     }
 
     /// The next HAL selection read owns this barrier. The test supplies only
@@ -1039,6 +1062,47 @@ struct MicrophoneRecoveryTests {
 
     private func awaitPreparationEnd(_ replay: PreparationReplay) async throws {
         try await observe("Controller startup task did not exit", log: replay.log) { replay.preparationFinished }
+    }
+
+    @Test func successfulStartClearsPublishedMicrophoneNotice() async throws {
+        let replay = PreparationReplay()
+        defer { replay.finish() }
+        replay.selectedUID = "missing"
+        replay.controller.toggle()
+        try await observe("Missing microphone did not resolve", log: replay.log) {
+            replay.controller.microphoneNotice?.state == .selectedDeviceMissing
+        }
+        try await awaitPreparationEnd(replay)
+        #expect(replay.controller.microphoneNotice?.state == .selectedDeviceMissing)
+        #expect(replay.controller.phase == .idle)
+
+        replay.selectedUID = "explicit"
+        replay.controller.toggle()
+        let attempt = try await awaitEngine(replay, index: 1)
+        let device = await lane { replay.rig.devices[0] }
+        let tap = try #require(await lane { device.node.partialTap })
+        stablePCM(replay, device: device, tap: tap)
+        try await observe("Successful start did not become recording", log: replay.log) {
+            replay.controller.phase == .recording
+        }
+        try await awaitPreparationEnd(replay)
+        #expect(attempt.gate.didCommit)
+        #expect(replay.controller.microphoneNotice == nil)
+        replay.controller.toggle()
+        _ = try await awaitDelivery(replay, take: attempt.takeID)
+    }
+
+    @Test func engineStartOSFailurePublishesStartUnavailableNotice() async throws {
+        let replay = PreparationReplay(rig: Rig(.start))
+        defer { replay.finish() }
+        replay.controller.toggle()
+        try await observe("Engine start failure did not publish MIC-07", log: replay.log) {
+            replay.controller.microphoneNotice?.state == .startUnavailable
+        }
+        try await awaitPreparationEnd(replay)
+        #expect(replay.attempts.count == 4)
+        #expect(replay.controller.microphoneNotice?.state == .startUnavailable)
+        #expect(replay.controller.phase == .idle)
     }
 
     @Test func livePreparationRetriesAfterPostResumeSelectionLoss() async throws {

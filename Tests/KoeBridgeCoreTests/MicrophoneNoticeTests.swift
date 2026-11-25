@@ -10,7 +10,7 @@ struct MicrophoneNoticeTests {
             (.selectedDeviceMissing, "選択したマイクが未接続です", "接続を確認するか、設定で別のマイクを選んでください。自動では切り替えません。", .openMicrophoneSettings, .retryRecording),
             (.noInputDevice, "使えるマイクが見つかりません", "マイクを接続するか、macOS のサウンド設定で入力デバイスを確認してください。", .openSoundSettings, .retryRecording),
             (.ambiguousDevice, "マイクを特定できません", "同じ名前のマイクが重複している可能性があります。設定で選び直してください。", .openMicrophoneSettings, .retryRecording),
-            (.recordingDeviceDisconnected, "録音中にマイクが切断されました", "マイクの接続が切れたため録音を停止しました。接続を確認してから再開してください。", .openMicrophoneSettings, .dismiss),
+            (.recordingDeviceDisconnected, "録音中にマイク入力が中断されました", "マイク入力が変更または中断されたため録音を停止しました。入力を確認してから再開してください。", .openMicrophoneSettings, .dismiss),
             (.startUnavailable, "マイクを開始できませんでした", "他のアプリが使用中か、マイクが応答していません。確認してからもう一度お試しください。", .retryRecording, .dismiss),
             (.inputFormatUnconfirmed, "マイクの入力形式を確認できません", "マイクを再接続するか、設定で別のマイクを選んでからもう一度お試しください。", .openMicrophoneSettings, .dismiss),
             (.buffersUnstable, "マイクの準備が安定しません", "接続直後などで音声入力が不安定です。少し待ってからもう一度お試しください。", .retryRecording, .dismiss),
@@ -26,12 +26,25 @@ struct MicrophoneNoticeTests {
         }
     }
 
-    @Test func meetingDisconnectUsesMeetingCopyVariant() {
-        let notice = MicrophoneNotice(state: .recordingDeviceDisconnected, context: .meeting)
-        #expect(notice.title == "マイク切断により会議モードを終了しました")
-        #expect(notice.message == "マイクの接続が切れたため会議モードを終了しました。接続を確認してから再開してください。")
-        #expect(notice.primaryAction == .openMicrophoneSettings)
-        #expect(notice.secondaryAction == .dismiss)
+    @Test func recordingDeviceCopyFollowsRemovalEvidence() {
+        let disconnected = MicrophoneNotice(state: .recordingDeviceDisconnected, deviceRemovalProven: true)
+        #expect(disconnected.title == "録音中にマイクが切断されました")
+        #expect(disconnected.message == "マイクの接続が切れたため録音を停止しました。接続を確認してから再開してください。")
+
+        let interrupted = MicrophoneNotice(state: .recordingDeviceDisconnected)
+        #expect(interrupted.title == "録音中にマイク入力が中断されました")
+        #expect(interrupted.message == "マイク入力が変更または中断されたため録音を停止しました。入力を確認してから再開してください。")
+
+        let meetingDisconnected = MicrophoneNotice(state: .recordingDeviceDisconnected, context: .meeting,
+                                                   deviceRemovalProven: true)
+        #expect(meetingDisconnected.title == "マイク切断により会議モードを終了しました")
+        #expect(meetingDisconnected.message == "マイクの接続が切れたため会議モードを終了しました。接続を確認してから再開してください。")
+
+        let meetingInterrupted = MicrophoneNotice(state: .recordingDeviceDisconnected, context: .meeting)
+        #expect(meetingInterrupted.title == "マイク入力の中断により会議モードを終了しました")
+        #expect(meetingInterrupted.message == "マイク入力が変更または中断されたため会議モードを終了しました。入力を確認してから再開してください。")
+        #expect(meetingInterrupted.primaryAction == .openMicrophoneSettings)
+        #expect(meetingInterrupted.secondaryAction == .dismiss)
     }
 
     @Test func stateMetadataMatchesTaxonomy() {
@@ -102,6 +115,19 @@ struct MicrophoneNoticeTests {
         #expect(store.current == nil)
         let repeatedSuccessfulStart = store.recordSuccessfulStart()
         #expect(!repeatedSuccessfulStart)
+    }
+
+    @Test func removalEvidenceIsRetainedByTheStore() {
+        var store = MicrophoneNoticeStore()
+        #expect(store.recordFailure(.recordingDeviceDisconnected, timing: .finalFailure,
+                                    deviceRemovalProven: true))
+        #expect(store.current?.deviceRemovalProven == true)
+        #expect(store.current?.title == "録音中にマイクが切断されました")
+
+        store = MicrophoneNoticeStore()
+        #expect(store.recordFailure(.recordingDeviceDisconnected, timing: .finalFailure))
+        #expect(store.current?.deviceRemovalProven == false)
+        #expect(store.current?.title == "録音中にマイク入力が中断されました")
     }
 
     @Test func priorityProtectsHigherStatesAndLatestSamePriorityWins() {

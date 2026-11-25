@@ -9,7 +9,7 @@ struct MicrophoneNoticeTests {
             (.selectedDeviceMissing, "選択したマイクが未接続です", "接続を確認するか、設定で別のマイクを選んでください。自動では切り替えません。", .openMicrophoneSettings, .retryRecording),
             (.noInputDevice, "使えるマイクが見つかりません", "マイクを接続するか、macOS のサウンド設定で入力デバイスを確認してください。", .openSoundSettings, .retryRecording),
             (.ambiguousDevice, "マイクを特定できません", "同じ名前のマイクが重複している可能性があります。設定で選び直してください。", .openMicrophoneSettings, .retryRecording),
-            (.recordingDeviceDisconnected, "録音中にマイクが切断されました", "マイクの接続が切れたため録音を停止しました。接続を確認してから再開してください。", .openMicrophoneSettings, .dismiss),
+            (.recordingDeviceDisconnected, "録音中にマイク入力が中断されました", "マイク入力が変更または中断されたため録音を停止しました。入力を確認してから再開してください。", .openMicrophoneSettings, .dismiss),
             (.startUnavailable, "マイクを開始できませんでした", "他のアプリが使用中か、マイクが応答していません。確認してからもう一度お試しください。", .retryRecording, .dismiss),
             (.inputFormatUnconfirmed, "マイクの入力形式を確認できません", "マイクを再接続するか、設定で別のマイクを選んでからもう一度お試しください。", .openMicrophoneSettings, .dismiss),
             (.buffersUnstable, "マイクの準備が安定しません", "接続直後などで音声入力が不安定です。少し待ってからもう一度お試しください。", .retryRecording, .dismiss),
@@ -25,10 +25,23 @@ struct MicrophoneNoticeTests {
         }
     }
 
-    func meetingDisconnectUsesMeetingCopyVariant() {
-        let notice = MicrophoneNotice(state: .recordingDeviceDisconnected, context: .meeting)
-        check(notice.title == "マイク切断により会議モードを終了しました")
-        check(notice.message == "マイクの接続が切れたため会議モードを終了しました。接続を確認してから再開してください。")
+    func recordingDeviceCopyFollowsRemovalEvidence() {
+        let disconnected = MicrophoneNotice(state: .recordingDeviceDisconnected, deviceRemovalProven: true)
+        check(disconnected.title == "録音中にマイクが切断されました")
+        check(disconnected.message == "マイクの接続が切れたため録音を停止しました。接続を確認してから再開してください。")
+
+        let interrupted = MicrophoneNotice(state: .recordingDeviceDisconnected)
+        check(interrupted.title == "録音中にマイク入力が中断されました")
+        check(interrupted.message == "マイク入力が変更または中断されたため録音を停止しました。入力を確認してから再開してください。")
+
+        let meetingDisconnected = MicrophoneNotice(state: .recordingDeviceDisconnected, context: .meeting,
+                                                   deviceRemovalProven: true)
+        check(meetingDisconnected.title == "マイク切断により会議モードを終了しました")
+        check(meetingDisconnected.message == "マイクの接続が切れたため会議モードを終了しました。接続を確認してから再開してください。")
+
+        let meetingInterrupted = MicrophoneNotice(state: .recordingDeviceDisconnected, context: .meeting)
+        check(meetingInterrupted.title == "マイク入力の中断により会議モードを終了しました")
+        check(meetingInterrupted.message == "マイク入力が変更または中断されたため会議モードを終了しました。入力を確認してから再開してください。")
     }
 
     func stateMetadataMatchesTaxonomy() {
@@ -82,6 +95,19 @@ struct MicrophoneNoticeTests {
         check(store.current?.state == .buffersUnstable)
         check(store.recordSuccessfulStart())
         check(store.current == nil)
+    }
+
+    func removalEvidenceIsRetainedByTheStore() {
+        var store = MicrophoneNoticeStore()
+        check(store.recordFailure(.recordingDeviceDisconnected, timing: .finalFailure,
+                                  deviceRemovalProven: true))
+        check(store.current?.deviceRemovalProven == true)
+        check(store.current?.title == "録音中にマイクが切断されました")
+
+        store = MicrophoneNoticeStore()
+        check(store.recordFailure(.recordingDeviceDisconnected, timing: .finalFailure))
+        check(store.current?.deviceRemovalProven == false)
+        check(store.current?.title == "録音中にマイク入力が中断されました")
     }
 
     func priorityProtectsHigherStatesAndLatestSamePriorityWins() {

@@ -549,8 +549,9 @@ import KoeBridgeEngines
         session.onMicrophoneStarted = { [weak self] in
             self?.clearMicrophoneNoticeForSuccessfulStart()
         }
-        session.onMicrophoneDisconnect = { [weak self] in
-            self?.recordMicrophoneNotice(.recordingDeviceDisconnected, timing: .finalFailure, context: .meeting)
+        session.onMicrophoneInterruption = { [weak self] interruption in
+            self?.recordMicrophoneNotice(.recordingDeviceDisconnected, timing: .finalFailure, context: .meeting,
+                deviceRemovalProven: interruption == .deviceRemoval)
         }
         session.onMicrophoneFailure = { [weak self] error, disposition in
             self?.recordMicrophoneNotice(MicrophoneNoticeBinding.state(for: error, disposition: disposition),
@@ -955,10 +956,12 @@ import KoeBridgeEngines
     private func recordMicrophoneNotice(
         _ state: MicrophoneNoticeState?,
         timing: MicrophoneNoticeFailureTiming,
-        context: MicrophoneNoticeContext = .standard
+        context: MicrophoneNoticeContext = .standard,
+        deviceRemovalProven: Bool = false
     ) {
         guard let state else { return }
-        if microphoneNoticeStore.recordFailure(state, timing: timing, context: context) {
+        if microphoneNoticeStore.recordFailure(state, timing: timing, context: context,
+                                               deviceRemovalProven: deviceRemovalProven) {
             microphoneNotice = microphoneNoticeStore.current
         }
     }
@@ -1184,13 +1187,14 @@ import KoeBridgeEngines
                                 self.resolve(take, text: nil, reason: "音声送信キューから音声が欠落しました")
                             }
                         }
-                    }, onDeviceChanged: { [weak self, weak take, weak candidate] in
+                    }, onDeviceChanged: { [weak self, weak take, weak candidate] interruption in
                         Task { @MainActor [weak self, weak take, weak candidate] in
                             guard let self, let take, let candidate, !take.finished,
                                   self.active === take, take.mic === candidate else { return }
                             // Covers the narrow ready-to-UI handoff as well as
                             // recording; preparing-only events stay inside start().
-                            self.recordMicrophoneNotice(.recordingDeviceDisconnected, timing: .finalFailure)
+                            self.recordMicrophoneNotice(.recordingDeviceDisconnected, timing: .finalFailure,
+                                deviceRemovalProven: interruption == .deviceRemoval)
                             self.resolve(take, text: nil, reason: "マイク入力が変更または中断されたため録音を終了しました")
                         }
                     })

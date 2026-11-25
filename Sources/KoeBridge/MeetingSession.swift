@@ -37,7 +37,7 @@ private final class MeetingAudioCount: @unchecked Sendable {
     var onStatus: ((String) -> Void)?
     var onFinished: ((String, Bool) -> Void)?
     var onMicrophoneStarted: (() -> Void)?
-    var onMicrophoneDisconnect: (() -> Void)?
+    var onMicrophoneInterruption: ((MicrophoneInputInterruption) -> Void)?
     var onMicrophoneFailure: ((Error, MicrophoneCapture.EngineLifetime.Disposition) -> Void)?
 
     @MainActor final class Chunk {
@@ -291,18 +291,19 @@ private final class MeetingAudioCount: @unchecked Sendable {
             emittedAudio.append(data)
             if case .dropped = continuation.yield(data) { integrity.markDropped() }
         }
-        let failure: () -> Void = { [weak self, weak chunk] in
+        let failureWithInterruption: (MicrophoneInputInterruption) -> Void = { [weak self, weak chunk] interruption in
             Task { @MainActor in
                 guard let self, let chunk, !chunk.captureEnded else { return }
                 chunk.failed = true; chunk.stopRequested = true
                 if source == .microphone {
                     self.micFailed = true
-                    self.onMicrophoneDisconnect?()
+                    self.onMicrophoneInterruption?(interruption)
                     self.stop()
                 }
                 else { self.systemFailed = true }
             }
         }
+        let failure: () -> Void = { failureWithInterruption(.inputChange) }
         chunk.worker = Task {
             do {
                 for await data in stream {
@@ -342,7 +343,7 @@ private final class MeetingAudioCount: @unchecked Sendable {
             requestedMicrophone = true
             chunk.mic = mic
             do {
-                try await mic.start(onAudio: audio, onDeviceChanged: failure)
+                try await mic.start(onAudio: audio, onDeviceChanged: failureWithInterruption)
             } catch {
                 if !(error is CancellationError) {
                     microphoneRecoveryMessage = mic.recoveryDisposition.message

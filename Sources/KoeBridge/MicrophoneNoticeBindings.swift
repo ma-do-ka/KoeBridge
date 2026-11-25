@@ -5,7 +5,7 @@ import KoeBridgeCore
 extension MicrophoneCapture.CaptureError: MicrophoneNoticeErrorIdentity {
     var microphoneNoticeState: MicrophoneNoticeState {
         switch self {
-        case .noInput: return .noInputDevice
+        case .noInput: return .inputFormatUnconfirmed
         case .alreadyStarted: return .unclassifiedStartFailure
         case .engineInUse: return .startUnavailable
         case .notReady(let failure): return failure.microphoneNoticeState
@@ -33,7 +33,14 @@ enum MicrophoneNoticeBinding {
         case .replacementPending: return .inputFormatUnconfirmed
         case .normal, .verificationDeferred: break
         }
-        return MicrophoneNoticeClassifier.state(for: error)
+        if let identified = error as? MicrophoneNoticeErrorIdentity {
+            return identified.microphoneNoticeState
+        }
+        let nsError = error as NSError
+        if nsError.domain == NSOSStatusErrorDomain || nsError.domain == "OSStatus" {
+            return .startUnavailable
+        }
+        return .unclassifiedStartFailure
     }
 }
 #endif

@@ -156,19 +156,34 @@ public enum MicrophoneNoticeState: String, CaseIterable, Equatable, Sendable {
 public struct MicrophoneNotice: Equatable, Sendable {
     public let state: MicrophoneNoticeState
     public let context: MicrophoneNoticeContext
+    public let deviceRemovalProven: Bool
 
-    public init(state: MicrophoneNoticeState, context: MicrophoneNoticeContext = .standard) {
+    public init(state: MicrophoneNoticeState, context: MicrophoneNoticeContext = .standard,
+                deviceRemovalProven: Bool = false) {
         self.state = state
         self.context = context
+        self.deviceRemovalProven = deviceRemovalProven
     }
 
     public var title: String {
-        guard state == .recordingDeviceDisconnected, context == .meeting else { return state.title }
+        guard state == .recordingDeviceDisconnected else { return state.title }
+        guard deviceRemovalProven else {
+            return context == .meeting
+                ? "マイク入力の中断により会議モードを終了しました"
+                : "録音中にマイク入力が中断されました"
+        }
+        guard context == .meeting else { return state.title }
         return "マイク切断により会議モードを終了しました"
     }
 
     public var message: String {
-        guard state == .recordingDeviceDisconnected, context == .meeting else { return state.message }
+        guard state == .recordingDeviceDisconnected else { return state.message }
+        guard deviceRemovalProven else {
+            return context == .meeting
+                ? "マイク入力が変更または中断されたため会議モードを終了しました。入力を確認してから再開してください。"
+                : "マイク入力が変更または中断されたため録音を停止しました。入力を確認してから再開してください。"
+        }
+        guard context == .meeting else { return state.message }
         return "マイクの接続が切れたため会議モードを終了しました。接続を確認してから再開してください。"
     }
 
@@ -186,11 +201,12 @@ public struct MicrophoneNoticeStore: Equatable, Sendable {
     public mutating func recordFailure(
         _ state: MicrophoneNoticeState,
         timing: MicrophoneNoticeFailureTiming,
-        context: MicrophoneNoticeContext = .standard
+        context: MicrophoneNoticeContext = .standard,
+        deviceRemovalProven: Bool = false
     ) -> Bool {
         guard timing == .finalFailure else { return false }
         if let current, current.state.priority < state.priority { return false }
-        let next = MicrophoneNotice(state: state, context: context)
+        let next = MicrophoneNotice(state: state, context: context, deviceRemovalProven: deviceRemovalProven)
         if let current, current == next { return false }
         current = next
         return true
