@@ -36,6 +36,7 @@ Sources/KoeBridgeAudioTap/include/KoeBridgeAudioTap.h
 Sources/KoeBridgeCore/AmiVoiceWire.swift
 Sources/KoeBridgeCore/AudioDurationPolicy.swift
 Sources/KoeBridgeCore/AudioIntegrityState.swift
+Sources/KoeBridgeCore/BenchmarkMetrics.swift
 Sources/KoeBridgeCore/DiagnosticFileStore.swift
 Sources/KoeBridgeCore/DiagnosticLogPolicy.swift
 Sources/KoeBridgeCore/DirectInputObservation.swift
@@ -62,6 +63,7 @@ Sources/KoeBridgePOSIX/FileLock.c
 Sources/KoeBridgePOSIX/include/KoeBridgePOSIX.h
 Sources/KoeBridgeSelfTest/AmiVoiceWireTests.swift
 Sources/KoeBridgeSelfTest/AudioDurationTests.swift
+Sources/KoeBridgeSelfTest/BenchmarkMetricsTests.swift
 Sources/KoeBridgeSelfTest/DiagnosticLogPolicyTests.swift
 Sources/KoeBridgeSelfTest/DirectInputObservationTests.swift
 Sources/KoeBridgeSelfTest/DirectTypingPlanTests.swift
@@ -88,6 +90,7 @@ Sources/KoeBridgeSelfTest/UserFacingErrorMessageTests.swift
 TEST_REPORT.md
 Tests/KoeBridgeCoreTests/AmiVoiceWireTests.swift
 Tests/KoeBridgeCoreTests/AudioDurationTests.swift
+Tests/KoeBridgeCoreTests/BenchmarkMetricsTests.swift
 Tests/KoeBridgeCoreTests/DiagnosticLogPolicyTests.swift
 Tests/KoeBridgeCoreTests/DirectInputObservationTests.swift
 Tests/KoeBridgeCoreTests/DirectTypingPlanTests.swift
