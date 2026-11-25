@@ -421,6 +421,7 @@ import KoeBridgeCore
                     localizedName: takeStart?.pid == pid ? takeStart?.localizedName : NSRunningApplication(processIdentifier: pid)?.localizedName,
                     pid: pid, focused: app, window: window, selectionAttribute: nil,
                     selection: nil, textSnapshot: nil, capturedAt: now, blockedReason: nil)
+                    .withReceiptFieldNature(.unknown)
                 recoveryCandidate = (DeliveryRecovery(unavailableTarget: placeholder, rejectedAt: now, ax: transport.ax), placeholder)
             } else {
                 recoveryCandidate = nil
@@ -680,8 +681,12 @@ import KoeBridgeCore
             }
             let resultUptimeMS = diagnostics?.record(.result, stage: .result, resultFields)
                 ?? InputDiagnosticTrace.uptimeMilliseconds(ProcessInfo.processInfo.systemUptime)
+            var storedTarget = target
+            if let receipt, !receipt.proof.retainsContentEvidence {
+                storedTarget = receipt.target
+            }
             return Report(outcome: outcome, reason: reason, receipt: receipt,
-                          eventsPosted: sent > 0, target: target, diagnostics: diagnostics,
+                          eventsPosted: sent > 0, target: storedTarget, diagnostics: diagnostics,
                           resultUptimeMS: resultUptimeMS, valueUnsupported: receiptEligibility == .valueUnsupported,
                           exactBaselineAvailable: exactBaselineAvailable,
                           postSendFocusVerified: postSendFocusVerified,
@@ -1011,7 +1016,8 @@ import KoeBridgeCore
             }
             guard let after = observed else { continue }
             guard let proof = InsertionReceiptPolicy.verify(before: before, inserted: safeText,
-                                                            after: after, sameTarget: true) else { continue }
+                                                            after: after, sameTarget: true,
+                                                            fieldNature: target.receiptFieldNature) else { continue }
             // Focus may move while AX is answering. Recheck before accepting
             // the receipt, without imposing the already-replaced old caret.
             let finalFocus = transport.receiptFocus(target, timeout, diagnostics, sent)
@@ -1020,7 +1026,8 @@ import KoeBridgeCore
                 return report(.inserted, "delivery_cancelled_after_post")
             }
             guard ProcessInfo.processInfo.systemUptime <= deadline else { deadlineExceeded = true; break }
-            let receipt = Receipt(target: target, proof: proof, postedAt: postedAt,
+            let receiptTarget = proof.retainsContentEvidence ? target : target.removingTextSnapshot()
+            let receipt = Receipt(target: receiptTarget, proof: proof, postedAt: postedAt,
                                   verifiedAt: ProcessInfo.processInfo.systemUptime)
             return report(.verifiedInserted, "verified_value_and_selection", receipt: receipt)
         }

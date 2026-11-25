@@ -110,6 +110,7 @@ import KoeBridgeCore
                     pid: self.pid, focused: self.field, window: self.currentWindow, selectionAttribute: name,
                     selection: self.selection.value ?? self.marker.value, textSnapshot: self.initialSnapshot,
                     capturedAt: self.now, blockedReason: nil)
+                    .withReceiptFieldNature(.normal)
                 let gate = InsertionTarget.DeliveryGateRead(role: self.role, subrole: self.subrole,
                     selectedRange: self.selection, selectedMarker: self.marker, editable: self.editable)
                 let rejection = DeliveryRejection(target: target, gate: gate, rejectedAt: self.now,
@@ -158,6 +159,7 @@ import KoeBridgeCore
             focused: f.field, window: f.window, selectionAttribute: kAXSelectedTextRangeAttribute,
             selection: f.selection.value, textSnapshot: .init(text: "cached private body",
                 selection: .init(location: 0, length: 0)), capturedAt: 0, blockedReason: nil)
+            .withReceiptFieldNature(.normal)
         for (role, subrole, allowed) in [(secure, standard, false), (normal, secure, false),
             (normal, timeout, false), (normal, wrongType, false), (timeout, standard, false),
             (wrongType, standard, false), (normal, absent, false), (normal, standard, true)] {
@@ -1057,6 +1059,7 @@ import KoeBridgeCore
                                             selectionAttribute: kAXSelectedTextRangeAttribute,
                                             selection: f.range(0, 0).value, textSnapshot: nil,
                                             capturedAt: 0, blockedReason: nil)
+                                            .withReceiptFieldNature(.normal)
             f.currentField = nil
             var t = f.transport()
             t.capture = { _ in
@@ -1372,6 +1375,7 @@ import KoeBridgeCore
                     let fresh = InsertionTarget(bundleIdentifier: old.bundleIdentifier, localizedName: nil,
                         pid: old.pid, focused: sender.f.other, window: old.window, selectionAttribute: old.selectionAttribute,
                         selection: old.selection, textSnapshot: old.textSnapshot, capturedAt: old.capturedAt, blockedReason: nil)
+                        .withReceiptFieldNature(.normal)
                     transport.capture = { _ in .accepted(fresh) }
                 } else { sender.f.currentWindow = sender.f.other }
                 let report = await gate.post(.dictation("B"), from: sender.source(producer), transport: transport) { true }

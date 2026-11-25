@@ -192,4 +192,73 @@ struct InsertionReceiptPolicyTests {
         #expect(Policy.reconcile(state("pX", 2), using: probeReceiptI5, sameTarget: true,
                                  eventsPosted: true, capturedDuringSubmission: false) == .rebased(state("pX", 2)))
     }
+
+    @Test func blockScopedReceiptEvidenceIsTieredByFieldNature() throws {
+        let before = state("suffix", 0)
+        let inserted = "abc"
+        let after = state("abc", 3)
+        func receipt(_ nature: Policy.FieldNature) -> Policy.Receipt? {
+            Policy.verify(before: before, inserted: inserted, after: after,
+                          sameTarget: true, fieldNature: nature)
+        }
+
+        let normal = try #require(receipt(.normal))
+        #expect(normal.mode == .blockScoped)
+        #expect(normal.retainsContentEvidence)
+        #expect(normal.before.text == before.text)
+        #expect(normal.after.text == after.text)
+        #expect(normal.inserted == inserted)
+        #expect(normal.before.textSHA256 == nil)
+        #expect(normal.after.textSHA256 == nil)
+        #expect(normal.insertedSHA256 == nil)
+
+        let protected = try #require(receipt(.protected))
+        #expect(protected.mode == .blockScoped)
+        #expect(protected.fieldNature == .protected)
+        #expect(!protected.retainsContentEvidence)
+        #expect(protected.before.text.isEmpty)
+        #expect(protected.after.text.isEmpty)
+        #expect(protected.inserted.isEmpty)
+        #expect(protected.before.textUTF16Count == before.text.utf16.count)
+        #expect(protected.after.textUTF16Count == after.text.utf16.count)
+        #expect(protected.insertedUTF16Count == inserted.utf16.count)
+        #expect(protected.before.textSHA256?.count == 64)
+        #expect(protected.after.textSHA256?.count == 64)
+        #expect(protected.insertedSHA256?.count == 64)
+        #expect(protected.before.selection == before.selection)
+        #expect(protected.after.selection == after.selection)
+        #expect(Policy.reconcile(before, using: protected, sameTarget: true, eventsPosted: true) == .blocked)
+
+        let unknown = try #require(receipt(.unknown))
+        #expect(unknown.fieldNature == .protected)
+        #expect(!unknown.retainsContentEvidence)
+        #expect(unknown.before.text.isEmpty)
+        #expect(unknown.after.text.isEmpty)
+        #expect(unknown.insertedSHA256?.count == 64)
+    }
+
+    @Test func fieldNatureClassificationIsExplicitAndFailsClosed() {
+        #expect(Policy.fieldNature(role: "AXTextField", subrole: nil, editable: true,
+                                 hasTextSelection: false, bundleIdentifier: "com.example.Editor") == .normal)
+        #expect(Policy.fieldNature(role: "AXTextArea", subrole: nil, editable: nil,
+                                 hasTextSelection: true, bundleIdentifier: "com.example.Editor") == .normal)
+        #expect(Policy.fieldNature(role: "AXSecureTextField", subrole: nil, editable: true,
+                                 hasTextSelection: true, bundleIdentifier: "com.example.Editor") == .protected)
+        #expect(Policy.fieldNature(role: "AXTextField", subrole: nil, editable: true,
+                                 hasTextSelection: false, bundleIdentifier: "com.example.Editor",
+                                 labelHints: ["PIN入力"]) == .protected)
+        #expect(Policy.fieldNature(role: "AXTextField", subrole: nil, editable: true,
+                                 hasTextSelection: false, bundleIdentifier: "com.example.Editor",
+                                 explicitlyProtected: true) == .protected)
+        #expect(Policy.fieldNature(role: "AXTextField", subrole: nil, editable: true,
+                                 hasTextSelection: false, bundleIdentifier: "com.example.Secrets",
+                                 protectedBundleIdentifiers: ["com.example.Secrets"]) == .protected)
+        #expect(Policy.fieldNature(role: nil, subrole: nil, editable: true,
+                                 hasTextSelection: true, bundleIdentifier: "com.example.Editor") == .unknown)
+        #expect(Policy.fieldNature(role: "AXWebArea", subrole: nil, editable: true,
+                                 hasTextSelection: true, bundleIdentifier: "com.example.Editor") == .unknown)
+        #expect(Policy.fieldNature(role: "AXTextField", subrole: nil, editable: true,
+                                 hasTextSelection: false, bundleIdentifier: "com.example.Editor",
+                                 attributesReadable: false) == .unknown)
+    }
 }

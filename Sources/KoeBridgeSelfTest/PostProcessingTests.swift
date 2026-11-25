@@ -25,7 +25,8 @@ struct PostProcessingTests {
             let original = String(repeating: "あ", count: originalCount)
             let limit = max(originalCount * 3, originalCount + 120)
             check(!PostProcessingPolicy.accepts(original: original, processed: ""))
-            for count in [1, limit - 1, limit] {
+            let passingCounts = originalCount == 0 ? [1, limit - 1, limit] : [originalCount, limit - 1, limit]
+            for count in passingCounts {
                 check(PostProcessingPolicy.accepts(original: original,
                     processed: String(repeating: "👩🏽‍💻", count: count)))
             }
@@ -35,6 +36,31 @@ struct PostProcessingTests {
         let original = String(repeating: "e\u{301}", count: 61)
         check(PostProcessingPolicy.accepts(original: original, processed: String(repeating: "x", count: 183)))
         check(!PostProcessingPolicy.accepts(original: original, processed: String(repeating: "x", count: 184)))
+    }
+
+    func shorteningGuard() {
+        func usesProcessed(originalCount: Int, processedCount: Int) -> Bool {
+            let original = String(repeating: "あ", count: originalCount)
+            let processed = String(repeating: "い", count: processedCount)
+            return PostProcessingPolicy.adoption(original: original, processed: processed).text == processed
+        }
+
+        check(!usesProcessed(originalCount: 5, processedCount: 0))
+        check(!usesProcessed(originalCount: 200, processedCount: 0))
+        check(usesProcessed(originalCount: 19, processedCount: 1))
+        check(usesProcessed(originalCount: 30, processedCount: 11))
+
+        check(!usesProcessed(originalCount: 100, processedCount: 55))
+        check(usesProcessed(originalCount: 100, processedCount: 56))
+        check(!usesProcessed(originalCount: 40, processedCount: 20))
+        check(usesProcessed(originalCount: 40, processedCount: 21))
+
+        check(!usesProcessed(originalCount: 400, processedCount: 300))
+        check(usesProcessed(originalCount: 400, processedCount: 301))
+        check(!usesProcessed(originalCount: 200, processedCount: 120))
+        check(usesProcessed(originalCount: 200, processedCount: 121))
+        check(usesProcessed(originalCount: 100, processedCount: 100))
+        check(usesProcessed(originalCount: 100, processedCount: 101))
     }
 
     func requestModes() throws {

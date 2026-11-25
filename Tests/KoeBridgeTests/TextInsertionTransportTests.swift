@@ -65,6 +65,7 @@ import KoeBridgeCore
             selectionAttribute: selectionAttribute, selection: selection,
             textSnapshot: numeric ? .init(text: text, selection: .init(location: caret, length: 0)) : nil,
             capturedAt: 1, blockedReason: nil)
+            .withReceiptFieldNature(.normal)
     }
 
     @Test func deliveryAcceptsEditorsWithNoNumericOrMarkerSelection() throws {
@@ -577,6 +578,7 @@ import KoeBridgeCore
                                            selectionAttribute: "AXSelectedTextMarkerRange",
                                            selection: markerValue, textSnapshot: nil,
                                            capturedAt: 1.200, blockedReason: nil)
+                                           .withReceiptFieldNature(.normal)
         // If live AX selection read returns .noValue (nil), verifySettledPredecessors must NOT fall back to fresh.selection.
         var failingTransport = TextInsertion.Transport()
         failingTransport.ax.now = { 1.300 }

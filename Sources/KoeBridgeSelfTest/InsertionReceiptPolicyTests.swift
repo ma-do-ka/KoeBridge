@@ -414,4 +414,73 @@ struct InsertionReceiptPolicyTests {
                 bracketedSelectionStable: true))
         }
     }
+
+    func blockScopedReceiptEvidenceIsTieredByFieldNature() throws {
+        let before = state("suffix", 0)
+        let inserted = "abc"
+        let after = state("abc", 3)
+        func receipt(_ nature: Policy.FieldNature) -> Policy.Receipt? {
+            Policy.verify(before: before, inserted: inserted, after: after,
+                          sameTarget: true, fieldNature: nature)
+        }
+
+        let normal = try require(receipt(.normal))
+        check(normal.mode == .blockScoped)
+        check(normal.retainsContentEvidence)
+        check(normal.before.text == before.text)
+        check(normal.after.text == after.text)
+        check(normal.inserted == inserted)
+        check(normal.before.textSHA256 == nil)
+        check(normal.after.textSHA256 == nil)
+        check(normal.insertedSHA256 == nil)
+
+        let protected = try require(receipt(.protected))
+        check(protected.mode == .blockScoped)
+        check(protected.fieldNature == .protected)
+        check(!protected.retainsContentEvidence)
+        check(protected.before.text.isEmpty)
+        check(protected.after.text.isEmpty)
+        check(protected.inserted.isEmpty)
+        check(protected.before.textUTF16Count == before.text.utf16.count)
+        check(protected.after.textUTF16Count == after.text.utf16.count)
+        check(protected.insertedUTF16Count == inserted.utf16.count)
+        check(protected.before.textSHA256?.count == 64)
+        check(protected.after.textSHA256?.count == 64)
+        check(protected.insertedSHA256?.count == 64)
+        check(protected.before.selection == before.selection)
+        check(protected.after.selection == after.selection)
+        check(Policy.reconcile(before, using: protected, sameTarget: true, eventsPosted: true) == .blocked)
+
+        let unknown = try require(receipt(.unknown))
+        check(unknown.fieldNature == .protected)
+        check(!unknown.retainsContentEvidence)
+        check(unknown.before.text.isEmpty)
+        check(unknown.after.text.isEmpty)
+        check(unknown.insertedSHA256?.count == 64)
+    }
+
+    func fieldNatureClassificationIsExplicitAndFailsClosed() {
+        check(Policy.fieldNature(role: "AXTextField", subrole: nil, editable: true,
+                                 hasTextSelection: false, bundleIdentifier: "com.example.Editor") == .normal)
+        check(Policy.fieldNature(role: "AXTextArea", subrole: nil, editable: nil,
+                                 hasTextSelection: true, bundleIdentifier: "com.example.Editor") == .normal)
+        check(Policy.fieldNature(role: "AXSecureTextField", subrole: nil, editable: true,
+                                 hasTextSelection: true, bundleIdentifier: "com.example.Editor") == .protected)
+        check(Policy.fieldNature(role: "AXTextField", subrole: nil, editable: true,
+                                 hasTextSelection: false, bundleIdentifier: "com.example.Editor",
+                                 labelHints: ["PIN入力"]) == .protected)
+        check(Policy.fieldNature(role: "AXTextField", subrole: nil, editable: true,
+                                 hasTextSelection: false, bundleIdentifier: "com.example.Editor",
+                                 explicitlyProtected: true) == .protected)
+        check(Policy.fieldNature(role: "AXTextField", subrole: nil, editable: true,
+                                 hasTextSelection: false, bundleIdentifier: "com.example.Secrets",
+                                 protectedBundleIdentifiers: ["com.example.Secrets"]) == .protected)
+        check(Policy.fieldNature(role: nil, subrole: nil, editable: true,
+                                 hasTextSelection: true, bundleIdentifier: "com.example.Editor") == .unknown)
+        check(Policy.fieldNature(role: "AXWebArea", subrole: nil, editable: true,
+                                 hasTextSelection: true, bundleIdentifier: "com.example.Editor") == .unknown)
+        check(Policy.fieldNature(role: "AXTextField", subrole: nil, editable: true,
+                                 hasTextSelection: false, bundleIdentifier: "com.example.Editor",
+                                 attributesReadable: false) == .unknown)
+    }
 }

@@ -1864,7 +1864,7 @@ import KoeBridgeEngines
         } else {
             deliveringTakeID = id
             let report = await postingGate.post(.dictation(text), from: .take(take), finalize: { report in
-                if let receipt = report.receipt {
+                if let receipt = report.receipt, receipt.proof.retainsContentEvidence {
                     self.postingGate.lastDeliveryAnchor = LastDeliveryAnchor(receipt: receipt, sourceRecordID: recordID)
                 }
             }) {
@@ -2071,7 +2071,7 @@ import KoeBridgeEngines
             let sourceRecordID = postingGate.lastDeliveryAnchor?.sourceRecordID
             deliveringTakeID = take.id
             let report = await postingGate.post(.dictation(output.text), from: .take(take), finalize: { report in
-                if take.isFixLastInput, let receipt = report.receipt {
+                if take.isFixLastInput, let receipt = report.receipt, receipt.proof.retainsContentEvidence {
                     self.postingGate.lastDeliveryAnchor = LastDeliveryAnchor(receipt: receipt, sourceRecordID: sourceRecordID)
                 }
             }) {

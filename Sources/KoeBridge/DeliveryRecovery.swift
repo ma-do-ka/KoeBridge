@@ -1,6 +1,7 @@
 #if os(macOS)
 import AppKit
 import ApplicationServices
+import Carbon
 import KoeBridgeCore
 
 /// These references belong only to the current delivery adjudication.
@@ -323,9 +324,27 @@ struct RecoveryAX {
             guard InsertionTarget.secureExclusionReadable(finalSubrole.value, status: finalSubrole.status),
                   finalSubrole.value as? String != "AXSecureTextField", ax.frontPID() == original.pid,
                   ax.now() < limit else { return .rejected }
+            let observedNature = InsertionReceiptPolicy.fieldNature(
+                role: role,
+                subrole: finalSubrole.value as? String,
+                editable: editableValue,
+                hasTextSelection: true,
+                bundleIdentifier: original.bundleIdentifier,
+                labelHints: [original.localizedName],
+                secureInputEnabled: IsSecureEventInputEnabled()
+            )
+            let recoveredNature: InsertionReceiptPolicy.FieldNature
+            if observedNature == .protected || original.receiptFieldNature == .protected {
+                recoveredNature = .protected
+            } else if observedNature == .normal && original.receiptFieldNature == .normal {
+                recoveredNature = .normal
+            } else {
+                recoveredNature = .unknown
+            }
             let target = InsertionTarget(bundleIdentifier: original.bundleIdentifier, localizedName: original.localizedName,
                 pid: original.pid, focused: element, window: window, selectionAttribute: name,
                 selection: selection, textSnapshot: nil, capturedAt: ax.now(), blockedReason: nil)
+                .withReceiptFieldNature(recoveredNature)
             return .editor(Host(target: target, role: role))
         } catch { return .rejected }
     }

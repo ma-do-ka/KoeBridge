@@ -1,6 +1,7 @@
 #if os(macOS)
 import AppKit
 import ApplicationServices
+import Carbon
 import CoreGraphics
 import KoeBridgeCore
 
@@ -15,6 +16,7 @@ import KoeBridgeCore
     let selectionAttribute: String?
     private(set) var selection: CFTypeRef?
     private(set) var textSnapshot: InsertionReceiptPolicy.Snapshot?
+    private(set) var receiptFieldNature = InsertionReceiptPolicy.FieldNature.unknown
     private(set) var capturedAt: TimeInterval
     private(set) var blockedReason: String?
     private(set) var hasHardPredecessorBlock = false
@@ -311,6 +313,24 @@ import KoeBridgeCore
                                      diagnostics: diagnostics, stage: stage)
             let editableRead = copyAX(element, name: "AXEditable" as CFString, operation: .editable,
                                       diagnostics: diagnostics, stage: stage)
+            let editableValue = editableRead.value.flatMap {
+                CFGetTypeID($0) == CFBooleanGetTypeID() ? $0 as? Bool : nil
+            }
+            let titleRead = copyAX(element, name: "AXTitle" as CFString, operation: .title,
+                                   timeout: 0.02, diagnostics: diagnostics, stage: stage)
+            let descriptionRead = copyAX(element, name: "AXDescription" as CFString,
+                                         operation: .fieldDescription, timeout: 0.02,
+                                         diagnostics: diagnostics, stage: stage)
+            let placeholderRead = copyAX(element, name: "AXPlaceholderValue" as CFString,
+                                         operation: .placeholder, timeout: 0.02,
+                                         diagnostics: diagnostics, stage: stage)
+            let fieldHints = [target.localizedName,
+                              titleRead.value as? String,
+                              descriptionRead.value as? String,
+                              placeholderRead.value as? String]
+            let hintReadsReadable = [titleRead, descriptionRead, placeholderRead].allSatisfy { read in
+                read.status == .success || read.status == .noValue || read.status == .attributeUnsupported
+            }
             let gate = DeliveryGateRead(role: roleRead.value as? String, subrole: subroleRead, selectedRange: rangeRead,
                                         selectedMarker: markerRead, editable: editableRead, roleStatus: roleRead.status)
             lazy var rejection = DeliveryRejection(target: target, gate: gate, rejectedAt: ProcessInfo.processInfo.systemUptime,
@@ -321,6 +341,17 @@ import KoeBridgeCore
                                            retryCandidate: rejection.eligible) {
                 return .rejected(rejection, reason)
             }
+            target = target.withReceiptFieldNature(InsertionReceiptPolicy.fieldNature(
+                role: roleRead.value as? String,
+                subrole: subroleRead.value as? String,
+                editable: editableValue,
+                hasTextSelection: selection != nil,
+                bundleIdentifier: target.bundleIdentifier,
+                labelHints: fieldHints,
+                secureInputEnabled: IsSecureEventInputEnabled(),
+                attributesReadable: roleRead.status == .success && hintReadsReadable &&
+                    InsertionTarget.secureExclusionReadable(subroleRead.value, status: subroleRead.status)
+            ))
         }
         // Keep this delivery baseline ephemeral. External surrounding context
         // takes a fresh security-checked snapshot.
@@ -640,6 +671,18 @@ import KoeBridgeCore
         case (let lhs?, let rhs?): return CFEqual(lhs, rhs)
         default: return false
         }
+    }
+
+    func withReceiptFieldNature(_ nature: InsertionReceiptPolicy.FieldNature) -> InsertionTarget {
+        var updated = self
+        updated.receiptFieldNature = nature
+        return updated
+    }
+
+    func removingTextSnapshot() -> InsertionTarget {
+        var updated = self
+        updated.textSnapshot = nil
+        return updated
     }
 
     func rebased(to snapshot: InsertionReceiptPolicy.Snapshot) -> InsertionTarget? {
