@@ -1,0 +1,384 @@
+{
+  "schema_version": 1,
+  "language": "ja-JP",
+  "audio_format": {
+    "container": "WAV",
+    "encoding": "PCM_S16LE",
+    "sample_rate_hz": 16000,
+    "channels": 1
+  },
+  "clips": [
+    {
+      "id": "t1-1-1",
+      "track": 1,
+      "category": 1,
+      "category_name": "会話メモ",
+      "file": "t1-1-1.wav",
+      "reference": "明日の午前中に歯医者の予約を変更したいので、受付が開く九時過ぎに電話する。ついでに、来週の出張の新幹線の切符も今日中に取っておく。",
+      "sha256": null,
+      "estimated_seconds": 13
+    },
+    {
+      "id": "t1-1-2",
+      "track": 1,
+      "category": 1,
+      "category_name": "会話メモ",
+      "file": "t1-1-2.wav",
+      "reference": "冷蔵庫に卵と牛乳とほうれん草が残っていたので、今夜はオムレツとスープにする。足りないものは帰りにコンビニで買ってくる。",
+      "sha256": null,
+      "estimated_seconds": 13
+    },
+    {
+      "id": "t1-1-3",
+      "track": 1,
+      "category": 1,
+      "category_name": "会話メモ",
+      "file": "t1-1-3.wav",
+      "reference": "週末は天気が良さそうなので、午前中に洗濯を済ませて、午後は近所の公園を散歩する。雨が降り出したら早めに切り上げる。",
+      "sha256": null,
+      "estimated_seconds": 13
+    },
+    {
+      "id": "t1-1-4",
+      "track": 1,
+      "category": 1,
+      "category_name": "会話メモ",
+      "file": "t1-1-4.wav",
+      "reference": "読んでいる本の三章が特に面白かったので、要点をノートにまとめておく。引用したい一文はページ番号と一緒に控えておく。",
+      "sha256": null,
+      "estimated_seconds": 13
+    },
+    {
+      "id": "t1-2-1",
+      "track": 1,
+      "category": 2,
+      "category_name": "ビジネス・敬語と同音異義語",
+      "file": "t1-2-1.wav",
+      "reference": "先方への見積書は本日中にご送付いたします。ご不明な点がございましたら、担当の者までお気軽にお問い合わせください。",
+      "sha256": null,
+      "estimated_seconds": 13
+    },
+    {
+      "id": "t1-2-2",
+      "track": 1,
+      "category": 2,
+      "category_name": "ビジネス・敬語と同音異義語",
+      "file": "t1-2-2.wav",
+      "reference": "会議の日程を来週の火曜日に変更していただけますでしょうか。関係者には私の方から改めてご連絡を差し上げます。",
+      "sha256": null,
+      "estimated_seconds": 13
+    },
+    {
+      "id": "t1-2-3",
+      "track": 1,
+      "category": 2,
+      "category_name": "ビジネス・敬語と同音異義語",
+      "file": "t1-2-3.wav",
+      "reference": "この橋を渡った先に、新しい支社の事務所があります。箸の持ち方を教わる教室も、同じ建物の中に入っているそうです。",
+      "sha256": null,
+      "estimated_seconds": 13
+    },
+    {
+      "id": "t1-2-4",
+      "track": 1,
+      "category": 2,
+      "category_name": "ビジネス・敬語と同音異義語",
+      "file": "t1-2-4.wav",
+      "reference": "機械の異常を早期に発見するため、監視の仕組みを強化する。対象の範囲と期間については、次回の打ち合わせで確定させる。",
+      "sha256": null,
+      "estimated_seconds": 13
+    },
+    {
+      "id": "t1-3-1",
+      "track": 1,
+      "category": 3,
+      "category_name": "日本語＋英語の技術用語",
+      "file": "t1-3-1.wav",
+      "reference": "このプルリクエストは、認証まわりのリファクタリングです。レビューが通ったら、ステージング環境にデプロイして動作を確認します。",
+      "sha256": null,
+      "estimated_seconds": 13
+    },
+    {
+      "id": "t1-3-2",
+      "track": 1,
+      "category": 3,
+      "category_name": "日本語＋英語の技術用語",
+      "file": "t1-3-2.wav",
+      "reference": "データベースのマイグレーションでインデックスを追加したところ、クエリのレスポンスが平均で四割ほど改善しました。",
+      "sha256": null,
+      "estimated_seconds": 13
+    },
+    {
+      "id": "t1-3-3",
+      "track": 1,
+      "category": 3,
+      "category_name": "日本語＋英語の技術用語",
+      "file": "t1-3-3.wav",
+      "reference": "新しいAPIのエンドポイントは、バージョニングのためパスにブイツーを含めます。古いクライアントとの互換性は当面維持します。",
+      "sha256": null,
+      "estimated_seconds": 13
+    },
+    {
+      "id": "t1-3-4",
+      "track": 1,
+      "category": 3,
+      "category_name": "日本語＋英語の技術用語",
+      "file": "t1-3-4.wav",
+      "reference": "テストがフレーキーになっているので、タイムアウトの扱いを見直します。本体の処理ではなく、テスト側の待ち方の問題だと思います。",
+      "sha256": null,
+      "estimated_seconds": 13
+    },
+    {
+      "id": "t1-4-1",
+      "track": 1,
+      "category": 4,
+      "category_name": "数字・日付・金額・バージョン",
+      "file": "t1-4-1.wav",
+      "reference": "売上は前年比で百分の十二増えて、三千四百五十万円になりました。一方で、広告費は二百万円ほど圧縮できています。",
+      "sha256": null,
+      "estimated_seconds": 13
+    },
+    {
+      "id": "t1-4-2",
+      "track": 1,
+      "category": 4,
+      "category_name": "数字・日付・金額・バージョン",
+      "file": "t1-4-2.wav",
+      "reference": "次回の締め切りは十二月十六日の午後六時です。提出物のファイル名には、日付とバージョン番号を必ず入れてください。",
+      "sha256": null,
+      "estimated_seconds": 13
+    },
+    {
+      "id": "t1-4-3",
+      "track": 1,
+      "category": 4,
+      "category_name": "数字・日付・金額・バージョン",
+      "file": "t1-4-3.wav",
+      "reference": "このプランは月額千九百八十円で、年間契約だと二か月分が無料になります。解約はいつでも可能ですが、日割り計算はされません。",
+      "sha256": null,
+      "estimated_seconds": 13
+    },
+    {
+      "id": "t1-4-4",
+      "track": 1,
+      "category": 4,
+      "category_name": "数字・日付・金額・バージョン",
+      "file": "t1-4-4.wav",
+      "reference": "バージョン一・二・三へのアップデートで、起動時間が約十五パーセント短縮されました。対応するOSは十五以降です。",
+      "sha256": null,
+      "estimated_seconds": 13
+    },
+    {
+      "id": "t1-5-1",
+      "track": 1,
+      "category": 5,
+      "category_name": "言い淀みと間",
+      "file": "t1-5-1.wav",
+      "reference": "えーと、明日の予定なんですけど、午前中は、あのー、役所に行かないといけなくて、午後なら大丈夫だと思います。",
+      "sha256": null,
+      "estimated_seconds": 13
+    },
+    {
+      "id": "t1-5-2",
+      "track": 1,
+      "category": 5,
+      "category_name": "言い淀みと間",
+      "file": "t1-5-2.wav",
+      "reference": "その件は、えーと、一度持ち帰って検討します。結論は、来週の頭には、お返しできるはずです。",
+      "sha256": null,
+      "estimated_seconds": 13
+    },
+    {
+      "id": "t1-5-3",
+      "track": 1,
+      "category": 5,
+      "category_name": "言い淀みと間",
+      "file": "t1-5-3.wav",
+      "reference": "あのー、この資料の三ページ目なんですけど、数字が、えーと、去年のものと入れ替わっている気がします。",
+      "sha256": null,
+      "estimated_seconds": 13
+    },
+    {
+      "id": "t1-5-4",
+      "track": 1,
+      "category": 5,
+      "category_name": "言い淀みと間",
+      "file": "t1-5-4.wav",
+      "reference": "旅行の日程は、えーと、たぶん三泊四日で、帰りは、あのー、夕方の便になるんじゃないかと思います。",
+      "sha256": null,
+      "estimated_seconds": 13
+    },
+    {
+      "id": "t1-6-1",
+      "track": 1,
+      "category": 6,
+      "category_name": "長めの連続発話",
+      "file": "t1-6-1.wav",
+      "reference": "新しいプロジェクトの立ち上げにあたって、まず関係者全員の認識をそろえることが何より大切で、目的と範囲と優先順位を文書に明記し、週に一度の定例で進捗と課題を共有しながら、小さな成功を積み重ねて信頼を築いていく進め方を取りたいと考えています。",
+      "sha256": null,
+      "estimated_seconds": 31
+    },
+    {
+      "id": "t1-6-2",
+      "track": 1,
+      "category": 6,
+      "category_name": "長めの連続発話",
+      "file": "t1-6-2.wav",
+      "reference": "旅行の計画を立てるときは、移動時間に余裕を持たせることが快適さに直結します。乗り換えのたびに三十分の余白を確保し、初日は無理な予定を入れず、現地の天気と交通情報を前日の夜に確認してから、翌日の順路を最終決定するのが私のやり方です。",
+      "sha256": null,
+      "estimated_seconds": 31
+    },
+    {
+      "id": "t1-6-3",
+      "track": 1,
+      "category": 6,
+      "category_name": "長めの連続発話",
+      "file": "t1-6-3.wav",
+      "reference": "家庭の支出を見直すなら、まず固定費から手をつけるのが効果的です。通信費と保険と定期購読の三つを並べて、使っていないもの、重複しているもの、安い代替があるものを順に洗い出すと、生活の質を落とさずに月々の負担を減らせます。",
+      "sha256": null,
+      "estimated_seconds": 31
+    },
+    {
+      "id": "t1-6-4",
+      "track": 1,
+      "category": 6,
+      "category_name": "長めの連続発話",
+      "file": "t1-6-4.wav",
+      "reference": "文章を書くときは、読み手が最初の一文で内容をつかめるように、結論を先に置くことを意識しています。理由と具体例はその後に続け、最後にもう一度要点を短く繰り返すと、長い文章でも途中で迷子にならずに最後まで読んでもらえます。",
+      "sha256": null,
+      "estimated_seconds": 31
+    },
+    {
+      "id": "t2-1-1",
+      "track": 2,
+      "category": 1,
+      "category_name": "会話メモ",
+      "file": "t2-1-1.wav",
+      "reference": "明日の午後は図書館で予約していた本を受け取る予定なので、駅前の郵便局にも寄って荷物を発送してから帰ることにする。",
+      "sha256": null,
+      "estimated_seconds": 11,
+      "voice": "Kyoko"
+    },
+    {
+      "id": "t2-1-2",
+      "track": 2,
+      "category": 1,
+      "category_name": "会話メモ",
+      "file": "t2-1-2.wav",
+      "reference": "週末の料理に向けて、帰りにスーパーで鶏肉と大根と生姜を買っておく。調味料の醤油も残り少ないので忘れずに補充する。",
+      "sha256": null,
+      "estimated_seconds": 11,
+      "voice": "Otoya"
+    },
+    {
+      "id": "t2-2-1",
+      "track": 2,
+      "category": 2,
+      "category_name": "ビジネス・敬語と同音異義語",
+      "file": "t2-2-1.wav",
+      "reference": "ご依頼いただいた資料の修正版を本日夕方までに共有いたします。内容をご確認のうえ、追加のご要望があればお知らせください。",
+      "sha256": null,
+      "estimated_seconds": 11,
+      "voice": "Kyoko"
+    },
+    {
+      "id": "t2-2-2",
+      "track": 2,
+      "category": 2,
+      "category_name": "ビジネス・敬語と同音異義語",
+      "file": "t2-2-2.wav",
+      "reference": "この坂の上にある新しい工場では、作業の効率を向上させる取り組みを進めている。見学の希望者が多いため、事前に予約が必要だ。",
+      "sha256": null,
+      "estimated_seconds": 11,
+      "voice": "Otoya"
+    },
+    {
+      "id": "t2-3-1",
+      "track": 2,
+      "category": 3,
+      "category_name": "日本語＋英語の技術用語",
+      "file": "t2-3-1.wav",
+      "reference": "キャッシュの有効期限を短くしたことで、フロントエンドの表示が最新データと一致するようになりました。負荷の推移も問題ありません。",
+      "sha256": null,
+      "estimated_seconds": 12,
+      "voice": "Kyoko"
+    },
+    {
+      "id": "t2-3-2",
+      "track": 2,
+      "category": 3,
+      "category_name": "日本語＋英語の技術用語",
+      "file": "t2-3-2.wav",
+      "reference": "ログの集計ジョブでエラーが発生しているため、リトライ処理とアラート通知の条件を見直します。修正後は単体テストを追加します。",
+      "sha256": null,
+      "estimated_seconds": 11,
+      "voice": "Otoya"
+    },
+    {
+      "id": "t2-4-1",
+      "track": 2,
+      "category": 4,
+      "category_name": "数字・日付・金額・バージョン",
+      "file": "t2-4-1.wav",
+      "reference": "今期の経費は前年より八パーセント減って、合計で二千百六十万円に収まりました。来期の予算は十月五日までに確定する予定です。",
+      "sha256": null,
+      "estimated_seconds": 11,
+      "voice": "Kyoko"
+    },
+    {
+      "id": "t2-4-2",
+      "track": 2,
+      "category": 4,
+      "category_name": "数字・日付・金額・バージョン",
+      "file": "t2-4-2.wav",
+      "reference": "月額二千四百八十円の標準コースは、バージョン二・五・一からオフライン保存に対応しました。利用開始から十四日間は無料です。",
+      "sha256": null,
+      "estimated_seconds": 11,
+      "voice": "Otoya"
+    },
+    {
+      "id": "t2-5-1",
+      "track": 2,
+      "category": 5,
+      "category_name": "口語・短い区切りのある発話",
+      "file": "t2-5-1.wav",
+      "reference": "明日の打ち合わせなんですけど、午前中は別の用事が入っていて、午後の二時以降なら時間を合わせられます。",
+      "sha256": null,
+      "estimated_seconds": 10,
+      "voice": "Kyoko"
+    },
+    {
+      "id": "t2-5-2",
+      "track": 2,
+      "category": 5,
+      "category_name": "口語・短い区切りのある発話",
+      "file": "t2-5-2.wav",
+      "reference": "その提案は一度チーム内で確認してからお返事します。細かい条件の整理が終わるのは、たぶん金曜日の夕方ごろです。",
+      "sha256": null,
+      "estimated_seconds": 10,
+      "voice": "Otoya"
+    },
+    {
+      "id": "t2-6-1",
+      "track": 2,
+      "category": 6,
+      "category_name": "長めの連続発話",
+      "file": "t2-6-1.wav",
+      "reference": "新しい業務手順を定着させるときは、最初に全体の流れを一枚の図にまとめて共有するのが効果的です。担当ごとの役割と確認のタイミングを明確にし、最初の二週間は短い振り返りを毎日行うことで、疑問点をその場で解消しながら無理なく運用に乗せることができます。",
+      "sha256": null,
+      "estimated_seconds": 22,
+      "voice": "Kyoko"
+    },
+    {
+      "id": "t2-6-2",
+      "track": 2,
+      "category": 6,
+      "category_name": "長めの連続発話",
+      "file": "t2-6-2.wav",
+      "reference": "長期の休暇を計画するときは、移動日と休息日を交互に配置すると体力を保ちやすくなります。目的地を欲張って詰め込むのではなく、午前中に主な予定を一つだけ入れ、午後は現地の天気や体調に合わせて柔軟に動ける余白を残しておくと、最後まで快適に過ごせます。",
+      "sha256": null,
+      "estimated_seconds": 22,
+      "voice": "Otoya"
+    }
+  ]
+}
