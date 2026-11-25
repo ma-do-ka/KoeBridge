@@ -221,6 +221,14 @@ import KoeBridgeCore
             || (status == .success && (value == nil || value is String))
     }
 
+    private static func fieldHintStatusReadable(_ status: AXError) -> Bool {
+        let succeeded: Bool = status == .success
+        let noValue: Bool = status == .noValue
+        let unsupported: Bool = status == .attributeUnsupported
+        let successOrNoValue: Bool = succeeded || noValue
+        return successOrNoValue || unsupported
+    }
+
     enum CaptureSample {
         case accepted(InsertionTarget)
         case rejected(DeliveryRejection, String)
@@ -324,13 +332,17 @@ import KoeBridgeCore
             let placeholderRead = copyAX(element, name: "AXPlaceholderValue" as CFString,
                                          operation: .placeholder, timeout: 0.02,
                                          diagnostics: diagnostics, stage: stage)
-            let fieldHints = [target.localizedName,
-                              titleRead.value as? String,
-                              descriptionRead.value as? String,
-                              placeholderRead.value as? String]
-            let hintReadsReadable = [titleRead, descriptionRead, placeholderRead].allSatisfy { read in
-                read.status == .success || read.status == .noValue || read.status == .attributeUnsupported
-            }
+            let fieldHints: [String?] = [
+                target.localizedName,
+                titleRead.value as? String,
+                descriptionRead.value as? String,
+                placeholderRead.value as? String
+            ]
+            let titleHintReadable: Bool = InsertionTarget.fieldHintStatusReadable(titleRead.status)
+            let descriptionHintReadable: Bool = InsertionTarget.fieldHintStatusReadable(descriptionRead.status)
+            let placeholderHintReadable: Bool = InsertionTarget.fieldHintStatusReadable(placeholderRead.status)
+            let titleAndDescriptionHintsReadable: Bool = titleHintReadable && descriptionHintReadable
+            let hintReadsReadable: Bool = titleAndDescriptionHintsReadable && placeholderHintReadable
             let gate = DeliveryGateRead(role: roleRead.value as? String, subrole: subroleRead, selectedRange: rangeRead,
                                         selectedMarker: markerRead, editable: editableRead, roleStatus: roleRead.status)
             lazy var rejection = DeliveryRejection(target: target, gate: gate, rejectedAt: ProcessInfo.processInfo.systemUptime,
@@ -341,17 +353,27 @@ import KoeBridgeCore
                                            retryCandidate: rejection.eligible) {
                 return .rejected(rejection, reason)
             }
-            target = target.withReceiptFieldNature(InsertionReceiptPolicy.fieldNature(
-                role: roleRead.value as? String,
-                subrole: subroleRead.value as? String,
+            let roleValue: String? = roleRead.value as? String
+            let subroleValue: String? = subroleRead.value as? String
+            let hasTextSelection: Bool = selection != nil
+            let secureInputEnabled: Bool = IsSecureEventInputEnabled()
+            let roleAttributeReadable: Bool = roleRead.status == .success
+            let roleAndHintsReadable: Bool = roleAttributeReadable && hintReadsReadable
+            let subroleAttributeReadable: Bool = InsertionTarget.secureExclusionReadable(
+                subroleRead.value, status: subroleRead.status
+            )
+            let attributesReadable: Bool = roleAndHintsReadable && subroleAttributeReadable
+            let receiptFieldNature: InsertionReceiptPolicy.FieldNature = InsertionReceiptPolicy.fieldNature(
+                role: roleValue,
+                subrole: subroleValue,
                 editable: editableValue,
-                hasTextSelection: selection != nil,
+                hasTextSelection: hasTextSelection,
                 bundleIdentifier: target.bundleIdentifier,
                 labelHints: fieldHints,
-                secureInputEnabled: IsSecureEventInputEnabled(),
-                attributesReadable: roleRead.status == .success && hintReadsReadable &&
-                    InsertionTarget.secureExclusionReadable(subroleRead.value, status: subroleRead.status)
-            ))
+                secureInputEnabled: secureInputEnabled,
+                attributesReadable: attributesReadable
+            )
+            target = target.withReceiptFieldNature(receiptFieldNature)
         }
         // Keep this delivery baseline ephemeral. External surrounding context
         // takes a fresh security-checked snapshot.
