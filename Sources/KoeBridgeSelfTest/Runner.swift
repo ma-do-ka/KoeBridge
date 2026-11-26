@@ -427,6 +427,11 @@ struct KoeBridgeSelfTest {
         await run("BenchmarkMetricsTests.costAndFreeQuotaLogic", { try BenchmarkMetricsTests().costAndFreeQuotaLogic() })
         await run("BenchmarkMetricsTests.strictCERTransformInjection", { BenchmarkMetricsTests().strictCERTransformInjection() })
         await run("BenchmarkMetricsTests.strictTransformPreservesCanonicalEquivalenceBeforeAdopt", { BenchmarkMetricsTests().strictTransformPreservesCanonicalEquivalenceBeforeAdopt() })
+        await run("AmiVoiceDictionarySyncTests.payloadShapeFullOverwriteAndEmptyDeletePerEngineFamily", { try await AmiVoiceDictionarySyncTests().payloadShapeFullOverwriteAndEmptyDeletePerEngineFamily() })
+        await run("AmiVoiceDictionarySyncTests.serverValidationRejectionQuarantinesOnlyBadEntryAndResyncsRest", { try await AmiVoiceDictionarySyncTests().serverValidationRejectionQuarantinesOnlyBadEntryAndResyncsRest() })
+        await run("AmiVoiceDictionarySyncTests.launchPassRestoresFullSnapshotWhenServerProfileIsEmpty", { try await AmiVoiceDictionarySyncTests().launchPassRestoresFullSnapshotWhenServerProfileIsEmpty() })
+        await run("AmiVoiceDictionarySyncTests.optInOffMakesEveryEntryPointZeroTransportCalls", { try await AmiVoiceDictionarySyncTests().optInOffMakesEveryEntryPointZeroTransportCalls() })
+        await run("AmiVoiceDictionarySyncTests.recognitionProfileReferenceIsConditionalAndOffPathByteIdentical", { try AmiVoiceDictionarySyncTests().recognitionProfileReferenceIsConditionalAndOffPathByteIdentical() })
         print("KoeBridge portable self-test: \(testCount) cases, \(TestRecorder.checked) assertions, \(TestRecorder.failures) failures")
         if TestRecorder.failures > 0 { exit(1) }
     }
