@@ -510,7 +510,6 @@ public actor AmiVoiceDictionarySyncEngine {
             let payloads = preparation.pairs.map(\.payload)
             let fingerprint = AmiVoiceDictionaryWordPayload.fingerprint(payloads: payloads, family: family)
             let hasDirtyRows = rows.contains { $0.engineState(for: key)?.dirty == true }
-            let noPriorSync = profile.lastSyncedFingerprint == nil
             let quarantinedCount = preparation.locallyQuarantinedCount + totalServerQuarantined
             let alreadyCurrent = profile.lastSyncedFingerprint == fingerprint && !hasDirtyRows
             if alreadyCurrent && !forceUpload {
@@ -527,21 +526,7 @@ public actor AmiVoiceDictionarySyncEngine {
                     timestamp: now()
                 )
             }
-            if payloads.isEmpty && noPriorSync && !hasDirtyRows && !forceUpload {
-                var updated = profile
-                updated.lastResult = quarantinedCount > 0 ? .validationFailed : .noChanges
-                updated.lastErrorClass = quarantinedCount > 0 ? .validation : nil
-                _ = updateProfile(updated)
-                notifyStatus(key)
-                return AmiVoiceDictionarySyncOutcome(
-                    kind: updated.lastResult ?? .noChanges,
-                    profileKey: key,
-                    quarantinedCount: quarantinedCount,
-                    archivedCount: preparation.archivedCount,
-                    timestamp: now()
-                )
-            }
-            if payloads.isEmpty && !forceUpload {
+            if payloads.isEmpty && trigger != .deleteAll {
                 let quarantinedRows = quarantinedRowCount(rows, key: key)
                 if quarantinedCount > 0 || quarantinedRows > 0 {
                     // The candidate set is empty because everything left is
@@ -555,9 +540,26 @@ public actor AmiVoiceDictionarySyncEngine {
                         archivedCount: preparation.archivedCount
                     )
                 }
+                var updated = profile
+                updated.lastResult = .noChanges
+                updated.lastErrorClass = nil
+                _ = updateProfile(updated)
+                notifyStatus(key)
+                return AmiVoiceDictionarySyncOutcome(
+                    kind: .noChanges,
+                    profileKey: key,
+                    quarantinedCount: quarantinedCount,
+                    archivedCount: preparation.archivedCount,
+                    timestamp: now()
+                )
             }
 
             let generationByID = Dictionary(uniqueKeysWithValues: preparation.pairs.map { ($0.entry.id, $0.engineState.generation) })
+            let nonParticipatingGenerationByID = Dictionary(uniqueKeysWithValues: rows.compactMap { row -> (UUID, UInt64)? in
+                guard let engineState = row.engineState(for: key),
+                      !engineState.state.participatesInSnapshot else { return nil }
+                return (row.id, engineState.generation)
+            })
             do {
                 _ = try await transport.replaceWords(
                     engine: key.engine,
@@ -581,7 +583,9 @@ public actor AmiVoiceDictionarySyncEngine {
                             engineState.lastErrorDetail = nil
                             engineState.lastSyncedAt = finishedAt
                         }
-                    } else if !currentState.state.participatesInSnapshot && currentState.dirty {
+                    } else if !currentState.state.participatesInSnapshot && currentState.dirty,
+                              let preparedGeneration = nonParticipatingGenerationByID[rows[index].id],
+                              preparedGeneration == currentState.generation {
                         rows[index].updateEngineState(for: key) { engineState in
                             engineState.dirty = false
                         }
