@@ -255,7 +255,7 @@
       "category_name": "会話メモ",
       "file": "t2-1-1.wav",
       "reference": "明日の午後は図書館で予約していた本を受け取る予定なので、駅前の郵便局にも寄って荷物を発送してから帰ることにする。",
-      "sha256": null,
+      "sha256": "9a14e29a55ef7de156662dac411e59f3203723ff1373b95b38abeefde771168d",
       "estimated_seconds": 11,
       "voice": "Kyoko"
     },
@@ -266,7 +266,7 @@
       "category_name": "会話メモ",
       "file": "t2-1-2.wav",
       "reference": "週末の料理に向けて、帰りにスーパーで鶏肉と大根と生姜を買っておく。調味料の醤油も残り少ないので忘れずに補充する。",
-      "sha256": null,
+      "sha256": "9acbd9b8a8de6cc3eea1b17727c7240d7e0f74a527482bb726ba18d4b373c7f3",
       "estimated_seconds": 11,
       "voice": "Otoya"
     },
@@ -277,7 +277,7 @@
       "category_name": "ビジネス・敬語と同音異義語",
       "file": "t2-2-1.wav",
       "reference": "ご依頼いただいた資料の修正版を本日夕方までに共有いたします。内容をご確認のうえ、追加のご要望があればお知らせください。",
-      "sha256": null,
+      "sha256": "5e2ffd0e12c9eb6e296054badf1e70b6b3b1a072a5ce9fabdb8d412aed71b4b0",
       "estimated_seconds": 11,
       "voice": "Kyoko"
     },
@@ -288,7 +288,7 @@
       "category_name": "ビジネス・敬語と同音異義語",
       "file": "t2-2-2.wav",
       "reference": "この坂の上にある新しい工場では、作業の効率を向上させる取り組みを進めている。見学の希望者が多いため、事前に予約が必要だ。",
-      "sha256": null,
+      "sha256": "7a83b2aa727c7b59851ec78721d9dc1f70b94cfee6d753fecc2b8e74b9b51347",
       "estimated_seconds": 11,
       "voice": "Otoya"
     },
@@ -299,7 +299,7 @@
       "category_name": "日本語＋英語の技術用語",
       "file": "t2-3-1.wav",
       "reference": "キャッシュの有効期限を短くしたことで、フロントエンドの表示が最新データと一致するようになりました。負荷の推移も問題ありません。",
-      "sha256": null,
+      "sha256": "be50719cb58b7c202871b5a682dc7bafafe03c5cce8f00a6047e900656318ca7",
       "estimated_seconds": 12,
       "voice": "Kyoko"
     },
@@ -310,7 +310,7 @@
       "category_name": "日本語＋英語の技術用語",
       "file": "t2-3-2.wav",
       "reference": "ログの集計ジョブでエラーが発生しているため、リトライ処理とアラート通知の条件を見直します。修正後は単体テストを追加します。",
-      "sha256": null,
+      "sha256": "1b2a17fe0156a674328b2005e68250f559e0c517cf305063cab2d408db659c27",
       "estimated_seconds": 11,
       "voice": "Otoya"
     },
@@ -321,7 +321,7 @@
       "category_name": "数字・日付・金額・バージョン",
       "file": "t2-4-1.wav",
       "reference": "今期の経費は前年より八パーセント減って、合計で二千百六十万円に収まりました。来期の予算は十月五日までに確定する予定です。",
-      "sha256": null,
+      "sha256": "b3d7e05a5e2332508d0a45fd81091f3e70c9f4c02ff5da8465a21a3919cbe6f9",
       "estimated_seconds": 11,
       "voice": "Kyoko"
     },
@@ -332,7 +332,7 @@
       "category_name": "数字・日付・金額・バージョン",
       "file": "t2-4-2.wav",
       "reference": "月額二千四百八十円の標準コースは、バージョン二・五・一からオフライン保存に対応しました。利用開始から十四日間は無料です。",
-      "sha256": null,
+      "sha256": "af426688a3698b0212ff3b268250a7d5b27a1dcc77e4c338f4c69bf08a1c5ade",
       "estimated_seconds": 11,
       "voice": "Otoya"
     },
@@ -343,7 +343,7 @@
       "category_name": "口語・短い区切りのある発話",
       "file": "t2-5-1.wav",
       "reference": "明日の打ち合わせなんですけど、午前中は別の用事が入っていて、午後の二時以降なら時間を合わせられます。",
-      "sha256": null,
+      "sha256": "120702ec79724ae51534754b1c1c414203476529ab64c83c8cd6222c95cb1585",
       "estimated_seconds": 10,
       "voice": "Kyoko"
     },
@@ -354,7 +354,7 @@
       "category_name": "口語・短い区切りのある発話",
       "file": "t2-5-2.wav",
       "reference": "その提案は一度チーム内で確認してからお返事します。細かい条件の整理が終わるのは、たぶん金曜日の夕方ごろです。",
-      "sha256": null,
+      "sha256": "5af4ae6d8b389a6ea73cce74fff51701680dbf8d9d7ef6b5903421b56175584c",
       "estimated_seconds": 10,
       "voice": "Otoya"
     },
@@ -365,7 +365,7 @@
       "category_name": "長めの連続発話",
       "file": "t2-6-1.wav",
       "reference": "新しい業務手順を定着させるときは、最初に全体の流れを一枚の図にまとめて共有するのが効果的です。担当ごとの役割と確認のタイミングを明確にし、最初の二週間は短い振り返りを毎日行うことで、疑問点をその場で解消しながら無理なく運用に乗せることができます。",
-      "sha256": null,
+      "sha256": "4965ce9595676f0d0fab314fa965fb76abb37c9defe01c37bba4e073f6e25da1",
       "estimated_seconds": 22,
       "voice": "Kyoko"
     },
@@ -376,7 +376,7 @@
       "category_name": "長めの連続発話",
       "file": "t2-6-2.wav",
       "reference": "長期の休暇を計画するときは、移動日と休息日を交互に配置すると体力を保ちやすくなります。目的地を欲張って詰め込むのではなく、午前中に主な予定を一つだけ入れ、午後は現地の天気や体調に合わせて柔軟に動ける余白を残しておくと、最後まで快適に過ごせます。",
-      "sha256": null,
+      "sha256": "40a85fb141013986bc1464d01c0503439f4ac862d1421364ba813b2aed995603",
       "estimated_seconds": 22,
       "voice": "Otoya"
     }
