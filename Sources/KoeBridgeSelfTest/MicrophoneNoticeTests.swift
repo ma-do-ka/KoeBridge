@@ -99,13 +99,15 @@ struct MicrophoneNoticeTests {
 
     func removalEvidenceIsRetainedByTheStore() {
         var store = MicrophoneNoticeStore()
-        check(store.recordFailure(.recordingDeviceDisconnected, timing: .finalFailure,
-                                  deviceRemovalProven: true))
+        let disconnectProvenStored = store.recordFailure(.recordingDeviceDisconnected, timing: .finalFailure,
+                                                         deviceRemovalProven: true)
+        check(disconnectProvenStored)
         check(store.current?.deviceRemovalProven == true)
         check(store.current?.title == "録音中にマイクが切断されました")
 
         store = MicrophoneNoticeStore()
-        check(store.recordFailure(.recordingDeviceDisconnected, timing: .finalFailure))
+        let interruptedStored = store.recordFailure(.recordingDeviceDisconnected, timing: .finalFailure)
+        check(interruptedStored)
         check(store.current?.deviceRemovalProven == false)
         check(store.current?.title == "録音中にマイク入力が中断されました")
     }
