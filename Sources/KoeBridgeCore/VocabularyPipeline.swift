@@ -1,16 +1,6 @@
 import Foundation
 
-/// VocabularyTermType classifies the written form of a term for rule selection.
-public enum VocabularyTermType: Equatable, Sendable {
-    /// Kana-only (hiragana, katakana) words.
-    case kana
-    /// Kanji with or without kana mixture.
-    case kanjiMixed
-    /// Latin alphabet letters only.
-    case alphabet
-    /// Mixed letters, digits, Japanese characters, and separators.
-    case numericMixed
-}
+// VocabularyTermType is defined in VocabularyReadingGeneration.swift
 
 /// Outcome of the candidate pipeline for a LearnedTerm.
 public enum VocabularyCandidateOutcome: Equatable, Sendable {
