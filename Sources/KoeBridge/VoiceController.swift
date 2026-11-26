@@ -940,6 +940,8 @@ import KoeBridgeEngines
         objectWillChange.send()
     }
     var busy: Bool { active != nil }
+    /// Read-only observation of the active take's stored target (post-capture).
+    var activeTakeTarget: InsertionTarget? { active?.target }
     func reserveHistoryInsertion() -> UUID? { postingGate.reserveHistory() }
     func performHistoryIntent(_ ticket: UUID, deadline: ContinuousClock.Instant, perform: () async -> Void) async {
         await postingGate.performHistoryIntent(ticket, deadline: deadline, perform: perform)
@@ -1066,7 +1068,7 @@ import KoeBridgeEngines
         let targetResult = transformTarget.map { (target: Optional($0), reason: "ok") }
             ?? preparation.captureTarget?(take.inputDiagnostics)
             ?? InsertionTarget.capture(diagnostics: take.inputDiagnostics) // BEFORE the overlay is shown
-        take.target = targetResult.target
+        take.target = targetResult.target?.removingTextSnapshotUnlessNormal()
         take.targetCaptureReason = targetResult.reason
         if recheckContextEnabled && selection == nil {
             take.capturedContext = ContextCapture.capture(target: take.target, app: contextAppEnabled,
@@ -1864,7 +1866,7 @@ import KoeBridgeEngines
         } else {
             deliveringTakeID = id
             let report = await postingGate.post(.dictation(text), from: .take(take), finalize: { report in
-                if let receipt = report.receipt {
+                if let receipt = report.receipt, receipt.proof.retainsContentEvidence {
                     self.postingGate.lastDeliveryAnchor = LastDeliveryAnchor(receipt: receipt, sourceRecordID: recordID)
                 }
             }) {
@@ -2071,7 +2073,7 @@ import KoeBridgeEngines
             let sourceRecordID = postingGate.lastDeliveryAnchor?.sourceRecordID
             deliveringTakeID = take.id
             let report = await postingGate.post(.dictation(output.text), from: .take(take), finalize: { report in
-                if take.isFixLastInput, let receipt = report.receipt {
+                if take.isFixLastInput, let receipt = report.receipt, receipt.proof.retainsContentEvidence {
                     self.postingGate.lastDeliveryAnchor = LastDeliveryAnchor(receipt: receipt, sourceRecordID: sourceRecordID)
                 }
             }) {

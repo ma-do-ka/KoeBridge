@@ -47,7 +47,7 @@ struct InputReceiptObservationTests {
         check(Observation.classify(before: before, expected: expected, after: expected) == .unchanged)
         check(Observation.classify(before: before, expected: expected,
                                    after: state(before.text, 2)) == .unchanged)
-        check(Policy.verify(before: before, inserted: before.text, after: expected, sameTarget: true) == nil)
+        check(Policy.verify(before: before, inserted: before.text, after: expected, sameTarget: true, fieldNature: .normal) == nil)
     }
 
     func exactEmojiReplacementMatchesTheActualUTF16Caret() throws {
@@ -56,7 +56,7 @@ struct InputReceiptObservationTests {
         let expected = try require(Policy.expectedAfter(before: before, inserted: inserted))
         let after = state("A" + inserted + "Z", 1 + inserted.utf16.count)
         check(Observation.classify(before: before, expected: expected, after: after) == .matches)
-        check(Policy.verify(before: before, inserted: inserted, after: after, sameTarget: true) != nil)
+        check(Policy.verify(before: before, inserted: inserted, after: after, sameTarget: true, fieldNature: .normal) != nil)
     }
 
     func matchingTextStillDistinguishesCaretAndSelectionChanges() throws {
@@ -89,9 +89,9 @@ struct InputReceiptObservationTests {
         let before = state("", 0)
         let after = state("本文", 2)
         check(Observation.classify(before: before, expected: after, after: after) == .matches)
-        check(Policy.verify(before: before, inserted: "本文", after: after, sameTarget: false) == nil)
+        check(Policy.verify(before: before, inserted: "本文", after: after, sameTarget: false, fieldNature: .normal) == nil)
         check(Policy.verify(before: before, inserted: "本文", after: after,
-                            sameTarget: true, cancelled: true) == nil)
+                            sameTarget: true, cancelled: true, fieldNature: .normal) == nil)
     }
 
     func spanComparisonRemainsContentFreeAndDistinguishesMismatches() {

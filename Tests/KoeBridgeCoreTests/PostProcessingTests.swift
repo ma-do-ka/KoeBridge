@@ -44,7 +44,8 @@ struct PostProcessingTests {
             let original = String(repeating: "あ", count: originalCount)
             let limit = max(originalCount * 3, originalCount + 120)
             #expect(!PostProcessingPolicy.accepts(original: original, processed: ""))
-            for count in [1, limit - 1, limit] {
+            let passingCounts = originalCount == 0 ? [1, limit - 1, limit] : [originalCount, limit - 1, limit]
+            for count in passingCounts {
                 #expect(PostProcessingPolicy.accepts(original: original,
                     processed: String(repeating: "👩🏽‍💻", count: count)))
             }
@@ -54,6 +55,44 @@ struct PostProcessingTests {
         let original = String(repeating: "e\u{301}", count: 61)
         #expect(PostProcessingPolicy.accepts(original: original, processed: String(repeating: "x", count: 183)))
         #expect(!PostProcessingPolicy.accepts(original: original, processed: String(repeating: "x", count: 184)))
+    }
+
+    @Test func shorteningGuard() {
+        func adoption(originalCount: Int, processedCount: Int) -> (text: String, rejection: PostProcessingPolicy.Rejection?) {
+            let original = String(repeating: "あ", count: originalCount)
+            let processed = String(repeating: "い", count: processedCount)
+            return PostProcessingPolicy.adoption(original: original, processed: processed)
+        }
+        func usesProcessed(originalCount: Int, processedCount: Int) -> Bool {
+            let original = String(repeating: "あ", count: originalCount)
+            let processed = String(repeating: "い", count: processedCount)
+            let result = adoption(originalCount: originalCount, processedCount: processedCount)
+            return result.text == processed && result.rejection == nil
+        }
+        func rejectsAsLength(originalCount: Int, processedCount: Int) -> Bool {
+            let original = String(repeating: "あ", count: originalCount)
+            let result = adoption(originalCount: originalCount, processedCount: processedCount)
+            return result.text == original && result.rejection == .length
+        }
+
+        #expect(rejectsAsLength(originalCount: 5, processedCount: 0))
+        #expect(rejectsAsLength(originalCount: 200, processedCount: 0))
+        #expect(usesProcessed(originalCount: 19, processedCount: 1))
+        #expect(usesProcessed(originalCount: 30, processedCount: 11))
+
+        #expect(rejectsAsLength(originalCount: 100, processedCount: 55))
+        #expect(usesProcessed(originalCount: 100, processedCount: 56))
+        #expect(rejectsAsLength(originalCount: 40, processedCount: 20))
+        #expect(usesProcessed(originalCount: 40, processedCount: 21))
+
+        #expect(rejectsAsLength(originalCount: 400, processedCount: 300))
+        #expect(usesProcessed(originalCount: 400, processedCount: 301))
+        #expect(rejectsAsLength(originalCount: 199, processedCount: 109))
+        #expect(usesProcessed(originalCount: 199, processedCount: 110))
+        #expect(rejectsAsLength(originalCount: 200, processedCount: 120))
+        #expect(usesProcessed(originalCount: 200, processedCount: 121))
+        #expect(usesProcessed(originalCount: 100, processedCount: 100))
+        #expect(usesProcessed(originalCount: 100, processedCount: 101))
     }
 
     @Test func requestModes() throws {

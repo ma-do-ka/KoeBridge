@@ -1,9 +1,17 @@
+import CryptoKit
 import Foundation
 
 /// Exact, local-only evidence for advancing another recording's input position.
 /// UTF-16 offsets match AXSelectedTextRange; String.count does not.
 public enum InsertionReceiptPolicy {
     public static let maximumObservableUTF16Count = 200_000
+    private static let evidenceSessionSalt = UUID().uuidString
+
+    public enum FieldNature: String, Equatable, Sendable {
+        case normal
+        case protected
+        case unknown
+    }
 
     public struct Selection: Equatable, Sendable {
         public let location: Int
@@ -18,14 +26,33 @@ public enum InsertionReceiptPolicy {
     public struct Snapshot: Equatable, Sendable {
         public let text: String
         public let selection: Selection
+        public let textUTF16Count: Int
+        public let textSHA256: String?
+        public let retainsText: Bool
 
-        public init(text: String, selection: Selection) {
+        public init(text: String, selection: Selection, textUTF16Count: Int? = nil,
+                    textSHA256: String? = nil, retainsText: Bool = true) {
             self.text = text
             self.selection = selection
+            self.textUTF16Count = textUTF16Count ?? text.utf16.count
+            self.textSHA256 = textSHA256
+            self.retainsText = retainsText
+        }
+
+        fileprivate func redacted() -> Snapshot {
+            Snapshot(text: "", selection: selection, textUTF16Count: text.utf16.count,
+                     textSHA256: InsertionReceiptPolicy.evidenceHash(text), retainsText: false)
         }
 
         public static func == (lhs: Self, rhs: Self) -> Bool {
-            lhs.selection == rhs.selection && InsertionReceiptPolicy.sameText(lhs.text, rhs.text)
+            guard lhs.selection == rhs.selection,
+                  lhs.retainsText == rhs.retainsText,
+                  lhs.textUTF16Count == rhs.textUTF16Count,
+                  lhs.textSHA256 == rhs.textSHA256 else { return false }
+            if lhs.retainsText {
+                return InsertionReceiptPolicy.sameText(lhs.text, rhs.text)
+            }
+            return lhs.text.isEmpty && rhs.text.isEmpty
         }
     }
 
@@ -40,19 +67,47 @@ public enum InsertionReceiptPolicy {
         public let after: Snapshot
         public let inserted: String
         public let mode: VerificationMode
+        public let insertedUTF16Count: Int
+        public let insertedSHA256: String?
+        public let retainsInserted: Bool
+        public let fieldNature: FieldNature
+
+        public var retainsContentEvidence: Bool {
+            fieldNature == .normal && before.retainsText && after.retainsText && retainsInserted
+        }
 
         fileprivate init(before: Snapshot, after: Snapshot, inserted: String,
-                         mode: VerificationMode = .strict) {
+                         mode: VerificationMode = .strict, insertedUTF16Count: Int? = nil,
+                         insertedSHA256: String? = nil, retainsInserted: Bool = true,
+                         fieldNature: FieldNature = .normal) {
             self.before = before
             self.after = after
             self.inserted = inserted
             self.mode = mode
+            self.insertedUTF16Count = insertedUTF16Count ?? inserted.utf16.count
+            self.insertedSHA256 = insertedSHA256
+            self.retainsInserted = retainsInserted
+            self.fieldNature = fieldNature
+        }
+
+        fileprivate func retainingEvidence(for nature: FieldNature) -> Receipt {
+            guard nature == .normal else {
+                return Receipt(before: before.redacted(), after: after.redacted(), inserted: "",
+                               mode: mode, insertedUTF16Count: inserted.utf16.count,
+                               insertedSHA256: InsertionReceiptPolicy.evidenceHash(inserted),
+                               retainsInserted: false, fieldNature: .protected)
+            }
+            return self
         }
 
         public static func == (lhs: Self, rhs: Self) -> Bool {
             lhs.before == rhs.before && lhs.after == rhs.after
                 && InsertionReceiptPolicy.sameText(lhs.inserted, rhs.inserted)
                 && lhs.mode == rhs.mode
+                && lhs.insertedUTF16Count == rhs.insertedUTF16Count
+                && lhs.insertedSHA256 == rhs.insertedSHA256
+                && lhs.retainsInserted == rhs.retainsInserted
+                && lhs.fieldNature == rhs.fieldNature
         }
     }
 
@@ -68,7 +123,45 @@ public enum InsertionReceiptPolicy {
         lhs.utf16.elementsEqual(rhs.utf16)
     }
 
+    private static func evidenceHash(_ text: String) -> String {
+        var data = Data(evidenceSessionSalt.utf8)
+        data.append(contentsOf: [0])
+        data.append(contentsOf: text.utf8)
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    public static func fieldNature(role: String?, subrole: String?, editable: Bool?,
+                                   hasTextSelection: Bool, bundleIdentifier: String?,
+                                   labelHints: [String?] = [], explicitlyProtected: Bool = false,
+                                   secureInputEnabled: Bool = false, attributesReadable: Bool = true,
+                                   protectedBundleIdentifiers: Set<String> = []) -> FieldNature {
+        let sensitiveMarkers = [
+            "password", "passcode", "pin", "security code", "authentication code",
+            "token", "secret", "one-time", "otp", "2fa",
+            "パスワード", "暗証番号", "セキュリティコード", "認証コード",
+            "トークン", "シークレット", "秘密鍵", "マイナンバー"
+        ]
+        if explicitlyProtected || secureInputEnabled
+            || role == "AXSecureTextField" || subrole == "AXSecureTextField" {
+            return .protected
+        }
+        if let bundleIdentifier,
+           protectedBundleIdentifiers.contains(where: { $0.caseInsensitiveCompare(bundleIdentifier) == .orderedSame }) {
+            return .protected
+        }
+        let hints = ([bundleIdentifier, subrole] + labelHints).compactMap { $0?.lowercased() }
+        if hints.contains(where: { hint in sensitiveMarkers.contains { hint.contains($0) } }) {
+            return .protected
+        }
+        let textRoles: Set<String> = ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"]
+        guard attributesReadable, let role, textRoles.contains(role), editable == true || hasTextSelection else {
+            return .unknown
+        }
+        return .normal
+    }
+
     public static func isValid(_ snapshot: Snapshot) -> Bool {
+        guard snapshot.retainsText else { return false }
         let units = Array(snapshot.text.utf16)
         let range = snapshot.selection
         guard units.count <= maximumObservableUTF16Count,
@@ -87,7 +180,8 @@ public enum InsertionReceiptPolicy {
     }
 
     public static func verify(before: Snapshot, inserted: String, after: Snapshot?,
-                              sameTarget: Bool, cancelled: Bool = false) -> Receipt? {
+                              sameTarget: Bool, cancelled: Bool = false,
+                              fieldNature: FieldNature = .unknown) -> Receipt? {
         guard sameTarget, !cancelled,
               let after, isValid(after),
               let expected = expectedAfter(before: before, inserted: inserted),
@@ -97,6 +191,7 @@ public enum InsertionReceiptPolicy {
               !sameText(before.text, after.text) else { return nil }
         if expected == after {
             return Receipt(before: before, after: after, inserted: inserted, mode: .strict)
+                .retainingEvidence(for: fieldNature)
         }
         // Only collapsed-caret insertions qualify for trailing-newline normalization
         // or block-scoped AX read-back acceptance. Selection replacements remain strict.
@@ -118,6 +213,7 @@ public enum InsertionReceiptPolicy {
         // paragraphs live in sibling AX nodes omitted from the active node's AXValue.
         if afterSuffix.isEmpty {
             return Receipt(before: before, after: after, inserted: inserted, mode: .blockScoped)
+                .retainingEvidence(for: fieldNature)
         }
         // Branch (a): Trailing-newline normalization where the editor strips or
         // collapses up to 2 trailing newline code units (\n or \r) at the end of
@@ -130,6 +226,7 @@ public enum InsertionReceiptPolicy {
             && afterSuffix.last == 10 && beforeSuffix.dropLast(2).elementsEqual(afterSuffix.dropLast())
         guard stripped || collapsedCRLF else { return nil }
         return Receipt(before: before, after: after, inserted: inserted, mode: .trailingNewlineNormalized)
+            .retainingEvidence(for: fieldNature)
     }
 
     /// Reconcile only a concurrent recording for the exact same target. A
@@ -145,6 +242,7 @@ public enum InsertionReceiptPolicy {
         // block an uncertain chain, but it must not authorize positive rebase.
         guard sameTarget else { return mayShareTarget ? .blocked : .unchanged }
         guard !cancelled, let receipt, let candidate, isValid(candidate) else { return .blocked }
+        guard receipt.retainsContentEvidence else { return .blocked }
         if candidate == receipt.before || candidate == receipt.after {
             return .rebased(receipt.after)
         }

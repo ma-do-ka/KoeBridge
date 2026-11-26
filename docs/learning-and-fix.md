@@ -25,27 +25,35 @@ of recording activation mode. It starts a spoken instruction take using the
 Build 48 transform machinery; use the recording key to finish the instruction.
 Further fix presses during pending work are ignored.
 
-An in-memory LastDeliveryAnchor stores only the latest verified ordinary delivery:
-field identity, before/after numeric snapshots, the actual sanitized submitted
-text, optional History ID, and delivery time. Unconfirmed `.inserted` event posting
-never establishes an anchor. A newer delivery clears it, starting a take in a
-different application clears it, and use after ten minutes clears it lazily.
-Manual transform, translate, and preset-chain deliveries invalidate an old anchor
-but do not establish one in this build. A verified fix replacement establishes a
-new anchor from its receipt so fixes can chain; a missing/unconfirmed receipt
-clears it rather than inferring success.
+An in-memory LastDeliveryAnchor stores only the latest verified ordinary delivery
+as verification evidence (not as the source of truth for fixing; since Build 66,
+the current input field itself is the source of truth): field identity,
+before/after numeric snapshots, the actual sanitized submitted text, optional
+History ID, and delivery time. Unconfirmed `.inserted` event posting never
+establishes an anchor. A newer delivery clears it, starting a take in a different
+application clears it, and use after ten minutes clears it lazily. Manual
+transform, translate, and preset-chain deliveries invalidate an old anchor but do
+not establish one in this build. A verified fix replacement establishes a new
+anchor from its receipt so fixes can chain; a missing/unconfirmed receipt clears
+it rather than inferring success.
 
 At invocation, the same frontmost AX field must have exactly the after-snapshot
 text and caret (UTF-16 exact comparison). The delivered span starts at the
 before-selection location and has the submitted text's UTF-16 length. The app
-writes `kAXSelectedTextRangeAttribute`, then reads the numeric range and full value
-back, verifies focus and exact selected text, and records that selection as the
-transform target. Unsupported/opaque ranges fail closed. Before replacement, fix
-checks focus, the full selection snapshot, and selected text again; the existing
-insertion preflight and verified receipt path also apply. Manual-selection
-transforms retain their Build 48/51 behavior. Fix instructions send the complete
-anchored span (bounded by receipt snapshot observability), bypassing the manual
-transform context truncation so a long delivery is never silently shortened. AX operations cannot be atomic
+writes `kAXSelectedTextRangeAttribute`, then re-reads the current input field's
+numeric range and full value (treating the live field content as the source of
+truth and the anchor only as verification evidence), verifies focus and exact
+selected text against expectations, and fails closed without applying a fix if
+they differ; otherwise it records that live selection as the transform target.
+Unsupported/opaque ranges fail closed. Before replacement, fix re-reads the
+current input field (the source of truth) to verify that focus, the full selection
+state, and the selected text still match the expected evidence, and fails closed
+without applying the replacement if the field differs; the existing insertion
+preflight and verified receipt path also apply. Manual-selection transforms retain
+their Build 48/51 behavior. Fix instructions send the complete span re-read from
+the current input field (validated against the anchor evidence and bounded by
+receipt snapshot observability), bypassing the manual transform context truncation
+so a long delivery is never silently shortened. AX operations cannot be atomic
 against simultaneous edits in a host app.
 
 Failure statuses:
