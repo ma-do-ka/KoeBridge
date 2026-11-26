@@ -13,15 +13,6 @@ import Foundation
 struct VocabularyPipelineGD308GateTests {
     private var cases: [GD308Fixture.TestCase] { GD308Fixture.allCases }
 
-    /// Cases where the pipeline disagrees with the verification matrix on this platform.
-    /// The matrix expectation stays encoded in the fixture and is still asserted below;
-    /// recording it as a known issue keeps the gate red the moment either side changes and
-    /// stops tolerating it once the disagreement is adjudicated.
-    private static let documentedDeviations: [String: String] = [
-        "CAT2-04": "matrix expects ready; pipeline holds because CFStringTokenizer reads 白峰 as はくほう while Y_before is しらみね (matrix note: 自動確定 is conditional on the dictionary reading agreeing)",
-        "CAT2-07": "matrix expects pending_review (Y_before 推奨); pipeline is ready because CFStringTokenizer reads 水無瀬 as みなせ, identical to Y_before",
-    ]
-
     // MARK: - Fixture shape
 
     @Test func fixtureIsTheFullSixtyCaseSet() {
@@ -43,15 +34,8 @@ struct VocabularyPipelineGD308GateTests {
         for testCase in cases where testCase.scope != .monitoring {
             let outcome = process(testCase)
             let failure = "\(testCase.id) expected \(testCase.expected.label), got \(signature(outcome))"
-            if let deviation = Self.documentedDeviations[testCase.id] {
-                withKnownIssue("\(testCase.id): \(deviation)") {
-                    #expect(matches(outcome, testCase), "\(failure)")
-                    assertMatrixDetails(outcome, testCase)
-                }
-            } else {
-                #expect(matches(outcome, testCase), "\(failure)")
-                assertMatrixDetails(outcome, testCase)
-            }
+            #expect(matches(outcome, testCase), "\(failure)")
+            assertMatrixDetails(outcome, testCase)
         }
     }
 
@@ -68,7 +52,7 @@ struct VocabularyPipelineGD308GateTests {
         }
     }
 
-    @Test func readyCountMatchesTheMatrixExpectedSet() {
+    @Test func readySetMatchesTheMatrixExpectedSet() {
         let correctPairs = cases.filter { $0.scope == .correctPair }
         let expectedReady = correctPairs.filter { $0.expectsReady }
         // The verification matrix (§3.1-2) pins 14 auto-confirmed pairs; the conditional
@@ -77,9 +61,13 @@ struct VocabularyPipelineGD308GateTests {
         // bound plus CAT4-05's own evidence-backed branch (see the fix5 report).
         #expect(expectedReady.count == 16, "matrix expected ready set: \(expectedReady.map(\.id))")
         let actualReady = correctPairs.filter { process($0).isReady }
+        let actualReadyIDs = Set(actualReady.map(\.id))
+        let expectedReadyIDs = Set(expectedReady.map(\.id))
+        let actualButNotExpected = actualReadyIDs.subtracting(expectedReadyIDs).sorted()
+        let expectedButNotActual = expectedReadyIDs.subtracting(actualReadyIDs).sorted()
         #expect(
-            actualReady.count == expectedReady.count,
-            "auto-confirmed \(actualReady.map(\.id)) vs matrix \(expectedReady.map(\.id))"
+            Set(actualReady.map(\.id)) == Set(expectedReady.map(\.id)),
+            "auto-confirmed set mismatch: actual-but-not-expected=\(actualButNotExpected), expected-but-not-actual=\(expectedButNotActual)"
         )
     }
 

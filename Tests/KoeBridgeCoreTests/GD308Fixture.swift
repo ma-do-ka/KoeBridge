@@ -147,9 +147,10 @@ enum GD308Fixture {
                  written: "音声入力設定", originalFragment: "音声入力設営",
                  expectedReading: "おんせいにゅうりょくせってい",
                  expected: .pendingReview(.phoneticDivergence)),
+        // Adjudicated 2026-11-27: measured CFStringTokenizer readings diverge (白峯=しらみね vs 白峰=はくほう); fail closed.
         TestCase("CAT2-04", group: "CAT2", scope: .correctPair,
                  written: "白峰データ", originalFragment: "白峯データ",
-                 expectedReading: "しらみねでーた", expected: .ready),
+                 expectedReading: "しらみねでーた", expected: .pendingReview(.phoneticDivergence)),
         // 難読 + Y_before/Y_after mismatch → 保留（Y_before 推奨）.
         TestCase("CAT2-05", group: "CAT2", scope: .correctPair,
                  written: "霧峰システム", originalFragment: "切峰システム",
@@ -158,10 +159,10 @@ enum GD308Fixture {
         TestCase("CAT2-06", group: "CAT2", scope: .correctPair,
                  written: "朝霧パイプライン", originalFragment: "朝切パイプライン",
                  expectedReading: "あさぎりぱいぷらいん", expected: .pendingReview(nil)),
-        // 難読（辞書が別読みした場合 Y_before を一次証拠として保持）→ 保留.
+        // Adjudicated 2026-11-27: measured CFStringTokenizer reads 水無瀬基盤 as みなせきばん, identical to みなせ基板.
         TestCase("CAT2-07", group: "CAT2", scope: .correctPair,
                  written: "水無瀬基盤", originalFragment: "みなせ基板",
-                 expectedReading: "みなせきばん", expected: .pendingReview(nil)),
+                 expectedReading: "みなせきばん", expected: .ready),
         // 自動確定（辞書一致時）: Y_before と辞書読みが一致 → ready.
         TestCase("CAT2-08", group: "CAT2", scope: .correctPair,
                  written: "夕凪帳票", originalFragment: "ゆうなぎ調表",
