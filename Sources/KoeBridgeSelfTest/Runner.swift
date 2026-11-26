@@ -432,6 +432,11 @@ struct KoeBridgeSelfTest {
         await run("AmiVoiceDictionarySyncTests.launchPassRestoresFullSnapshotWhenServerProfileIsEmpty", { try await AmiVoiceDictionarySyncTests().launchPassRestoresFullSnapshotWhenServerProfileIsEmpty() })
         await run("AmiVoiceDictionarySyncTests.optInOffMakesEveryEntryPointZeroTransportCalls", { try await AmiVoiceDictionarySyncTests().optInOffMakesEveryEntryPointZeroTransportCalls() })
         await run("AmiVoiceDictionarySyncTests.recognitionProfileReferenceIsConditionalAndOffPathByteIdentical", { try AmiVoiceDictionarySyncTests().recognitionProfileReferenceIsConditionalAndOffPathByteIdentical() })
+        await run("AmiVoiceDictionarySyncTests.unattributedServerRejectionIsolatesOneEntryAndResyncsRest", { try await AmiVoiceDictionarySyncTests().unattributedServerRejectionIsolatesOneEntryAndResyncsRest() })
+        await run("AmiVoiceDictionarySyncTests.unattributableRejectionNeverPostsIdenticalFailingSetTwice", { try await AmiVoiceDictionarySyncTests().unattributableRejectionNeverPostsIdenticalFailingSetTwice() })
+        await run("AmiVoiceDictionarySyncTests.isolationPrefersUnprotectedEntriesOverProtectedOnes", { try await AmiVoiceDictionarySyncTests().isolationPrefersUnprotectedEntriesOverProtectedOnes() })
+        await run("AmiVoiceDictionarySyncTests.hybridSpokenMustBeKanaAndPendingReviewIsCountedSeparately", { try await AmiVoiceDictionarySyncTests().hybridSpokenMustBeKanaAndPendingReviewIsCountedSeparately() })
+        await run("AmiVoiceDictionarySyncTests.corruptPersistedStoreRecoversOnNextSyncInsteadOfStoreFailure", { try await AmiVoiceDictionarySyncTests().corruptPersistedStoreRecoversOnNextSyncInsteadOfStoreFailure() })
         print("KoeBridge portable self-test: \(testCount) cases, \(TestRecorder.checked) assertions, \(TestRecorder.failures) failures")
         if TestRecorder.failures > 0 { exit(1) }
     }

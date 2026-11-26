@@ -164,6 +164,7 @@ public actor AmiVoiceDictionarySyncEngine {
                 }
                 if requestedState == .readyToSync {
                     engineState.lastErrorClass = nil
+                    engineState.lastErrorDetail = nil
                 }
             }
             rows[index] = merged
@@ -207,6 +208,7 @@ public actor AmiVoiceDictionarySyncEngine {
             }
             if requestedState == .readyToSync {
                 engineState.lastErrorClass = nil
+                engineState.lastErrorDetail = nil
             }
             changed = true
         }
@@ -509,6 +511,7 @@ public actor AmiVoiceDictionarySyncEngine {
             let fingerprint = AmiVoiceDictionaryWordPayload.fingerprint(payloads: payloads, family: family)
             let hasDirtyRows = rows.contains { $0.engineState(for: key)?.dirty == true }
             let noPriorSync = profile.lastSyncedFingerprint == nil
+            let quarantinedCount = preparation.locallyQuarantinedCount + totalServerQuarantined
             let alreadyCurrent = profile.lastSyncedFingerprint == fingerprint && !hasDirtyRows
             if alreadyCurrent && !forceUpload {
                 var updated = profile
@@ -519,24 +522,39 @@ public actor AmiVoiceDictionarySyncEngine {
                 return AmiVoiceDictionarySyncOutcome(
                     kind: .noChanges,
                     profileKey: key,
-                    quarantinedCount: preparation.locallyQuarantinedCount,
+                    quarantinedCount: quarantinedCount,
                     archivedCount: preparation.archivedCount,
                     timestamp: now()
                 )
             }
             if payloads.isEmpty && noPriorSync && !hasDirtyRows && !forceUpload {
                 var updated = profile
-                updated.lastResult = preparation.locallyQuarantinedCount > 0 ? .validationFailed : .noChanges
-                updated.lastErrorClass = preparation.locallyQuarantinedCount > 0 ? .validation : nil
+                updated.lastResult = quarantinedCount > 0 ? .validationFailed : .noChanges
+                updated.lastErrorClass = quarantinedCount > 0 ? .validation : nil
                 _ = updateProfile(updated)
                 notifyStatus(key)
                 return AmiVoiceDictionarySyncOutcome(
                     kind: updated.lastResult ?? .noChanges,
                     profileKey: key,
-                    quarantinedCount: preparation.locallyQuarantinedCount,
+                    quarantinedCount: quarantinedCount,
                     archivedCount: preparation.archivedCount,
                     timestamp: now()
                 )
+            }
+            if payloads.isEmpty && !forceUpload {
+                let quarantinedRows = quarantinedRowCount(rows, key: key)
+                if quarantinedCount > 0 || quarantinedRows > 0 {
+                    // The candidate set is empty because everything left is
+                    // quarantined. Never send an empty full-overwrite here: it would
+                    // delete every word on the server and would repeat a failing set
+                    // on the next sync.
+                    return validationFailureOutcome(
+                        profile: profile,
+                        key: key,
+                        quarantinedCount: max(quarantinedCount, quarantinedRows),
+                        archivedCount: preparation.archivedCount
+                    )
+                }
             }
 
             let generationByID = Dictionary(uniqueKeysWithValues: preparation.pairs.map { ($0.entry.id, $0.engineState.generation) })
@@ -560,6 +578,7 @@ public actor AmiVoiceDictionarySyncEngine {
                             engineState.dirty = false
                             engineState.failureCount = 0
                             engineState.lastErrorClass = nil
+                            engineState.lastErrorDetail = nil
                             engineState.lastSyncedAt = finishedAt
                         }
                     } else if !currentState.state.participatesInSnapshot && currentState.dirty {
@@ -590,49 +609,61 @@ public actor AmiVoiceDictionarySyncEngine {
                     kind: updated.lastResult ?? .success,
                     profileKey: key,
                     uploadedCount: payloads.count,
-                    quarantinedCount: preparation.locallyQuarantinedCount + totalServerQuarantined,
+                    quarantinedCount: quarantinedCount,
                     archivedCount: preparation.archivedCount,
                     timestamp: finishedAt
                 )
             } catch AmiVoiceDictionaryTransportError.entryValidation(let rejection) {
-                let matchedIDs = entriesMatching(
+                let attributedIDs = entriesMatching(
                     rejection: rejection,
                     pairs: preparation.pairs,
                     family: AmiVoiceDictionaryEngineFamily(engine: key.engine)
                 )
-                guard !matchedIDs.isEmpty,
-                      validationAttempts < AmiVoiceDictionarySyncPolicy.maximumValidationIsolationAttempts else {
-                    var updated = profile
-                    updated.lastResult = .validationFailed
-                    updated.lastErrorClass = .validation
-                    _ = updateProfile(updated)
-                    notifyStatus(key)
-                    return AmiVoiceDictionarySyncOutcome(
-                        kind: .validationFailed,
-                        profileKey: key,
-                        quarantinedCount: preparation.locallyQuarantinedCount + totalServerQuarantined,
-                        archivedCount: preparation.archivedCount,
-                        timestamp: now()
-                    )
+                let attemptsRemain = validationAttempts < AmiVoiceDictionarySyncPolicy.maximumValidationIsolationAttempts
+                let unattributedCandidate = attributedIDs.isEmpty
+                    ? isolationCandidate(pairs: preparation.pairs)
+                    : nil
+                // Attribution fails when the server's error body names no entry in
+                // this snapshot. Guarantee progress (§8.3): isolate exactly one
+                // deterministic candidate and retry with the strictly smaller set,
+                // so one bad entry cannot block every later sync forever.
+                let isolationIDs: Set<UUID>
+                let isolationDetail: String?
+                if !attributedIDs.isEmpty {
+                    isolationIDs = attributedIDs
+                    isolationDetail = nil
+                } else if let unattributedCandidate {
+                    isolationIDs = [unattributedCandidate]
+                    isolationDetail = Self.unattributedIsolationDetail
+                } else {
+                    isolationIDs = []
+                    isolationDetail = nil
                 }
-                validationAttempts += 1
-                totalServerQuarantined += matchedIDs.count
-                rows = store.loadEntries()
-                for index in rows.indices where matchedIDs.contains(rows[index].id) {
-                    rows[index].updateEngineState(for: key) { engineState in
-                        engineState.state = .syncFailed
-                        engineState.dirty = true
-                        engineState.failureCount += 1
-                        engineState.lastErrorClass = .validation
-                        engineState.generation &+= 1
+                if attemptsRemain, !isolationIDs.isEmpty {
+                    validationAttempts += 1
+                    totalServerQuarantined += isolationIDs.count
+                    guard quarantineEntries(isolationIDs, detail: isolationDetail, key: key) else {
+                        recordStoreFailure(profile: profile, key: key)
+                        return AmiVoiceDictionarySyncOutcome(kind: .storeFailure, profileKey: key, timestamp: now())
                     }
+                    notifyStatus(key)
+                    continue
                 }
-                guard store.saveEntries(rows) else {
-                    recordStoreFailure(profile: profile, key: key)
-                    return AmiVoiceDictionarySyncOutcome(kind: .storeFailure, profileKey: key, timestamp: now())
+                // The attempt budget is spent with the set still failing. For an
+                // unattributed rejection, quarantine one more candidate (bookkeeping
+                // only, no retry) so the next sync posts a strictly smaller set than
+                // any set that has already failed.
+                if !attemptsRemain, let unattributedCandidate {
+                    totalServerQuarantined += 1
+                    _ = quarantineEntries([unattributedCandidate], detail: Self.unattributedIsolationDetail, key: key)
+                    notifyStatus(key)
                 }
-                notifyStatus(key)
-                continue
+                return validationFailureOutcome(
+                    profile: profile,
+                    key: key,
+                    quarantinedCount: preparation.locallyQuarantinedCount + totalServerQuarantined,
+                    archivedCount: preparation.archivedCount
+                )
             } catch AmiVoiceDictionaryTransportError.authentication {
                 var updated = profile
                 updated.lastResult = .authenticationRejected
@@ -689,6 +720,24 @@ public actor AmiVoiceDictionarySyncEngine {
             }
         }
 
+        // Defensive fallback: every isolation path above returns, so this is only
+        // reachable if the loop bound changes.
+        return validationFailureOutcome(
+            profile: profile,
+            key: key,
+            quarantinedCount: (lastPreparation?.locallyQuarantinedCount ?? 0) + totalServerQuarantined,
+            archivedCount: lastPreparation?.archivedCount ?? 0
+        )
+    }
+
+    private static let unattributedIsolationDetail = "unattributed validation rejection (isolation)"
+
+    private func validationFailureOutcome(
+        profile: AmiVoiceDictionaryProfile,
+        key: AmiVoiceDictionaryProfileKey,
+        quarantinedCount: Int,
+        archivedCount: Int
+    ) -> AmiVoiceDictionarySyncOutcome {
         var updated = profile
         updated.lastResult = .validationFailed
         updated.lastErrorClass = .validation
@@ -697,10 +746,41 @@ public actor AmiVoiceDictionarySyncEngine {
         return AmiVoiceDictionarySyncOutcome(
             kind: .validationFailed,
             profileKey: key,
-            quarantinedCount: (lastPreparation?.locallyQuarantinedCount ?? 0) + totalServerQuarantined,
-            archivedCount: lastPreparation?.archivedCount ?? 0,
+            quarantinedCount: quarantinedCount,
+            archivedCount: archivedCount,
             timestamp: now()
         )
+    }
+
+    @discardableResult
+    private func quarantineEntries(
+        _ ids: Set<UUID>,
+        detail: String?,
+        key: AmiVoiceDictionaryProfileKey
+    ) -> Bool {
+        guard !ids.isEmpty else { return true }
+        var rows = store.loadEntries()
+        for index in rows.indices where ids.contains(rows[index].id) {
+            rows[index].updateEngineState(for: key) { engineState in
+                engineState.state = .syncFailed
+                engineState.dirty = true
+                engineState.failureCount += 1
+                engineState.lastErrorClass = .validation
+                engineState.lastErrorDetail = detail
+                engineState.generation &+= 1
+            }
+        }
+        return store.saveEntries(rows)
+    }
+
+    private func quarantinedRowCount(
+        _ rows: [AmiVoiceDictionaryEntry],
+        key: AmiVoiceDictionaryProfileKey
+    ) -> Int {
+        rows.filter { row in
+            guard let state = row.engineState(for: key)?.state else { return false }
+            return state == .pendingReview || state == .syncFailed
+        }.count
     }
 
     private func prepareSnapshot(
@@ -803,8 +883,9 @@ public actor AmiVoiceDictionarySyncEngine {
         pairs: [SnapshotPair],
         family: AmiVoiceDictionaryEngineFamily
     ) -> Set<UUID> {
-        guard let rejection else { return fallbackSingleDirtyReadyEntry(pairs: pairs) }
-        guard let value = rejection.value else { return fallbackSingleDirtyReadyEntry(pairs: pairs) }
+        // An empty result means "cannot attribute"; the caller then isolates one
+        // deterministic candidate instead of giving up.
+        guard let rejection, let value = rejection.value else { return [] }
         var matched = Set<UUID>()
         for pair in pairs {
             let candidate: String?
@@ -824,15 +905,27 @@ public actor AmiVoiceDictionarySyncEngine {
                 matched.insert(pair.entry.id)
             }
         }
-        return matched.isEmpty ? fallbackSingleDirtyReadyEntry(pairs: pairs) : matched
+        return matched
     }
 
-    private func fallbackSingleDirtyReadyEntry(pairs: [SnapshotPair]) -> Set<UUID> {
+    /// Deterministic isolation choice for an unattributable rejection: the oldest
+    /// dirty ready-to-sync entry, never a protected one while an unprotected entry
+    /// is still a candidate. B-1 has no separate "manual" provenance flag, so
+    /// `isProtected` is the only user-protection signal available here.
+    private func isolationCandidate(pairs: [SnapshotPair]) -> UUID? {
         let candidates = pairs.filter { pair in
             pair.engineState.state == .readyToSync && pair.engineState.dirty
         }
-        guard candidates.count == 1, let only = candidates.first else { return [] }
-        return [only.entry.id]
+        let ordered = candidates.sorted { lhs, rhs in
+            if lhs.entry.isProtected != rhs.entry.isProtected {
+                return !lhs.entry.isProtected
+            }
+            if lhs.entry.createdAt != rhs.entry.createdAt {
+                return lhs.entry.createdAt < rhs.entry.createdAt
+            }
+            return lhs.entry.id.uuidString < rhs.entry.id.uuidString
+        }
+        return ordered.first?.entry.id
     }
 
     private func usableAPIKey() async -> String? {

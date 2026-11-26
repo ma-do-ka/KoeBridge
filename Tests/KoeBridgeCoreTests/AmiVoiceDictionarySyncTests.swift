@@ -142,7 +142,7 @@ struct AmiVoiceDictionarySyncTests {
         #expect(AmiVoiceProfileID("__reserved") == nil)
         #expect(AmiVoiceProfileID("has space") == nil)
         #expect(AmiVoiceProfileID("日本語") == nil)
-        #expect(AmiVoiceProfileID("valid_profile-1")?.recognitionReference == ":valid_profile-1")
+        #expect(AmiVoiceProfileID("valid_profile-1")?.rawValue == "valid_profile-1")
 
         let uuid = UUID()
         let hybrid16 = AmiVoiceDictionaryProfileKey(engine: .hybridJapaneseConversation, samplingRate: .rate16k)
@@ -360,5 +360,211 @@ struct AmiVoiceDictionarySyncTests {
         #expect(retried.uploadedCount == 1)
         #expect(transport.calls.map(\.method) == ["POST"])
         #expect(transport.calls.last?.payloads.first?.written == "霧峰システム")
+    }
+
+    @Test func unattributedServerRejectionIsolatesOneEntryAndResyncsRest() async throws {
+        let suite = "KoeBridge.AmiVoiceSync." + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = AmiVoiceDictionarySyncStore(defaults: defaults)
+        let transport = MockAmiVoiceDictionaryTransport()
+        let engine = AmiVoiceDictionarySyncEngine(store: store, transport: transport, apiKeyProvider: { "fixture-key" })
+        let key = AmiVoiceDictionaryProfileKey(engine: .e2eJapaneseGeneral, samplingRate: .rate16k)
+        let badID = UUID()
+        let goodID = UUID()
+        // The error body is unparsable, so nothing can be attributed. The oldest
+        // dirty ready entry is isolated and the retried POST carries the rest.
+        #expect(await engine.upsertEntry(
+            AmiVoiceDictionaryEntry(id: badID, written: "BadWord", createdAt: Date(timeIntervalSince1970: 1_000)),
+            for: key,
+            state: .readyToSync
+        ))
+        #expect(await engine.upsertEntry(
+            AmiVoiceDictionaryEntry(id: goodID, written: "KoeBridge", createdAt: Date(timeIntervalSince1970: 2_000)),
+            for: key,
+            state: .readyToSync
+        ))
+        await engine.setAutomaticSyncEnabled(true)
+        transport.replaceHandler = { payloads in
+            if payloads.contains(where: { $0.written == "BadWord" }) {
+                throw AmiVoiceDictionaryTransportError.entryValidation(nil)
+            }
+            return payloads
+        }
+
+        let outcome = await engine.syncNow(for: key)
+        #expect(outcome.kind == .success)
+        #expect(outcome.quarantinedCount == 1)
+        let posts = transport.calls.filter { $0.method == "POST" }
+        #expect(posts.count == 2)
+        #expect(Set(posts[0].payloads.map(\.written)) == ["BadWord", "KoeBridge"])
+        #expect(posts[1].payloads.map(\.written) == ["KoeBridge"])
+        let rows = await engine.entries()
+        #expect(rows.first { $0.id == badID }?.engineState(for: key)?.state == .syncFailed)
+        #expect(rows.first { $0.id == badID }?.engineState(for: key)?.lastErrorDetail
+            == "unattributed validation rejection (isolation)")
+        #expect(rows.first { $0.id == goodID }?.engineState(for: key)?.state == .autoSynced)
+        let status = await engine.status(for: key)
+        #expect(status.quarantinedCount == 1)
+        #expect(status.pendingReviewCount == 0)
+    }
+
+    @Test func unattributableRejectionNeverPostsIdenticalFailingSetTwice() async throws {
+        let suite = "KoeBridge.AmiVoiceSync." + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = AmiVoiceDictionarySyncStore(defaults: defaults)
+        let transport = MockAmiVoiceDictionaryTransport()
+        let engine = AmiVoiceDictionarySyncEngine(store: store, transport: transport, apiKeyProvider: { "fixture-key" })
+        let key = AmiVoiceDictionaryProfileKey(engine: .e2eJapaneseGeneral, samplingRate: .rate16k)
+        #expect(await engine.upsertEntry(
+            AmiVoiceDictionaryEntry(written: "AlphaWord", createdAt: Date(timeIntervalSince1970: 1_000)),
+            for: key,
+            state: .readyToSync
+        ))
+        #expect(await engine.upsertEntry(
+            AmiVoiceDictionaryEntry(written: "BetaWord", createdAt: Date(timeIntervalSince1970: 2_000)),
+            for: key,
+            state: .readyToSync
+        ))
+        await engine.setAutomaticSyncEnabled(true)
+        transport.replaceHandler = { _ in
+            throw AmiVoiceDictionaryTransportError.entryValidation(nil)
+        }
+
+        let first = await engine.syncNow(for: key)
+        #expect(first.kind == .validationFailed)
+        let second = await engine.syncNow(for: key)
+        #expect(second.kind == .validationFailed)
+        let third = await engine.syncNow(for: key, trigger: .retry)
+        #expect(third.kind == .validationFailed)
+
+        // Each attempt posts a strictly smaller set; once everything is quarantined
+        // the sync stops posting instead of repeating a set that already failed.
+        let signatures = transport.calls
+            .filter { $0.method == "POST" }
+            .map { $0.payloads.map(\.written).sorted().joined(separator: ",") }
+        #expect(signatures == ["AlphaWord,BetaWord", "BetaWord"])
+        let rows = await engine.entries()
+        #expect(rows.allSatisfy { $0.engineState(for: key)?.state == .syncFailed })
+        #expect(await engine.status(for: key).quarantinedCount == 2)
+    }
+
+    @Test func isolationPrefersUnprotectedEntriesOverProtectedOnes() async throws {
+        let suite = "KoeBridge.AmiVoiceSync." + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = AmiVoiceDictionarySyncStore(defaults: defaults)
+        let transport = MockAmiVoiceDictionaryTransport()
+        let engine = AmiVoiceDictionarySyncEngine(store: store, transport: transport, apiKeyProvider: { "fixture-key" })
+        let key = AmiVoiceDictionaryProfileKey(engine: .e2eJapaneseGeneral, samplingRate: .rate16k)
+        #expect(await engine.upsertEntry(
+            AmiVoiceDictionaryEntry(
+                written: "ProtectedWord",
+                isProtected: true,
+                createdAt: Date(timeIntervalSince1970: 1_000)
+            ),
+            for: key,
+            state: .readyToSync
+        ))
+        #expect(await engine.upsertEntry(
+            AmiVoiceDictionaryEntry(written: "PlainWord", createdAt: Date(timeIntervalSince1970: 2_000)),
+            for: key,
+            state: .readyToSync
+        ))
+        await engine.setAutomaticSyncEnabled(true)
+        transport.replaceHandler = { payloads in
+            if payloads.contains(where: { $0.written == "ProtectedWord" }) {
+                throw AmiVoiceDictionaryTransportError.entryValidation(nil)
+            }
+            return payloads
+        }
+
+        let outcome = await engine.syncNow(for: key)
+        #expect(outcome.kind == .validationFailed)
+        let posts = transport.calls.filter { $0.method == "POST" }
+        // The unprotected entry is isolated first, so the older protected entry is
+        // the only one left for the second attempt.
+        #expect(posts.allSatisfy { $0.payloads.contains { payload in payload.written == "ProtectedWord" } })
+        #expect(posts.last?.payloads.map(\.written) == ["ProtectedWord"])
+        let rows = await engine.entries()
+        #expect(rows.allSatisfy { $0.engineState(for: key)?.state == .syncFailed })
+    }
+
+    @Test func hybridSpokenMustBeKanaAndPendingReviewIsCountedSeparately() async throws {
+        #expect(throws: AmiVoiceDictionaryValidationFailure.invalidSpoken) {
+            try AmiVoiceDictionaryValidator.payload(
+                for: AmiVoiceDictionaryEntry(written: "KoeBridge", spoken: "KoeBridge"),
+                engine: .hybridJapaneseConversation
+            )
+        }
+        #expect(throws: AmiVoiceDictionaryValidationFailure.invalidSpoken) {
+            try AmiVoiceDictionaryValidator.payload(
+                for: AmiVoiceDictionaryEntry(written: "KoeBridge", spoken: "こえぶりっじ2"),
+                engine: .hybridJapaneseConversation
+            )
+        }
+        let kana = try AmiVoiceDictionaryValidator.payload(
+            for: AmiVoiceDictionaryEntry(written: "霧峰システム", spoken: "きりみねしすてむ"),
+            engine: .hybridJapaneseConversation
+        )
+        #expect(kana.spoken == "きりみねしすてむ")
+        let katakana = try AmiVoiceDictionaryValidator.payload(
+            for: AmiVoiceDictionaryEntry(written: "コエブリッジ", spoken: "コーエブリッジ"),
+            engine: .hybridJapaneseConversation
+        )
+        #expect(katakana.spoken == "コーエブリッジ")
+        // E2E entries carry no spoken field and are unaffected.
+        let e2e = try AmiVoiceDictionaryValidator.payload(
+            for: AmiVoiceDictionaryEntry(written: "KoeBridge", spoken: "KoeBridge"),
+            engine: .e2eJapaneseGeneral
+        )
+        #expect(e2e.spoken == nil)
+
+        let suite = "KoeBridge.AmiVoiceSync." + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = AmiVoiceDictionarySyncStore(defaults: defaults)
+        let transport = MockAmiVoiceDictionaryTransport()
+        let engine = AmiVoiceDictionarySyncEngine(store: store, transport: transport, apiKeyProvider: { "fixture-key" })
+        let key = AmiVoiceDictionaryProfileKey(engine: .hybridJapaneseConversation, samplingRate: .rate16k)
+        let entryID = UUID()
+        #expect(await engine.upsertEntry(
+            AmiVoiceDictionaryEntry(id: entryID, written: "BadEntry", spoken: "BadEntry"),
+            for: key,
+            state: .readyToSync
+        ))
+        await engine.setAutomaticSyncEnabled(true)
+        let outcome = await engine.syncNow(for: key)
+        #expect(outcome.kind == .validationFailed)
+        #expect(transport.calls.isEmpty)
+        let rows = await engine.entries()
+        #expect(rows.first { $0.id == entryID }?.engineState(for: key)?.state == .pendingReview)
+        let status = await engine.status(for: key)
+        #expect(status.pendingReviewCount == 1)
+        #expect(status.quarantinedCount == 0)
+    }
+
+    @Test func corruptPersistedStoreRecoversOnNextSyncInsteadOfStoreFailure() async throws {
+        let suite = "KoeBridge.AmiVoiceSync." + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let corrupt = Data("not-json".utf8)
+        defaults.set(corrupt, forKey: AmiVoiceDictionarySyncStore.entriesKey)
+        defaults.set(corrupt, forKey: AmiVoiceDictionarySyncStore.profilesKey)
+        let store = AmiVoiceDictionarySyncStore(defaults: defaults)
+        let transport = MockAmiVoiceDictionaryTransport()
+        let engine = AmiVoiceDictionarySyncEngine(store: store, transport: transport, apiKeyProvider: { "fixture-key" })
+        let key = AmiVoiceDictionaryProfileKey(engine: .e2eJapaneseGeneral, samplingRate: .rate16k)
+        await engine.setAutomaticSyncEnabled(true)
+
+        // The undecodable values are dropped on load instead of wedging the store.
+        #expect(store.loadEntries().isEmpty)
+        #expect(store.loadProfiles().isEmpty)
+        #expect(await engine.upsertEntry(AmiVoiceDictionaryEntry(written: "KoeBridge"), for: key, state: .readyToSync))
+        let outcome = await engine.syncNow(for: key)
+        #expect(outcome.kind == .success)
+        #expect(outcome.uploadedCount == 1)
+        #expect(await engine.entries().count == 1)
     }
 }

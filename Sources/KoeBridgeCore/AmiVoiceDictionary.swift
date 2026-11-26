@@ -29,18 +29,15 @@ public struct AmiVoiceDictionaryProfileKey: Codable, Equatable, Hashable, Sendab
     }
 }
 
-/// Validated server-side profile identifier. The recognition reference always
-/// carries the mandatory leading colon; the stored/raw identifier never does.
+/// Validated server-side profile identifier. `AmiVoiceWire.startCommand` owns the
+/// mandatory leading colon when it builds the recognition reference; the stored
+/// identifier never carries it.
 public struct AmiVoiceProfileID: Codable, Equatable, Hashable, Sendable {
     public let rawValue: String
 
     public init?(_ rawValue: String) {
         guard let sanitized = AmiVoiceWire.sanitizeProfileId(rawValue) else { return nil }
         self.rawValue = sanitized
-    }
-
-    public var recognitionReference: String {
-        ":" + rawValue
     }
 
     public init(from decoder: Decoder) throws {
@@ -119,6 +116,10 @@ public struct AmiVoiceDictionaryEngineState: Codable, Equatable, Sendable {
     public var dirty: Bool
     public var failureCount: Int
     public var lastErrorClass: AmiVoiceDictionarySyncErrorClass?
+    /// Optional human-readable detail for the last failure. Used by the sync
+    /// engine to record why an entry was quarantined when the server's rejection
+    /// could not be attributed to it.
+    public var lastErrorDetail: String?
     public var lastSyncedAt: Date?
     public var generation: UInt64
 
@@ -128,6 +129,7 @@ public struct AmiVoiceDictionaryEngineState: Codable, Equatable, Sendable {
         dirty: Bool = false,
         failureCount: Int = 0,
         lastErrorClass: AmiVoiceDictionarySyncErrorClass? = nil,
+        lastErrorDetail: String? = nil,
         lastSyncedAt: Date? = nil,
         generation: UInt64 = 0
     ) {
@@ -136,6 +138,7 @@ public struct AmiVoiceDictionaryEngineState: Codable, Equatable, Sendable {
         self.dirty = dirty
         self.failureCount = failureCount
         self.lastErrorClass = lastErrorClass
+        self.lastErrorDetail = lastErrorDetail
         self.lastSyncedAt = lastSyncedAt
         self.generation = generation
     }
@@ -291,6 +294,9 @@ public enum AmiVoiceDictionaryValidator {
             guard !hasWhitespaceOrControlScalar(spoken) else {
                 throw AmiVoiceDictionaryValidationFailure.invalidSpoken
             }
+            guard isValidHybridReading(spoken) else {
+                throw AmiVoiceDictionaryValidationFailure.invalidSpoken
+            }
             return .hybrid(written: entry.written, spoken: spoken, className: className)
         case .e2e:
             if let alternative = entry.alternativeWritten,
@@ -321,6 +327,24 @@ public enum AmiVoiceDictionaryValidator {
         text.unicodeScalars.contains { scalar in
             scalar.value == 0x20 || scalar.value == 0x09 || scalar.value == 0x0A || scalar.value == 0x0D || isControl(scalar)
         }
+    }
+
+    /// Mirrors the B-2 pipeline's reading-validity guard
+    /// (`VocabularyReadingGeneration.isValidHybridReading`): kana scalars plus the
+    /// "." and "_" separators only. A Latin letter or any other non-kana spelling
+    /// in a Hybrid `spoken` is rejected here, before the full-overwrite POST.
+    private static func isValidHybridReading(_ reading: String) -> Bool {
+        guard !reading.isEmpty else { return false }
+        return reading.unicodeScalars.allSatisfy { scalar in
+            isKanaScalar(scalar) || scalar == "." || scalar == "_"
+        }
+    }
+
+    private static func isKanaScalar(_ scalar: Unicode.Scalar) -> Bool {
+        let value = scalar.value
+        return (value >= 0x3040 && value <= 0x309F)
+            || (value >= 0x30A0 && value <= 0x30FF)
+            || value == 0x3005
     }
 
     private static func isControl(_ scalar: Unicode.Scalar) -> Bool {
@@ -620,6 +644,7 @@ public struct AmiVoiceDictionarySyncStatus: Codable, Equatable, Sendable {
     public var lastResult: AmiVoiceDictionarySyncResultKind?
     public var pendingCount: Int
     public var quarantinedCount: Int
+    public var pendingReviewCount: Int
     public var lastErrorClass: AmiVoiceDictionarySyncErrorClass?
     public var lastSyncAt: Date?
     public var backoffUntil: Date?
@@ -631,6 +656,7 @@ public struct AmiVoiceDictionarySyncStatus: Codable, Equatable, Sendable {
         lastResult: AmiVoiceDictionarySyncResultKind?,
         pendingCount: Int,
         quarantinedCount: Int,
+        pendingReviewCount: Int,
         lastErrorClass: AmiVoiceDictionarySyncErrorClass?,
         lastSyncAt: Date?,
         backoffUntil: Date?,
@@ -641,6 +667,7 @@ public struct AmiVoiceDictionarySyncStatus: Codable, Equatable, Sendable {
         self.lastResult = lastResult
         self.pendingCount = pendingCount
         self.quarantinedCount = quarantinedCount
+        self.pendingReviewCount = pendingReviewCount
         self.lastErrorClass = lastErrorClass
         self.lastSyncAt = lastSyncAt
         self.backoffUntil = backoffUntil
@@ -656,13 +683,18 @@ public struct AmiVoiceDictionarySyncStatus: Codable, Equatable, Sendable {
     ) -> Self {
         let states = entries.compactMap { $0.engineState(for: key) }
         let pendingCount = states.filter { $0.dirty && $0.state.participatesInSnapshot }.count
-        let quarantinedCount = states.filter { $0.state == .pendingReview || $0.state == .syncFailed }.count
+        // Sync quarantine and the pre-flight hold queue are distinct states: only
+        // `.syncFailed` is a server-side quarantine, while `.pendingReview` waits
+        // for the user to resolve a locally invalid entry.
+        let quarantinedCount = states.filter { $0.state == .syncFailed }.count
+        let pendingReviewCount = states.filter { $0.state == .pendingReview }.count
         let activeCount = states.filter { $0.state.participatesInSnapshot }.count
         return Self(
             automaticSyncEnabled: automaticSyncEnabled,
             lastResult: profile?.lastResult,
             pendingCount: pendingCount,
             quarantinedCount: quarantinedCount,
+            pendingReviewCount: pendingReviewCount,
             lastErrorClass: profile?.lastErrorClass,
             lastSyncAt: profile?.lastSyncAt,
             backoffUntil: profile?.backoffUntil,
@@ -709,6 +741,7 @@ public final class AmiVoiceDictionarySyncStore: @unchecked Sendable {
     public func loadEntries() -> [AmiVoiceDictionaryEntry] {
         lock.lock()
         defer { lock.unlock() }
+        recoverCorruptValuesLocked()
         return entriesStore.rows
     }
 
@@ -721,6 +754,7 @@ public final class AmiVoiceDictionarySyncStore: @unchecked Sendable {
     public func loadProfiles() -> [AmiVoiceDictionaryProfile] {
         lock.lock()
         defer { lock.unlock() }
+        recoverCorruptValuesLocked()
         return profilesStore.rows
     }
 
@@ -736,9 +770,17 @@ public final class AmiVoiceDictionarySyncStore: @unchecked Sendable {
 
     public func resetCorruptValues() {
         lock.lock()
-        entriesStore.resetCorruptValue()
-        profilesStore.resetCorruptValue()
-        lock.unlock()
+        defer { lock.unlock() }
+        recoverCorruptValuesLocked()
+    }
+
+    /// A persisted value that no longer decodes used to wedge every sync into
+    /// `storeFailure`, because both load and save refuse a corrupt store. Recovery
+    /// on the load path drops the unreadable value so the sync can run again from
+    /// the empty store.
+    private func recoverCorruptValuesLocked() {
+        if entriesStore.state == .corrupt { entriesStore.resetCorruptValue() }
+        if profilesStore.state == .corrupt { profilesStore.resetCorruptValue() }
     }
 }
 
