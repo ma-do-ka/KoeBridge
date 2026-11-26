@@ -91,6 +91,8 @@ private final class EphemeralAmiVoiceSocket: AmiVoiceSocket, @unchecked Sendable
     private var sendTail: Task<Void, Error>?
     private var endTask: Task<Void, Error>?
     private var endAckWaiters: [CheckedContinuation<Void, Never>] = []
+    /// Test seam only: observes writer enqueueing without changing the serialized write chain.
+    var onWriteEnqueued: (() -> Void)?
 
     private var openStarted = false
     private var ready = false
@@ -446,6 +448,7 @@ private final class EphemeralAmiVoiceSocket: AmiVoiceSocket, @unchecked Sendable
             }
         }
         sendTail = task
+        onWriteEnqueued?()
         return task
     }
 
