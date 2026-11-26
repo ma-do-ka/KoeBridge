@@ -41,7 +41,7 @@ private final class BenchPCMBuffer: @unchecked Sendable {
     @Published private(set) var errorMessage: String?
 
     private let controller: VoiceController
-    private let selectedInputUID: () -> String
+    private let selectedInputUID: @MainActor () -> String
     private let requestMicPermission: () async -> Bool
     private let makeCapture: (String, Bool) -> MicrophoneCapture
 
@@ -54,7 +54,7 @@ private final class BenchPCMBuffer: @unchecked Sendable {
     init(
         controller: VoiceController,
         progressStore: BenchRecordingProgressStore = BenchRecordingProgressStore(),
-        selectedInputUID: @escaping () -> String = { MicrophoneDeviceStore.shared.selectedUID },
+        selectedInputUID: @MainActor @escaping () -> String = { MicrophoneDeviceStore.shared.selectedUID },
         requestMicPermission: @escaping () async -> Bool = {
             switch AVCaptureDevice.authorizationStatus(for: .audio) {
             case .authorized: return true
