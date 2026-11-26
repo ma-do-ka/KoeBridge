@@ -1565,7 +1565,7 @@ import KoeBridgeCore
             env.preparationLaunched = { launched = $0 }
             let controller = VoiceController(preparation: env, storageDirectory: root)
             controller.toggle()
-            let stored = try #require(controller.active?.target)
+            let stored = try #require(controller.activeTakeTarget)
             #expect(stored.receiptFieldNature == nature)
             if nature == .normal {
                 #expect(stored.textSnapshot == snapshot)

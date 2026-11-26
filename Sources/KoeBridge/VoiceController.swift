@@ -940,6 +940,8 @@ import KoeBridgeEngines
         objectWillChange.send()
     }
     var busy: Bool { active != nil }
+    /// Read-only observation of the active take's stored target (post-capture).
+    var activeTakeTarget: InsertionTarget? { active?.target }
     func reserveHistoryInsertion() -> UUID? { postingGate.reserveHistory() }
     func performHistoryIntent(_ ticket: UUID, deadline: ContinuousClock.Instant, perform: () async -> Void) async {
         await postingGate.performHistoryIntent(ticket, deadline: deadline, perform: perform)
