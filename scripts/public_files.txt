@@ -319,7 +319,7 @@ Sources/KoeBridge/LastDeliveryAnchor.swift
 Sources/KoeBridgeSelfTest/LearnedTermsTests.swift
 Tests/KoeBridgeCoreTests/LearnedTermsTests.swift
 Tests/KoeBridgeCoreTests/GD308Fixture.swift
-Tests/KoeBridgeCoreTests/VocabularyPipelineGD308RepresentativeTests.swift
+Tests/KoeBridgeCoreTests/VocabularyPipelineGD308GateTests.swift
 Tests/KoeBridgeCoreTests/VocabularyPipelineTests.swift
 docs/learning-and-fix.md
 

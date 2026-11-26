@@ -46,10 +46,9 @@ struct VocabularyPipelineTests {
     }
 
     @Test func intakeNormalization_sameSoundOrthographyExcluded() {
-        // Example: 子供 → 子ども (same reading, different kanji)
-        // We cannot reliably detect this without a dictionary; for MVP we treat
-        // any kanji‑to‑kanji change with identical kana reading as out‑of‑scope.
-        // This test is a placeholder.
+        // 子供 → 子ども is a same-sound orthography unification (kanji → kana opening),
+        // not a new dictionary term: the written form introduces no new kanji, so it is
+        // out of dictionary scope.
         let term = LearnedTerm(
             term: "子ども",
             originalFragment: "子供",
@@ -57,8 +56,7 @@ struct VocabularyPipelineTests {
         )
         let pipeline = VocabularyCandidatePipeline()
         let outcome = pipeline.process(term)
-        // Should be excluded (out‑of‑dictionary‑scope) or held.
-        #expect(outcome.isExcluded || outcome.isPendingReview)
+        #expect(outcome == .excluded(.outOfDictionaryScope))
     }
 
     // MARK: - Stage 2: Type Classification
@@ -167,8 +165,8 @@ struct VocabularyPipelineTests {
     }
 
     @Test func gd308_forbiddenCasesZeroReady() {
-        // Verify that none of the 27 auto‑registration‑forbidden cases produce `.ready`.
-        // We'll test a representative subset.
+        // Spot check only: the mechanical 27-case gate lives in
+        // VocabularyPipelineGD308GateTests.forbiddenCasesNeverReachReady().
         let forbidden = [
             ("QA", "課"),
             ("K", "系"),

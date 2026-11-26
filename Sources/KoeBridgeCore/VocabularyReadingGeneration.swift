@@ -81,7 +81,12 @@ public enum VocabularyReadingGeneration {
             }
             var holds: [InternalHoldReason] = []
             if let evidenceReading {
-                if !withinPhase1Tolerance(generated, evidenceReading) {
+                // Phase 1 accepts the dictionary reading only when it agrees with the
+                // speaker's evidence exactly. One-mora or voicing differences on a kanji
+                // compound ("つきあげ" vs "つきかげ", GD-308 BND-F04) are precisely the
+                // ambiguous cases the fixture requires to be held, and the OQ-06 phonetic
+                // distance threshold is still unset, so no edit-distance tolerance is applied.
+                if generated != evidenceReading {
                     holds.append(.phoneticDivergence)
                 }
             } else {
@@ -130,9 +135,10 @@ public enum VocabularyReadingGeneration {
             } else {
                 // For non-acronym alphabet terms (romaji/word readings or short abbreviations),
                 // phonetic divergence fires when the speaker's evidence matches neither the
-                // spell-out nor the romaji reading within Phase 1 tolerance.
+                // spell-out nor the romaji reading exactly. Like the kanji path above, Phase 1
+                // does not apply a blanket edit-distance tolerance (OQ-06 is unset).
                 let matchesSpelled = evidenceReading == canonicalSpelled
-                let matchesRomaji = romaji.map { withinPhase1Tolerance($0, evidenceReading) } ?? false
+                let matchesRomaji = romaji.map { $0 == evidenceReading } ?? false
                 if !matchesSpelled && !matchesRomaji {
                     holds.append(.phoneticDivergence)
                 }
@@ -250,7 +256,7 @@ public enum VocabularyReadingGeneration {
             // Numeric readings vary too much for a merely-close match. A digit-bearing
             // candidate is automatic only when the speaker evidence selects one variant exactly.
             if best.distance != 0 { holds.append(.numericReadingAmbiguous) }
-        } else if !withinPhase1Tolerance(best.canonical, evidenceReading) {
+        } else if best.canonical != evidenceReading {
             holds.append(.phoneticDivergence)
         }
         return GeneratedReading(
@@ -485,10 +491,6 @@ public enum VocabularyReadingGeneration {
             previous = current
         }
         return previous[right.count]
-    }
-
-    static func withinPhase1Tolerance(_ generated: String, _ evidence: String) -> Bool {
-        editDistance(generated, evidence) <= 1
     }
 
     internal static func tokenize(_ text: String) -> [SurfaceToken] {

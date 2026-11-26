@@ -86,7 +86,6 @@ public struct VocabularyCandidatePipeline {
         public var longReadingMoraThreshold: Int = 20         // >20 mora → hold
         public var softCap: Int = 800
         public var safetyCap: Int = 1000
-        public var phoneticDistanceTolerance: Int = 1          // edit distance ≤ 1
 
         public static let `default` = Configuration()
     }
@@ -94,9 +93,31 @@ public struct VocabularyCandidatePipeline {
     private let config: Configuration
     private let candidateSetTracker: CandidateSetTracker?
 
-    public init(config: Configuration = .default, candidateSetTracker: CandidateSetTracker? = nil) {
+    /// - Parameters:
+    ///   - config: Guard thresholds.
+    ///   - candidateSetTracker: Tracker that holds already-processed candidates and their readings.
+    ///   - registeredEntries: Words already registered in the target profile, as
+    ///     (written, reading) pairs. They make the duplicate-reading guard aware of
+    ///     existing words (GD-308 BND-G02) without counting toward the dictionary caps.
+    ///     An empty list keeps the previous behaviour exactly.
+    public init(
+        config: Configuration = .default,
+        candidateSetTracker: CandidateSetTracker? = nil,
+        registeredEntries: [(written: String, reading: String)] = []
+    ) {
         self.config = config
-        self.candidateSetTracker = candidateSetTracker
+        let tracker: CandidateSetTracker?
+        if let candidateSetTracker {
+            tracker = candidateSetTracker
+        } else if registeredEntries.isEmpty {
+            tracker = nil
+        } else {
+            tracker = CandidateSetTracker()
+        }
+        self.candidateSetTracker = tracker
+        if !registeredEntries.isEmpty {
+            tracker?.seedRegisteredEntries(registeredEntries)
+        }
     }
 
     private enum IntakeResult {
@@ -403,6 +424,9 @@ public final class CandidateSetTracker: @unchecked Sendable {
     private let lock = NSLock()
     private var candidates: [VocabularyCandidate] = []
     private var readingToWritten: [String: [String]] = [:]
+    /// Words already registered in the target profile, keyed by canonical reading.
+    /// Kept apart from `candidates` so seeding never consumes the soft/safety caps.
+    private var registeredReadingToWritten: [String: [String]] = [:]
 
     public init() {}
 
@@ -420,11 +444,35 @@ public final class CandidateSetTracker: @unchecked Sendable {
         readingToWritten[normalizedReading, default: []].append(candidate.written)
     }
 
+    /// Seeds one word that is already registered in the target profile so the
+    /// duplicate-reading guard can see it (GD-308 BND-G01/G02/G03).
+    public func seedRegisteredEntry(written: String, reading: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        seedRegisteredEntryLocked(written: written, reading: reading)
+    }
+
+    /// Seeds the words already registered in the target profile.
+    public func seedRegisteredEntries(_ entries: [(written: String, reading: String)]) {
+        lock.lock()
+        defer { lock.unlock() }
+        for entry in entries {
+            seedRegisteredEntryLocked(written: entry.written, reading: entry.reading)
+        }
+    }
+
+    private func seedRegisteredEntryLocked(written: String, reading: String) {
+        let normalizedReading = VocabularyReadingGeneration.canonicalHiragana(reading)
+        registeredReadingToWritten[normalizedReading, default: []].append(written)
+    }
+
     public func hasCollision(written: String, reading: String, type: VocabularyTermType) -> Bool {
         lock.lock()
         defer { lock.unlock() }
         let normalizedReading = VocabularyReadingGeneration.canonicalHiragana(reading)
-        guard let existingWrittens = readingToWritten[normalizedReading] else { return false }
+        let existingWrittens = (readingToWritten[normalizedReading] ?? [])
+            + (registeredReadingToWritten[normalizedReading] ?? [])
+        guard !existingWrittens.isEmpty else { return false }
         // Collision if same reading but different written form in same type context.
         // (We don't track class context; treat all as same class per OQ‑04.)
         return existingWrittens.contains { $0 != written }
