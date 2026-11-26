@@ -99,37 +99,56 @@ public struct VocabularyCandidatePipeline {
         self.candidateSetTracker = candidateSetTracker
     }
 
+    private enum IntakeResult {
+        case candidate(written: String, hold: VocabularyHoldReason?)
+        case excluded(VocabularyExclusionReason)
+    }
+
+    private static let predicateEndings: [String] = [
+        "しました", "しません", "します", "している", "していた",
+        "でした", "ました", "ている", "ていた", "になる", "になった",
+        "だった", "しない", "した", "する", "して", "です", "ます"
+    ]
+
     /// Process a single LearnedTerm through Stages 1‑4.
     public func process(_ term: LearnedTerm) -> VocabularyCandidateOutcome {
         // Stage 1: Intake & normalization
-        guard let (normalizedWritten, intakeHold) = intakeNormalize(term) else {
-            return .excluded(.noiseOnly)
+        let normalizedWritten: String
+        let intakeHold: VocabularyHoldReason?
+        switch intakeNormalize(term) {
+        case .excluded(let reason):
+            return .excluded(reason)
+        case .candidate(let written, let hold):
+            normalizedWritten = written
+            intakeHold = hold
         }
 
         // Stage 2: Type classification
         let type = classifyWrittenForm(normalizedWritten)
 
         // Stage 3: Reading generation (Phase 1 local rules)
-        let evidenceReading = VocabularyReadingGeneration.mixedEvidenceReading(term.originalFragment)
         let generated = VocabularyReadingGeneration.generate(
             written: normalizedWritten,
             evidence: term.originalFragment,
             type: type
         )
 
-        // Stage 4: Quality guards
-        var holdReasons: [VocabularyHoldReason] = generated.holdReasons.map { internalReason in
-            switch internalReason {
-            case .readingGenerationUnavailable: return .readingGenerationUnavailable
-            case .invalidWrittenCharacters: return .invalidWrittenCharacters
-            case .ambiguousAlphabetReading: return .ambiguousAlphabetReading
-            case .numericReadingAmbiguous: return .numericReadingAmbiguous
-            case .phoneticDivergence: return .phoneticDivergence
-            }
+        // Stage 4: Quality guards (ordered by design precedence:
+        // Stage 1 surface/intake constraints -> Stage 4 structural/safety guards ->
+        // phonetic divergence -> Stage 3 Phase-1 ambiguity/generation holds)
+        let generatedReasons: [VocabularyHoldReason] = generated.holdReasons.map { $0.toVocabularyHoldReason() }
+        var holdReasons: [VocabularyHoldReason] = []
+        if let intakeHold {
+            holdReasons.append(intakeHold)
         }
-        if let intakeHold { holdReasons.append(intakeHold) }
 
-        // Short‑reading guard
+        // Reading character validity
+        if let reading = generated.output,
+           !VocabularyReadingGeneration.isValidHybridReading(reading) {
+            holdReasons.append(.readingCharacterInvalid)
+        }
+
+        // Short-reading / long-reading guards
         if let reading = generated.canonical ?? generated.output {
             let moraCount = VocabularyReadingGeneration.moraCount(of: reading)
             if moraCount <= config.shortReadingMoraThreshold {
@@ -140,17 +159,15 @@ public struct VocabularyCandidatePipeline {
             }
         }
 
-        // Reading character validity
-        if let reading = generated.output,
-           !VocabularyReadingGeneration.isValidHybridReading(reading) {
-            holdReasons.append(.readingCharacterInvalid)
-        }
-
-        // Duplicate‑reading collision
-        if let candidateSetTracker,
-           let reading = generated.canonical ?? generated.output,
-           candidateSetTracker.hasCollision(written: normalizedWritten, reading: reading, type: type) {
-            holdReasons.append(.duplicateReadingCollision)
+        // Duplicate-reading collision
+        if let candidateSetTracker {
+            let candidateReadings = [generated.canonical ?? generated.output, generated.evidenceCanonical]
+                .compactMap { $0 }
+            if candidateReadings.contains(where: {
+                candidateSetTracker.hasCollision(written: normalizedWritten, reading: $0, type: type)
+            }) {
+                holdReasons.append(.duplicateReadingCollision)
+            }
         }
 
         // Cap awareness (counts against soft/safety caps)
@@ -161,6 +178,14 @@ public struct VocabularyCandidatePipeline {
             } else if count >= config.softCap {
                 holdReasons.append(.capExceededSoft)
             }
+        }
+
+        // Phonetic divergence precedes Phase-1 reading ambiguity holds
+        if generatedReasons.contains(.phoneticDivergence) {
+            holdReasons.append(.phoneticDivergence)
+        }
+        for reason in generatedReasons where reason != .phoneticDivergence {
+            holdReasons.append(reason)
         }
 
         // Determine final outcome
@@ -193,75 +218,147 @@ public struct VocabularyCandidatePipeline {
 
     // MARK: - Stage 1 Implementation
 
-    private func intakeNormalize(_ term: LearnedTerm) -> (String, VocabularyHoldReason?)? {
-        var written = term.term
+    private func intakeNormalize(_ term: LearnedTerm) -> IntakeResult {
+        var written = term.term.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !written.isEmpty else {
+            return .excluded(.noiseOnly)
+        }
 
-        // Remove leading/trailing whitespace
-        written = written.trimmingCharacters(in: .whitespacesAndNewlines)
+        var intakeHold: VocabularyHoldReason?
 
-        // Half-width space → underscore (AmiVoice requirement)
-        written = written.replacingOccurrences(of: " ", with: "_")
-        written = written.replacingOccurrences(of: "　", with: "_")
+        // Half-width / full-width spaces are forbidden in AmiVoice written forms;
+        // normalize consecutive spaces to a single underscore and hold for review.
+        if written.contains(" ") || written.contains("　") {
+            written = normalizeInternalSpaces(written)
+            intakeHold = .writtenContainsForbiddenCharacters
+        }
 
-        // Forbidden characters | and : – we cannot safely sanitize, so hold
+        // Forbidden characters | and : – strip for display and hold; exclude if nothing remains.
         if written.contains("|") || written.contains(":") {
-            // Attempt to remove them; if the result is non‑empty, hold; otherwise exclude.
-            let sanitized = written.replacingOccurrences(of: "|", with: "")
+            let sanitized = written
+                .replacingOccurrences(of: "|", with: "")
                 .replacingOccurrences(of: ":", with: "")
             if sanitized.isEmpty {
-                return nil // would become empty → exclude
+                return .excluded(.invalidCharactersCannotSanitize)
             }
-            return (sanitized, .writtenContainsForbiddenCharacters)
-        }
-
-        // Punctuation‑only changes (e.g., 「アストラ同期、」 → 「アストラ同期」)
-        let originalNormalized = term.originalFragment.trimmingCharacters(in: CharacterSet(
-            charactersIn: "、。,."
-        ))
-        let writtenNormalized = written.trimmingCharacters(in: CharacterSet(
-            charactersIn: "、。,."
-        ))
-        if originalNormalized == writtenNormalized,
-           term.originalFragment != written {
-            // Only punctuation difference → exclude as noise.
-            return nil
-        }
-
-        // Full‑rewrite noise (e.g., 「機能を追加した」 → 「仕様を変更した」)
-        // Check if the edit is a whole‑sentence rephrase with no substring match.
-        if !written.contains(where: { term.originalFragment.contains($0) }),
-           !term.originalFragment.contains(where: { written.contains($0) }) {
-            return nil
-        }
-
-        // Same‑sound orthography unification (e.g., 子供 → 子ども)
-        // This is out of dictionary scope → exclude.
-        // In a real implementation we would need a dictionary of unification pairs;
-        // for MVP we treat any kanji‑to‑kanji change with identical kana reading as out‑of‑scope.
-        // Simplified: if the term is purely Japanese characters and changed, hold for now.
-        if written.allSatisfy(VocabularyReadingGeneration.isJapaneseCharacter),
-           term.originalFragment.allSatisfy(VocabularyReadingGeneration.isJapaneseCharacter),
-           written != term.originalFragment,
-           let writtenKana = VocabularyReadingGeneration.japaneseKanaReading(written),
-           let originalKana = VocabularyReadingGeneration.japaneseKanaReading(term.originalFragment),
-           writtenKana == originalKana {
-            return nil // same‑sound orthography change → excluded
-        }
-
-        // Filler or particle inclusion (e.g., 「えーと霧峰」 → 「霧峰」)
-        // Detect if the difference is a common filler or particle at edges.
-        // Simplified: if written is a suffix/prefix substring of originalFragment, hold.
-        if term.originalFragment.hasPrefix(written) || term.originalFragment.hasSuffix(written),
-           written.count < term.originalFragment.count {
-            return (written, .fillerOrParticleInclusion)
+            written = sanitized
+            intakeHold = .writtenContainsForbiddenCharacters
         }
 
         // Length limit (AmiVoice: 60 characters)
         if written.count > 60 {
-            return nil // excluded
+            return .excluded(.writtenTooLong)
         }
 
-        return (written, nil)
+        let original = term.originalFragment.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Punctuation-only changes (e.g., 「アストラ同期、」 → 「アストラ同期」)
+        let punctuationSet = CharacterSet(charactersIn: "、。,.")
+        let originalNormalized = original.trimmingCharacters(in: punctuationSet)
+        let writtenNormalized = written.trimmingCharacters(in: punctuationSet)
+        if originalNormalized == writtenNormalized,
+           original != written {
+            return .excluded(.noiseOnly)
+        }
+
+        // Full-rewrite / sentence-expression rephrase noise (e.g., 「機能を追加した」 → 「仕様を変更した」)
+        if isFullRewriteNoise(written: writtenNormalized, original: originalNormalized) {
+            return .excluded(.noiseOnly)
+        }
+
+        // Same-sound orthography unification (e.g., 子供 → 子ども, 受付 → 受け付け)
+        if isSameSoundOrthographyUnification(written: written, original: original) {
+            return .excluded(.outOfDictionaryScope)
+        }
+
+        // Filler or particle inclusion (e.g., 「えーと霧峰」 → 「霧峰」, 「アストラ同期を」 → 「アストラ同期」)
+        if intakeHold == nil,
+           original.hasPrefix(written) || original.hasSuffix(written),
+           written.count < original.count {
+            intakeHold = .fillerOrParticleInclusion
+        }
+
+        return .candidate(written: written, hold: intakeHold)
+    }
+
+    private func normalizeInternalSpaces(_ text: String) -> String {
+        var result = ""
+        var previousWasSpace = false
+        for character in text {
+            if character == " " || character == "　" {
+                if !previousWasSpace {
+                    result.append("_")
+                    previousWasSpace = true
+                }
+            } else {
+                result.append(character)
+                previousWasSpace = false
+            }
+        }
+        return result
+    }
+
+    private func isFullRewriteNoise(written: String, original: String) -> Bool {
+        guard written != original,
+              !written.isEmpty,
+              !original.isEmpty,
+              hasClauseExpressionStructure(written),
+              hasClauseExpressionStructure(original),
+              let writtenKana = VocabularyReadingGeneration.japaneseKanaReading(written),
+              let originalKana = VocabularyReadingGeneration.japaneseKanaReading(original) else {
+            return false
+        }
+        let distance = VocabularyReadingGeneration.editDistance(writtenKana, originalKana)
+        let maxLength = max(writtenKana.count, originalKana.count)
+        return maxLength > 0 && distance * 2 > maxLength
+    }
+
+    private func hasClauseExpressionStructure(_ text: String) -> Bool {
+        guard text.allSatisfy(VocabularyReadingGeneration.isJapaneseCharacter),
+              VocabularyReadingGeneration.containsKanji(text) else {
+            return false
+        }
+        for ending in Self.predicateEndings {
+            if text.hasSuffix(ending), text.count > ending.count {
+                let stem = text.dropLast(ending.count)
+                if stem.contains(where: { VocabularyReadingGeneration.isKanjiCharacter($0) }) {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    private func isSameSoundOrthographyUnification(written: String, original: String) -> Bool {
+        guard written != original,
+              written.allSatisfy(VocabularyReadingGeneration.isJapaneseCharacter),
+              original.allSatisfy(VocabularyReadingGeneration.isJapaneseCharacter),
+              VocabularyReadingGeneration.containsKanji(written),
+              VocabularyReadingGeneration.containsKanji(original),
+              let writtenKana = VocabularyReadingGeneration.japaneseKanaReading(written),
+              let originalKana = VocabularyReadingGeneration.japaneseKanaReading(original),
+              writtenKana == originalKana else {
+            return false
+        }
+        // Only treat as out-of-scope orthography unification (e.g., 子供 → 子ども, 受付 → 受け付け)
+        // when `written` introduces no new kanji relative to `original` (kanji-to-hiragana opening
+        // or okurigana changes). Homophone kanji substitutions (e.g., 稼働監視基板 → 稼働監視基盤)
+        // introduce a different kanji and remain eligible for dictionary registration.
+        let writtenKanji = written.filter(VocabularyReadingGeneration.isKanjiCharacter)
+        let originalKanji = original.filter(VocabularyReadingGeneration.isKanjiCharacter)
+        return isSubsequence(writtenKanji, of: originalKanji)
+    }
+
+    private func isSubsequence(_ needle: String, of haystack: String) -> Bool {
+        var needleIterator = needle.makeIterator()
+        guard var current = needleIterator.next() else { return true }
+        for character in haystack {
+            if character == current {
+                guard let next = needleIterator.next() else { return true }
+                current = next
+            }
+        }
+        return false
     }
 
     // MARK: - Stage 2 Implementation
@@ -271,10 +368,15 @@ public struct VocabularyCandidatePipeline {
         let hasJapanese = tokens.contains { $0.kind == .japanese }
         let hasLetters = tokens.contains { $0.kind == .letters }
         let hasDigits = tokens.contains { $0.kind == .digits }
+        let hasSeparator = tokens.contains { $0.kind == .separator }
         let hasOther = tokens.contains { $0.kind == .other }
 
         guard !hasOther else {
             // Contains unsupported characters → treat as mixed for safety.
+            return .numericMixed
+        }
+
+        if hasSeparator {
             return .numericMixed
         }
 
@@ -314,13 +416,15 @@ public final class CandidateSetTracker: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         candidates.append(candidate)
-        readingToWritten[candidate.reading, default: []].append(candidate.written)
+        let normalizedReading = VocabularyReadingGeneration.canonicalHiragana(candidate.reading)
+        readingToWritten[normalizedReading, default: []].append(candidate.written)
     }
 
     public func hasCollision(written: String, reading: String, type: VocabularyTermType) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        guard let existingWrittens = readingToWritten[reading] else { return false }
+        let normalizedReading = VocabularyReadingGeneration.canonicalHiragana(reading)
+        guard let existingWrittens = readingToWritten[normalizedReading] else { return false }
         // Collision if same reading but different written form in same type context.
         // (We don't track class context; treat all as same class per OQ‑04.)
         return existingWrittens.contains { $0 != written }

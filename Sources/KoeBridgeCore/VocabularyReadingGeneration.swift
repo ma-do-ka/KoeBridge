@@ -61,9 +61,10 @@ public enum VocabularyReadingGeneration {
         let evidenceReading = mixedEvidenceReading(evidence)
         switch type {
         case .kana:
+            let hiragana = canonicalHiragana(written)
             return GeneratedReading(
-                output: written,
-                canonical: canonicalHiragana(written),
+                output: hiragana,
+                canonical: hiragana,
                 evidenceCanonical: evidenceReading,
                 recommended: nil,
                 holdReasons: []
@@ -111,25 +112,39 @@ public enum VocabularyReadingGeneration {
             )
         }
         let canonicalSpelled = canonicalHiragana(spelled)
+        let isAcronym = isUnambiguousAcronym(written)
+        let romaji = isAcronym ? nil : romajiReading(written)
+        let primaryCanonical = romaji ?? canonicalSpelled
         var holds: [InternalHoldReason] = []
-        if !isUnambiguousAcronym(written) {
+        if !isAcronym {
             holds.append(.ambiguousAlphabetReading)
         }
         if let evidenceReading {
-            // Phase 1 requires an exact spell-out match for alphabet-only terms. The GD-308
-            // conditional ZQDB case is therefore held rather than guessed when the evidence
-            // differs by contraction or long-vowel details.
-            if evidenceReading != canonicalSpelled {
-                holds.append(.phoneticDivergence)
+            if isAcronym {
+                // Phase 1 requires an exact spell-out match for unambiguous alphabet acronyms.
+                // The GD-308 conditional ZQDB case is therefore held rather than guessed when
+                // the evidence differs by contraction or long-vowel details.
+                if evidenceReading != canonicalSpelled {
+                    holds.append(.phoneticDivergence)
+                }
+            } else {
+                // For non-acronym alphabet terms (romaji/word readings or short abbreviations),
+                // phonetic divergence fires when the speaker's evidence matches neither the
+                // spell-out nor the romaji reading within Phase 1 tolerance.
+                let matchesSpelled = evidenceReading == canonicalSpelled
+                let matchesRomaji = romaji.map { withinPhase1Tolerance($0, evidenceReading) } ?? false
+                if !matchesSpelled && !matchesRomaji {
+                    holds.append(.phoneticDivergence)
+                }
             }
         } else {
             holds.append(.readingGenerationUnavailable)
         }
         return GeneratedReading(
-            output: spelled,
-            canonical: canonicalSpelled,
+            output: isAcronym ? spelled : primaryCanonical,
+            canonical: primaryCanonical,
             evidenceCanonical: evidenceReading,
-            recommended: evidenceReading ?? canonicalSpelled,
+            recommended: evidenceReading ?? primaryCanonical,
             holdReasons: holds
         )
     }
@@ -339,6 +354,14 @@ public enum VocabularyReadingGeneration {
             result += reading
         }
         return result
+    }
+
+    static func romajiReading(_ text: String) -> String? {
+        guard !text.isEmpty, text.allSatisfy(isASCIILetterCharacter) else { return nil }
+        guard let transformed = latinToHiragana(text.lowercased()), !transformed.isEmpty else { return nil }
+        let canonical = canonicalHiragana(transformed)
+        guard canonical.allSatisfy(isKanaCharacter) else { return nil }
+        return canonical
     }
 
     /// Only consonant-heavy all-uppercase acronyms of three or more letters are treated as
