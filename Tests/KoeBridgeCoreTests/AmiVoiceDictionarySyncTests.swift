@@ -284,4 +284,81 @@ struct AmiVoiceDictionarySyncTests {
         )
         #expect(onCommand == "s LSB16K -a2-ja-general resultUpdatedInterval=300 profileId=:kb_test_profile")
     }
+
+    @Test func launchPassRestoresFullSnapshotWhenServerProfileIsMissingAndReturnsNoChangesWhenMatching() async throws {
+        let suite = "KoeBridge.AmiVoiceSync." + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = AmiVoiceDictionarySyncStore(defaults: defaults)
+        let transport = MockAmiVoiceDictionaryTransport()
+        let engine = AmiVoiceDictionarySyncEngine(store: store, transport: transport, apiKeyProvider: { "fixture-key" })
+        let key = AmiVoiceDictionaryProfileKey(engine: .hybridJapaneseConversation, samplingRate: .rate16k)
+        await engine.setAutomaticSyncEnabled(true)
+
+        // Fresh empty local + empty server must stay .noChanges with GET only.
+        transport.fetchHandler = { [] }
+        let emptyPass = await engine.performLaunchConsistencyPass(for: key)
+        #expect(emptyPass.kind == .noChanges)
+        #expect(transport.calls.map(\.method) == ["GET"])
+
+        let upserted = await engine.upsertEntry(
+            AmiVoiceDictionaryEntry(written: "霧峰システム", spoken: "きりみねしすてむ"),
+            for: key,
+            state: .readyToSync
+        )
+        #expect(upserted)
+        let initial = await engine.syncNow(for: key)
+        #expect(initial.kind == .success)
+
+        // Matching server state stays .noChanges with GET only.
+        transport.resetCalls()
+        let expectedPayload = AmiVoiceDictionaryWordPayload.hybrid(written: "霧峰システム", spoken: "きりみねしすてむ")
+        transport.fetchHandler = { [expectedPayload] }
+        let matchingPass = await engine.performLaunchConsistencyPass(for: key)
+        #expect(matchingPass.kind == .noChanges)
+        #expect(transport.calls.map(\.method) == ["GET"])
+
+        // 404 profileMissing restores full snapshot.
+        transport.resetCalls()
+        transport.fetchHandler = { throw AmiVoiceDictionaryTransportError.profileMissing }
+        let restored = await engine.performLaunchConsistencyPass(for: key)
+        #expect(restored.kind == .success)
+        #expect(restored.uploadedCount == 1)
+        #expect(transport.calls.map(\.method) == ["GET", "POST"])
+        #expect(transport.calls.last?.payloads.first?.written == "霧峰システム")
+    }
+
+    @Test func retryAfterFailedLaunchRestoreStillUploadsFullSnapshot() async throws {
+        let suite = "KoeBridge.AmiVoiceSync." + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = AmiVoiceDictionarySyncStore(defaults: defaults)
+        let transport = MockAmiVoiceDictionaryTransport()
+        let engine = AmiVoiceDictionarySyncEngine(store: store, transport: transport, apiKeyProvider: { "fixture-key" })
+        let key = AmiVoiceDictionaryProfileKey(engine: .hybridJapaneseConversation, samplingRate: .rate16k)
+        let upserted = await engine.upsertEntry(
+            AmiVoiceDictionaryEntry(written: "霧峰システム", spoken: "きりみねしすてむ"),
+            for: key,
+            state: .readyToSync
+        )
+        #expect(upserted)
+        await engine.setAutomaticSyncEnabled(true)
+        let initial = await engine.syncNow(for: key)
+        #expect(initial.kind == .success)
+
+        transport.resetCalls()
+        transport.fetchHandler = { [] }
+        transport.replaceHandler = { _ in throw AmiVoiceDictionaryTransportError.temporary(.network) }
+        let failedLaunch = await engine.performLaunchConsistencyPass(for: key)
+        #expect(failedLaunch.kind == .temporaryFailure)
+        #expect(transport.calls.map(\.method) == ["GET", "POST"])
+
+        transport.resetCalls()
+        transport.replaceHandler = nil
+        let retried = await engine.syncNow(for: key, trigger: .retry)
+        #expect(retried.kind == .success)
+        #expect(retried.uploadedCount == 1)
+        #expect(transport.calls.map(\.method) == ["POST"])
+        #expect(transport.calls.last?.payloads.first?.written == "霧峰システム")
+    }
 }

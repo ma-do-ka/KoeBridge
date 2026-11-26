@@ -63,6 +63,8 @@ public actor AmiVoiceDictionarySyncEngine {
     private var inFlight: Set<AmiVoiceDictionaryProfileKey> = []
     private var debounceTasks: [AmiVoiceDictionaryProfileKey: Task<Void, Never>] = [:]
     private var retryTasks: [AmiVoiceDictionaryProfileKey: Task<Void, Never>] = [:]
+    private var retryRequiresLaunchConsistency: Set<AmiVoiceDictionaryProfileKey> = []
+    private var retryForcesUpload: Set<AmiVoiceDictionaryProfileKey> = []
     private var statusObserver: StatusObserver?
 
     public init(
@@ -303,7 +305,12 @@ public actor AmiVoiceDictionarySyncEngine {
         let desiredPayloads = preparation.pairs.map(\.payload)
         let desiredFingerprint = AmiVoiceDictionaryWordPayload.fingerprint(payloads: desiredPayloads, family: family)
         let hasDirtyRows = rows.contains { $0.engineState(for: key)?.dirty == true }
-        var needsUpload = profile.lastSyncedFingerprint != desiredFingerprint || hasDirtyRows
+        let hasUnsyncedLocalChanges = hasDirtyRows
+            || (profile.lastSyncedFingerprint != desiredFingerprint
+                && !(profile.lastSyncedFingerprint == nil && desiredPayloads.isEmpty))
+        var needsUpload = hasUnsyncedLocalChanges
+        var forceUpload = false
+        var serverConfirmedMismatch = false
         var fetchFailure: AmiVoiceDictionaryTransportError?
         var serverPayloads: [AmiVoiceDictionaryWordPayload]?
 
@@ -318,14 +325,24 @@ public actor AmiVoiceDictionarySyncEngine {
             let serverFingerprint = AmiVoiceDictionaryWordPayload.fingerprint(payloads: fetched, family: family)
             if fetched.isEmpty && !desiredPayloads.isEmpty {
                 needsUpload = true
-            } else if serverFingerprint != desiredFingerprint,
-                      !fetched.isEmpty || !desiredPayloads.isEmpty || profile.lastSyncedFingerprint != nil {
+                forceUpload = true
+                serverConfirmedMismatch = true
+            } else if serverFingerprint != desiredFingerprint {
                 needsUpload = true
+                forceUpload = true
+                serverConfirmedMismatch = true
+            } else {
+                needsUpload = hasDirtyRows
+                forceUpload = false
             }
         } catch let error as AmiVoiceDictionaryTransportError {
             fetchFailure = error
             if error == .profileMissing {
-                needsUpload = !desiredPayloads.isEmpty || profile.lastSyncedFingerprint != nil || hasDirtyRows
+                needsUpload = !desiredPayloads.isEmpty || hasDirtyRows
+                forceUpload = !desiredPayloads.isEmpty
+                if !desiredPayloads.isEmpty {
+                    serverConfirmedMismatch = true
+                }
             }
         } catch {
             fetchFailure = .temporary(.network)
@@ -348,7 +365,7 @@ public actor AmiVoiceDictionarySyncEngine {
                 var updated = profile
                 recordTemporaryFailure(temporary, profile: &updated)
                 _ = updateProfile(updated)
-                scheduleRetryIfNeeded(for: key, profile: updated)
+                scheduleRetryIfNeeded(for: key, profile: updated, verifyConsistency: true)
                 notifyStatus(key)
                 return AmiVoiceDictionarySyncOutcome(kind: .temporaryFailure, profileKey: key, timestamp: now())
             case .invalidRequest, .entryValidation(_), .limitExceeded, .malformedResponse:
@@ -363,19 +380,26 @@ public actor AmiVoiceDictionarySyncEngine {
         }
 
         guard needsUpload else {
+            cancelScheduledRetry(for: key)
             var updated = profile
             updated.lastResult = .noChanges
             updated.lastErrorClass = nil
             updated.consecutiveTemporaryFailures = 0
             updated.backoffUntil = nil
-            if serverPayloads != nil, updated.lastSyncedFingerprint == nil {
+            if serverPayloads != nil, updated.lastSyncedFingerprint != desiredFingerprint {
                 updated.lastSyncedFingerprint = desiredFingerprint
             }
             _ = updateProfile(updated)
             notifyStatus(key)
             return AmiVoiceDictionarySyncOutcome(kind: .noChanges, profileKey: key, timestamp: now())
         }
-        return await performSync(for: key, trigger: .launch, forceUpload: false)
+        if serverConfirmedMismatch && profile.lastSyncedFingerprint != nil {
+            // Invalidate the cached fingerprint once GET observes profile loss or
+            // divergence so a subsequent retry cannot treat stale state as current.
+            profile.lastSyncedFingerprint = nil
+            _ = updateProfile(profile)
+        }
+        return await performSync(for: key, trigger: .launch, forceUpload: forceUpload)
     }
 
     public static func generatedProfileID(
@@ -418,9 +442,15 @@ public actor AmiVoiceDictionarySyncEngine {
 
     private func retryAfterBackoff(for key: AmiVoiceDictionaryProfileKey) {
         retryTasks[key] = nil
+        let shouldVerifyConsistency = retryRequiresLaunchConsistency.remove(key) != nil
+        let shouldForceUpload = retryForcesUpload.remove(key) != nil
         Task { [weak self] in
             guard let self else { return }
-            _ = await self.performSync(for: key, trigger: .retry, forceUpload: false)
+            if shouldVerifyConsistency {
+                _ = await self.performLaunchConsistencyPass(for: key)
+            } else {
+                _ = await self.performSync(for: key, trigger: .retry, forceUpload: shouldForceUpload)
+            }
         }
     }
 
@@ -554,6 +584,7 @@ public actor AmiVoiceDictionarySyncEngine {
                     recordStoreFailure(profile: updated, key: key)
                     return AmiVoiceDictionarySyncOutcome(kind: .storeFailure, profileKey: key, timestamp: now())
                 }
+                cancelScheduledRetry(for: key)
                 notifyStatus(key)
                 return AmiVoiceDictionarySyncOutcome(
                     kind: updated.lastResult ?? .success,
@@ -609,8 +640,7 @@ public actor AmiVoiceDictionarySyncEngine {
                 updated.authenticationBlocked = true
                 updated.backoffUntil = nil
                 _ = updateProfile(updated)
-                retryTasks[key]?.cancel()
-                retryTasks[key] = nil
+                cancelScheduledRetry(for: key)
                 notifyStatus(key)
                 return AmiVoiceDictionarySyncOutcome(kind: .authenticationRejected, profileKey: key, timestamp: now())
             } catch AmiVoiceDictionaryTransportError.limitExceeded {
@@ -624,7 +654,7 @@ public actor AmiVoiceDictionarySyncEngine {
                 var updated = profile
                 recordTemporaryFailure(temporary, profile: &updated)
                 _ = updateProfile(updated)
-                scheduleRetryIfNeeded(for: key, profile: updated)
+                scheduleRetryIfNeeded(for: key, profile: updated, verifyConsistency: trigger == .launch, forceUpload: forceUpload)
                 notifyStatus(key)
                 return AmiVoiceDictionarySyncOutcome(kind: .temporaryFailure, profileKey: key, timestamp: now())
             } catch AmiVoiceDictionaryTransportError.profileMissing {
@@ -632,28 +662,28 @@ public actor AmiVoiceDictionarySyncEngine {
                 recordTemporaryFailure(.serverStatus(404), profile: &updated)
                 updated.lastErrorClass = .profileMissing
                 _ = updateProfile(updated)
-                scheduleRetryIfNeeded(for: key, profile: updated)
+                scheduleRetryIfNeeded(for: key, profile: updated, verifyConsistency: trigger == .launch, forceUpload: forceUpload)
                 notifyStatus(key)
                 return AmiVoiceDictionarySyncOutcome(kind: .temporaryFailure, profileKey: key, timestamp: now())
             } catch AmiVoiceDictionaryTransportError.malformedResponse {
                 var updated = profile
                 recordTemporaryFailure(.serverStatus(500), profile: &updated)
                 _ = updateProfile(updated)
-                scheduleRetryIfNeeded(for: key, profile: updated)
+                scheduleRetryIfNeeded(for: key, profile: updated, verifyConsistency: trigger == .launch, forceUpload: forceUpload)
                 notifyStatus(key)
                 return AmiVoiceDictionarySyncOutcome(kind: .temporaryFailure, profileKey: key, timestamp: now())
             } catch AmiVoiceDictionaryTransportError.invalidRequest {
                 var updated = profile
                 recordTemporaryFailure(.serverStatus(500), profile: &updated)
                 _ = updateProfile(updated)
-                scheduleRetryIfNeeded(for: key, profile: updated)
+                scheduleRetryIfNeeded(for: key, profile: updated, verifyConsistency: trigger == .launch, forceUpload: forceUpload)
                 notifyStatus(key)
                 return AmiVoiceDictionarySyncOutcome(kind: .temporaryFailure, profileKey: key, timestamp: now())
             } catch {
                 var updated = profile
                 recordTemporaryFailure(.network, profile: &updated)
                 _ = updateProfile(updated)
-                scheduleRetryIfNeeded(for: key, profile: updated)
+                scheduleRetryIfNeeded(for: key, profile: updated, verifyConsistency: trigger == .launch, forceUpload: forceUpload)
                 notifyStatus(key)
                 return AmiVoiceDictionarySyncOutcome(kind: .temporaryFailure, profileKey: key, timestamp: now())
             }
@@ -856,12 +886,19 @@ public actor AmiVoiceDictionarySyncEngine {
 
     private func scheduleRetryIfNeeded(
         for key: AmiVoiceDictionaryProfileKey,
-        profile: AmiVoiceDictionaryProfile
+        profile: AmiVoiceDictionaryProfile,
+        verifyConsistency: Bool = false,
+        forceUpload: Bool = false
     ) {
-        retryTasks[key]?.cancel()
-        retryTasks[key] = nil
+        cancelScheduledRetry(for: key)
         guard profile.consecutiveTemporaryFailures <= AmiVoiceDictionarySyncPolicy.maximumAutomaticRetryCount,
               let backoffUntil = profile.backoffUntil else { return }
+        if verifyConsistency {
+            retryRequiresLaunchConsistency.insert(key)
+        }
+        if forceUpload {
+            retryForcesUpload.insert(key)
+        }
         let delay = max(0, backoffUntil.timeIntervalSince(now()))
         retryTasks[key] = Task { [weak self] in
             if delay > 0 {
@@ -870,6 +907,13 @@ public actor AmiVoiceDictionarySyncEngine {
             guard !Task.isCancelled, let self else { return }
             await self.retryAfterBackoff(for: key)
         }
+    }
+
+    private func cancelScheduledRetry(for key: AmiVoiceDictionaryProfileKey) {
+        retryTasks[key]?.cancel()
+        retryTasks[key] = nil
+        retryRequiresLaunchConsistency.remove(key)
+        retryForcesUpload.remove(key)
     }
 
     private func recordStoreFailure(
