@@ -200,10 +200,10 @@ public struct VocabularyCandidatePipeline {
         }
 
         // Punctuation‑only changes (e.g., 「アストラ同期、」 → 「アストラ同期」)
-        let originalNormalized = term.originalFragment.trimmingCharacters(in: .characterSet(
+        let originalNormalized = term.originalFragment.trimmingCharacters(in: CharacterSet(
             charactersIn: "、。,."
         ))
-        let writtenNormalized = written.trimmingCharacters(in: .characterSet(
+        let writtenNormalized = written.trimmingCharacters(in: CharacterSet(
             charactersIn: "、。,."
         ))
         if originalNormalized == writtenNormalized,
@@ -282,7 +282,7 @@ public struct VocabularyCandidatePipeline {
 }
 
 /// Tracks candidates already processed to detect collisions and count caps.
-public final class CandidateSetTracker: Sendable {
+public final class CandidateSetTracker: @unchecked Sendable {
     private let lock = NSLock()
     private var candidates: [VocabularyCandidate] = []
     private var readingToWritten: [String: [String]] = [:]

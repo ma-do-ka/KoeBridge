@@ -14,7 +14,7 @@ public enum VocabularyTermType: Equatable, Sendable {
 
 // VocabularyHoldReason is defined in VocabularyPipeline.swift
 // The following cases are used internally and correspond to cases in VocabularyHoldReason
-private enum InternalHoldReason {
+internal enum InternalHoldReason {
     case readingGenerationUnavailable
     case invalidWrittenCharacters
     case ambiguousAlphabetReading
@@ -44,7 +44,7 @@ public enum VocabularyReadingGeneration {
         let holdReasons: [InternalHoldReason]
     }
 
-    private enum SurfaceTokenKind {
+    internal enum SurfaceTokenKind {
         case japanese
         case letters
         case digits
@@ -52,12 +52,12 @@ public enum VocabularyReadingGeneration {
         case other
     }
 
-    private struct SurfaceToken {
+    internal struct SurfaceToken {
         let kind: SurfaceTokenKind
         let text: String
     }
 
-    public static func generate(written: String, evidence: String, type: VocabularyTermType) -> GeneratedReading {
+    internal static func generate(written: String, evidence: String, type: VocabularyTermType) -> GeneratedReading {
         let evidenceReading = mixedEvidenceReading(evidence)
         switch type {
         case .kana:
@@ -468,7 +468,7 @@ public enum VocabularyReadingGeneration {
         editDistance(generated, evidence) <= 1
     }
 
-    static func tokenize(_ text: String) -> [SurfaceToken] {
+    internal static func tokenize(_ text: String) -> [SurfaceToken] {
         var tokens: [SurfaceToken] = []
         var currentKind: SurfaceTokenKind?
         var current = ""
