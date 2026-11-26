@@ -10,6 +10,21 @@ public enum VocabularyCandidateOutcome: Equatable, Sendable {
     case pendingReview(VocabularyHoldReason, VocabularyCandidate)
     /// Must never be registered (noise, out‑of‑scope, forbidden cases).
     case excluded(VocabularyExclusionReason)
+
+    public var isReady: Bool {
+        if case .ready = self { return true }
+        return false
+    }
+
+    public var isPendingReview: Bool {
+        if case .pendingReview = self { return true }
+        return false
+    }
+
+    public var isExcluded: Bool {
+        if case .excluded = self { return true }
+        return false
+    }
 }
 
 /// Candidate data passed to the sync engine or the hold queue.

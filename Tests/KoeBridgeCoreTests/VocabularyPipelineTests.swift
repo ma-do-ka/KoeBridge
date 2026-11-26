@@ -122,7 +122,7 @@ struct VocabularyPipelineTests {
 
     @Test func gd308_boundaryShortReadingHold() {
         // BND‑A01 through A04 (short‑reading guard) should be pendingReview.
-        let samples = [
+        let samples: [(String, String, VocabularyHoldReason)] = [
             ("QA", "課", .shortReadingGuard),
             ("NOA", "野合", .shortReadingGuard),
             ("K", "系", .shortReadingGuard),
@@ -145,7 +145,7 @@ struct VocabularyPipelineTests {
 
     @Test func gd308_boundaryPhoneticDivergenceHold() {
         // BND‑D01 through D04 (phonetic divergence) should be pendingReview.
-        let samples = [
+        let samples: [(String, String, VocabularyHoldReason)] = [
             ("Kurohane", "全然違う", .phoneticDivergence),
             ("霧峰システム", "会議資料", .phoneticDivergence),
             ("ZQDB", "データベース", .phoneticDivergence),
@@ -186,27 +186,12 @@ struct VocabularyPipelineTests {
             #expect(!outcome.isReady, "Forbidden case \(written) incorrectly ready")
         }
     }
+}
 
-    // MARK: - Utilities for testing
+// MARK: - Utilities for testing
 
-    private extension VocabularyCandidatePipeline {
-        func classifyTest(_ written: String) -> VocabularyTermType {
-            classifyWrittenForm(written)
-        }
-    }
-
-    private extension VocabularyCandidateOutcome {
-        var isReady: Bool {
-            if case .ready = self { return true }
-            return false
-        }
-        var isPendingReview: Bool {
-            if case .pendingReview = self { return true }
-            return false
-        }
-        var isExcluded: Bool {
-            if case .excluded = self { return true }
-            return false
-        }
+private extension VocabularyCandidatePipeline {
+    func classifyTest(_ written: String) -> VocabularyTermType {
+        classifyWrittenForm(written)
     }
 }
