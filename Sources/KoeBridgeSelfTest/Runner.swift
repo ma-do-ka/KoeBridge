@@ -401,6 +401,11 @@ struct KoeBridgeSelfTest {
         await run("AmiVoiceWireTests.providerErrorClassificationAndZeroLeakBoundary", { try AmiVoiceWireTests().providerErrorClassificationAndZeroLeakBoundary() })
         await run("AmiVoiceWireTests.assemblerInterleavedSpeechDurationAndNoSpeechSegmentPolicy", { try AmiVoiceWireTests().assemblerInterleavedSpeechDurationAndNoSpeechSegmentPolicy() })
         await run("AmiVoiceWireTests.assemblerDictationBudgetFailClosedAndMeetingUnlimited", { AmiVoiceWireTests().assemblerDictationBudgetFailClosedAndMeetingUnlimited() })
+        await run("AmiVoiceDictionarySyncTests.payloadShapeFullOverwriteAndEmptyDeletePerEngineFamily", { try await AmiVoiceDictionarySyncTests().payloadShapeFullOverwriteAndEmptyDeletePerEngineFamily() })
+        await run("AmiVoiceDictionarySyncTests.serverValidationRejectionQuarantinesOnlyBadEntryAndResyncsRest", { try await AmiVoiceDictionarySyncTests().serverValidationRejectionQuarantinesOnlyBadEntryAndResyncsRest() })
+        await run("AmiVoiceDictionarySyncTests.launchPassRestoresFullSnapshotWhenServerProfileIsEmpty", { try await AmiVoiceDictionarySyncTests().launchPassRestoresFullSnapshotWhenServerProfileIsEmpty() })
+        await run("AmiVoiceDictionarySyncTests.optInOffMakesEveryEntryPointZeroTransportCalls", { try await AmiVoiceDictionarySyncTests().optInOffMakesEveryEntryPointZeroTransportCalls() })
+        await run("AmiVoiceDictionarySyncTests.recognitionProfileReferenceIsConditionalAndOffPathByteIdentical", { try AmiVoiceDictionarySyncTests().recognitionProfileReferenceIsConditionalAndOffPathByteIdentical() })
         print("KoeBridge portable self-test: \(testCount) cases, \(TestRecorder.checked) assertions, \(TestRecorder.failures) failures")
         if TestRecorder.failures > 0 { exit(1) }
     }

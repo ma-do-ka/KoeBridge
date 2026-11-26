@@ -22,6 +22,7 @@ private final class MeetingAudioCount: @unchecked Sendable {
     private let apiKey: String?
     private let amiVoiceKey: String?
     private let amiVoiceEngine: AmiVoiceEngine
+    private let amiVoiceProfileId: String?
     private let microphoneUID: String
     private var transcript = MeetingTranscript()
     private var tasks: [Task<Void, Never>] = []
@@ -67,10 +68,12 @@ private final class MeetingAudioCount: @unchecked Sendable {
 
     init(engine: RecognitionMode, vocabulary: [String], style: TranscriptionStyle,
          japaneseHint: Bool, apiKey: String?, microphoneUID: String,
-         amiVoiceKey: String? = nil, amiVoiceEngine: AmiVoiceEngine = .e2eJapaneseGeneral) {
+         amiVoiceKey: String? = nil, amiVoiceEngine: AmiVoiceEngine = .e2eJapaneseGeneral,
+         amiVoiceProfileId: String? = nil) {
         self.engine = engine; self.vocabulary = vocabulary; self.style = style
         self.japaneseHint = japaneseHint; self.apiKey = apiKey; self.microphoneUID = microphoneUID
         self.amiVoiceKey = amiVoiceKey; self.amiVoiceEngine = amiVoiceEngine
+        self.amiVoiceProfileId = amiVoiceProfileId
     }
 
     static func chunkDurationSeconds(for engine: RecognitionMode) -> TimeInterval {
@@ -276,6 +279,7 @@ private final class MeetingAudioCount: @unchecked Sendable {
                 apiKey: amiVoiceKey,
                 engine: amiVoiceEngine,
                 vocabulary: vocabulary,
+                profileId: amiVoiceProfileId,
                 finalBudget: nil
             )
         }

@@ -313,8 +313,12 @@ Tests/KoeBridgeCoreTests/TranslationAndPresetTests.swift
 docs/translate-and-chains.md
 
 Sources/KoeBridgeCore/LearnedTerms.swift
+Sources/KoeBridgeCore/AmiVoiceDictionary.swift
+Sources/KoeBridgeCore/AmiVoiceDictionarySyncEngine.swift
 Sources/KoeBridge/LastDeliveryAnchor.swift
+Sources/KoeBridgeSelfTest/AmiVoiceDictionarySyncTests.swift
 Sources/KoeBridgeSelfTest/LearnedTermsTests.swift
+Tests/KoeBridgeCoreTests/AmiVoiceDictionarySyncTests.swift
 Tests/KoeBridgeCoreTests/LearnedTermsTests.swift
 docs/learning-and-fix.md
 
