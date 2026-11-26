@@ -135,7 +135,7 @@ final class ScriptedAmiVoiceSocket: AmiVoiceSocket, @unchecked Sendable {
             if predicate() { return }
             try await Task.sleep(for: .milliseconds(5))
         }
-        Issue.record(message)
+        Issue.record(Comment(rawValue: message))
         throw CancellationError()
     }
 

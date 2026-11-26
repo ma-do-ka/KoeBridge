@@ -836,7 +836,7 @@ struct MicrophoneRecoveryTests {
         }
         defer { take.cancel() }
         try await feedStablePCM(rig, index: 0)
-        try await awaitCommit(take, clock: rig.clock)
+        try await awaitCommit(take)
         await lane {
             rig.devices[0].node.currentDeviceID = 173
         }
