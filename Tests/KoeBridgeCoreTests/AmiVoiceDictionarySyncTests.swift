@@ -98,7 +98,8 @@ struct AmiVoiceDictionarySyncTests {
         #expect(hybridRequest.httpMethod == "POST")
         #expect(hybridRequest.url?.absoluteString == "https://acp-api.amivoice.com/profilewords/-a-general/kb_test_profile?adf=16k")
         #expect(hybridRequest.value(forHTTPHeaderField: "Authorization") == "Bearer fixture-key")
-        let hybridBody = try #require(JSONSerialization.jsonObject(with: try #require(hybridRequest.httpBody)) as? [String: Any])
+        let hybridBodyData = try #require(hybridRequest.httpBody)
+        let hybridBody = try #require(JSONSerialization.jsonObject(with: hybridBodyData) as? [String: Any])
         let hybridRows = try #require(hybridBody["profilewords"] as? [[String: Any]])
         #expect(hybridRows.count == 1)
         #expect(hybridRows[0]["written"] as? String == "霧峰システム")
@@ -115,7 +116,8 @@ struct AmiVoiceDictionarySyncTests {
             apiKey: "fixture-key",
             payloads: e2ePayloads
         )
-        let e2eBody = try #require(JSONSerialization.jsonObject(with: try #require(recorder.all.last?.httpBody)) as? [String: Any])
+        let e2eBodyData = try #require(recorder.all.last?.httpBody)
+        let e2eBody = try #require(JSONSerialization.jsonObject(with: e2eBodyData) as? [String: Any])
         let e2eRows = try #require(e2eBody["profilewords"] as? [[String: Any]])
         #expect(e2eRows.count == 1)
         #expect(e2eRows[0]["written"] as? String == "KoeBridge")
@@ -131,7 +133,8 @@ struct AmiVoiceDictionarySyncTests {
             apiKey: "fixture-key",
             payloads: []
         )
-        let emptyBody = try #require(JSONSerialization.jsonObject(with: try #require(recorder.all.last?.httpBody)) as? [String: Any])
+        let emptyBodyData = try #require(recorder.all.last?.httpBody)
+        let emptyBody = try #require(JSONSerialization.jsonObject(with: emptyBodyData) as? [String: Any])
         #expect((emptyBody["profilewords"] as? [Any])?.isEmpty == true)
     }
 
