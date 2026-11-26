@@ -4,11 +4,12 @@ import Testing
 
 struct SettingsNavigationTests {
     @Test func sidebarCoversEveryPageInClearGroups() {
-        #expect(SettingsSection.allCases.map(\.title) == ["一般", "音声入力", "AI・Gemini", "AmiVoice", "ショートカット", "アプリ別", "履歴とデータ", "権限", "KoeBridgeについて"])
+        #expect(SettingsSection.allCases.map(\.title) == ["一般", "音声入力", "AI・Gemini", "AmiVoice", "ショートカット", "アプリ別", "履歴とデータ", "権限", "KoeBridgeについて", "ベンチ録音"])
         #expect(SettingsSection.voice.group == "基本")
         #expect(SettingsSection.amivoice.group == "基本")
         #expect(SettingsSection.permissions.group == "データと安全")
         #expect(SettingsSection.about.group == "サポート")
+        #expect(SettingsSection.bench.group == "開発ツール")
         #expect(SettingsSection.allCases.allSatisfy { !$0.title.isEmpty && !$0.symbol.isEmpty })
     }
 
@@ -26,6 +27,9 @@ struct SettingsNavigationTests {
         #expect(SettingsSearchCatalog.find("AmiVoice APIキー").contains { $0.section == .amivoice && $0.id == "amivoice-apikey" })
         #expect(SettingsSearchCatalog.find("AmiVoice エンジン").contains { $0.section == .amivoice && $0.id == "amivoice-engine" })
         #expect(SettingsSearchCatalog.find("AmiVoice nolog").contains { $0.section == .amivoice && $0.id == "amivoice-privacy" })
+        #expect(SettingsSearchCatalog.find("ベンチ録音").contains { $0.section == .bench && $0.id == "bench-recording" })
+        #expect(SettingsSearchCatalog.find("録音").contains { $0.section == .bench && $0.id == "bench-recording" })
+        #expect(SettingsSearchCatalog.find("ベンチマーク").contains { $0.section == .bench && $0.id == "bench-recording" })
         #expect(SettingsSearchCatalog.find("  ").isEmpty)
         #expect(SettingsSearchCatalog.find("never_present_keyword_123").isEmpty)
     }
@@ -43,7 +47,8 @@ struct SettingsNavigationTests {
             .profiles: ["SettingsView.swift"],
             .history: ["SettingsPrivacyPage.swift", "UsageMonitorView.swift"],
             .permissions: ["SettingsPermissionsPage.swift"],
-            .about: ["SettingsSupportPages.swift"]
+            .about: ["SettingsSupportPages.swift"],
+            .bench: ["SettingsBenchRecordingPage.swift"]
         ]
         let pattern = try NSRegularExpression(pattern: #"\.settingsTarget\("([^"]+)"\)"#)
         var anchors: [SettingsSection: Set<String>] = [:]

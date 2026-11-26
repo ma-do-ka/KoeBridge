@@ -39,9 +39,11 @@ struct SettingsNavigationSelfTests {
 
     func amiVoiceSectionAndSearchCatalogEntriesRouteCorrectly() throws {
         check(SettingsSection.allCases.map(\.rawValue) == [
-            "general", "voice", "gemini", "amivoice", "shortcuts", "profiles", "history", "permissions", "about"
+            "general", "voice", "gemini", "amivoice", "shortcuts", "profiles", "history", "permissions", "about", "bench"
         ])
         check(SettingsSection.amivoice.group == "基本")
+        check(SettingsSection.bench.group == "開発ツール")
+        check(SettingsSection.bench.title == "ベンチ録音")
         for id in ["amivoice-apikey", "amivoice-engine", "amivoice-privacy"] {
             let entry = try require(SettingsSearchCatalog.entries.first { $0.id == id })
             check(entry.section == .amivoice)
@@ -49,5 +51,8 @@ struct SettingsNavigationSelfTests {
         check(SettingsSearchCatalog.find("AmiVoice APIキー").contains { $0.section == .amivoice && $0.id == "amivoice-apikey" })
         check(SettingsSearchCatalog.find("AmiVoice エンジン").contains { $0.section == .amivoice && $0.id == "amivoice-engine" })
         check(SettingsSearchCatalog.find("AmiVoice nolog").contains { $0.section == .amivoice && $0.id == "amivoice-privacy" })
+        check(SettingsSearchCatalog.find("ベンチ録音").contains { $0.section == .bench && $0.id == "bench-recording" })
+        check(SettingsSearchCatalog.find("録音").contains { $0.section == .bench && $0.id == "bench-recording" })
+        check(SettingsSearchCatalog.find("ベンチマーク").contains { $0.section == .bench && $0.id == "bench-recording" })
     }
 }

@@ -23,6 +23,7 @@ struct SettingsView: View {
     }
     @AppStorage("diagnosticsEnabled") private var diagnosticsEnabled = false
     @StateObject private var presetEditor = TransformPresetEditorState()
+    @StateObject private var benchRecorder: BenchRecordingCoordinator
     @State private var apiKeyDraft = ""
     @State private var apiKeyNotice = ""
     @State private var amiVoiceKeyDraft = ""
@@ -34,6 +35,12 @@ struct SettingsView: View {
     @State private var navigation = SettingsNavigation()
     @State private var searchText = ""
     @State private var generalPermissionCheckedAt: Date?
+
+    init(controller: VoiceController, guide: PermissionGuide) {
+        self.controller = controller
+        self.guide = guide
+        _benchRecorder = StateObject(wrappedValue: BenchRecordingCoordinator(controller: controller))
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -259,6 +266,8 @@ struct SettingsView: View {
                         sidebarGroup("データと安全", pages: [.history, .permissions])
                         Divider().padding(.horizontal, 16)
                         sidebarGroup("サポート", pages: [.about])
+                        Divider().padding(.horizontal, 16)
+                        sidebarGroup("開発ツール", pages: [.bench])
                     } else {
                         Text("検索結果")
                             .font(.caption.weight(.semibold))
@@ -389,6 +398,8 @@ struct SettingsView: View {
             )
         case .about:
             SettingsAboutPage(updater: updater, focusRequest: navigation.focusRequest, shortcutLabel: controller.shortcutChoice.label, navigate: go)
+        case .bench:
+            SettingsBenchRecordingPage(controller: controller, coordinator: benchRecorder, focusRequest: navigation.focusRequest)
         }
     }
 }
