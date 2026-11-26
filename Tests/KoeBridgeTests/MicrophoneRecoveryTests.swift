@@ -7,12 +7,18 @@ import Testing
 import KoeBridgeCore
 import KoeBridgeTapFixtures
 
-// Parallel CI can starve lifecycle-lane progress far longer than the nominal
-// 5 ms poll interval. Scheduling-only waits use 2,000 condition polls; assertions
-// on the conditions themselves remain exact.
-private let ciSchedulingWaitIterations = 2_000
+// Parallel CI can starve lifecycle-lane progress far longer than the nominal 5 ms
+// poll interval; CI observed 18.6 s of such delay. These waits observe monotonic
+// in-process progress (engine start, cleanup log lines), so the budget is sized at
+// a 60 s equivalent (12,000 x 5 ms) to stay above that evidence while matching the
+// 60 s setup bound. Assertions on the conditions themselves remain exact.
+private let ciSchedulingWaitIterations = 12_000
 
-private struct CommitTimeoutError: Error {}
+private struct CommitTimeoutError: LocalizedError {
+    var errorDescription: String? {
+        "Microphone fixture commit did not complete within its 30 s bound"
+    }
+}
 
 @MainActor
 struct MicrophoneRecoveryTests {
@@ -871,9 +877,10 @@ struct MicrophoneRecoveryTests {
             }
             guard block else { return actual }
             // This barrier waits for the test thread to inject a verdict. The
-            // thirty-second escape only contains deadlocks; it must not fire
-            // merely because parallel CI starved that test thread.
-            guard release.wait(timeout: .now() + 30) == .success else {
+            // ten-second escape only contains deadlocks; it must not fire merely
+            // because parallel CI starved that test thread, and it must not park the
+            // shared warmLifecycleQueue for long if the test is genuinely deadlocked.
+            guard release.wait(timeout: .now() + 10) == .success else {
                 Issue.record("HAL selection read was never released")
                 return actual
             }
@@ -1384,9 +1391,13 @@ struct MicrophoneRecoveryTests {
         // before releasing the HAL read; then hold MainActor to keep recording UI
         // from advancing until the notification is delivered.
         DispatchQueue.global(qos: .userInitiated).async(execute: notification)
-        #expect(started.wait(timeout: .now() + 30) == .success)
+        // One absolute 12 s cap bounds the combined MainActor block for both
+        // semaphore waits (previously 30 s + 12 s = 42 s worst case). The
+        // background item's own 10 s commit poll fits inside this window.
+        let deadline = DispatchTime.now() + .seconds(12)
+        #expect(started.wait(timeout: deadline) == .success)
         attempt.read.complete(matches: true)
-        #expect(delivered.wait(timeout: .now() + 12) == .success)
+        #expect(delivered.wait(timeout: deadline) == .success)
     }
 
     @Test(arguments: [false, true])

@@ -6,9 +6,11 @@ import KoeBridgeCore
 @testable import KoeBridge
 
 // Parallel CI can starve MainActor continuation delivery long beyond the nominal
-// 5 ms poll interval. Scheduling-only waits use 2,000 condition polls; assertions
-// on the conditions themselves remain exact.
-private let amiVoiceSchedulingWaitIterations = 2_000
+// 5 ms poll interval; CI observed 18.6 s of such delay. These waits observe
+// monotonic in-process progress (enqueued writes, socket state), so the budget is
+// sized at a 60 s equivalent (12,000 x 5 ms) to stay above that evidence while
+// matching the 60 s setup bound. Assertions on the conditions remain exact.
+private let amiVoiceSchedulingWaitIterations = 12_000
 
 final class ScriptedAmiVoiceSocket: AmiVoiceSocket, @unchecked Sendable {
     private let lock = NSLock()
@@ -724,7 +726,13 @@ final class ScriptedAmiVoiceSocket: AmiVoiceSocket, @unchecked Sendable {
         }
         #expect(socket.pendingSendCount == 1)
 
+        // Enqueue p2 fully before creating the end task: this reproduces origin/main's
+        // structural guarantee that p2 precedes e in the serialized write queue, so e
+        // cannot run first and make send2 fail with .disconnected.
         let send2 = Task { try await connection.sendAudio(Data([0x20, 0x21])) }
+        try await waitForCondition("Pipelined send2 was not enqueued before end") {
+            enqueuedWrites == 3
+        }
         let end = Task { try await connection.endAudioAndAwaitFinal() }
         try await waitForCondition("Pipelined writes were not all enqueued") {
             enqueuedWrites == 4
@@ -792,7 +800,11 @@ final class ScriptedAmiVoiceSocket: AmiVoiceSocket, @unchecked Sendable {
         }
         #expect(socket0.pendingSendCount == 1)
 
+        // Enqueue p2 fully before creating the end task so p2 precedes e in the queue.
         let sendP2 = Task { try await providerConn.sendAudio(Data([0x20, 0x21])) }
+        try await waitForCondition("Provider pipelined send2 was not enqueued before end") {
+            providerEnqueuedWrites == 3
+        }
         let endP = Task { try await providerConn.endAudioAndAwaitFinal() }
         try await waitForCondition("Provider pipelined writes were not all enqueued") {
             providerEnqueuedWrites == 4
@@ -1017,8 +1029,12 @@ final class ScriptedAmiVoiceSocket: AmiVoiceSocket, @unchecked Sendable {
         }
         let socket = try #require(capturedSocket)
 
-        // Enqueue send2 and endAudioAndAwaitFinal while "s" ack is still pending.
+        // Enqueue send2 before creating the end task so p2 precedes e in the
+        // serialized queue; both stay queued while "s" ack is still pending.
         let send2 = Task { try await connection.sendAudio(Data([0xCC, 0xDD])) }
+        try await waitForCondition("Queued send2 was not enqueued before end") {
+            enqueuedWrites == 2
+        }
         let end = Task { try await connection.endAudioAndAwaitFinal() }
         try await waitForCondition("Queued writes were not all enqueued before setup completion") {
             enqueuedWrites == 3
@@ -1070,8 +1086,9 @@ final class ScriptedAmiVoiceSocket: AmiVoiceSocket, @unchecked Sendable {
             Issue.record("Expected receiveFailed when socket drops before e-ack")
         } catch AmiVoiceWebSocketConnection.ConnectionError.receiveFailed(let reason) {
             #expect(!reason.contains(marker))
-            // Immediate receive failure is the deadline behavior under test; the
-            // 2 s ceiling leaves parallel-CI scheduling slack while excluding dwell.
+            // Immediacy check: a receive failure must fail closed without ever
+            // entering the 5 s finalizationTimeout wait, so 2 s separates immediate
+            // failure from dwell. It is not scheduling slack for parallel CI.
             #expect(started.duration(to: .now) < .seconds(2))
         } catch {
             Issue.record("Unexpected error: \(error)")
