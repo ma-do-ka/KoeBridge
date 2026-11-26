@@ -121,8 +121,10 @@ struct AmiVoiceDictionarySyncTests {
         let key = AmiVoiceDictionaryProfileKey(engine: .e2eJapaneseGeneral, samplingRate: .rate16k)
         let goodID = UUID()
         let badID = UUID()
-        check(await engine.upsertEntry(AmiVoiceDictionaryEntry(id: goodID, written: "KoeBridge"), for: key, state: .readyToSync))
-        check(await engine.upsertEntry(AmiVoiceDictionaryEntry(id: badID, written: "BadWord"), for: key, state: .readyToSync))
+        let upsertGood = await engine.upsertEntry(AmiVoiceDictionaryEntry(id: goodID, written: "KoeBridge"), for: key, state: .readyToSync)
+        let upsertBad = await engine.upsertEntry(AmiVoiceDictionaryEntry(id: badID, written: "BadWord"), for: key, state: .readyToSync)
+        check(upsertGood)
+        check(upsertBad)
         await engine.setAutomaticSyncEnabled(true)
         transport.replaceHandler = { payloads in
             if payloads.contains(where: { $0.written == "BadWord" }) {
@@ -150,13 +152,15 @@ struct AmiVoiceDictionarySyncTests {
         let transport = SelfTestMockAmiVoiceDictionaryTransport()
         let engine = AmiVoiceDictionarySyncEngine(store: store, transport: transport, apiKeyProvider: { "fixture-key" })
         let key = AmiVoiceDictionaryProfileKey(engine: .hybridJapaneseConversation, samplingRate: .rate16k)
-        check(await engine.upsertEntry(
+        let upserted = await engine.upsertEntry(
             AmiVoiceDictionaryEntry(written: "霧峰システム", spoken: "きりみねしすてむ"),
             for: key,
             state: .readyToSync
-        ))
+        )
+        check(upserted)
         await engine.setAutomaticSyncEnabled(true)
-        check((await engine.syncNow(for: key)).kind == .success)
+        let syncResult = await engine.syncNow(for: key)
+        check(syncResult.kind == .success)
         transport.resetCalls()
         transport.fetchHandler = { [] }
         let outcome = await engine.performLaunchConsistencyPass(for: key)
@@ -173,11 +177,15 @@ struct AmiVoiceDictionarySyncTests {
         let transport = SelfTestMockAmiVoiceDictionaryTransport()
         let engine = AmiVoiceDictionarySyncEngine(store: store, transport: transport, apiKeyProvider: { "fixture-key" })
         let key = AmiVoiceDictionaryProfileKey(engine: .e2eJapaneseGeneral, samplingRate: .rate16k)
-        check(await engine.upsertEntry(AmiVoiceDictionaryEntry(written: "KoeBridge"), for: key, state: .readyToSync))
+        let upserted = await engine.upsertEntry(AmiVoiceDictionaryEntry(written: "KoeBridge"), for: key, state: .readyToSync)
         await engine.scheduleDebouncedSync(for: key)
-        check((await engine.syncNow(for: key)).kind == .disabled)
-        check((await engine.performLaunchConsistencyPass(for: key)).kind == .disabled)
-        check((await engine.deleteAllServerWords(for: key)).kind == .disabled)
+        let syncResult = await engine.syncNow(for: key)
+        let passResult = await engine.performLaunchConsistencyPass(for: key)
+        let deleteResult = await engine.deleteAllServerWords(for: key)
+        check(upserted)
+        check(syncResult.kind == .disabled)
+        check(passResult.kind == .disabled)
+        check(deleteResult.kind == .disabled)
         check(transport.calls.isEmpty)
     }
 
