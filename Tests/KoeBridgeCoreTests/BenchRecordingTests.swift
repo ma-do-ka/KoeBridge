@@ -87,6 +87,33 @@ struct BenchRecordingTests {
         #expect(try PCM16WAV.extractPCM(wav) == pcm)
     }
 
+    @Test func progressFileLivesInsideAudioDirectory() {
+        let progress = BenchRecordingProgressStore.defaultProgressFileURL
+        #expect(progress.lastPathComponent == "recording-progress.json")
+        #expect(progress.deletingLastPathComponent().standardizedFileURL
+                == BenchRecordingProgressStore.defaultAudioDirectory.standardizedFileURL)
+    }
+
+    @Test func clipsOverFortyFiveSecondsAreSavedButFlagged() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("BenchLong-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let audioDir = root.appendingPathComponent("audio", isDirectory: true)
+        let progressURL = root.appendingPathComponent("recording-progress.json")
+        var store = BenchRecordingProgressStore(audioDirectory: audioDir, progressFileURL: progressURL)
+
+        let atLimit = try #require(BenchRecordingItem.item(forClipID: "p1-d1-normal-1"))
+        let overLimit = try #require(BenchRecordingItem.item(forClipID: "p1-d2-normal-1"))
+        let savedAtLimit = try store.saveRecording(for: atLimit, pcm16LE: Data(count: 45 * 32_000))
+        #expect(savedAtLimit.duration == 45.0)
+        #expect(!savedAtLimit.isTooLong)
+
+        let savedOverLimit = try store.saveRecording(for: overLimit, pcm16LE: Data(count: 46 * 32_000))
+        #expect(savedOverLimit.duration == 46.0)
+        #expect(savedOverLimit.isTooLong)
+        #expect(store.isRecorded(overLimit.clipID))
+        #expect(FileManager.default.fileExists(atPath: audioDir.appendingPathComponent(overLimit.fileName).path))
+    }
+
     @Test func progressStoreRoundTripsAndRecoversSafelyWithoutDeletingWAVs() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("BenchRec-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }

@@ -166,6 +166,9 @@ public struct BenchRecordingItem: Identifiable, Equatable, Hashable, Sendable {
 
 public struct BenchRecordingProgressStore: Equatable, Sendable {
     public static let minimumRecommendedDuration: TimeInterval = 0.3
+    /// The bench CLI rejects clips over this length (Tools/KoeBridgeBench/BenchSupport.swift),
+    /// which the 60 s auto-stop can reach; such clips are saved but flagged.
+    public static let maximumClipDuration: TimeInterval = 45.0
     public static let maximumRecordingDuration: TimeInterval = 60.0
     public static let pcmBytesPerSecond = 32_000
 
@@ -186,6 +189,10 @@ public struct BenchRecordingProgressStore: Equatable, Sendable {
 
         public var isTooShort: Bool {
             recorded && duration < BenchRecordingProgressStore.minimumRecommendedDuration
+        }
+
+        public var isTooLong: Bool {
+            recorded && duration > BenchRecordingProgressStore.maximumClipDuration
         }
     }
 
@@ -216,7 +223,7 @@ public struct BenchRecordingProgressStore: Equatable, Sendable {
     }
 
     public static var defaultProgressFileURL: URL {
-        defaultCacheRoot.appendingPathComponent("recording-progress.json")
+        defaultAudioDirectory.appendingPathComponent("recording-progress.json")
     }
 
     public let audioDirectory: URL

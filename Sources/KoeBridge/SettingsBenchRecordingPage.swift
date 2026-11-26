@@ -69,12 +69,12 @@ struct SettingsBenchRecordingPage: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                Text("保存先: ~/.cache/koebridge-bench/audio/")
+                Text("保存先: ~/.cache/koebridge-bench/audio/（WAVと recording-progress.json）")
                     .font(.system(.caption2, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
                 if coordinator.progressStore.loadOutcome == .recoveredFromCorrupt {
-                    Label("進捗ファイル（recording-progress.json）を読み込めなかったため空の状態で再開しました。既存のWAVファイルは削除していません。", systemImage: "exclamationmark.triangle.fill")
+                    Label("進捗ファイル（~/.cache/koebridge-bench/audio/recording-progress.json）を読み込めなかったため空の状態で再開しました。既存のWAVファイルは削除していません。", systemImage: "exclamationmark.triangle.fill")
                         .font(.caption)
                         .foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
@@ -108,9 +108,9 @@ struct SettingsBenchRecordingPage: View {
                     Spacer(minLength: 0)
                     if let progress = currentProgress {
                         Label("録音済み（\(String(format: "%.2f", progress.duration))秒）",
-                              systemImage: progress.isTooShort ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                              systemImage: progress.isTooShort || progress.isTooLong ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
                             .font(.caption.weight(.medium))
-                            .foregroundStyle(progress.isTooShort ? Color.orange : Color.green)
+                            .foregroundStyle(progress.isTooShort || progress.isTooLong ? Color.orange : Color.green)
                     }
                 }
 
@@ -256,9 +256,13 @@ struct SettingsBenchRecordingPage: View {
                 if let progress {
                     Text(String(format: "%.2f秒", progress.duration))
                         .font(.system(size: 12, design: .monospaced))
-                        .foregroundStyle(progress.isTooShort ? Color.orange : Color.secondary)
+                        .foregroundStyle(progress.isTooShort || progress.isTooLong ? Color.orange : Color.secondary)
                     if progress.isTooShort {
                         Text("0.3秒未満")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.orange)
+                    } else if progress.isTooLong {
+                        Text("45秒超")
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(.orange)
                     }
@@ -305,12 +309,12 @@ struct SettingsBenchRecordingPage: View {
 
     private func rowStatusSymbol(_ progress: BenchRecordingProgressStore.ItemProgress?) -> String {
         guard let progress else { return "circle" }
-        return progress.isTooShort ? "exclamationmark.triangle.fill" : "checkmark.circle.fill"
+        return progress.isTooShort || progress.isTooLong ? "exclamationmark.triangle.fill" : "checkmark.circle.fill"
     }
 
     private func rowStatusColor(_ progress: BenchRecordingProgressStore.ItemProgress?) -> Color {
         guard let progress else { return .secondary }
-        return progress.isTooShort ? .orange : .green
+        return progress.isTooShort || progress.isTooLong ? .orange : .green
     }
 }
 #endif

@@ -23,6 +23,21 @@ private final class BenchPCMBuffer: @unchecked Sendable {
     }
 }
 
+/// Capture surface the coordinator drives. `MicrophoneCapture` conforms in
+/// production; tests substitute a capture that never touches real hardware.
+@MainActor
+protocol BenchRecordingCapture: AnyObject {
+    var recoveryDisposition: MicrophoneCapture.EngineLifetime.Disposition { get }
+
+    func start(deadline: TimeInterval?,
+               onAudio: @escaping (Data) -> Void,
+               onDeviceChanged: @escaping (MicrophoneInputInterruption) -> Void) async throws
+    func stop(_ end: CaptureEnd, completion: @escaping (Int) -> Void)
+    func cancelAndWait() async
+}
+
+extension MicrophoneCapture: BenchRecordingCapture {}
+
 /// Coordinates local-only benchmark corpus recording through MicrophoneCapture
 /// without starting any speech engine, history record, usage accounting, or insertion.
 @MainActor final class BenchRecordingCoordinator: ObservableObject {
@@ -43,9 +58,13 @@ private final class BenchPCMBuffer: @unchecked Sendable {
     private let controller: VoiceController
     private let selectedInputUID: @MainActor () -> String
     private let requestMicPermission: () async -> Bool
-    private let makeCapture: (String, Bool) -> MicrophoneCapture
+    private let makeCapture: (String, Bool) -> any BenchRecordingCapture
 
-    private var activeCapture: MicrophoneCapture?
+    /// One token per recording session. An async stop/save task captures its
+    /// session's token and skips shared-state mutations once a newer session
+    /// owns the coordinator (I1).
+    private var sessionGeneration: UUID?
+    private var activeCapture: (any BenchRecordingCapture)?
     private var activePCMBuffer: BenchPCMBuffer?
     private var recordingTask: Task<Void, Never>?
     private var elapsedTimerTask: Task<Void, Never>?
@@ -62,7 +81,7 @@ private final class BenchPCMBuffer: @unchecked Sendable {
             default: return false
             }
         },
-        makeCapture: @escaping (String, Bool) -> MicrophoneCapture = { uid, explicitStart in
+        makeCapture: @escaping (String, Bool) -> any BenchRecordingCapture = { uid, explicitStart in
             MicrophoneCapture(selectedInputUID: uid, explicitStart: explicitStart)
         }
     ) {
@@ -141,21 +160,35 @@ private final class BenchPCMBuffer: @unchecked Sendable {
         }
         state = .preparing
         elapsedSeconds = 0
+        let sessionToken = UUID()
+        sessionGeneration = sessionToken
 
         recordingTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            await self.prepareAndStartCapture()
+            await self.prepareAndStartCapture(sessionToken: sessionToken)
         }
     }
 
-    private func prepareAndStartCapture() async {
+    /// Test-only seam for the I1 race: simulates a new recording session
+    /// replacing this coordinator's session while an async stop/save task from
+    /// the previous session is still running, without a second capture stack.
+    func replaceActiveSessionForTesting() {
+        sessionGeneration = UUID()
+    }
+
+    private func isCurrentSession(_ token: UUID) -> Bool {
+        sessionGeneration == token
+    }
+
+    private func prepareAndStartCapture(sessionToken: UUID) async {
         let allowed = await requestMicPermission()
-        guard !Task.isCancelled, state == .preparing else {
-            finishCancelledPreparation()
+        guard !Task.isCancelled, state == .preparing, isCurrentSession(sessionToken) else {
+            finishCancelledPreparation(sessionToken: sessionToken)
             return
         }
         guard allowed else {
             controller.endBenchRecordingSession()
+            sessionGeneration = nil
             state = .idle
             errorMessage = "マイクへのアクセスが許可されていません。設定の「権限」からマイクを許可してください。"
             return
@@ -165,13 +198,13 @@ private final class BenchPCMBuffer: @unchecked Sendable {
         let retryPolicy = MicrophoneStartupRetryPolicy()
         let preparationBegan = ProcessInfo.processInfo.systemUptime
         var attempts = 0
-        var readyCapture: MicrophoneCapture?
+        var readyCapture: (any BenchRecordingCapture)?
         var readyBuffer: BenchPCMBuffer?
 
         do {
             while readyCapture == nil {
                 try Task.checkCancellation()
-                guard state == .preparing else { throw CancellationError() }
+                guard state == .preparing, isCurrentSession(sessionToken) else { throw CancellationError() }
                 let attemptBegan = ProcessInfo.processInfo.systemUptime
                 let elapsed = attemptBegan - preparationBegan
                 let timeout = retryPolicy.timeoutForNextAttempt(elapsed: elapsed)
@@ -205,7 +238,9 @@ private final class BenchPCMBuffer: @unchecked Sendable {
                         activeCapture = nil
                         activePCMBuffer = nil
                     }
-                    guard !Task.isCancelled, state == .preparing else { throw CancellationError() }
+                    guard !Task.isCancelled, state == .preparing, isCurrentSession(sessionToken) else {
+                        throw CancellationError()
+                    }
                     if error is CancellationError { throw error }
                     if error is MicrophoneSelectionError { throw error }
                     let totalElapsed = ProcessInfo.processInfo.systemUptime - preparationBegan
@@ -222,21 +257,23 @@ private final class BenchPCMBuffer: @unchecked Sendable {
                 }
             }
         } catch is CancellationError {
-            finishCancelledPreparation()
+            finishCancelledPreparation(sessionToken: sessionToken)
             return
         } catch {
+            guard isCurrentSession(sessionToken) else { return }
             controller.endBenchRecordingSession()
+            sessionGeneration = nil
             state = .idle
             errorMessage = error.localizedDescription
             return
         }
 
         guard let capture = readyCapture, let buffer = readyBuffer,
-              !Task.isCancelled, state == .preparing else {
+              !Task.isCancelled, state == .preparing, isCurrentSession(sessionToken) else {
             if let capture = readyCapture {
                 await capture.cancelAndWait()
             }
-            finishCancelledPreparation()
+            finishCancelledPreparation(sessionToken: sessionToken)
             return
         }
 
@@ -266,10 +303,12 @@ private final class BenchPCMBuffer: @unchecked Sendable {
         }
     }
 
-    private func finishCancelledPreparation() {
+    private func finishCancelledPreparation(sessionToken: UUID) {
+        guard isCurrentSession(sessionToken) else { return }
         let capture = activeCapture
         activeCapture = nil
         activePCMBuffer = nil
+        sessionGeneration = nil
         if let capture {
             Task { @MainActor [weak self] in
                 await capture.cancelAndWait()
@@ -287,7 +326,8 @@ private final class BenchPCMBuffer: @unchecked Sendable {
     func stopRecording(autoStopped: Bool) {
         guard state == .recording,
               let capture = activeCapture,
-              let pcmBuffer = activePCMBuffer else {
+              let pcmBuffer = activePCMBuffer,
+              let sessionToken = sessionGeneration else {
             return
         }
         let item = currentItem
@@ -306,11 +346,19 @@ private final class BenchPCMBuffer: @unchecked Sendable {
                     continuation.resume(returning: losses)
                 }
             }
+            // The only suspension point is above: a new session may now own the
+            // coordinator (I1). On a mismatch this task must not touch shared
+            // state, but the old clip's WAV/progress write is session-independent.
+            guard self.isCurrentSession(sessionToken) else {
+                self.persistOrphanedClip(item: item, pcmBuffer: pcmBuffer, losses: losses)
+                return
+            }
             self.controller.endBenchRecordingSession()
             self.elapsedSeconds = 0
 
             guard losses == 0 else {
                 self.state = .idle
+                self.sessionGeneration = nil
                 self.errorMessage = "マイクの音声データが欠落したため保存しませんでした"
                 return
             }
@@ -318,6 +366,7 @@ private final class BenchPCMBuffer: @unchecked Sendable {
             let pcm = pcmBuffer.drain()
             guard !pcm.isEmpty else {
                 self.state = .idle
+                self.sessionGeneration = nil
                 self.errorMessage = "音声が検出されなかったため保存しませんでした（0秒）"
                 return
             }
@@ -325,10 +374,15 @@ private final class BenchPCMBuffer: @unchecked Sendable {
             do {
                 let saved = try self.progressStore.saveRecording(for: item, pcm16LE: pcm)
                 let durationText = String(format: "%.2f", saved.duration)
-                if autoStopped {
-                    self.statusMessage = "\(item.sentence.id)（\(item.voice.label) \(item.repetition)回目）を60秒上限で自動停止し、保存しました（\(durationText)秒）"
-                } else if saved.isTooShort {
+                if saved.isTooShort {
                     self.statusMessage = "\(item.sentence.id) を保存しましたが、0.3秒未満（\(durationText)秒）のため再録音をおすすめします"
+                } else if saved.isTooLong {
+                    let prefix = autoStopped
+                        ? "\(item.sentence.id)（\(item.voice.label) \(item.repetition)回目）を60秒上限で自動停止し、保存しました（\(durationText)秒）"
+                        : "\(item.sentence.id)（\(item.voice.label) \(item.repetition)回目）を保存しました（\(durationText)秒）"
+                    self.statusMessage = "\(prefix)。45秒を超えているためベンチマークCLIでは扱えません。再録音してください"
+                } else if autoStopped {
+                    self.statusMessage = "\(item.sentence.id)（\(item.voice.label) \(item.repetition)回目）を60秒上限で自動停止し、保存しました（\(durationText)秒）"
                 } else {
                     self.statusMessage = "\(item.sentence.id)（\(item.voice.label) \(item.repetition)回目）を保存しました（\(durationText)秒）"
                 }
@@ -339,10 +393,23 @@ private final class BenchPCMBuffer: @unchecked Sendable {
                 self.errorMessage = "WAVファイルの保存に失敗しました: \(error.localizedDescription)"
             }
             self.state = .idle
+            self.sessionGeneration = nil
         }
     }
 
+    /// Persists a clip whose stop task outlived its session without touching any
+    /// session-owned UI state.
+    private func persistOrphanedClip(item: BenchRecordingItem, pcmBuffer: BenchPCMBuffer, losses: Int) {
+        guard losses == 0 else { return }
+        let pcm = pcmBuffer.drain()
+        guard !pcm.isEmpty else { return }
+        try? progressStore.saveRecording(for: item, pcm16LE: pcm)
+    }
+
     func cancelRecording(reason: String?) {
+        // While saving, the stop task owns completion: resetting here would let a
+        // new session start while the old task still writes shared state (I1).
+        guard state != .stopping else { return }
         recordingTask?.cancel()
         recordingTask = nil
         elapsedTimerTask?.cancel()
@@ -355,6 +422,7 @@ private final class BenchPCMBuffer: @unchecked Sendable {
         activePCMBuffer = nil
         state = .idle
         elapsedSeconds = 0
+        sessionGeneration = nil
         if let reason {
             errorMessage = reason
         }

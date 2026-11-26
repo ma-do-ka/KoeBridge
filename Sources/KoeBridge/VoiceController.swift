@@ -977,8 +977,13 @@ import KoeBridgeEngines
     }
 
     var busy: Bool { active != nil }
+    static func benchRecordingAdmission(busy: Bool, phase: Phase, meetingRunning: Bool,
+                                        updateBlocksRecording: Bool) -> Bool {
+        !busy && phase == .idle && !meetingRunning && !updateBlocksRecording
+    }
     var canStartBenchRecording: Bool {
-        !busy && phase == .idle && !meetingRunning && !KoeBridgeUpdateManager.shared.blocksRecording
+        Self.benchRecordingAdmission(busy: busy, phase: phase, meetingRunning: meetingRunning,
+                                     updateBlocksRecording: KoeBridgeUpdateManager.shared.blocksRecording)
     }
     func beginBenchRecordingSession(onInterrupt: @escaping @MainActor () -> Void) -> Bool {
         guard canStartBenchRecording, !benchRecordingActive else { return false }
