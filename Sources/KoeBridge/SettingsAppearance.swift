@@ -15,6 +15,7 @@ extension SettingsSection {
         case .permissions: return Color(red: 0.95, green: 0.27, blue: 0.33)
         case .profiles: return Color(red: 0.98, green: 0.58, blue: 0.17)
         case .about: return Color(red: 0.43, green: 0.36, blue: 0.94)
+        case .bench: return Color(red: 0.88, green: 0.25, blue: 0.42)
         }
     }
 
@@ -29,6 +30,7 @@ extension SettingsSection {
         case .permissions: return "録音と文字入力に必要なmacOSの許可状態を確認します。許可はmacOSが管理します。"
         case .profiles: return "アプリごとの継承と上書きを設定します。"
         case .about: return "バージョンと公式リポジトリ、アップデートの確認ができます。"
+        case .bench: return "開発・ベンチマーク用の録音ツールです。WAVファイルをこのMac内に保存し、音声認識への送信や文字入力は一切行いません。"
         }
     }
 }

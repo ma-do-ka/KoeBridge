@@ -437,6 +437,9 @@ struct KoeBridgeSelfTest {
         await run("AmiVoiceDictionarySyncTests.isolationPrefersUnprotectedEntriesOverProtectedOnes", { try await AmiVoiceDictionarySyncTests().isolationPrefersUnprotectedEntriesOverProtectedOnes() })
         await run("AmiVoiceDictionarySyncTests.hybridSpokenMustBeKanaAndPendingReviewIsCountedSeparately", { try await AmiVoiceDictionarySyncTests().hybridSpokenMustBeKanaAndPendingReviewIsCountedSeparately() })
         await run("AmiVoiceDictionarySyncTests.corruptPersistedStoreRecoversOnNextSyncInsteadOfStoreFailure", { try await AmiVoiceDictionarySyncTests().corruptPersistedStoreRecoversOnNextSyncInsteadOfStoreFailure() })
+        await run("BenchRecordingSelfTests.itemTableIntegrityAndRoundTrip", { try BenchRecordingSelfTests().itemTableIntegrityAndRoundTrip() })
+        await run("BenchRecordingSelfTests.canonicalWAVHeaderAndPayloadRoundTrip", { try BenchRecordingSelfTests().canonicalWAVHeaderAndPayloadRoundTrip() })
+        await run("BenchRecordingSelfTests.progressStorePersistenceAndCorruptRecovery", { try BenchRecordingSelfTests().progressStorePersistenceAndCorruptRecovery() })
         print("KoeBridge portable self-test: \(testCount) cases, \(TestRecorder.checked) assertions, \(TestRecorder.failures) failures")
         if TestRecorder.failures > 0 { exit(1) }
     }
