@@ -2,8 +2,15 @@
 import Foundation
 import Testing
 import KoeBridgeCore
-import KoeBridgeEngines
+@testable import KoeBridgeEngines
 @testable import KoeBridge
+
+// Parallel CI can starve MainActor continuation delivery long beyond the nominal
+// 5 ms poll interval; CI observed 18.6 s of such delay. These waits observe
+// monotonic in-process progress (enqueued writes, socket state), so the budget is
+// sized at a 60 s equivalent (12,000 x 5 ms) to stay above that evidence while
+// matching the 60 s setup bound. Assertions on the conditions remain exact.
+private let amiVoiceSchedulingWaitIterations = 12_000
 
 final class ScriptedAmiVoiceSocket: AmiVoiceSocket, @unchecked Sendable {
     private let lock = NSLock()
@@ -125,6 +132,15 @@ final class ScriptedAmiVoiceSocket: AmiVoiceSocket, @unchecked Sendable {
 }
 
 @MainActor struct AmiVoiceWebSocketConnectionTests {
+    private func waitForCondition(_ message: String, until predicate: () -> Bool) async throws {
+        for _ in 0..<amiVoiceSchedulingWaitIterations {
+            if predicate() { return }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        Issue.record(Comment(rawValue: message))
+        throw CancellationError()
+    }
+
     @Test func lazyOpenDefersSocketUntilFirstNonEmptyPCM() async throws {
         var sockets: [ScriptedAmiVoiceSocket] = []
         let connection = AmiVoiceWebSocketConnection(
@@ -553,9 +569,8 @@ final class ScriptedAmiVoiceSocket: AmiVoiceSocket, @unchecked Sendable {
         let socket = try #require(capturedSocket)
         socket.feed(#"A {"text":"前半の認識結果","code":""}"#)
         socket.feed(#"A {"text":"ignored","code":"b","message":"\#(marker)"}"#)
-        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
-        while utteranceErrorConn.assembler.fatalError == nil && ContinuousClock.now < deadline {
-            await Task.yield()
+        try await waitForCondition("Utterance provider error was not applied") {
+            utteranceErrorConn.assembler.fatalError != nil
         }
         #expect(utteranceErrorConn.assembler.committedText.isEmpty)
         #expect(utteranceErrorConn.assembler.recoveryText == "前半の認識結果")
@@ -581,9 +596,8 @@ final class ScriptedAmiVoiceSocket: AmiVoiceSocket, @unchecked Sendable {
         }
         try await provideErrorConn.sendAudio(Data([0x01, 0x02]))
         provideSocket?.feed("p can't feed audio data to recognizer server \(marker)")
-        let pDeadline = ContinuousClock.now.advanced(by: .seconds(2))
-        while provideErrorConn.assembler.fatalError == nil && ContinuousClock.now < pDeadline {
-            await Task.yield()
+        try await waitForCondition("Mid-stream provider error was not applied") {
+            provideErrorConn.assembler.fatalError != nil
         }
         do {
             try await provideErrorConn.sendAudio(Data([0x03, 0x04]))
@@ -644,9 +658,8 @@ final class ScriptedAmiVoiceSocket: AmiVoiceSocket, @unchecked Sendable {
             socket.feed(#"A {"text":"cd","code":""}"#)
             socket.feed(#"A {"text":"ef","code":""}"#)
 
-            let deadline = ContinuousClock.now.advanced(by: .seconds(2))
-            while !connection.assembler.exceededFinalBudget && ContinuousClock.now < deadline {
-                await Task.yield()
+            try await waitForCondition("Final budget overrun was not applied") {
+                connection.assembler.exceededFinalBudget
             }
             #expect(connection.assembler.exceededFinalBudget)
             #expect(connection.assembler.finalCount == 1)
@@ -680,6 +693,7 @@ final class ScriptedAmiVoiceSocket: AmiVoiceSocket, @unchecked Sendable {
         var capturedSocket: ScriptedAmiVoiceSocket?
         let blockedChunk = Data([0x10, 0x11])
         let blockedFrame = Data([0x70, 0x10, 0x11])
+        var enqueuedWrites = 0
         let connection = AmiVoiceWebSocketConnection(
             apiKey: "fixture-amivoice-key",
             finalBudget: TranscriptAssembler.FinalBudget(bytes: 4, identities: 100)
@@ -701,32 +715,28 @@ final class ScriptedAmiVoiceSocket: AmiVoiceSocket, @unchecked Sendable {
             capturedSocket = socket
             return socket
         }
+        connection.onWriteEnqueued = { enqueuedWrites += 1 }
 
         try await connection.sendAudio(Data([0x01, 0x02]))
         let socket = try #require(capturedSocket)
 
         let send1 = Task { try await connection.sendAudio(blockedChunk) }
-        let blockDeadline = ContinuousClock.now.advanced(by: .seconds(2))
-        while socket.pendingSendCount == 0 && ContinuousClock.now < blockDeadline {
-            await Task.yield()
+        try await waitForCondition("Blocked pipelined write did not reach the socket") {
+            socket.pendingSendCount == 1
         }
         #expect(socket.pendingSendCount == 1)
 
-        let send2Ready = AsyncStream<Void>.makeStream()
-        let send2 = Task {
-            send2Ready.continuation.yield()
-            try await connection.sendAudio(Data([0x20, 0x21]))
+        // Enqueue p2 fully before creating the end task: this reproduces origin/main's
+        // structural guarantee that p2 precedes e in the serialized write queue, so e
+        // cannot run first and make send2 fail with .disconnected.
+        let send2 = Task { try await connection.sendAudio(Data([0x20, 0x21])) }
+        try await waitForCondition("Pipelined send2 was not enqueued before end") {
+            enqueuedWrites == 3
         }
-        var send2Iterator = send2Ready.stream.makeAsyncIterator()
-        _ = await send2Iterator.next()
-
-        let endReady = AsyncStream<Void>.makeStream()
-        let end = Task {
-            endReady.continuation.yield()
-            return try await connection.endAudioAndAwaitFinal()
+        let end = Task { try await connection.endAudioAndAwaitFinal() }
+        try await waitForCondition("Pipelined writes were not all enqueued") {
+            enqueuedWrites == 4
         }
-        var endIterator = endReady.stream.makeAsyncIterator()
-        _ = await endIterator.next()
 
         socket.feed(#"A {"text":"ab","code":""}"#)
         socket.feed(#"A {"text":"cd","code":""}"#)
@@ -766,6 +776,7 @@ final class ScriptedAmiVoiceSocket: AmiVoiceSocket, @unchecked Sendable {
 
         // 1. Provider error surfaces ConnectionError.provider to all pipelined callers even when endAudio's defer calls cancel().
         var providerSocket: ScriptedAmiVoiceSocket?
+        var providerEnqueuedWrites = 0
         let providerConn = AmiVoiceWebSocketConnection(apiKey: "fixture-amivoice-key") { request in
             let socket = ScriptedAmiVoiceSocket(
                 request: request,
@@ -780,30 +791,24 @@ final class ScriptedAmiVoiceSocket: AmiVoiceSocket, @unchecked Sendable {
             providerSocket = socket
             return socket
         }
+        providerConn.onWriteEnqueued = { providerEnqueuedWrites += 1 }
         try await providerConn.sendAudio(Data([0x01, 0x02]))
         let socket0 = try #require(providerSocket)
         let sendP1 = Task { try await providerConn.sendAudio(blockedChunk) }
-        let deadline0 = ContinuousClock.now.advanced(by: .seconds(2))
-        while socket0.pendingSendCount == 0 && ContinuousClock.now < deadline0 {
-            await Task.yield()
+        try await waitForCondition("Blocked provider write did not reach the socket") {
+            socket0.pendingSendCount == 1
         }
         #expect(socket0.pendingSendCount == 1)
 
-        let sendP2Ready = AsyncStream<Void>.makeStream()
-        let sendP2 = Task {
-            sendP2Ready.continuation.yield()
-            try await providerConn.sendAudio(Data([0x20, 0x21]))
+        // Enqueue p2 fully before creating the end task so p2 precedes e in the queue.
+        let sendP2 = Task { try await providerConn.sendAudio(Data([0x20, 0x21])) }
+        try await waitForCondition("Provider pipelined send2 was not enqueued before end") {
+            providerEnqueuedWrites == 3
         }
-        var sendP2Iterator = sendP2Ready.stream.makeAsyncIterator()
-        _ = await sendP2Iterator.next()
-
-        let endPReady = AsyncStream<Void>.makeStream()
-        let endP = Task {
-            endPReady.continuation.yield()
-            return try await providerConn.endAudioAndAwaitFinal()
+        let endP = Task { try await providerConn.endAudioAndAwaitFinal() }
+        try await waitForCondition("Provider pipelined writes were not all enqueued") {
+            providerEnqueuedWrites == 4
         }
-        var endPIterator = endPReady.stream.makeAsyncIterator()
-        _ = await endPIterator.next()
 
         socket0.feed("p can't feed audio data to recognizer server")
 
@@ -828,6 +833,7 @@ final class ScriptedAmiVoiceSocket: AmiVoiceSocket, @unchecked Sendable {
 
         // 2. External connection.cancel() surfaces disconnected to uncancelled pipelined callers.
         var cancelSocket: ScriptedAmiVoiceSocket?
+        var cancelEnqueuedWrites = 0
         let cancelConn = AmiVoiceWebSocketConnection(apiKey: "fixture-amivoice-key") { request in
             let socket = ScriptedAmiVoiceSocket(
                 request: request,
@@ -842,22 +848,19 @@ final class ScriptedAmiVoiceSocket: AmiVoiceSocket, @unchecked Sendable {
             cancelSocket = socket
             return socket
         }
+        cancelConn.onWriteEnqueued = { cancelEnqueuedWrites += 1 }
         try await cancelConn.sendAudio(Data([0x01, 0x02]))
         let socket1 = try #require(cancelSocket)
         let sendA1 = Task { try await cancelConn.sendAudio(blockedChunk) }
-        let deadline1 = ContinuousClock.now.advanced(by: .seconds(2))
-        while socket1.pendingSendCount == 0 && ContinuousClock.now < deadline1 {
-            await Task.yield()
+        try await waitForCondition("Blocked cancellation write did not reach the socket") {
+            socket1.pendingSendCount == 1
         }
         #expect(socket1.pendingSendCount == 1)
 
-        let sendA2Ready = AsyncStream<Void>.makeStream()
-        let sendA2 = Task {
-            sendA2Ready.continuation.yield()
-            try await cancelConn.sendAudio(Data([0x20, 0x21]))
+        let sendA2 = Task { try await cancelConn.sendAudio(Data([0x20, 0x21])) }
+        try await waitForCondition("Cancellation pipelined write was not enqueued") {
+            cancelEnqueuedWrites == 3
         }
-        var sendA2Iterator = sendA2Ready.stream.makeAsyncIterator()
-        _ = await sendA2Iterator.next()
 
         cancelConn.cancel()
 
@@ -882,6 +885,7 @@ final class ScriptedAmiVoiceSocket: AmiVoiceSocket, @unchecked Sendable {
         // 3. Genuine caller task cancellation surfaces CancellationError to the cancelled caller,
         // while an uncancelled pipelined sibling observes disconnected.
         var callerCancelSocket: ScriptedAmiVoiceSocket?
+        var callerCancelEnqueuedWrites = 0
         let callerCancelConn = AmiVoiceWebSocketConnection(apiKey: "fixture-amivoice-key") { request in
             let socket = ScriptedAmiVoiceSocket(
                 request: request,
@@ -896,22 +900,19 @@ final class ScriptedAmiVoiceSocket: AmiVoiceSocket, @unchecked Sendable {
             callerCancelSocket = socket
             return socket
         }
+        callerCancelConn.onWriteEnqueued = { callerCancelEnqueuedWrites += 1 }
         try await callerCancelConn.sendAudio(Data([0x01, 0x02]))
         let socket2 = try #require(callerCancelSocket)
         let sendB1 = Task { try await callerCancelConn.sendAudio(blockedChunk) }
-        let deadline2 = ContinuousClock.now.advanced(by: .seconds(2))
-        while socket2.pendingSendCount == 0 && ContinuousClock.now < deadline2 {
-            await Task.yield()
+        try await waitForCondition("Blocked caller-cancellation write did not reach the socket") {
+            socket2.pendingSendCount == 1
         }
         #expect(socket2.pendingSendCount == 1)
 
-        let sendB2Ready = AsyncStream<Void>.makeStream()
-        let sendB2 = Task {
-            sendB2Ready.continuation.yield()
-            try await callerCancelConn.sendAudio(Data([0x20, 0x21]))
+        let sendB2 = Task { try await callerCancelConn.sendAudio(Data([0x20, 0x21])) }
+        try await waitForCondition("Caller-cancellation pipelined write was not enqueued") {
+            callerCancelEnqueuedWrites == 3
         }
-        var sendB2Iterator = sendB2Ready.stream.makeAsyncIterator()
-        _ = await sendB2Iterator.next()
 
         sendB1.cancel()
 
@@ -1002,7 +1003,14 @@ final class ScriptedAmiVoiceSocket: AmiVoiceSocket, @unchecked Sendable {
 
     @Test func serializedSendQueuePreservesStrictSBeforePBeforeEOrder() async throws {
         var capturedSocket: ScriptedAmiVoiceSocket?
-        let connection = AmiVoiceWebSocketConnection(apiKey: "fixture-amivoice-key") { request in
+        var enqueuedWrites = 0
+        // The test intentionally withholds the s-ack while queued writers are
+        // observed. CI saw the unrelated default 10 s watchdog fire after 18.6 s
+        // of parallel scheduling delay; keep it outside that measurement.
+        let connection = AmiVoiceWebSocketConnection(
+            apiKey: "fixture-amivoice-key",
+            setupTimeout: .seconds(60)
+        ) { request in
             let socket = ScriptedAmiVoiceSocket(request: request) { message, ws in
                 if case .string(let text) = message, text == "e" {
                     ws.feed(#"A {"text":"順序保証","code":""}"#)
@@ -1012,31 +1020,25 @@ final class ScriptedAmiVoiceSocket: AmiVoiceSocket, @unchecked Sendable {
             capturedSocket = socket
             return socket
         }
+        connection.onWriteEnqueued = { enqueuedWrites += 1 }
 
         // Start send1 and wait until lazy "s" has been sent, while withholding "s" ack.
         let send1 = Task { try await connection.sendAudio(Data([0xAA, 0xBB])) }
-        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
-        while capturedSocket?.sentMessages.isEmpty != false && ContinuousClock.now < deadline {
-            await Task.yield()
+        try await waitForCondition("Lazy setup write did not reach the socket") {
+            capturedSocket?.sentMessages.isEmpty == false
         }
         let socket = try #require(capturedSocket)
 
-        // Enqueue send2 and endAudioAndAwaitFinal while "s" ack is still pending.
-        let send2Ready = AsyncStream<Void>.makeStream()
-        let send2 = Task {
-            send2Ready.continuation.yield()
-            try await connection.sendAudio(Data([0xCC, 0xDD]))
+        // Enqueue send2 before creating the end task so p2 precedes e in the
+        // serialized queue; both stay queued while "s" ack is still pending.
+        let send2 = Task { try await connection.sendAudio(Data([0xCC, 0xDD])) }
+        try await waitForCondition("Queued send2 was not enqueued before end") {
+            enqueuedWrites == 2
         }
-        var send2Iterator = send2Ready.stream.makeAsyncIterator()
-        _ = await send2Iterator.next()
-
-        let endReady = AsyncStream<Void>.makeStream()
-        let end = Task {
-            endReady.continuation.yield()
-            return try await connection.endAudioAndAwaitFinal()
+        let end = Task { try await connection.endAudioAndAwaitFinal() }
+        try await waitForCondition("Queued writes were not all enqueued before setup completion") {
+            enqueuedWrites == 3
         }
-        var endIterator = endReady.stream.makeAsyncIterator()
-        _ = await endIterator.next()
 
         // Neither p1, p2, nor e may be written before "s" ack completes.
         #expect(socket.sentMessages.count == 1)
@@ -1084,6 +1086,9 @@ final class ScriptedAmiVoiceSocket: AmiVoiceSocket, @unchecked Sendable {
             Issue.record("Expected receiveFailed when socket drops before e-ack")
         } catch AmiVoiceWebSocketConnection.ConnectionError.receiveFailed(let reason) {
             #expect(!reason.contains(marker))
+            // Immediacy check: a receive failure must fail closed without ever
+            // entering the 5 s finalizationTimeout wait, so 2 s separates immediate
+            // failure from dwell. It is not scheduling slack for parallel CI.
             #expect(started.duration(to: .now) < .seconds(2))
         } catch {
             Issue.record("Unexpected error: \(error)")
