@@ -427,6 +427,9 @@ struct KoeBridgeSelfTest {
         await run("BenchmarkMetricsTests.costAndFreeQuotaLogic", { try BenchmarkMetricsTests().costAndFreeQuotaLogic() })
         await run("BenchmarkMetricsTests.strictCERTransformInjection", { BenchmarkMetricsTests().strictCERTransformInjection() })
         await run("BenchmarkMetricsTests.strictTransformPreservesCanonicalEquivalenceBeforeAdopt", { BenchmarkMetricsTests().strictTransformPreservesCanonicalEquivalenceBeforeAdopt() })
+        await run("BenchRecordingSelfTests.itemTableIntegrityAndRoundTrip", { try BenchRecordingSelfTests().itemTableIntegrityAndRoundTrip() })
+        await run("BenchRecordingSelfTests.canonicalWAVHeaderAndPayloadRoundTrip", { try BenchRecordingSelfTests().canonicalWAVHeaderAndPayloadRoundTrip() })
+        await run("BenchRecordingSelfTests.progressStorePersistenceAndCorruptRecovery", { try BenchRecordingSelfTests().progressStorePersistenceAndCorruptRecovery() })
         print("KoeBridge portable self-test: \(testCount) cases, \(TestRecorder.checked) assertions, \(TestRecorder.failures) failures")
         if TestRecorder.failures > 0 { exit(1) }
     }

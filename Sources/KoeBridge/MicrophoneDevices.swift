@@ -193,7 +193,7 @@ enum MicrophoneDevices {
         loaded && !selectedUIDCollides && !selectedUID.isEmpty && !devices.contains { $0.uid == selectedUID }
     }
     func select(_ uid: String) {
-        guard !VoiceController.shared.busy,
+        guard !VoiceController.shared.busy, !VoiceController.shared.benchRecordingActive,
               uid.isEmpty || devices.contains(where: { $0.uid == uid }) else { return }
         selectedUID = uid
         defaults.set(uid, forKey: "microphoneInputUID")

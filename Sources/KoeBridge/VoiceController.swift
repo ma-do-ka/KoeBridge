@@ -37,6 +37,8 @@ import KoeBridgeEngines
         didSet { UserDefaults.standard.set(progressivePreviewEnabled, forKey: "progressivePreviewEnabled") }
     }
     @Published var isRecording = false
+    @Published private(set) var benchRecordingActive = false
+    private var cancelBenchRecording: (@MainActor () -> Void)?
     @Published private(set) var microphoneNotice: MicrophoneNotice?
     @Published private(set) var overlayFeedback: OverlayFeedback = .hidden
     @Published private(set) var lastStartupSeconds: TimeInterval?
@@ -509,8 +511,8 @@ import KoeBridgeEngines
             status = "更新画面を閉じるか、更新の完了後に会議モードを開始してください"; return
         }
         guard canStartMeeting else { status = "会議モードと画面収録の許可を設定してください"; return }
-        guard phase == .idle, active == nil, inFlight.isEmpty, !textOperationRunning else {
-            status = "音声入力・処理の完了後に会議モードを開始してください"; return
+        guard phase == .idle, active == nil, inFlight.isEmpty, !textOperationRunning, !benchRecordingActive else {
+            status = "音声入力・ベンチ録音・処理の完了後に会議モードを開始してください"; return
         }
         let geminiKey: String?
         let amiVoiceKey: String?
@@ -743,9 +745,9 @@ import KoeBridgeEngines
     private let microphoneWarmKeeper: MicrophoneWarmKeeper
     private var microphoneStoreObservation: AnyCancellable?
     private func resumeMicrophoneWarm(reason: String = "teardown") {
-        guard !meetingRunning else { return }
+        guard !meetingRunning, !benchRecordingActive else { return }
         microphoneWarmKeeper.resume(enabled: bluetoothMicWarmEnabled,
-            selectedUID: MicrophoneDeviceStore.shared.selectedUID, takeActive: busy, reason: reason)
+            selectedUID: MicrophoneDeviceStore.shared.selectedUID, takeActive: busy || benchRecordingActive, reason: reason)
     }
 
     private let prewarmer = GeminiLivePrewarmer()
@@ -905,7 +907,7 @@ import KoeBridgeEngines
 
     private func warmGeminiIfNeeded() {
         prewarmer.warmIfNeeded { [self] in
-            guard !meetingRunning, geminiPrewarmEnabled, requestedMode == .gemini, active == nil,
+            guard !meetingRunning, !benchRecordingActive, geminiPrewarmEnabled, requestedMode == .gemini, active == nil,
                   !inFlight.values.contains(where: { !$0.finished }),
                   let key = KeychainStore.loadForUse() else { return nil }
             let terms = AgentVocabulary.terms(user: vocabulary.components(separatedBy: .newlines), learned: learnedTerms.map(\.term),
@@ -975,6 +977,27 @@ import KoeBridgeEngines
     }
 
     var busy: Bool { active != nil }
+    static func benchRecordingAdmission(busy: Bool, phase: Phase, meetingRunning: Bool,
+                                        updateBlocksRecording: Bool) -> Bool {
+        !busy && phase == .idle && !meetingRunning && !updateBlocksRecording
+    }
+    var canStartBenchRecording: Bool {
+        Self.benchRecordingAdmission(busy: busy, phase: phase, meetingRunning: meetingRunning,
+                                     updateBlocksRecording: KoeBridgeUpdateManager.shared.blocksRecording)
+    }
+    func beginBenchRecordingSession(onInterrupt: @escaping @MainActor () -> Void) -> Bool {
+        guard canStartBenchRecording, !benchRecordingActive else { return false }
+        benchRecordingActive = true
+        cancelBenchRecording = onInterrupt
+        microphoneWarmKeeper.suspend(reason: "bench")
+        return true
+    }
+    func endBenchRecordingSession() {
+        guard benchRecordingActive else { return }
+        benchRecordingActive = false
+        cancelBenchRecording = nil
+        resumeMicrophoneWarm(reason: "bench_teardown")
+    }
     /// Read-only observation of the active take's stored target (post-capture).
     var activeTakeTarget: InsertionTarget? { active?.target }
     func reserveHistoryInsertion() -> UUID? { postingGate.reserveHistory() }
@@ -1019,6 +1042,7 @@ import KoeBridgeEngines
 
     private func beginRecording(transformTarget: InsertionTarget? = nil, selection: String? = nil, fixingLastInput: Bool = false) {
         guard !meetingRunning else { status = "会議モード中は通常の音声入力を開始できません"; return }
+        guard !benchRecordingActive else { status = "ベンチ録音中は通常の音声入力を開始できません"; return }
         guard active == nil, phase == .idle else { return }
         cancelTextOperation()
         guard !KoeBridgeUpdateManager.shared.blocksRecording else {
@@ -2231,6 +2255,7 @@ import KoeBridgeEngines
     func interruptForSystemEvent(_ reason: String) {
         postingGate.interrupt()
         meetingSession?.interrupt(reason)
+        cancelBenchRecording?()
         cancelReplay()
         cancelTextOperation()
         let outstanding = Array(inFlight.values)
