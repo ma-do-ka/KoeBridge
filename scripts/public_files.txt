@@ -313,9 +313,14 @@ Tests/KoeBridgeCoreTests/TranslationAndPresetTests.swift
 docs/translate-and-chains.md
 
 Sources/KoeBridgeCore/LearnedTerms.swift
+Sources/KoeBridgeCore/VocabularyPipeline.swift
+Sources/KoeBridgeCore/VocabularyReadingGeneration.swift
 Sources/KoeBridge/LastDeliveryAnchor.swift
 Sources/KoeBridgeSelfTest/LearnedTermsTests.swift
 Tests/KoeBridgeCoreTests/LearnedTermsTests.swift
+Tests/KoeBridgeCoreTests/GD308Fixture.swift
+Tests/KoeBridgeCoreTests/VocabularyPipelineGD308RepresentativeTests.swift
+Tests/KoeBridgeCoreTests/VocabularyPipelineTests.swift
 docs/learning-and-fix.md
 
 docs/progressive-preview.md

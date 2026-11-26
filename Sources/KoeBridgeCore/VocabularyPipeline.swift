@@ -51,6 +51,7 @@ public enum VocabularyHoldReason: Equatable, Sendable {
 
     // Stage 3 (Reading generation) – Phase 1 local rules only.
     case readingGenerationUnavailable
+    case invalidWrittenCharacters
     case ambiguousAlphabetReading
     case numericReadingAmbiguous
     case phoneticDivergence // Y_before vs Y_after mismatch
@@ -112,7 +113,15 @@ public struct VocabularyCandidatePipeline {
         )
 
         // Stage 4: Quality guards
-        var holdReasons = generated.holdReasons
+        var holdReasons: [VocabularyHoldReason] = generated.holdReasons.map { internalReason in
+            switch internalReason {
+            case .readingGenerationUnavailable: return .readingGenerationUnavailable
+            case .invalidWrittenCharacters: return .invalidWrittenCharacters
+            case .ambiguousAlphabetReading: return .ambiguousAlphabetReading
+            case .numericReadingAmbiguous: return .numericReadingAmbiguous
+            case .phoneticDivergence: return .phoneticDivergence
+            }
+        }
         if let intakeHold { holdReasons.append(intakeHold) }
 
         // Short‑reading guard

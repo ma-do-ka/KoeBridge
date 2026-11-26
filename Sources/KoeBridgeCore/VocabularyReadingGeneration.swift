@@ -12,13 +12,24 @@ public enum VocabularyTermType: Equatable, Sendable {
     case numericMixed
 }
 
-/// Reasons why reading generation may hold a candidate.
-public enum VocabularyHoldReason: Equatable, Sendable {
+// VocabularyHoldReason is defined in VocabularyPipeline.swift
+// The following cases are used internally and correspond to cases in VocabularyHoldReason
+private enum InternalHoldReason {
     case readingGenerationUnavailable
     case invalidWrittenCharacters
     case ambiguousAlphabetReading
     case numericReadingAmbiguous
     case phoneticDivergence
+    
+    func toVocabularyHoldReason() -> VocabularyHoldReason {
+        switch self {
+        case .readingGenerationUnavailable: return .readingGenerationUnavailable
+        case .invalidWrittenCharacters: return .invalidWrittenCharacters
+        case .ambiguousAlphabetReading: return .ambiguousAlphabetReading
+        case .numericReadingAmbiguous: return .numericReadingAmbiguous
+        case .phoneticDivergence: return .phoneticDivergence
+        }
+    }
 }
 
 /// Local, deterministic reading generation helpers for the vocabulary candidate pipeline.
@@ -30,7 +41,7 @@ public enum VocabularyReadingGeneration {
         let canonical: String?
         let evidenceCanonical: String?
         let recommended: String?
-        let holdReasons: [VocabularyHoldReason]
+        let holdReasons: [InternalHoldReason]
     }
 
     private enum SurfaceTokenKind {
@@ -67,7 +78,7 @@ public enum VocabularyReadingGeneration {
                     holdReasons: [.readingGenerationUnavailable]
                 )
             }
-            var holds: [VocabularyHoldReason] = []
+            var holds: [InternalHoldReason] = []
             if let evidenceReading {
                 if !withinPhase1Tolerance(generated, evidenceReading) {
                     holds.append(.phoneticDivergence)
@@ -100,7 +111,7 @@ public enum VocabularyReadingGeneration {
             )
         }
         let canonicalSpelled = canonicalHiragana(spelled)
-        var holds: [VocabularyHoldReason] = []
+        var holds: [InternalHoldReason] = []
         if !isUnambiguousAcronym(written) {
             holds.append(.ambiguousAlphabetReading)
         }
@@ -219,7 +230,7 @@ public enum VocabularyReadingGeneration {
                 holdReasons: [.readingGenerationUnavailable]
             )
         }
-        var holds: [VocabularyHoldReason] = []
+        var holds: [InternalHoldReason] = []
         if containsDigits {
             // Numeric readings vary too much for a merely-close match. A digit-bearing
             // candidate is automatic only when the speaker evidence selects one variant exactly.
@@ -306,7 +317,7 @@ public enum VocabularyReadingGeneration {
         latin.applyingTransform(.latinToHiragana, reverse: false)
     }
 
-    static func canonicalHiragana(_ text: String) -> String {
+    public static func canonicalHiragana(_ text: String) -> String {
         var converted = String.UnicodeScalarView()
         for scalar in text.unicodeScalars {
             let value = scalar.value
