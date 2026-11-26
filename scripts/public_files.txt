@@ -364,3 +364,14 @@ Tests/KoeBridgeCoreTests/MicrophoneStartupGateSettlingTests.swift
 Tests/KoeBridgeCoreTests/StartupPreviewPolicyTests.swift
 Tests/KoeBridgeTests/TextInsertionTransportTests.swift
 AGENTS.md
+
+# Benchmark corpus and tooling
+Tools/KoeBridgeBench/BenchModels.swift
+Tools/KoeBridgeBench/BenchReport.swift
+Tools/KoeBridgeBench/BenchRunner.swift
+Tools/KoeBridgeBench/BenchSupport.swift
+Tools/KoeBridgeBench/corpus/manifest.json
+Tools/KoeBridgeBench/main.swift
+docs/amivoice-and-benchmark.md
+scripts/bench_generate_tts.sh
+scripts/test_bench_generate_tts.py
