@@ -36,6 +36,9 @@ private final class MeetingAudioCount: @unchecked Sendable {
     var onUsage: ((EngineUsageSample, [GeminiTokenSample]) -> Void)?
     var onStatus: ((String) -> Void)?
     var onFinished: ((String, Bool) -> Void)?
+    var onMicrophoneStarted: (() -> Void)?
+    var onMicrophoneInterruption: ((MicrophoneInputInterruption) -> Void)?
+    var onMicrophoneFailure: ((Error, MicrophoneCapture.EngineLifetime.Disposition) -> Void)?
 
     @MainActor final class Chunk {
         var mic: MicrophoneCapture?
@@ -288,14 +291,19 @@ private final class MeetingAudioCount: @unchecked Sendable {
             emittedAudio.append(data)
             if case .dropped = continuation.yield(data) { integrity.markDropped() }
         }
-        let failure: () -> Void = { [weak self, weak chunk] in
+        let failureWithInterruption: (MicrophoneInputInterruption) -> Void = { [weak self, weak chunk] interruption in
             Task { @MainActor in
                 guard let self, let chunk, !chunk.captureEnded else { return }
                 chunk.failed = true; chunk.stopRequested = true
-                if source == .microphone { self.micFailed = true; self.stop() }
+                if source == .microphone {
+                    self.micFailed = true
+                    self.onMicrophoneInterruption?(interruption)
+                    self.stop()
+                }
                 else { self.systemFailed = true }
             }
         }
+        let failure: () -> Void = { failureWithInterruption(.inputChange) }
         chunk.worker = Task {
             do {
                 for await data in stream {
@@ -335,11 +343,15 @@ private final class MeetingAudioCount: @unchecked Sendable {
             requestedMicrophone = true
             chunk.mic = mic
             do {
-                try await mic.start(onAudio: audio, onDeviceChanged: failure)
+                try await mic.start(onAudio: audio, onDeviceChanged: failureWithInterruption)
             } catch {
-                if !(error is CancellationError) { microphoneRecoveryMessage = mic.recoveryDisposition.message }
+                if !(error is CancellationError) {
+                    microphoneRecoveryMessage = mic.recoveryDisposition.message
+                    onMicrophoneFailure?(error, mic.recoveryDisposition)
+                }
                 throw error
             }
+            onMicrophoneStarted?()
             chunk.startedAt = ProcessInfo.processInfo.systemUptime - Double(mic.totalPCMBytes) / 32_000
         } else {
             let system = SystemAudioCapture(onAudio: audio, onFailure: failure)

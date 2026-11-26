@@ -143,6 +143,30 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
     }
 }
 
+enum ApplicationRelauncher {
+    static let executablePath = "/bin/sh"
+
+    static func arguments(processID: Int32, bundlePath: String) -> [String] {
+        [
+            "-c",
+            "attempts=0; while kill -0 \"$1\" 2>/dev/null && [ \"$attempts\" -lt 100 ]; do attempts=$((attempts + 1)); sleep 0.1; done; if kill -0 \"$1\" 2>/dev/null; then exit 1; fi; exec /usr/bin/open \"$2\"",
+            "koebridge-restart",
+            String(processID),
+            bundlePath
+        ]
+    }
+
+    static func spawn(processID: Int32, bundlePath: String) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executablePath)
+        process.arguments = arguments(processID: processID, bundlePath: bundlePath)
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+    }
+}
+
 @MainActor final class KoeBridgeAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var item: NSStatusItem!
     private var shortcut: GlobalShortcut?
@@ -157,7 +181,7 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
     private let statusPopover = NSPopover()
     private let historyMenu = RecentHistoryMenuState()
     private let historyHoverPanel = HistoryHoverPanelController()
-    private var recordingObservation: AnyCancellable?
+    private var statusItemObservations: [AnyCancellable] = []
     private var popoverMonitors: [Any] = []
     private var popoverActivationObserver: NSObjectProtocol?
 
@@ -178,6 +202,10 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
         let content = StatusPopoverView(
             controller: controller, guide: PermissionGuide.shared, historyMenu: historyMenu,
             onOpenSettings: { [weak self] in self?.showSettings() },
+            onOpenMicrophoneSettings: { [weak self] in self?.showSettingsDestination("microphone-device") },
+            onOpenSoundSettings: { [weak self] in self?.openSoundSettings() },
+            onOpenSystemMicrophoneSettings: { [weak self] in self?.openSystemMicrophoneSettings() },
+            onRestartApplication: { [weak self] in self?.restartApplication() },
             onOpenHistory: { [weak self] in self?.showHistory() },
             onOpenPermissions: { [weak self] in self?.showSettingsDestination("accessibility") },
             onOpenUsage: { [weak self] in self?.showSettingsDestination("usage") },
@@ -206,11 +234,10 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
         let hosting = NSViewController()
         hosting.view = FirstMouseHostingView(rootView: content)
         statusPopover.contentViewController = hosting
-        recordingObservation = controller.$isRecording.sink { [weak self] recording in
-            self?.item.button?.image = NSImage(
-                systemSymbolName: recording ? "record.circle" : "waveform",
-                accessibilityDescription: "KoeBridge")
-        }
+        controller.$isRecording.combineLatest(controller.$microphoneNotice)
+            .sink { [weak self] isRecording, notice in
+                self?.updateStatusItemAppearance(isRecording: isRecording, microphoneNotice: notice)
+            }.store(in: &statusItemObservations)
 
         // This never activates KoeBridge or takes keyboard focus from the text field.
         controller.onShowPreview = { [weak self] in self?.windows.showPreview() }
@@ -449,6 +476,43 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
         }
     }
 
+
+    private func updateStatusItemAppearance(isRecording: Bool, microphoneNotice notice: MicrophoneNotice?) {
+        guard let button = item.button else { return }
+        let symbolName: String
+        let fallbackSymbol: String?
+        if isRecording {
+            symbolName = "record.circle"
+            fallbackSymbol = nil
+        } else if notice != nil {
+            symbolName = "waveform.badge.exclamationmark"
+            fallbackSymbol = "exclamationmark.triangle.fill"
+        } else {
+            symbolName = "waveform"
+            fallbackSymbol = nil
+        }
+        var image = NSImage(systemSymbolName: symbolName, accessibilityDescription: "KoeBridge")
+        if image == nil, let fallbackSymbol {
+            image = NSImage(systemSymbolName: fallbackSymbol, accessibilityDescription: "KoeBridge")
+        }
+        button.image = image
+        button.toolTip = isRecording ? nil : notice?.menuBarTooltip
+    }
+
+    private func openSystemMicrophoneSettings() {
+        statusPopover.performClose(nil)
+        PermissionGuide.shared.requestMicrophone()
+    }
+
+    private func openSoundSettings() {
+        statusPopover.performClose(nil)
+        if let url = URL(string: "x-apple.systempreferences:com.apple.Sound-Settings.extension"),
+           NSWorkspace.shared.open(url) {
+            return
+        }
+        showSettingsDestination("microphone-device")
+    }
+
     private func showSettingsDestination(_ id: String) {
         statusPopover.performClose(nil)
         SettingsDestination.pending = id
@@ -544,6 +608,17 @@ enum RecordingShortcut: String, CaseIterable, Identifiable {
         statusPopover.performClose(nil)
         windows.showPermissions()
     }
+    private func restartApplication() {
+        statusPopover.performClose(nil)
+        do {
+            try ApplicationRelauncher.spawn(processID: ProcessInfo.processInfo.processIdentifier,
+                                            bundlePath: Bundle.main.bundleURL.path)
+        } catch {
+            DiagnosticLog.record("application relaunch helper failed")
+        }
+        NSApp.terminate(nil)
+    }
+
     @objc private func quit() {
         statusPopover.performClose(nil)
         NSApp.terminate(nil)

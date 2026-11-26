@@ -400,7 +400,7 @@ import KoeBridgeEngines
             let format = mismatch ? AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1)! : expected
             let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 16)!
             buffer.frameLength = 16
-            let accepted = capture.acceptsForConversion(buffer, token: token, expected: expected, onDeviceChanged: {})
+            let accepted = capture.acceptsForConversion(buffer, token: token, expected: expected, onDeviceChanged: { _ in })
             #expect(accepted == (!mismatch && !gap))
             #expect(capture.lostBufferCount == (mismatch || gap ? 1 : 0))
             #expect(gate.recordingWasInterrupted == gap)

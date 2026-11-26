@@ -4,6 +4,11 @@ import AVFoundation
 import Synchronization
 import KoeBridgeCore
 
+enum MicrophoneInputInterruption: Equatable, Sendable {
+    case deviceRemoval
+    case inputChange
+}
+
 /// End-of-stream conversion is only valid after a clean stop. Deliver each
 /// independent buffer through the source's ordinary meter and admission path.
 enum CaptureEnd {
@@ -237,7 +242,7 @@ final class MicrophoneCapture: @unchecked Sendable {
     @MainActor
     func start(deadline requestedDeadline: TimeInterval? = nil,
                onAudio: @escaping (Data) -> Void,
-               onDeviceChanged: @escaping () -> Void = {}) async throws {
+               onDeviceChanged: @escaping (MicrophoneInputInterruption) -> Void = { _ in }) async throws {
         guard !startRequested else { throw CaptureError.alreadyStarted }
         startRequested = true
         let beganAt = hardware.now()
@@ -435,7 +440,7 @@ final class MicrophoneCapture: @unchecked Sendable {
     }
 
     private func invalidateStartup(_ reason: MicrophoneStartupGate.Failure,
-                                   onDeviceChanged: @escaping () -> Void) {
+                                   onDeviceChanged: @escaping (MicrophoneInputInterruption) -> Void) {
         if reason == .configurationChanged || reason == .inputRouteChanged {
             handleConfigurationChange(reason: reason, onDeviceChanged: onDeviceChanged)
             return
@@ -448,12 +453,12 @@ final class MicrophoneCapture: @unchecked Sendable {
     }
 
     private func notifyInterruption(_ reason: MicrophoneStartupGate.Failure,
-                                    onDeviceChanged: @escaping () -> Void) {
+                                    onDeviceChanged: @escaping (MicrophoneInputInterruption) -> Void) {
         // Never stop/deallocate an engine in its notification callback.
         DispatchQueue.main.async { [weak self] in
             guard let self, !self.startupGate.isStopped else { return }
             self.microphoneEvidence?.write("mic_interrupted capture=\(self.diagnosticID.uuidString) category=\(reason.rawValue)")
-            onDeviceChanged()
+            onDeviceChanged(reason == .inputRouteChanged ? .deviceRemoval : .inputChange)
         }
     }
 
@@ -462,7 +467,7 @@ final class MicrophoneCapture: @unchecked Sendable {
     }
 
     private func handleConfigurationChange(reason: MicrophoneStartupGate.Failure,
-                                           onDeviceChanged: @escaping () -> Void) {
+                                           onDeviceChanged: @escaping (MicrophoneInputInterruption) -> Void) {
         let outcome = startupGate.handleConfigurationChange(
             at: hardware.now(), deadline: attemptDeadline, reason: reason)
         switch outcome {
@@ -586,7 +591,7 @@ final class MicrophoneCapture: @unchecked Sendable {
     }
 
     private func startBlocking(onAudio: @escaping (Data) -> Void,
-                               onDeviceChanged: @escaping () -> Void) throws {
+                               onDeviceChanged: @escaping (MicrophoneInputInterruption) -> Void) throws {
         guard !startupGate.isStopped, !teardownStarted else { throw CancellationError() }
         guard hardware.now() < attemptDeadline else { throw CaptureError.notReady(.unstableBuffers) }
         guard engine == nil else { throw CaptureError.alreadyStarted }
@@ -788,7 +793,7 @@ final class MicrophoneCapture: @unchecked Sendable {
     }
 
     func acceptsForConversion(_ buffer: AVAudioPCMBuffer, token: MicrophoneStartupGate.TapCaptureToken,
-                              expected: AVAudioFormat, onDeviceChanged: @escaping () -> Void) -> Bool {
+                              expected: AVAudioFormat, onDeviceChanged: @escaping (MicrophoneInputInterruption) -> Void) -> Bool {
         guard startupGate.accepts(token), buffer.frameLength > 0 else { return false }
         let format = buffer.format
         guard format.sampleRate.isFinite, format.sampleRate > 0, format.channelCount > 0,
@@ -802,7 +807,7 @@ final class MicrophoneCapture: @unchecked Sendable {
 
     private func convert(_ incoming: AVAudioPCMBuffer, arrivedAt: TimeInterval,
                          token: MicrophoneStartupGate.TapCaptureToken,
-                         onDeviceChanged: @escaping () -> Void) {
+                         onDeviceChanged: @escaping (MicrophoneInputInterruption) -> Void) {
         guard alive, let converter,
               acceptsForConversion(incoming, token: token, expected: converter.inputFormat,
                                    onDeviceChanged: onDeviceChanged) else { return }
