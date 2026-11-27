@@ -68,6 +68,10 @@ struct SettingsVoicePage: View {
                     Toggle("確定した部分をプレビューで区別する", isOn: $controller.progressivePreviewEnabled).settingsControlFocus("preview")
                     Text("濃い文字は確定部分、薄い文字は暫定部分です。入力は確認後に一度だけ行います。").font(.caption)
                 }.settingsTarget("preview")
+                GroupBox("文節ストリーミング（試験的）") {
+                    Toggle("文ごとに確定・後処理を先行する（既定オフ）", isOn: $controller.clauseStreamingEnabled).settingsControlFocus("clause-streaming")
+                    Text("試験的機能です。録音中に文単位の確定と後処理を先行し、停止時にまとめて入力します。入力のタイミングと順序は変わりません。").font(.caption)
+                }.settingsTarget("clause-streaming")
                 MeetingAndRetentionSettings(showMeeting: true).settingsTarget("meeting")
                 GroupBox {
                     VStack(alignment: .leading, spacing: 5) {

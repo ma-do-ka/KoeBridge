@@ -76,6 +76,7 @@ Sources/KoeBridge/SettingsView.swift
 Sources/KoeBridge/SettingsVoicePage.swift
 Sources/KoeBridge/StatusPopoverView.swift
 Sources/KoeBridge/SystemAudioCapture.swift
+Sources/KoeBridge/TakeStreamingContext.swift
 Sources/KoeBridge/TextInsertion.swift
 Sources/KoeBridge/UsageMonitorView.swift
 Sources/KoeBridge/VoiceController.swift
@@ -139,6 +140,7 @@ Sources/KoeBridgeCore/QuickNoInputPolicy.swift
 Sources/KoeBridgeCore/RecentHistoryMenuPolicy.swift
 Sources/KoeBridgeCore/RecentTranscriptArchive.swift
 Sources/KoeBridgeCore/ReleaseUpdatePolicy.swift
+Sources/KoeBridgeCore/SentenceSegmenter.swift
 Sources/KoeBridgeCore/SessionTransitions.swift
 Sources/KoeBridgeCore/SettingsNavigation.swift
 Sources/KoeBridgeCore/SettingsUXPolicy.swift
@@ -285,6 +287,7 @@ Tests/KoeBridgeCoreTests/RecentHistoryMenuPolicyTests.swift
 Tests/KoeBridgeCoreTests/RecentTranscriptArchiveTests.swift
 Tests/KoeBridgeCoreTests/ReleaseUpdatePolicyTests.swift
 Tests/KoeBridgeCoreTests/ResilienceTests.swift
+Tests/KoeBridgeCoreTests/SentenceSegmenterTests.swift
 Tests/KoeBridgeCoreTests/SessionTransitionsTests.swift
 Tests/KoeBridgeCoreTests/SettingsNavigationTests.swift
 Tests/KoeBridgeCoreTests/SettingsPersistenceTests.swift
@@ -320,6 +323,7 @@ Tests/KoeBridgeTests/MicrophoneNoticeBindingTests.swift
 Tests/KoeBridgeTests/MicrophoneRecoveryTests.swift
 Tests/KoeBridgeTests/OutputVolumeGuardTests.swift
 Tests/KoeBridgeTests/RetainedAudioStoreTests.swift
+Tests/KoeBridgeTests/TakeStreamingContextTests.swift
 Tests/KoeBridgeTests/TextInsertionTransportTests.swift
 Tests/KoeBridgeTests/UsageMonitorAggregationTests.swift
 Tests/KoeBridgeTests/VoiceCommandPresentationTests.swift
