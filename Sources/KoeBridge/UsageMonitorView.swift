@@ -133,10 +133,16 @@ struct UsageMonitorView: View {
             return totals
         }
     }
+    private struct MonthKey: Equatable {
+        let revision: UInt64
+        let calendar: Calendar
+        let monthStart: Date
+    }
     private final class RecentCache {
         var entry: (revision: UInt64, computed: Date, totals: RecentTotals)?
     }
     @State private var chartCache = DisplayCache<ChartKey, ChartTotals>()
+    @State private var monthCache = DisplayCache<MonthKey, [UsageSummary.AmiVoiceEngineMonthUsage]>()
     @State private var recentCache = RecentCache()
 
     private func recentTotals(at now: Date) -> RecentTotals {
@@ -161,11 +167,20 @@ struct UsageMonitorView: View {
         }
     }
 
+    private func monthlyAmiVoiceUsage(at now: Date) -> [UsageSummary.AmiVoiceEngineMonthUsage] {
+        let calendar = UsageSummary.jstCalendar
+        let monthStart = calendar.dateInterval(of: .month, for: now)?.start ?? now
+        let key = MonthKey(revision: controller.usageRevision, calendar: calendar, monthStart: monthStart)
+        return monthCache.value(for: key) {
+            UsageSummary.amiVoiceMonthlyUsage(events: controller.monitorEvents, now: now, calendar: calendar)
+        }
+    }
+
     var body: some View {
         let now = Date()
         let chart = chartTotals(at: now)
         let recent = recentTotals(at: now)
-        let monthlyAmiVoice = UsageSummary.amiVoiceMonthlyUsage(events: controller.monitorEvents, now: now)
+        let monthlyAmiVoice = monthlyAmiVoiceUsage(at: now)
         return Group {
                 VStack(alignment: .leading, spacing: 15) {
                 HStack {

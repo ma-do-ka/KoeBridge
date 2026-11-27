@@ -1445,6 +1445,7 @@ import KoeBridgeEngines
                 let connection = makeAmiVoiceConnectionInstance(apiKey: key, engine: amiVoiceEngine, vocabulary: take.vocabulary)
                 take.amiVoiceAttempted = true
                 take.amiVoiceStartedAt = Date()
+                take.amiVoiceEngine = amiVoiceEngine
                 take.amiVoice = connection
                 connection.onUpdate = { [weak self, weak take, weak connection] preview in
                     guard let self, let take, let connection, take.amiVoice === connection, !take.finished else { return }

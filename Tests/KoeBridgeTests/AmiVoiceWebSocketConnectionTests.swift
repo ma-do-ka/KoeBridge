@@ -1440,6 +1440,37 @@ final class ScriptedAmiVoiceSocket: AmiVoiceSocket, @unchecked Sendable {
             } catch VoiceController.AppError.audioDropped {}
             #expect(rescues == 0)
         }
+
+        // 7. The same drain/stoppingAt gate applies when finish() fails instead of send.
+        for (drained, hasStop) in [(false, true), (true, false)] {
+            let take = makeTake(preferred: .amivoice)
+            take.captureDrainedCleanly = drained
+            take.stoppingAt = hasStop ? Date() : nil
+            let stream = AsyncStream<Data> { output in
+                output.yield(Data([0x01, 0x02]))
+                output.finish()
+            }
+            var finishes = 0
+            var rescues = 0
+            do {
+                _ = try await take.transcribeLive(
+                    stream,
+                    cloudEngine: .amivoice,
+                    send: { _ in },
+                    finish: {
+                        finishes += 1
+                        throw VoiceController.AppError.connectionLost
+                    },
+                    rescue: {
+                        rescues += 1
+                        return "unexpected"
+                    }
+                )
+                Issue.record("Expected audioDropped when drain or stoppingAt is incomplete")
+            } catch VoiceController.AppError.audioDropped {}
+            #expect(finishes == 1)
+            #expect(rescues == 0)
+        }
     }
 
     @Test func amiVoiceOverBudgetClosesSocketPreservesBoundedPrefixAndSkipsRescue() async throws {
@@ -1582,6 +1613,42 @@ final class ScriptedAmiVoiceSocket: AmiVoiceSocket, @unchecked Sendable {
             return nil
         }
         #expect(binarySizes == [16_384, 16_384, 7_232])
+
+        // Non-zero-startIndex slice pins the pcm.startIndex..<pcm.endIndex
+        // slicing used by history replay; padding bytes must never be sent.
+        var capturedSliceSocket: ScriptedAmiVoiceSocket?
+        let sliceConnection = AmiVoiceWebSocketConnection(apiKey: "fixture-amivoice-key") { request in
+            let ws = ScriptedAmiVoiceSocket(request: request) { message, socket in
+                guard case .string(let text) = message else { return }
+                if text.hasPrefix("s ") {
+                    socket.feed("s")
+                } else if text == "e" {
+                    socket.feed("S 500")
+                    socket.feed("E 2000")
+                    socket.feed(#"A {"text":"スライス結果","code":""}"#)
+                    socket.feed("e")
+                }
+            }
+            capturedSliceSocket = ws
+            return ws
+        }
+        var padded = Data(repeating: 0xAA, count: 128)
+        padded.append(Data(count: 40_000))
+        let slice = padded.dropFirst(128)
+        #expect(slice.startIndex == 128)
+        #expect(slice.count == 40_000)
+        let slicedReplay = try await VoiceController.streamReplayPCM(slice, through: sliceConnection)
+        #expect(slicedReplay == "スライス結果")
+        let sliceSocket = try #require(capturedSliceSocket)
+        let sliceBinarySizes: [Int] = sliceSocket.sentMessages.compactMap { message in
+            if case .data(let data) = message {
+                #expect(data.first == 0x70)
+                #expect(!data.contains(0xAA))
+                return data.count - 1
+            }
+            return nil
+        }
+        #expect(sliceBinarySizes == [16_384, 16_384, 7_232])
 
         // DictationTake AmiVoice usageSamples
         let take = makeTake(preferred: .amivoice)

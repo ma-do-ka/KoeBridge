@@ -51,6 +51,8 @@ struct SettingsNavigationSelfTests {
         check(SettingsSearchCatalog.find("AmiVoice APIキー").contains { $0.section == .amivoice && $0.id == "amivoice-apikey" })
         check(SettingsSearchCatalog.find("AmiVoice エンジン").contains { $0.section == .amivoice && $0.id == "amivoice-engine" })
         check(SettingsSearchCatalog.find("AmiVoice nolog").contains { $0.section == .amivoice && $0.id == "amivoice-privacy" })
+        check(SettingsSearchCatalog.find("AmiVoice").contains { $0.section == .voice && $0.id == "engine" })
+        check(SettingsSearchCatalog.find("AmiVoice").contains { $0.section == .history && $0.id == "usage" })
         check(SettingsSearchCatalog.find("ベンチ録音").contains { $0.section == .bench && $0.id == "bench-recording" })
         check(SettingsSearchCatalog.find("録音").contains { $0.section == .bench && $0.id == "bench-recording" })
         check(SettingsSearchCatalog.find("ベンチマーク").contains { $0.section == .bench && $0.id == "bench-recording" })
