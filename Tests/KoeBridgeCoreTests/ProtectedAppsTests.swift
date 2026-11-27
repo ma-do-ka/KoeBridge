@@ -33,14 +33,18 @@ struct ProtectedAppsTests {
 
         var store = SettingsArray<ProtectedApp>(key, defaults: defaults)
         #expect(store.state == .unset && store.rows.isEmpty)
-        #expect(store.save([first]))
+        let savedFirst = store.save([first])
+        #expect(savedFirst)
         store = SettingsArray(key, defaults: defaults)
         #expect(store.state == .loaded && store.rows == [first])
-        #expect(store.save([first, second]))
+        let savedBoth = store.save([first, second])
+        #expect(savedBoth)
         #expect(SettingsArray<ProtectedApp>(key, defaults: defaults).rows == [first, second])
-        #expect(store.save([second]))
+        let savedSecondOnly = store.save([second])
+        #expect(savedSecondOnly)
         #expect(SettingsArray<ProtectedApp>(key, defaults: defaults).rows == [second])
-        #expect(store.save([]))
+        let savedEmpty = store.save([])
+        #expect(savedEmpty)
         store = SettingsArray(key, defaults: defaults)
         #expect(store.state == .loaded && store.rows.isEmpty)
 
@@ -49,7 +53,8 @@ struct ProtectedAppsTests {
         store = SettingsArray(key, defaults: defaults)
         #expect(store.state == .corrupt)
         #expect(store.rows.isEmpty)
-        #expect(!store.save([first]))
+        let corruptSave = store.save([first])
+        #expect(!corruptSave)
         #expect(defaults.data(forKey: key) == damaged)
         // Corrupt store => nil registry => even a normal field fails closed.
         #expect(ProtectedAppPolicy.bundleIdentifiers(in: store) == nil)
@@ -60,7 +65,8 @@ struct ProtectedAppsTests {
                                                    protectedBundleIdentifiers: nil) == .unknown)
         store.resetCorruptValue()
         #expect(store.state == .unset)
-        #expect(store.save([first]))
+        let recoveredSave = store.save([first])
+        #expect(recoveredSave)
     }
 
     @Test func corruptSchemaRowsFailWholeListClosedAndRecoveryRestoresNormalState() throws {
@@ -84,7 +90,8 @@ struct ProtectedAppsTests {
         store.resetCorruptValue()
         #expect(store.state == .unset)
         let app = ProtectedApp(bundleIdentifier: "com.example.Ok", displayName: "Ok")
-        #expect(store.save([app]))
+        let appSave = store.save([app])
+        #expect(appSave)
         #expect(ProtectedAppPolicy.bundleIdentifiers(in: store) == ["com.example.Ok"])
 
         // A decodable row with an unrecognizable identifier is damaged data:

@@ -1512,7 +1512,8 @@ import KoeBridgeCore
             return await gate.post(.dictation(text), from: sender.source(.take), transport: sender.transport()) { true }
         }
 
-        #expect(registry.save([ProtectedApp(bundleIdentifier: "com.example.Other", displayName: "Other")]))
+        let unlistedSave = registry.save([ProtectedApp(bundleIdentifier: "com.example.Other", displayName: "Other")])
+        #expect(unlistedSave)
         let unlisted = await deliver("U")
         let unlistedProof = try #require(unlisted.receipt?.proof)
         #expect(unlisted.outcome == .verifiedInserted)
@@ -1520,7 +1521,8 @@ import KoeBridgeCore
         #expect(unlistedProof.retainsContentEvidence)
         #expect(unlistedProof.inserted == "U")
 
-        #expect(registry.save([ProtectedApp(bundleIdentifier: "com.meta.endo", displayName: "Muse")]))
+        let protectedSave = registry.save([ProtectedApp(bundleIdentifier: "com.meta.endo", displayName: "Muse")])
+        #expect(protectedSave)
         let protected = await deliver("P")
         let protectedProof = try #require(protected.receipt?.proof)
         #expect(protected.outcome == .verifiedInserted)
@@ -1532,7 +1534,8 @@ import KoeBridgeCore
         #expect(protectedProof.insertedUTF16Count == 1)
         #expect(protectedProof.insertedSHA256?.count == 64)
 
-        #expect(registry.save([]))
+        let clearedSave = registry.save([])
+        #expect(clearedSave)
         let removed = await deliver("R")
         let removedProof = try #require(removed.receipt?.proof)
         #expect(removed.outcome == .verifiedInserted)
@@ -1555,7 +1558,8 @@ import KoeBridgeCore
         var reset = SettingsArray<ProtectedApp>("protectedApps", defaults: defaults)
         reset.resetCorruptValue()
         #expect(reset.state == .unset)
-        #expect(reset.save([]))
+        let resetSave = reset.save([])
+        #expect(resetSave)
         let recovered = await deliver("V")
         let recoveredProof = try #require(recovered.receipt?.proof)
         #expect(recoveredProof.fieldNature == .normal)
