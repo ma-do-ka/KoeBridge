@@ -84,6 +84,7 @@ Sources/KoeBridgeAudioTap/InputTap.m
 Sources/KoeBridgeAudioTap/include/KoeBridgeAudioTap.h
 Sources/KoeBridgeCore/AmiVoiceDictionary.swift
 Sources/KoeBridgeCore/AmiVoiceDictionarySyncEngine.swift
+Sources/KoeBridgeCore/AmiVoiceDictionarySyncMonitoring.swift
 Sources/KoeBridgeCore/AmiVoiceWire.swift
 Sources/KoeBridgeCore/AppProfiles.swift
 Sources/KoeBridgeCore/AudioActivityEvidence.swift
@@ -233,6 +234,7 @@ Sources/KoeBridgeSelfTest/UsageSummaryTests.swift
 Sources/KoeBridgeSelfTest/UserFacingErrorMessageTests.swift
 Sources/KoeBridgeSelfTest/VoiceCommandTests.swift
 TEST_REPORT.md
+Tests/KoeBridgeCoreTests/AmiVoiceDictionarySyncMonitoringTests.swift
 Tests/KoeBridgeCoreTests/AmiVoiceDictionarySyncTests.swift
 Tests/KoeBridgeCoreTests/AmiVoiceWireTests.swift
 Tests/KoeBridgeCoreTests/AppProfileTests.swift

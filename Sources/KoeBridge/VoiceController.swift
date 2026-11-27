@@ -371,9 +371,24 @@ import KoeBridgeEngines
     @Published private(set) var learnedTermsStore = SettingsArray<LearnedTerm>("learnedTerms")
     var learnedTerms: [LearnedTerm] {
         get { learnedTermsStore.rows }
-        set { if learnedTermsStore.save(newValue) { scheduleWarmGemini() } }
+        set {
+            guard learnedTermsStore.save(newValue) else { return }
+            scheduleWarmGemini()
+            scheduleLearnedTermsObservation(newValue)
+        }
     }
     func resetLearnedTerms() { learnedTermsStore.resetCorruptValue() }
+
+    /// B-3: new LearnedTerm records are the correction signal for dictionary
+    /// sync monitoring. The monitor is inert while the opt-in sync setting is
+    /// off.
+    private func scheduleLearnedTermsObservation(_ terms: [LearnedTerm]) {
+        let profileKey = currentAmiVoiceDictionaryProfileKey
+        Task { [weak self] in
+            guard let self else { return }
+            _ = await self.amiVoiceDictionarySyncMonitor.observe(learnedTerms: terms, for: profileKey)
+        }
+    }
 
     func learn(fragment: String, term: String, from record: TranscriptRecord) -> Bool {
         guard LearnedTermPolicy.validationHint(fragment: fragment, term: term, recordText: record.text) == nil else { return false }
@@ -381,6 +396,7 @@ import KoeBridgeEngines
             LearnedTerm(term: term, originalFragment: fragment, sourceRecordID: record.id), in: learnedTerms)
         guard learnedTermsStore.save(updated) else { return false }
         scheduleWarmGemini()
+        scheduleLearnedTermsObservation(updated)
         return true
     }
 
@@ -827,6 +843,7 @@ import KoeBridgeEngines
     private let preparation: PreparationEnvironment
     private let amiVoiceDictionaryStore: AmiVoiceDictionarySyncStore
     let amiVoiceDictionarySyncEngine: AmiVoiceDictionarySyncEngine
+    let amiVoiceDictionarySyncMonitor: AmiVoiceDictionarySyncMonitor
 
     private var currentAmiVoiceDictionaryProfileKey: AmiVoiceDictionaryProfileKey {
         AmiVoiceDictionaryProfileKey(engine: amiVoiceEngine, samplingRate: .rate16k)
@@ -902,6 +919,10 @@ import KoeBridgeEngines
             store: dictionaryStore,
             transport: AmiVoiceDictionaryAPIClient(),
             apiKeyProvider: { KeychainStore.load(provider: .amivoice) }
+        )
+        amiVoiceDictionarySyncMonitor = AmiVoiceDictionarySyncMonitor(
+            store: dictionaryStore,
+            engine: amiVoiceDictionarySyncEngine
         )
 
         let d = UserDefaults.standard
