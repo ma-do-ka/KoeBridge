@@ -37,6 +37,9 @@ import KoeBridgeEngines
         didSet { UserDefaults.standard.set(progressivePreviewEnabled, forKey: "progressivePreviewEnabled") }
     }
     @Published var isRecording = false
+    @Published private(set) var benchRecordingActive = false
+    private var cancelBenchRecording: (@MainActor () -> Void)?
+    @Published private(set) var microphoneNotice: MicrophoneNotice?
     @Published private(set) var overlayFeedback: OverlayFeedback = .hidden
     @Published private(set) var lastStartupSeconds: TimeInterval?
     @Published private(set) var lastStopToInputSeconds: TimeInterval?
@@ -508,8 +511,8 @@ import KoeBridgeEngines
             status = "更新画面を閉じるか、更新の完了後に会議モードを開始してください"; return
         }
         guard canStartMeeting else { status = "会議モードと画面収録の許可を設定してください"; return }
-        guard phase == .idle, active == nil, inFlight.isEmpty, !textOperationRunning else {
-            status = "音声入力・処理の完了後に会議モードを開始してください"; return
+        guard phase == .idle, active == nil, inFlight.isEmpty, !textOperationRunning, !benchRecordingActive else {
+            status = "音声入力・ベンチ録音・処理の完了後に会議モードを開始してください"; return
         }
         let geminiKey: String?
         let amiVoiceKey: String?
@@ -538,12 +541,24 @@ import KoeBridgeEngines
         let session = MeetingSession(engine: requestedMode, vocabulary: currentAudioVocabulary,
             style: transcriptionStyle, japaneseHint: japaneseHint, apiKey: geminiKey,
             microphoneUID: MicrophoneDeviceStore.shared.selectedUID,
-            amiVoiceKey: amiVoiceKey, amiVoiceEngine: amiVoiceEngine)
+            amiVoiceKey: amiVoiceKey, amiVoiceEngine: amiVoiceEngine,
+            amiVoiceProfileId: amiVoiceRecognitionProfileID(for: amiVoiceEngine))
         meetingSession = session
         meetingStatus = session.liveStatus
         session.onStatus = { [weak self] in self?.meetingStatus = $0 }
         session.onUsage = { [weak self] event, tokens in
             self?.usageStore.append(engineEvents: [event], tokenEvents: tokens)
+        }
+        session.onMicrophoneStarted = { [weak self] in
+            self?.clearMicrophoneNoticeForSuccessfulStart()
+        }
+        session.onMicrophoneInterruption = { [weak self] interruption in
+            self?.recordMicrophoneNotice(.recordingDeviceDisconnected, timing: .finalFailure, context: .meeting,
+                deviceRemovalProven: interruption == .deviceRemoval)
+        }
+        session.onMicrophoneFailure = { [weak self] error, disposition in
+            self?.recordMicrophoneNotice(MicrophoneNoticeBinding.state(for: error, disposition: disposition),
+                timing: .finalFailure, context: .meeting)
         }
         session.onFinished = { [weak self, weak session] text, partial in
             guard let self, let session, meetingSession === session else { return }
@@ -564,6 +579,7 @@ import KoeBridgeEngines
             guard meetingSession === session else { return }
             guard allowed else {
                 // Stop and save through the meeting's mic-failure completion without starting chunks.
+                recordMicrophoneNotice(.permissionDenied, timing: .finalFailure, context: .meeting)
                 session.microphonePermissionDenied()
                 return
             }
@@ -682,8 +698,7 @@ import KoeBridgeEngines
                         japaneseHint: japaneseHint, apiKey: key, timeout: 60).text
                 case .amivoice:
                     guard let key = loadKeyForUse(provider: .amivoice) else { throw AppError.noAmiVoiceKey }
-                    let connection = preparation.makeAmiVoiceConnection?(key, amiVoiceEngine, currentAudioVocabulary)
-                        ?? AmiVoiceWebSocketConnection(apiKey: key, engine: amiVoiceEngine, vocabulary: currentAudioVocabulary)
+                    let connection = makeAmiVoiceConnectionInstance(apiKey: key, engine: amiVoiceEngine, vocabulary: currentAudioVocabulary)
                     replayAmiVoice = connection
                     defer {
                         connection.cancel()
@@ -730,14 +745,15 @@ import KoeBridgeEngines
     private let microphoneWarmKeeper: MicrophoneWarmKeeper
     private var microphoneStoreObservation: AnyCancellable?
     private func resumeMicrophoneWarm(reason: String = "teardown") {
-        guard !meetingRunning else { return }
+        guard !meetingRunning, !benchRecordingActive else { return }
         microphoneWarmKeeper.resume(enabled: bluetoothMicWarmEnabled,
-            selectedUID: MicrophoneDeviceStore.shared.selectedUID, takeActive: busy, reason: reason)
+            selectedUID: MicrophoneDeviceStore.shared.selectedUID, takeActive: busy || benchRecordingActive, reason: reason)
     }
 
     private let prewarmer = GeminiLivePrewarmer()
     private var warmScheduleTask: Task<Void, Never>?
     private var active: DictationTake?
+    private var microphoneNoticeStore = MicrophoneNoticeStore()
     private lazy var postingGate = TextInsertion.PostingGate { [unowned self] report, sourceID in
         reconcileDelivery(report, sourceTakeID: sourceID)
     }
@@ -805,9 +821,58 @@ import KoeBridgeEngines
         var keyRegistered: (@MainActor (CredentialProvider) -> Bool)?
         var makeLocalTranscriber: (@MainActor () -> LocalTranscribing)?
         var makeAmiVoiceConnection: (@MainActor (String, AmiVoiceEngine, [String]) -> AmiVoiceWebSocketConnection)?
+        var makeAmiVoiceConnectionWithProfile: (@MainActor (String, AmiVoiceEngine, [String], String?) -> AmiVoiceWebSocketConnection)?
     }
 
     private let preparation: PreparationEnvironment
+    private let amiVoiceDictionaryStore: AmiVoiceDictionarySyncStore
+    let amiVoiceDictionarySyncEngine: AmiVoiceDictionarySyncEngine
+
+    private var currentAmiVoiceDictionaryProfileKey: AmiVoiceDictionaryProfileKey {
+        AmiVoiceDictionaryProfileKey(engine: amiVoiceEngine, samplingRate: .rate16k)
+    }
+
+    /// B-4-facing opt-in setting. It is deliberately false on a fresh install;
+    /// while false every sync entry point returns before touching transport.
+    var amiVoiceDictionarySyncEnabled: Bool {
+        get { amiVoiceDictionaryStore.automaticSyncEnabled }
+        set {
+            amiVoiceDictionaryStore.automaticSyncEnabled = newValue
+            objectWillChange.send()
+            guard newValue else { return }
+            let key = currentAmiVoiceDictionaryProfileKey
+            Task { [weak self] in
+                guard let self else { return }
+                _ = await self.amiVoiceDictionarySyncEngine.performLaunchConsistencyPass(for: key)
+            }
+        }
+    }
+
+    /// Synchronous snapshot for settings UI rendering; the actor exposes the
+    /// same surface to asynchronous callers through `status(for:)`.
+    var currentAmiVoiceDictionarySyncStatus: AmiVoiceDictionarySyncStatus {
+        let key = currentAmiVoiceDictionaryProfileKey
+        return AmiVoiceDictionarySyncStatus.make(
+            automaticSyncEnabled: amiVoiceDictionaryStore.automaticSyncEnabled,
+            entries: amiVoiceDictionaryStore.loadEntries(),
+            profile: amiVoiceDictionaryStore.profile(for: key),
+            key: key
+        )
+    }
+
+    func refreshAmiVoiceDictionarySyncStatus() async -> AmiVoiceDictionarySyncStatus {
+        await amiVoiceDictionarySyncEngine.status(for: currentAmiVoiceDictionaryProfileKey)
+    }
+
+    func amiVoiceRecognitionProfileID(for engine: AmiVoiceEngine) -> String? {
+        let key = AmiVoiceDictionaryProfileKey(engine: engine, samplingRate: .rate16k)
+        return AmiVoiceDictionarySyncPolicy.recognitionProfileID(
+            automaticSyncEnabled: amiVoiceDictionaryStore.automaticSyncEnabled,
+            entries: amiVoiceDictionaryStore.loadEntries(),
+            profile: amiVoiceDictionaryStore.profile(for: key),
+            key: key
+        )
+    }
 
     private func loadKeyForUse(provider: CredentialProvider) -> String? {
         if let load = preparation.loadKeyForUse { return load(provider) }
@@ -818,8 +883,26 @@ import KoeBridgeEngines
         preparation.makeLocalTranscriber?() ?? LocalTranscriberFactory.make()
     }
 
+    private func makeAmiVoiceConnectionInstance(apiKey: String, engine: AmiVoiceEngine, vocabulary: [String]) -> AmiVoiceWebSocketConnection {
+        let profileID = amiVoiceRecognitionProfileID(for: engine)
+        if let make = preparation.makeAmiVoiceConnectionWithProfile {
+            return make(apiKey, engine, vocabulary, profileID)
+        }
+        if let make = preparation.makeAmiVoiceConnection {
+            return make(apiKey, engine, vocabulary)
+        }
+        return AmiVoiceWebSocketConnection(apiKey: apiKey, engine: engine, vocabulary: vocabulary, profileId: profileID)
+    }
+
     init(preparation: PreparationEnvironment? = nil, storageDirectory: URL? = nil) {
         self.preparation = preparation ?? PreparationEnvironment()
+        let dictionaryStore = AmiVoiceDictionarySyncStore()
+        amiVoiceDictionaryStore = dictionaryStore
+        amiVoiceDictionarySyncEngine = AmiVoiceDictionarySyncEngine(
+            store: dictionaryStore,
+            transport: AmiVoiceDictionaryAPIClient(),
+            apiKeyProvider: { KeychainStore.load(provider: .amivoice) }
+        )
 
         let d = UserDefaults.standard
         let guardEnabled = storageDirectory == nil && d.bool(forKey: OutputVolumeGuard.preferenceKey)
@@ -867,6 +950,11 @@ import KoeBridgeEngines
         retainedAudio.reconcileAtLaunch(history: &historyStore, retentionEnabled: retainAudioEnabled)
         updateRetentionStatus()
         guard storageDirectory == nil else { return }
+        let launchProfileKey = currentAmiVoiceDictionaryProfileKey
+        Task { [weak self] in
+            guard let self else { return }
+            _ = await self.amiVoiceDictionarySyncEngine.performLaunchConsistencyPass(for: launchProfileKey)
+        }
         scheduleWarmGemini()
         microphoneWarmKeeper.onConfigurationChange = { [weak self] in
             self?.resumeMicrophoneWarm(reason: "configuration")
@@ -891,7 +979,7 @@ import KoeBridgeEngines
 
     private func warmGeminiIfNeeded() {
         prewarmer.warmIfNeeded { [self] in
-            guard !meetingRunning, geminiPrewarmEnabled, requestedMode == .gemini, active == nil,
+            guard !meetingRunning, !benchRecordingActive, geminiPrewarmEnabled, requestedMode == .gemini, active == nil,
                   !inFlight.values.contains(where: { !$0.finished }),
                   let key = KeychainStore.loadForUse() else { return nil }
             let terms = AgentVocabulary.terms(user: vocabulary.components(separatedBy: .newlines), learned: learnedTerms.map(\.term),
@@ -939,7 +1027,51 @@ import KoeBridgeEngines
         cachedAmiVoiceKeyRegistration = nil
         objectWillChange.send()
     }
+    private func recordMicrophoneNotice(
+        _ state: MicrophoneNoticeState?,
+        timing: MicrophoneNoticeFailureTiming,
+        context: MicrophoneNoticeContext = .standard,
+        deviceRemovalProven: Bool = false
+    ) {
+        guard let state else { return }
+        if microphoneNoticeStore.recordFailure(state, timing: timing, context: context,
+                                               deviceRemovalProven: deviceRemovalProven) {
+            microphoneNotice = microphoneNoticeStore.current
+        }
+    }
+
+    private func clearMicrophoneNoticeForSuccessfulStart() {
+        if microphoneNoticeStore.recordSuccessfulStart() { microphoneNotice = nil }
+    }
+
+    func dismissMicrophoneNotice() {
+        if microphoneNoticeStore.dismissCurrent() { microphoneNotice = nil }
+    }
+
     var busy: Bool { active != nil }
+    static func benchRecordingAdmission(busy: Bool, phase: Phase, meetingRunning: Bool,
+                                        updateBlocksRecording: Bool) -> Bool {
+        !busy && phase == .idle && !meetingRunning && !updateBlocksRecording
+    }
+    var canStartBenchRecording: Bool {
+        Self.benchRecordingAdmission(busy: busy, phase: phase, meetingRunning: meetingRunning,
+                                     updateBlocksRecording: KoeBridgeUpdateManager.shared.blocksRecording)
+    }
+    func beginBenchRecordingSession(onInterrupt: @escaping @MainActor () -> Void) -> Bool {
+        guard canStartBenchRecording, !benchRecordingActive else { return false }
+        benchRecordingActive = true
+        cancelBenchRecording = onInterrupt
+        microphoneWarmKeeper.suspend(reason: "bench")
+        return true
+    }
+    func endBenchRecordingSession() {
+        guard benchRecordingActive else { return }
+        benchRecordingActive = false
+        cancelBenchRecording = nil
+        resumeMicrophoneWarm(reason: "bench_teardown")
+    }
+    /// Read-only observation of the active take's stored target (post-capture).
+    var activeTakeTarget: InsertionTarget? { active?.target }
     func reserveHistoryInsertion() -> UUID? { postingGate.reserveHistory() }
     func performHistoryIntent(_ ticket: UUID, deadline: ContinuousClock.Instant, perform: () async -> Void) async {
         await postingGate.performHistoryIntent(ticket, deadline: deadline, perform: perform)
@@ -982,6 +1114,7 @@ import KoeBridgeEngines
 
     private func beginRecording(transformTarget: InsertionTarget? = nil, selection: String? = nil, fixingLastInput: Bool = false) {
         guard !meetingRunning else { status = "会議モード中は通常の音声入力を開始できません"; return }
+        guard !benchRecordingActive else { status = "ベンチ録音中は通常の音声入力を開始できません"; return }
         guard active == nil, phase == .idle else { return }
         cancelTextOperation()
         guard !KoeBridgeUpdateManager.shared.blocksRecording else {
@@ -1066,7 +1199,7 @@ import KoeBridgeEngines
         let targetResult = transformTarget.map { (target: Optional($0), reason: "ok") }
             ?? preparation.captureTarget?(take.inputDiagnostics)
             ?? InsertionTarget.capture(diagnostics: take.inputDiagnostics) // BEFORE the overlay is shown
-        take.target = targetResult.target
+        take.target = targetResult.target?.removingTextSnapshotUnlessNormal()
         take.targetCaptureReason = targetResult.reason
         if recheckContextEnabled && selection == nil {
             take.capturedContext = ContextCapture.capture(target: take.target, app: contextAppEnabled,
@@ -1106,7 +1239,10 @@ import KoeBridgeEngines
         if let permission = preparation.permission { allowed = await permission() }
         else { allowed = await microphoneAllowed() }
         guard allowed else {
-            if active === take { resolve(take, text: nil, reason: "マイクへのアクセスが許可されていません") }
+            if active === take {
+                recordMicrophoneNotice(.permissionDenied, timing: .finalFailure)
+                resolve(take, text: nil, reason: "マイクへのアクセスが許可されていません")
+            }
             return
         }
         DiagnosticLog.record("mic permission ready; elapsed=\(String(format: "%.3f", Date().timeIntervalSince(beforePermission)))s")
@@ -1149,12 +1285,14 @@ import KoeBridgeEngines
                                 self.resolve(take, text: nil, reason: "音声送信キューから音声が欠落しました")
                             }
                         }
-                    }, onDeviceChanged: { [weak self, weak take, weak candidate] in
+                    }, onDeviceChanged: { [weak self, weak take, weak candidate] interruption in
                         Task { @MainActor [weak self, weak take, weak candidate] in
                             guard let self, let take, let candidate, !take.finished,
                                   self.active === take, take.mic === candidate else { return }
                             // Covers the narrow ready-to-UI handoff as well as
                             // recording; preparing-only events stay inside start().
+                            self.recordMicrophoneNotice(.recordingDeviceDisconnected, timing: .finalFailure,
+                                deviceRemovalProven: interruption == .deviceRemoval)
                             self.resolve(take, text: nil, reason: "マイク入力が変更または中断されたため録音を終了しました")
                         }
                     })
@@ -1179,6 +1317,8 @@ import KoeBridgeEngines
                     guard let delay = MicrophoneCapture.retryDelay(for: error, policy: retryPolicy,
                         attempts: attempts, elapsed: elapsed, disposition: recoveryDisposition) else { throw error }
                     status = "マイクの接続準備を待っています…（\(attempts + 1)/\(retryPolicy.maximumAttempts)）"
+                    recordMicrophoneNotice(MicrophoneNoticeBinding.state(for: error, disposition: recoveryDisposition),
+                        timing: .retryInProgress)
                     try await preparation.waitBeforeRetry(delay)
                 }
             }
@@ -1214,6 +1354,7 @@ import KoeBridgeEngines
             lastStartupSeconds = take.startedAt?.timeIntervalSince(take.requestedAt)
             phase = .recording
             isRecording = true
+            clearMicrophoneNoticeForSuccessfulStart()
             if overlayOwner == take.id { overlayFeedback = .recording }
             take.permissionTask?.cancel()
             take.permissionTask = nil
@@ -1227,6 +1368,8 @@ import KoeBridgeEngines
             if active === take, !take.finished {
                 let recoveryMessage = recoveryDisposition.message
                 DiagnosticLog.record("microphone start failed: \(recoveryMessage ?? error.localizedDescription)")
+                recordMicrophoneNotice(MicrophoneNoticeBinding.state(for: error, disposition: recoveryDisposition),
+                    timing: .finalFailure)
                 resolve(take, text: nil, reason: Self.microphoneStartFailureMessage(error, disposition: recoveryDisposition))
             }
         }
@@ -1299,8 +1442,7 @@ import KoeBridgeEngines
             }
         case .amivoice:
             if let key = loadKeyForUse(provider: .amivoice) {
-                let connection = preparation.makeAmiVoiceConnection?(key, amiVoiceEngine, take.vocabulary)
-                    ?? AmiVoiceWebSocketConnection(apiKey: key, engine: amiVoiceEngine, vocabulary: take.vocabulary)
+                let connection = makeAmiVoiceConnectionInstance(apiKey: key, engine: amiVoiceEngine, vocabulary: take.vocabulary)
                 take.amiVoiceAttempted = true
                 take.amiVoiceStartedAt = Date()
                 take.amiVoice = connection
@@ -1864,7 +2006,7 @@ import KoeBridgeEngines
         } else {
             deliveringTakeID = id
             let report = await postingGate.post(.dictation(text), from: .take(take), finalize: { report in
-                if let receipt = report.receipt {
+                if let receipt = report.receipt, receipt.proof.retainsContentEvidence {
                     self.postingGate.lastDeliveryAnchor = LastDeliveryAnchor(receipt: receipt, sourceRecordID: recordID)
                 }
             }) {
@@ -2071,7 +2213,7 @@ import KoeBridgeEngines
             let sourceRecordID = postingGate.lastDeliveryAnchor?.sourceRecordID
             deliveringTakeID = take.id
             let report = await postingGate.post(.dictation(output.text), from: .take(take), finalize: { report in
-                if take.isFixLastInput, let receipt = report.receipt {
+                if take.isFixLastInput, let receipt = report.receipt, receipt.proof.retainsContentEvidence {
                     self.postingGate.lastDeliveryAnchor = LastDeliveryAnchor(receipt: receipt, sourceRecordID: sourceRecordID)
                 }
             }) {
@@ -2184,6 +2326,7 @@ import KoeBridgeEngines
     func interruptForSystemEvent(_ reason: String) {
         postingGate.interrupt()
         meetingSession?.interrupt(reason)
+        cancelBenchRecording?()
         cancelReplay()
         cancelTextOperation()
         let outstanding = Array(inFlight.values)

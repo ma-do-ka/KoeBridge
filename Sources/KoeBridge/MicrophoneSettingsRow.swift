@@ -23,7 +23,7 @@ struct MicrophoneSettingsRow: View {
                 }
                 .settingsControlFocus("microphone-device").labelsHidden()
                 .frame(width: 250)
-                .disabled(controller.busy || !microphones.loaded)
+                .disabled(controller.busy || controller.benchRecordingActive || !microphones.loaded)
                 .help("Mac全体の入力設定は変更しません。準備中・録音中は変更できません。")
             }
             SettingsRow("Bluetoothマイクの接続を温めておく",

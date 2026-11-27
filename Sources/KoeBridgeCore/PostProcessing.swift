@@ -21,7 +21,22 @@ public enum PostProcessingPolicy {
         guard !processed.isEmpty, processed.count <= max(original.count * 3, original.count + 120) else {
             return (original, .length)
         }
+        if isDrasticallyShortened(original: original, processed: processed) {
+            return (original, .length)
+        }
         return (processed, nil)
+    }
+
+    private static func isDrasticallyShortened(original: String, processed: String) -> Bool {
+        let originalCount = original.count
+        let processedCount = processed.count
+        guard originalCount > 0, processedCount > 0 else { return false }
+        let reduction = originalCount - processedCount
+        guard reduction > 0, originalCount >= 20, reduction >= 20 else { return false }
+        if originalCount < 200 {
+            return reduction * 100 >= originalCount * 45
+        }
+        return reduction >= 80 && reduction * 100 >= originalCount * 25
     }
 
     public static func accepts(original: String, processed: String) -> Bool {

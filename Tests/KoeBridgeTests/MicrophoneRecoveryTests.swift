@@ -7,6 +7,19 @@ import Testing
 import KoeBridgeCore
 import KoeBridgeTapFixtures
 
+// Parallel CI can starve lifecycle-lane progress far longer than the nominal 5 ms
+// poll interval; CI observed 18.6 s of such delay. These waits observe monotonic
+// in-process progress (engine start, cleanup log lines), so the budget is sized at
+// a 60 s equivalent (12,000 x 5 ms) to stay above that evidence while matching the
+// 60 s setup bound. Assertions on the conditions themselves remain exact.
+private let ciSchedulingWaitIterations = 12_000
+
+private struct CommitTimeoutError: LocalizedError {
+    var errorDescription: String? {
+        "Microphone fixture commit did not complete within its 30 s bound"
+    }
+}
+
 @MainActor
 struct MicrophoneRecoveryTests {
     private enum Fault: CaseIterable {
@@ -182,7 +195,7 @@ struct MicrophoneRecoveryTests {
         }
 
         func dispositions(count: Int) async throws -> [String] {
-            for _ in 0..<100 {
+            for _ in 0..<ciSchedulingWaitIterations {
                 writer.flush()
                 let contents = try? String(contentsOf: root.appendingPathComponent("mic"), encoding: .utf8)
                 let lines = contents?.split(separator: "\n").compactMap { line -> String? in
@@ -210,7 +223,7 @@ struct MicrophoneRecoveryTests {
     }
 
     private func readyForPCM(_ rig: Rig, index: Int) async throws {
-        for _ in 0..<100 {
+        for _ in 0..<ciSchedulingWaitIterations {
             if await lane({ rig.devices.indices.contains(index) && rig.devices[index].engine.starts == 1 }) { return }
             try await Task.sleep(for: .milliseconds(5))
         }
@@ -218,13 +231,28 @@ struct MicrophoneRecoveryTests {
         throw CancellationError()
     }
 
-    private func awaitCommit(_ task: Task<Void, Error>, clock: Clock) async throws {
-        let deadline = Task {
-            try await Task.sleep(for: .seconds(1))
-            clock.set(12.5)
+    private func awaitCommit(_ task: Task<Void, Error>) async throws {
+        // Never advance the fixture clock to escape a slow test: doing so turns
+        // CI scheduler latency into the capture's unstableBuffers path. Thirty
+        // seconds only bounds a genuinely hung commit; normal fixture commits are
+        // driven by synthetic PCM in well under one second.
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask {
+                try await task.value
+            }
+            group.addTask {
+                try await Task.sleep(for: .seconds(30))
+                throw CommitTimeoutError()
+            }
+            do {
+                _ = try await group.next()
+                group.cancelAll()
+            } catch {
+                group.cancelAll()
+                task.cancel()
+                throw error
+            }
         }
-        defer { deadline.cancel() }
-        try await task.value
     }
 
     private func feedStablePCM(_ rig: Rig, index: Int) async throws {
@@ -315,7 +343,7 @@ struct MicrophoneRecoveryTests {
             #expect(current.engine.stops == 0)
         }
         try await feedStablePCM(rig, index: 1)
-        try await awaitCommit(task, clock: rig.clock)
+        try await awaitCommit(task)
         #expect(secondGate.didCommit)
         #expect(second.recoveryDisposition.message == nil)
         #expect(second.totalPCMBytes == 4096)
@@ -338,7 +366,7 @@ struct MicrophoneRecoveryTests {
         let firstTask = Task { try await first.start(deadline: 12.5, onAudio: { _ in }) }
         defer { firstTask.cancel() }
         try await feedStablePCM(rig, index: 0)
-        try await awaitCommit(firstTask, clock: rig.clock)
+        try await awaitCommit(firstTask)
         #expect(firstGate.didCommit)
         #expect(first.totalPCMBytes == 4096)
         let losses = await withCheckedContinuation { continuation in
@@ -402,7 +430,7 @@ struct MicrophoneRecoveryTests {
             old.deliver(old.node.partialTap, value: 0.5)
         }
         try await feedStablePCM(rig, index: 1)
-        try await awaitCommit(nextTask, clock: rig.clock)
+        try await awaitCommit(nextTask)
         #expect(nextGate.didCommit)
         #expect(next.totalPCMBytes == 4096)
         #expect(next.sessionPeakAmplitude == 0)
@@ -554,7 +582,7 @@ struct MicrophoneRecoveryTests {
         let task = Task { try await next.start(deadline: 12.5, onAudio: { _ in }) }
         defer { task.cancel() }
         try await feedStablePCM(rig, index: 1)
-        try await awaitCommit(task, clock: rig.clock)
+        try await awaitCommit(task)
         await next.cancelAndWait()
 
         keeper.resume(enabled: true, selectedUID: "explicit", takeActive: false, reason: "test")
@@ -567,7 +595,7 @@ struct MicrophoneRecoveryTests {
         keeper.suspend(handingTo: handed)
         let handedTask = Task { try await handed.start(deadline: 12.5, onAudio: { _ in }) }
         defer { handedTask.cancel() }
-        for _ in 0..<100 {
+        for _ in 0..<ciSchedulingWaitIterations {
             if await lane({ rig.devices[1].engine.starts == 3 }) { break }
             try await Task.sleep(for: .milliseconds(5))
         }
@@ -582,7 +610,7 @@ struct MicrophoneRecoveryTests {
             rig.clock.set(first + 0.17)
             current.deliver(current.node.partialTap)
         }
-        try await awaitCommit(handedTask, clock: rig.clock)
+        try await awaitCommit(handedTask)
         await handed.cancelAndWait()
     }
 
@@ -786,15 +814,15 @@ struct MicrophoneRecoveryTests {
         let interrupted = expectationFlag()
         let take = Task {
             try await capture.start(deadline: 12.5, onAudio: { _ in },
-                                    onDeviceChanged: { interrupted.set(1) })
+                                    onDeviceChanged: { interruption in interrupted.set(interruption == .inputChange ? 1 : 2) })
         }
         defer { take.cancel() }
         try await feedStablePCM(rig, index: 1)
-        try await awaitCommit(take, clock: rig.clock)
+        try await awaitCommit(take)
         await lane {
             NotificationCenter.default.post(name: .AVAudioEngineConfigurationChange, object: rig.devices[1].engine)
         }
-        for _ in 0..<100 {
+        for _ in 0..<ciSchedulingWaitIterations {
             if interrupted.now() == 1 { break }
             try await Task.sleep(for: .milliseconds(5))
         }
@@ -802,6 +830,29 @@ struct MicrophoneRecoveryTests {
         #expect(capture.lostBufferCount == 1)
         await capture.cancelAndWait()
         #expect(rig.lifetime.disposition == .normal)
+    }
+
+    @Test func committedInputRouteLossReportsDeviceRemoval() async throws {
+        let rig = Rig(.none)
+        let capture = rig.capture()
+        let interrupted = expectationFlag()
+        let take = Task {
+            try await capture.start(deadline: 12.5, onAudio: { _ in },
+                onDeviceChanged: { interruption in interrupted.set(interruption == .deviceRemoval ? 1 : 2) })
+        }
+        defer { take.cancel() }
+        try await feedStablePCM(rig, index: 0)
+        try await awaitCommit(take)
+        await lane {
+            rig.devices[0].node.currentDeviceID = 173
+        }
+        for _ in 0..<200 {
+            if interrupted.now() != 0 { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(interrupted.now() == 1)
+        #expect(capture.lostBufferCount == 1)
+        await capture.cancelAndWait()
     }
 
     /// The next HAL selection read owns this barrier. The test supplies only
@@ -825,7 +876,11 @@ struct MicrophoneRecoveryTests {
                 return true
             }
             guard block else { return actual }
-            guard release.wait(timeout: .now() + 4) == .success else {
+            // This barrier waits for the test thread to inject a verdict. The
+            // ten-second escape only contains deadlocks; it must not fire merely
+            // because parallel CI starved that test thread, and it must not park the
+            // shared warmLifecycleQueue for long if the test is genuinely deadlocked.
+            guard release.wait(timeout: .now() + 10) == .success else {
                 Issue.record("HAL selection read was never released")
                 return actual
             }
@@ -986,7 +1041,7 @@ struct MicrophoneRecoveryTests {
 
     private func observe(_ message: String, log: CleanupLog? = nil,
                          until predicate: () -> Bool) async throws {
-        for _ in 0..<300 {
+        for _ in 0..<ciSchedulingWaitIterations {
             if predicate() { return }
             try await Task.sleep(for: .milliseconds(5))
         }
@@ -1039,6 +1094,47 @@ struct MicrophoneRecoveryTests {
 
     private func awaitPreparationEnd(_ replay: PreparationReplay) async throws {
         try await observe("Controller startup task did not exit", log: replay.log) { replay.preparationFinished }
+    }
+
+    @Test func successfulStartClearsPublishedMicrophoneNotice() async throws {
+        let replay = PreparationReplay()
+        defer { replay.finish() }
+        replay.selectedUID = "missing"
+        replay.controller.toggle()
+        try await observe("Missing microphone did not resolve", log: replay.log) {
+            replay.controller.microphoneNotice?.state == .selectedDeviceMissing
+        }
+        try await awaitPreparationEnd(replay)
+        #expect(replay.controller.microphoneNotice?.state == .selectedDeviceMissing)
+        #expect(replay.controller.phase == .idle)
+
+        replay.selectedUID = "explicit"
+        replay.controller.toggle()
+        let attempt = try await awaitEngine(replay, index: 1)
+        let device = await lane { replay.rig.devices[0] }
+        let tap = try #require(await lane { device.node.partialTap })
+        stablePCM(replay, device: device, tap: tap)
+        try await observe("Successful start did not become recording", log: replay.log) {
+            replay.controller.phase == .recording
+        }
+        try await awaitPreparationEnd(replay)
+        #expect(attempt.gate.didCommit)
+        #expect(replay.controller.microphoneNotice == nil)
+        replay.controller.toggle()
+        _ = try await awaitDelivery(replay, take: attempt.takeID)
+    }
+
+    @Test func engineStartOSFailurePublishesStartUnavailableNotice() async throws {
+        let replay = PreparationReplay(rig: Rig(.start))
+        defer { replay.finish() }
+        replay.controller.toggle()
+        try await observe("Engine start failure did not publish MIC-07", log: replay.log) {
+            replay.controller.microphoneNotice?.state == .startUnavailable
+        }
+        try await awaitPreparationEnd(replay)
+        #expect(replay.attempts.count == 4)
+        #expect(replay.controller.microphoneNotice?.state == .startUnavailable)
+        #expect(replay.controller.phase == .idle)
     }
 
     @Test func livePreparationRetriesAfterPostResumeSelectionLoss() async throws {
@@ -1187,9 +1283,11 @@ struct MicrophoneRecoveryTests {
         replay.controller.toggle()
         for index in 0..<4 {
             let (attempt, _, _) = try await resumeAndHoldSelection(replay, index: index)
+            if index == 3 { #expect(replay.controller.microphoneNotice == nil) }
             attempt.read.complete(matches: false)
         }
         try await awaitPreparationEnd(replay)
+        #expect(replay.controller.microphoneNotice?.state == .buffersUnstable)
         let take = replay.attempts[0].takeID
         let result = try await awaitDelivery(replay, take: take)
         #expect(replay.controller.status == "マイクの接続切り替えが安定しませんでした")
@@ -1270,10 +1368,15 @@ struct MicrophoneRecoveryTests {
     }
 
     private func notifyDuringHandoff(_ attempt: PreparationAttempt, device: Device) {
+        let started = DispatchSemaphore(value: 0)
         let delivered = DispatchSemaphore(value: 0)
         let notification = DispatchWorkItem {
+            started.signal()
             defer { delivered.signal() }
-            let limit = DispatchTime.now() + .seconds(1)
+            // The background item observes commit; it does not create the
+            // ordering under test. Give the lifecycle lane ample CI scheduling
+            // headroom while the outer semaphore remains the failure bound.
+            let limit = DispatchTime.now() + .seconds(10)
             while !attempt.gate.didCommit && DispatchTime.now() < limit {
                 Thread.sleep(forTimeInterval: 0.001)
             }
@@ -1284,11 +1387,17 @@ struct MicrophoneRecoveryTests {
             NotificationCenter.default.post(name: .AVAudioEngineConfigurationChange, object: device.engine)
         }
         // The notification originates outside the lifecycle lane so it can run
-        // even if another capture is already queued there. Hold MainActor to
-        // keep recording UI from advancing until the notification is delivered.
+        // even if another capture is already queued there. Start that observer
+        // before releasing the HAL read; then hold MainActor to keep recording UI
+        // from advancing until the notification is delivered.
         DispatchQueue.global(qos: .userInitiated).async(execute: notification)
+        // One absolute 12 s cap bounds the combined MainActor block for both
+        // semaphore waits (previously 30 s + 12 s = 42 s worst case). The
+        // background item's own 10 s commit poll fits inside this window.
+        let deadline = DispatchTime.now() + .seconds(12)
+        #expect(started.wait(timeout: deadline) == .success)
         attempt.read.complete(matches: true)
-        #expect(delivered.wait(timeout: .now() + 2) == .success)
+        #expect(delivered.wait(timeout: deadline) == .success)
     }
 
     @Test(arguments: [false, true])
@@ -1677,7 +1786,7 @@ struct MicrophoneRecoveryTests {
         let task = Task { try await retry.start(deadline: 12.5, onAudio: { _ in }) }
         defer { task.cancel() }
         try await feedStablePCM(rig, index: 1)
-        try await awaitCommit(task, clock: rig.clock)
+        try await awaitCommit(task)
         await retry.cancelAndWait()
         await lane {
             #expect(rig.factoryCalls == 2)

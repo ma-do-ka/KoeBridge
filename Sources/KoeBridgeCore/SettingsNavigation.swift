@@ -2,7 +2,7 @@ import Foundation
 
 /// Presentation-only sections. This catalog never owns recording or permission state.
 public enum SettingsSection: String, CaseIterable, Sendable, Hashable {
-    case general, voice, gemini, amivoice, shortcuts, profiles, history, permissions, about
+    case general, voice, gemini, amivoice, shortcuts, profiles, history, permissions, about, bench
 
     public var title: String {
         switch self {
@@ -15,6 +15,7 @@ public enum SettingsSection: String, CaseIterable, Sendable, Hashable {
         case .permissions: return "権限"
         case .profiles: return "アプリ別"
         case .about: return "KoeBridgeについて"
+        case .bench: return "ベンチ録音"
         }
     }
 
@@ -29,6 +30,7 @@ public enum SettingsSection: String, CaseIterable, Sendable, Hashable {
         case .permissions: return "checkmark.shield"
         case .profiles: return "app.badge"
         case .about: return "info.circle"
+        case .bench: return "record.circle"
         }
     }
 
@@ -37,6 +39,7 @@ public enum SettingsSection: String, CaseIterable, Sendable, Hashable {
         case .general, .voice, .gemini, .amivoice, .shortcuts, .profiles: return "基本"
         case .history, .permissions: return "データと安全"
         case .about: return "サポート"
+        case .bench: return "開発ツール"
         }
     }
 }
@@ -114,7 +117,8 @@ public enum SettingsSearchCatalog {
         .init(id: "topic-vocabulary", section: .gemini, title: "開発・ITの用語を使う", keywords: "topic vocabulary IT 用語 補助"),
         .init(id: "audio-policy", section: .gemini, title: "音声と照合するタイミング", keywords: "audio recheck policy 疑わしい 毎回"),
         .init(id: "transform-mode", section: .gemini, title: "変換キーの動作", keywords: "transform mode 音声 指示 プリセット"),
-        .init(id: "selected-preset", section: .gemini, title: "実行するプリセット", keywords: "selected transform preset チェーン 選ぶ")
+        .init(id: "selected-preset", section: .gemini, title: "実行するプリセット", keywords: "selected transform preset チェーン 選ぶ"),
+        .init(id: "bench-recording", section: .bench, title: "ベンチ録音", keywords: "ベンチ録音 録音 ベンチマーク コーパス WAV")
     ]
 
     public static func find(_ query: String) -> [SettingsSearchEntry] {

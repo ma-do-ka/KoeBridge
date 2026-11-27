@@ -149,6 +149,7 @@ public struct InputDiagnosticEvent: Equatable, Sendable {
         case selectedRange = "selected_range"
         case selectedMarker = "selected_marker"
         case role, editable, subrole, value, owner, rebased, blocked, unchanged
+        case title, fieldDescription = "description", placeholder
         case verified, unconfirmed, partial, cancelled, skipped
         case gemini, apple, amivoice, agent, verbatim, readable
         case nearSilence = "near_silence"
