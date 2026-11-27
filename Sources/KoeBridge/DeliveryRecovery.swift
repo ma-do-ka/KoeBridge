@@ -70,24 +70,28 @@ struct RecoveryAX {
     let ax: RecoveryAX
     let defaultFailureReason: String
     let requireSameElement: Bool
+    let protectedBundleIdentifiers: Set<String>?
     var deadline: TimeInterval { rejectedAt + 0.100 }
 
-    init(rejection: DeliveryRejection, ax: RecoveryAX) {
+    init(rejection: DeliveryRejection, ax: RecoveryAX, protectedBundleIdentifiers: Set<String>? = []) {
         original = rejection.target
         systemFocus = rejection.systemFocus
         rejectedAt = rejection.rejectedAt
         self.ax = ax
         defaultFailureReason = "current_target_not_text_input"
         requireSameElement = true
+        self.protectedBundleIdentifiers = protectedBundleIdentifiers
     }
 
-    init(unavailableTarget: InsertionTarget, rejectedAt: TimeInterval, ax: RecoveryAX) {
+    init(unavailableTarget: InsertionTarget, rejectedAt: TimeInterval, ax: RecoveryAX,
+         protectedBundleIdentifiers: Set<String>? = []) {
         original = unavailableTarget
         systemFocus = true
         self.rejectedAt = rejectedAt
         self.ax = ax
         defaultFailureReason = "target_unavailable_at_delivery"
         requireSameElement = false
+        self.protectedBundleIdentifiers = protectedBundleIdentifiers
     }
 
     @MainActor struct Host {
@@ -352,7 +356,8 @@ struct RecoveryAX {
                 bundleIdentifier: original.bundleIdentifier,
                 labelHints: fieldHints,
                 secureInputEnabled: IsSecureEventInputEnabled(),
-                attributesReadable: attributesReadable
+                attributesReadable: attributesReadable,
+                protectedBundleIdentifiers: protectedBundleIdentifiers
             )
             let recoveredNature: InsertionReceiptPolicy.FieldNature
             if observedNature == .protected || original.receiptFieldNature == .protected {

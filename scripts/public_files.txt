@@ -76,6 +76,7 @@ Sources/KoeBridge/SettingsView.swift
 Sources/KoeBridge/SettingsVoicePage.swift
 Sources/KoeBridge/StatusPopoverView.swift
 Sources/KoeBridge/SystemAudioCapture.swift
+Sources/KoeBridge/TakeStreamingContext.swift
 Sources/KoeBridge/TextInsertion.swift
 Sources/KoeBridge/UsageMonitorView.swift
 Sources/KoeBridge/VoiceController.swift
@@ -133,11 +134,13 @@ Sources/KoeBridgeCore/OverlayFeedback.swift
 Sources/KoeBridgeCore/PCM16WAV.swift
 Sources/KoeBridgeCore/PermissionSetupPolicy.swift
 Sources/KoeBridgeCore/PostProcessing.swift
+Sources/KoeBridgeCore/ProtectedApps.swift
 Sources/KoeBridgeCore/ProtectedTextSpans.swift
 Sources/KoeBridgeCore/QuickNoInputPolicy.swift
 Sources/KoeBridgeCore/RecentHistoryMenuPolicy.swift
 Sources/KoeBridgeCore/RecentTranscriptArchive.swift
 Sources/KoeBridgeCore/ReleaseUpdatePolicy.swift
+Sources/KoeBridgeCore/SentenceSegmenter.swift
 Sources/KoeBridgeCore/SessionTransitions.swift
 Sources/KoeBridgeCore/SettingsNavigation.swift
 Sources/KoeBridgeCore/SettingsUXPolicy.swift
@@ -163,6 +166,7 @@ Sources/KoeBridgeCore/UsageSummary.swift
 Sources/KoeBridgeCore/UserFacingErrorMessage.swift
 Sources/KoeBridgeCore/VocabularyPipeline.swift
 Sources/KoeBridgeCore/VocabularyReadingGeneration.swift
+Sources/KoeBridgeCore/VocabularySyncAdapter.swift
 Sources/KoeBridgeCore/VoiceCommands.swift
 Sources/KoeBridgeEngines/AmiVoiceWebSocketConnection.swift
 Sources/KoeBridgeEngines/AppleLocalTranscriber.swift
@@ -213,6 +217,7 @@ Sources/KoeBridgeSelfTest/OverlayFeedbackTests.swift
 Sources/KoeBridgeSelfTest/PermissionSetupPolicyTests.swift
 Sources/KoeBridgeSelfTest/PersistenceRecoveryTests.swift
 Sources/KoeBridgeSelfTest/PostProcessingTests.swift
+Sources/KoeBridgeSelfTest/ProtectedAppsTests.swift
 Sources/KoeBridgeSelfTest/RecentHistoryMenuSelfTests.swift
 Sources/KoeBridgeSelfTest/RecentTranscriptArchiveTests.swift
 Sources/KoeBridgeSelfTest/ReleaseUpdatePolicySelfTests.swift
@@ -277,10 +282,12 @@ Tests/KoeBridgeCoreTests/OverlayFeedbackTests.swift
 Tests/KoeBridgeCoreTests/PermissionSetupPolicyTests.swift
 Tests/KoeBridgeCoreTests/PersistenceRecoveryTests.swift
 Tests/KoeBridgeCoreTests/PostProcessingTests.swift
+Tests/KoeBridgeCoreTests/ProtectedAppsTests.swift
 Tests/KoeBridgeCoreTests/RecentHistoryMenuPolicyTests.swift
 Tests/KoeBridgeCoreTests/RecentTranscriptArchiveTests.swift
 Tests/KoeBridgeCoreTests/ReleaseUpdatePolicyTests.swift
 Tests/KoeBridgeCoreTests/ResilienceTests.swift
+Tests/KoeBridgeCoreTests/SentenceSegmenterTests.swift
 Tests/KoeBridgeCoreTests/SessionTransitionsTests.swift
 Tests/KoeBridgeCoreTests/SettingsNavigationTests.swift
 Tests/KoeBridgeCoreTests/SettingsPersistenceTests.swift
@@ -300,6 +307,7 @@ Tests/KoeBridgeCoreTests/UsageSummaryTests.swift
 Tests/KoeBridgeCoreTests/UserFacingErrorMessageTests.swift
 Tests/KoeBridgeCoreTests/VocabularyPipelineGD308GateTests.swift
 Tests/KoeBridgeCoreTests/VocabularyPipelineTests.swift
+Tests/KoeBridgeCoreTests/VocabularySyncAdapterTests.swift
 Tests/KoeBridgeCoreTests/VoiceCommandTests.swift
 Tests/KoeBridgeTapFixtures/FakeTapNode.m
 Tests/KoeBridgeTapFixtures/include/KoeBridgeTapFixtures.h
@@ -315,6 +323,7 @@ Tests/KoeBridgeTests/MicrophoneNoticeBindingTests.swift
 Tests/KoeBridgeTests/MicrophoneRecoveryTests.swift
 Tests/KoeBridgeTests/OutputVolumeGuardTests.swift
 Tests/KoeBridgeTests/RetainedAudioStoreTests.swift
+Tests/KoeBridgeTests/TakeStreamingContextTests.swift
 Tests/KoeBridgeTests/TextInsertionTransportTests.swift
 Tests/KoeBridgeTests/UsageMonitorAggregationTests.swift
 Tests/KoeBridgeTests/VoiceCommandPresentationTests.swift

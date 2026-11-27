@@ -45,6 +45,7 @@ import KoeBridgeCore
         var attributes: [String] = []
         var checkpoints: [InputDiagnosticEvent.Stage] = []
         var onCheck: ((InputDiagnosticEvent.Stage) -> Void)?
+        var captureNatureFromRegistry: (@MainActor (Set<String>?) -> InsertionReceiptPolicy.FieldNature)?
 
         init() {
             currentWindow = window
@@ -109,7 +110,7 @@ import KoeBridgeCore
             t.ax.restoreSystemTimeout = { .success }
             t.ax.owner = { _ in self.owner }
             t.ax.attribute = { _, name in self.attribute(name as String) }
-            t.capture = { trace in
+            t.capture = { trace, protectedBundleIdentifiers in
                 self.captures += 1
                 let name: String? = self.selection.value != nil ? kAXSelectedTextRangeAttribute
                     : self.marker.value != nil ? "AXSelectedTextMarkerRange" : nil
@@ -117,7 +118,7 @@ import KoeBridgeCore
                     pid: self.pid, focused: self.field, window: self.currentWindow, selectionAttribute: name,
                     selection: self.selection.value ?? self.marker.value, textSnapshot: self.initialSnapshot,
                     capturedAt: self.now, blockedReason: nil)
-                    .withReceiptFieldNature(self.captureNature)
+                    .withReceiptFieldNature(self.captureNatureFromRegistry?(protectedBundleIdentifiers) ?? self.captureNature)
                 let gate = InsertionTarget.DeliveryGateRead(role: self.role, subrole: self.subrole,
                     selectedRange: self.selection, selectedMarker: self.marker, editable: self.editable)
                 let rejection = DeliveryRejection(target: target, gate: gate, rejectedAt: self.now,
@@ -532,7 +533,7 @@ import KoeBridgeCore
     @Test func boundedValueObservationAndTypedSelections() throws {
         let f = Fixture()
         f.recover()
-        let target = try #require(f.transport().capture(nil).resolution.target)
+        let target = try #require(f.transport().capture(nil, []).resolution.target)
         for persistent in [false, true] {
             var attempts = 0
             var reads = InsertionTarget.FocusReads()
@@ -746,7 +747,7 @@ import KoeBridgeCore
             let f = Fixture()
             f.recover()
             var t = f.transport()
-            t.capture = { _ in
+            t.capture = { _, _ in
                 .unavailable(.focusedTextElementUnavailable, pid: f.pid, focused: nil, ownerStatus: nil)
             }
             let system = AXUIElementCreateSystemWide()
@@ -805,7 +806,7 @@ import KoeBridgeCore
             f.bundle = "com.google.Chrome"
             f.currentField = nil
             var t = f.transport()
-            t.capture = { _ in
+            t.capture = { _, _ in
                 f.captures += 1
                 return .unavailable(.focusedTextElementUnavailable, pid: f.pid, focused: nil, ownerStatus: nil)
             }
@@ -829,7 +830,7 @@ import KoeBridgeCore
         slot2.bundle = "com.google.Chrome"
         slot2.currentField = nil
         var t2 = slot2.transport()
-        t2.capture = { _ in
+        t2.capture = { _, _ in
             slot2.captures += 1
             return .unavailable(.focusedTextElementUnavailable, pid: slot2.pid, focused: nil, ownerStatus: nil)
         }
@@ -848,7 +849,7 @@ import KoeBridgeCore
         unrecovered.bundle = "com.google.Chrome"
         unrecovered.currentField = nil
         var tUnrec = unrecovered.transport()
-        tUnrec.capture = { _ in
+        tUnrec.capture = { _, _ in
             unrecovered.captures += 1
             return .unavailable(.focusedTextElementUnavailable, pid: unrecovered.pid, focused: nil, ownerStatus: nil)
         }
@@ -868,7 +869,7 @@ import KoeBridgeCore
             f.bundle = "com.google.Chrome"
             f.currentField = nil
             var t = f.transport()
-            t.capture = { _ in
+            t.capture = { _, _ in
                 f.captures += 1
                 return .unavailable(.focusedTextElementUnavailable, pid: f.pid, focused: nil, ownerStatus: nil)
             }
@@ -903,7 +904,7 @@ import KoeBridgeCore
             f.bundle = "com.google.Chrome"
             f.currentField = nil
             var t = f.transport()
-            t.capture = { _ in
+            t.capture = { _, _ in
                 f.captures += 1
                 return .unavailable(.focusedTextElementUnavailable, pid: f.pid, focused: nil, ownerStatus: nil)
             }
@@ -1119,10 +1120,21 @@ import KoeBridgeCore
             let f = Fixture()
             f.bundle = "com.google.Chrome"
             f.currentField = nil
+            // Unavailable-capture recovery resolves the host's bundle identity from
+            // the pending take's start target or NSRunningApplication; the fake pid
+            // has no running app, so the take supplies the identity a live take would.
+            let takeStart = InsertionTarget(bundleIdentifier: f.bundle, localizedName: "Chrome",
+                pid: f.pid, focused: f.field, window: f.window,
+                selectionAttribute: kAXSelectedTextRangeAttribute,
+                selection: f.range(0, 0).value, textSnapshot: nil,
+                capturedAt: 0, blockedReason: nil)
+                .withReceiptFieldNature(.normal)
             var t = f.transport()
-            t.capture = { _ in
+            t.capture = { _, _ in
                 f.captures += 1
-                return .unavailable(.focusedTextElementUnavailable, pid: f.pid, focused: nil, ownerStatus: nil)
+                let sample: InsertionTarget.CaptureSample = .unavailable(
+                    .focusedTextElementUnavailable, pid: f.pid, focused: nil, ownerStatus: nil)
+                return sample
             }
             f.onWait = {
                 f.currentField = f.field
@@ -1130,7 +1142,7 @@ import KoeBridgeCore
                 f.selection = f.range(0, 0)
                 f.fieldDescription = descriptionRead
             }
-            let report = await TextInsertion.deliver("x", to: nil, transport: t)
+            let report = await TextInsertion.deliver("x", to: takeStart, transport: t)
             #expect(report.outcome == .inserted)
             #expect(report.target?.receiptFieldNature == expectedNature)
             if expectedNature != .normal {
@@ -1189,7 +1201,7 @@ import KoeBridgeCore
             focusChanged.initialSnapshot = snapshot
             focusChanged.before = snapshot
             focusChanged.selection = focusChanged.range(0, 0)
-            let blockedStart = focusChanged.transport().capture(nil).resolution.target?.blockedByPriorInput(hard: true)
+            let blockedStart = focusChanged.transport().capture(nil, []).resolution.target?.blockedByPriorInput(hard: true)
             let focusReport = await TextInsertion.deliver("x", to: blockedStart, transport: focusChanged.transport())
             #expect(focusReport.outcome == .focusChanged)
             #expect(focusReport.reason == "prior_input_unverified")
@@ -1208,7 +1220,7 @@ import KoeBridgeCore
             f.bundle = "com.google.Chrome"
             f.currentField = nil
             var t = f.transport()
-            t.capture = { _ in
+            t.capture = { _, _ in
                 f.captures += 1
                 return .unavailable(.focusedTextElementUnavailable, pid: f.pid, focused: nil, ownerStatus: nil)
             }
@@ -1256,7 +1268,7 @@ import KoeBridgeCore
                                             .withReceiptFieldNature(.normal)
             f.currentField = nil
             var t = f.transport()
-            t.capture = { _ in
+            t.capture = { _, _ in
                 f.captures += 1
                 return .unavailable(.focusedTextElementUnavailable, pid: f.pid, focused: nil, ownerStatus: nil)
             }
@@ -1276,7 +1288,7 @@ import KoeBridgeCore
             fSame.elementWindow = startWindow
             fSame.currentField = nil
             var tSame = fSame.transport()
-            tSame.capture = { _ in
+            tSame.capture = { _, _ in
                 fSame.captures += 1
                 return .unavailable(.focusedTextElementUnavailable, pid: fSame.pid, focused: nil, ownerStatus: nil)
             }
@@ -1376,7 +1388,7 @@ import KoeBridgeCore
                 let appElement = AXUIElementCreateApplication(f.pid)
                 let systemElement = AXUIElementCreateSystemWide()
                 var t = f.transport()
-                t.capture = { _ in
+                t.capture = { _, _ in
                     f.captures += 1
                     return .unavailable(.focusedTextElementUnavailable, pid: f.pid, focused: nil, ownerStatus: nil)
                 }
@@ -1446,7 +1458,7 @@ import KoeBridgeCore
             f.initialSnapshot = observed
             f.selection = f.range(0, 1)
             // A synthetic source capture, separate from the delivery-time recapture.
-            start = f.transport().capture(nil).resolution.target!
+            start = f.transport().capture(nil, []).resolution.target!
             take.target = start
             f.captures = 0
         }
@@ -1485,6 +1497,84 @@ import KoeBridgeCore
             t.receiptSnapshot = { _, _, _ in self.observed }
             return t
         }
+    }
+
+    @Test func protectedRegistrySuppliesReceiptTieringThroughPostingGateAndRemovalRestoresNormalEvidence() async throws {
+        let suite = "KoeBridge.ProtectedAppsDelivery." + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var registry = SettingsArray<ProtectedApp>("protectedApps", defaults: defaults)
+        let gate = TextInsertion.PostingGate(reconcile: { _, _ in }, protectedBundleIdentifiers: {
+            ProtectedAppPolicy.bundleIdentifiers(
+                in: SettingsArray<ProtectedApp>("protectedApps", defaults: defaults))
+        })
+
+        func makeSender() -> Sender {
+            let sender = Sender(ticket: UUID())
+            sender.f.captureNatureFromRegistry = { protectedBundleIdentifiers in
+                InsertionReceiptPolicy.fieldNature(role: "AXTextField", subrole: nil, editable: true,
+                    hasTextSelection: true, bundleIdentifier: "com.meta.endo",
+                    protectedBundleIdentifiers: protectedBundleIdentifiers)
+            }
+            return sender
+        }
+        func deliver(_ text: String) async -> TextInsertion.Report {
+            let sender = makeSender()
+            return await gate.post(.dictation(text), from: sender.source(.take), transport: sender.transport()) { true }
+        }
+
+        let unlistedSave = registry.save([ProtectedApp(bundleIdentifier: "com.example.Other", displayName: "Other")])
+        #expect(unlistedSave)
+        let unlisted = await deliver("U")
+        let unlistedProof = try #require(unlisted.receipt?.proof)
+        #expect(unlisted.outcome == .verifiedInserted)
+        #expect(unlistedProof.fieldNature == .normal)
+        #expect(unlistedProof.retainsContentEvidence)
+        #expect(unlistedProof.inserted == "U")
+
+        let protectedSave = registry.save([ProtectedApp(bundleIdentifier: "com.meta.endo", displayName: "Muse")])
+        #expect(protectedSave)
+        let protected = await deliver("P")
+        let protectedProof = try #require(protected.receipt?.proof)
+        #expect(protected.outcome == .verifiedInserted)
+        #expect(protectedProof.fieldNature == .protected)
+        #expect(!protectedProof.retainsContentEvidence)
+        #expect(protectedProof.inserted.isEmpty)
+        #expect(protectedProof.before.text.isEmpty && protectedProof.after.text.isEmpty)
+        #expect(!protectedProof.before.retainsText && !protectedProof.after.retainsText)
+        #expect(protectedProof.insertedUTF16Count == 1)
+        #expect(protectedProof.insertedSHA256?.count == 64)
+
+        let clearedSave = registry.save([])
+        #expect(clearedSave)
+        let removed = await deliver("R")
+        let removedProof = try #require(removed.receipt?.proof)
+        #expect(removed.outcome == .verifiedInserted)
+        #expect(removedProof.fieldNature == .normal)
+        #expect(removedProof.retainsContentEvidence)
+        #expect(removedProof.inserted == "R")
+
+        // Corrupt/unreadable stored list => fail closed: a normal field on an
+        // unlisted app must produce a redacted receipt, never plaintext hints.
+        defaults.set(Data("not-json".utf8), forKey: "protectedApps")
+        let corrupted = await deliver("C")
+        let corruptedProof = try #require(corrupted.receipt?.proof)
+        #expect(corrupted.outcome == .verifiedInserted)
+        #expect(corruptedProof.fieldNature == .protected)
+        #expect(!corruptedProof.retainsContentEvidence)
+        #expect(corruptedProof.inserted.isEmpty)
+        #expect(corruptedProof.before.text.isEmpty && corruptedProof.after.text.isEmpty)
+        #expect(corruptedProof.insertedSHA256?.count == 64)
+
+        var reset = SettingsArray<ProtectedApp>("protectedApps", defaults: defaults)
+        reset.resetCorruptValue()
+        #expect(reset.state == .unset)
+        let resetSave = reset.save([])
+        #expect(resetSave)
+        let recovered = await deliver("V")
+        let recoveredProof = try #require(recovered.receipt?.proof)
+        #expect(recoveredProof.fieldNature == .normal)
+        #expect(recoveredProof.retainsContentEvidence)
     }
 
     @Test func valueFailureKeepsPredecessorHardBlocked() async throws {
@@ -1550,7 +1640,7 @@ import KoeBridgeCore
         f.selection = f.range(0, 0)
         for nature in [InsertionReceiptPolicy.FieldNature.unknown, .protected, .normal] {
             f.captureNature = nature
-            let captured = try #require(f.transport().capture(nil).resolution.target)
+            let captured = try #require(f.transport().capture(nil, []).resolution.target)
             #expect(captured.textSnapshot == snapshot)
             let root = FileManager.default.temporaryDirectory.appendingPathComponent("kb-take-target-\(UUID().uuidString)")
             defer { try? FileManager.default.removeItem(at: root) }
@@ -1648,7 +1738,7 @@ import KoeBridgeCore
                         pid: old.pid, focused: sender.f.other, window: old.window, selectionAttribute: old.selectionAttribute,
                         selection: old.selection, textSnapshot: old.textSnapshot, capturedAt: old.capturedAt, blockedReason: nil)
                         .withReceiptFieldNature(.normal)
-                    transport.capture = { _ in .accepted(fresh) }
+                    transport.capture = { _, _ in .accepted(fresh) }
                 } else { sender.f.currentWindow = sender.f.other }
                 let report = await gate.post(.dictation("B"), from: sender.source(producer), transport: transport) { true }
                 #expect(report.outcome == (producer == .history ? .focusChanged : .verifiedInserted))

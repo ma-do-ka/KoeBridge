@@ -36,6 +36,12 @@ import KoeBridgeEngines
     @Published var progressivePreviewEnabled = UserDefaults.standard.object(forKey: "progressivePreviewEnabled") as? Bool ?? true {
         didSet { UserDefaults.standard.set(progressivePreviewEnabled, forKey: "progressivePreviewEnabled") }
     }
+    /// R-03 文節ストリーミング（案B-2 Soft Commit）。任意設定・既定 OFF。
+    /// Snapshotted into each DictationTake at take start; mid-recording
+    /// changes never apply to the take already capturing.
+    @Published var clauseStreamingEnabled = UserDefaults.standard.bool(forKey: "clauseStreamingEnabled") {
+        didSet { UserDefaults.standard.set(clauseStreamingEnabled, forKey: "clauseStreamingEnabled") }
+    }
     @Published var isRecording = false
     @Published private(set) var benchRecordingActive = false
     private var cancelBenchRecording: (@MainActor () -> Void)?
@@ -58,6 +64,9 @@ import KoeBridgeEngines
     @Published var amiVoiceEngine: AmiVoiceEngine {
         didSet {
             UserDefaults.standard.set(amiVoiceEngine.rawValue, forKey: "amiVoiceEngine")
+            // The selected profile key follows the engine; reconcile the
+            // learned-term store into the newly selected profile.
+            refreshVocabularyDictionaryCandidates()
         }
     }
     @Published var outputVolumeGuardEnabled: Bool {
@@ -368,18 +377,36 @@ import KoeBridgeEngines
         set { appProfilesStore.save(newValue) }
     }
     func resetAppProfiles() { appProfilesStore.resetCorruptValue() }
+    @Published private(set) var protectedAppsStore = SettingsArray<ProtectedApp>("protectedApps")
+    var protectedApps: [ProtectedApp] {
+        get { protectedAppsStore.rows }
+        set { protectedAppsStore.save(newValue) }
+    }
+    func resetProtectedApps() { protectedAppsStore.resetCorruptValue() }
+    private var protectedBundleIdentifiers: Set<String>? {
+        ProtectedAppPolicy.bundleIdentifiers(in: protectedAppsStore)
+    }
     @Published private(set) var learnedTermsStore = SettingsArray<LearnedTerm>("learnedTerms")
     var learnedTerms: [LearnedTerm] {
         get { learnedTermsStore.rows }
-        set { if learnedTermsStore.save(newValue) { scheduleWarmGemini() } }
+        set {
+            if learnedTermsStore.save(newValue) {
+                refreshVocabularyDictionaryCandidates()
+                scheduleWarmGemini()
+            }
+        }
     }
-    func resetLearnedTerms() { learnedTermsStore.resetCorruptValue() }
+    func resetLearnedTerms() {
+        learnedTermsStore.resetCorruptValue()
+        refreshVocabularyDictionaryCandidates()
+    }
 
     func learn(fragment: String, term: String, from record: TranscriptRecord) -> Bool {
         guard LearnedTermPolicy.validationHint(fragment: fragment, term: term, recordText: record.text) == nil else { return false }
         let updated = LearnedTermPolicy.saving(
             LearnedTerm(term: term, originalFragment: fragment, sourceRecordID: record.id), in: learnedTerms)
         guard learnedTermsStore.save(updated) else { return false }
+        refreshVocabularyDictionaryCandidates()
         scheduleWarmGemini()
         return true
     }
@@ -409,7 +436,7 @@ import KoeBridgeEngines
         guard KeychainStore.loadForUse() != nil else { status = AppError.noKey.localizedDescription; return }
         var selectedTarget: InsertionTarget?
         let admitted = postingGate.withSelectionWrite {
-            guard let current = InsertionTarget.capture().target,
+            guard let current = InsertionTarget.capture(protectedBundleIdentifiers: protectedBundleIdentifiers).target,
                   current.sameField(as: anchor.target), current.textSnapshot == anchor.after else { return }
             selectedTarget = current.selectDeliveredSpan(before: anchor.before, after: anchor.after, submitted: anchor.submittedText)
         }
@@ -754,9 +781,11 @@ import KoeBridgeEngines
     private var warmScheduleTask: Task<Void, Never>?
     private var active: DictationTake?
     private var microphoneNoticeStore = MicrophoneNoticeStore()
-    private lazy var postingGate = TextInsertion.PostingGate { [unowned self] report, sourceID in
+    private lazy var postingGate = TextInsertion.PostingGate(reconcile: { [unowned self] report, sourceID in
         reconcileDelivery(report, sourceTakeID: sourceID)
-    }
+    }, protectedBundleIdentifiers: { [unowned self] in
+        self.protectedBundleIdentifiers
+    })
     private var inFlight: [UUID: DictationTake] = [:]
     private var finished = OrderedResultBuffer<Completion>(maximumPending: 8)
     /// Presentation only: report a live fallback accurately; idle text names the OS default.
@@ -827,6 +856,14 @@ import KoeBridgeEngines
     private let preparation: PreparationEnvironment
     private let amiVoiceDictionaryStore: AmiVoiceDictionarySyncStore
     let amiVoiceDictionarySyncEngine: AmiVoiceDictionarySyncEngine
+    /// B-2 pipeline owner that reconciles the learned-term store with the
+    /// dictionary sync store. Only live for the production runtime; isolated
+    /// test instances never touch the real dictionary store.
+    private let vocabularySyncCoordinator = VocabularySyncCoordinator()
+    private let vocabularySyncWired: Bool
+    /// Serializes reconcile passes so an older learned-term snapshot can never
+    /// overwrite the effects of a newer one.
+    private var vocabularySyncTask: Task<Void, Never>?
 
     private var currentAmiVoiceDictionaryProfileKey: AmiVoiceDictionaryProfileKey {
         AmiVoiceDictionaryProfileKey(engine: amiVoiceEngine, samplingRate: .rate16k)
@@ -841,8 +878,12 @@ import KoeBridgeEngines
             objectWillChange.send()
             guard newValue else { return }
             let key = currentAmiVoiceDictionaryProfileKey
+            // Reconcile first, in launch order, so the consistency pass sees
+            // the learned-term rows in their proper state.
+            refreshVocabularyDictionaryCandidates()
             Task { [weak self] in
                 guard let self else { return }
+                await self.vocabularySyncTask?.value
                 _ = await self.amiVoiceDictionarySyncEngine.performLaunchConsistencyPass(for: key)
             }
         }
@@ -862,6 +903,44 @@ import KoeBridgeEngines
 
     func refreshAmiVoiceDictionarySyncStatus() async -> AmiVoiceDictionarySyncStatus {
         await amiVoiceDictionarySyncEngine.status(for: currentAmiVoiceDictionaryProfileKey)
+    }
+
+    /// Replays the learned-term store through the B-2 candidate pipeline and
+    /// applies the reconcile plan to B-1's sync engine. `.ready` candidates are
+    /// upserted as `.readyToSync`, which is the trigger B-1 already uses for
+    /// learned terms (it schedules the debounced upload itself). Held and
+    /// excluded terms move to non-participating states, and rows whose learned
+    /// term disappeared are archived. No trigger issued here is `.deleteAll`,
+    /// so B-1's empty-snapshot guard keeps an empty ready set a no-op rather
+    /// than an empty upload.
+    private func refreshVocabularyDictionaryCandidates() {
+        guard vocabularySyncWired else { return }
+        let previous = vocabularySyncTask
+        vocabularySyncTask = Task { [weak self] in
+            await previous?.value
+            await self?.applyVocabularySyncPlan()
+        }
+    }
+
+    private func applyVocabularySyncPlan() async {
+        let key = currentAmiVoiceDictionaryProfileKey
+        let plan = vocabularySyncCoordinator.ingest(
+            terms: learnedTermsStore.rows,
+            existingEntries: amiVoiceDictionaryStore.loadEntries(),
+            for: key
+        )
+        for id in plan.ignoredIDs {
+            _ = await amiVoiceDictionarySyncEngine.transitionEntry(id: id, for: key, to: .ignored)
+        }
+        for id in plan.archivedIDs {
+            _ = await amiVoiceDictionarySyncEngine.transitionEntry(id: id, for: key, to: .archived)
+        }
+        for entry in plan.pendingUpserts {
+            _ = await amiVoiceDictionarySyncEngine.upsertEntry(entry, for: key, state: .pendingReview)
+        }
+        for entry in plan.readyUpserts {
+            _ = await amiVoiceDictionarySyncEngine.upsertEntry(entry, for: key, state: .readyToSync)
+        }
     }
 
     func amiVoiceRecognitionProfileID(for engine: AmiVoiceEngine) -> String? {
@@ -903,6 +982,7 @@ import KoeBridgeEngines
             transport: AmiVoiceDictionaryAPIClient(),
             apiKeyProvider: { KeychainStore.load(provider: .amivoice) }
         )
+        vocabularySyncWired = storageDirectory == nil
 
         let d = UserDefaults.standard
         let guardEnabled = storageDirectory == nil && d.bool(forKey: OutputVolumeGuard.preferenceKey)
@@ -953,6 +1033,11 @@ import KoeBridgeEngines
         let launchProfileKey = currentAmiVoiceDictionaryProfileKey
         Task { [weak self] in
             guard let self else { return }
+            // Re-seed the pipeline tracker and reconcile the dictionary store
+            // before the consistency pass so locally stored terms are in their
+            // proper state when B-1 decides whether an upload is needed.
+            self.refreshVocabularyDictionaryCandidates()
+            await self.vocabularySyncTask?.value
             _ = await self.amiVoiceDictionarySyncEngine.performLaunchConsistencyPass(for: launchProfileKey)
         }
         scheduleWarmGemini()
@@ -1167,6 +1252,22 @@ import KoeBridgeEngines
         }
         take.transformSelection = selection
         take.isFixLastInput = fixingLastInput
+        // R-03: normal single dictation only. App profiles, transforms, fix-
+        // last-input and agent style keep the whole-take path untouched.
+        if clauseStreamingEnabled, profile == nil, selection == nil, !fixingLastInput,
+           take.style != .agent {
+            take.streaming = TakeStreamingContext(
+                postProcessEligible: PostProcessingPolicy.shouldApply(
+                    mode: take.postProcessMode, enabled: take.postProcessEnabled,
+                    style: take.style, isTransform: false,
+                    skipped: DictationDelivery.skipped(
+                        suppressed: take.automaticDeliverySuppressed,
+                        requiresReview: take.review?.status == .needsReview,
+                        acousticReviewRequired: take.acousticReviewRequired,
+                        shouldPaste: take.shouldPaste) != nil,
+                    noInput: false),
+                postProcess: makeSentenceProcessor(for: take))
+        }
         guard finished.begin(take.id) else { return }
         take.inputDiagnostics = preparation.makeInputTrace(take.id)
         take.inputDiagnostics?.record(.session, stage: .requested, [
@@ -1198,7 +1299,8 @@ import KoeBridgeEngines
         let focusStartedAt = ProcessInfo.processInfo.systemUptime
         let targetResult = transformTarget.map { (target: Optional($0), reason: "ok") }
             ?? preparation.captureTarget?(take.inputDiagnostics)
-            ?? InsertionTarget.capture(diagnostics: take.inputDiagnostics) // BEFORE the overlay is shown
+            ?? InsertionTarget.capture(diagnostics: take.inputDiagnostics,
+                                       protectedBundleIdentifiers: protectedBundleIdentifiers) // BEFORE the overlay is shown
         take.target = targetResult.target?.removingTextSnapshotUnlessNormal()
         take.targetCaptureReason = targetResult.reason
         if recheckContextEnabled && selection == nil {
@@ -1408,6 +1510,9 @@ import KoeBridgeEngines
                             take.partialText = preview.text
                             take.previewFinalizedText = preview.finalizedPrefix
                             take.previewVolatileText = preview.volatileTail
+                            if case .final = event {
+                                take.streaming?.ingest(finalizedPrefix: preview.finalizedPrefix)
+                            }
                             if take.firstPreviewAt == nil, !take.partialText.isEmpty {
                                 take.firstPreviewAt = Date()
                             }
@@ -1452,6 +1557,7 @@ import KoeBridgeEngines
                     take.partialText = preview.text
                     take.previewFinalizedText = preview.finalizedPrefix
                     take.previewVolatileText = preview.volatileTail
+                    take.streaming?.ingest(finalizedPrefix: preview.finalizedPrefix)
                     if take.firstPreviewAt == nil, !preview.text.isEmpty {
                         take.firstPreviewAt = Date()
                     }
@@ -1512,6 +1618,7 @@ import KoeBridgeEngines
                 take.partialText = update.text
                 take.previewFinalizedText = update.finalizedPrefix
                 take.previewVolatileText = update.volatileTail
+                take.streaming?.ingest(finalizedPrefix: update.finalizedPrefix)
                 if take.firstPreviewAt == nil, !update.text.isEmpty { take.firstPreviewAt = Date() }
                 if self.active === take {
                     self.updatePreview(for: take, isFinal: !update.finalizedPrefix.isEmpty)
@@ -1690,6 +1797,41 @@ import KoeBridgeEngines
         return result
     }
 
+    /// Per-sentence post-processing through the existing path: the same
+    /// GeminiTextTransformer.postProcess call, the same PostProcessingPolicy
+    /// adoption contract (C-Q01), and on any failure the sentence's original
+    /// text is kept. No per-sentence timeout exists; while recording the
+    /// request gets a plain HTTP bound, and after stop the take's existing
+    /// 15 s watchdog bounds whatever is still running.
+    private func makeSentenceProcessor(for take: DictationTake)
+        -> @MainActor (String) async -> (text: String, applied: Bool) {
+        let mode = take.postProcessMode
+        return { [weak take] sentence in
+            guard let take else { return (sentence, false) }
+            do {
+                let budget: TimeInterval = take.stoppingAt != nil
+                    ? TranscriptReviewDeadline.available(stoppedAt: take.stoppingAt, now: Date())
+                    : 30
+                guard budget > 0, let key = KeychainStore.loadForUse() else { return (sentence, false) }
+                let result = try await GeminiTextTransformer.postProcess(
+                    text: sentence, mode: mode, apiKey: key, timeout: budget)
+                let adoption = PostProcessingPolicy.adoption(original: sentence, processed: result.text)
+                if let rejection = adoption.rejection {
+                    DiagnosticLog.record("clause postprocess rejected \(rejection.rawValue)")
+                }
+                return (adoption.text, adoption.rejection == nil)
+            } catch {
+                guard !take.finished, !Task.isCancelled else { return (sentence, false) }
+                DiagnosticLog.record("clause postprocess failed; sentence original retained")
+                return (sentence, false)
+            }
+        }
+    }
+
+    private static func boundarySummary(_ sources: [SentenceBoundarySource: Int]) -> String {
+        "terminator:\(sources[.terminator] ?? 0),quoteClose:\(sources[.quoteClose] ?? 0),flush:\(sources[.flush] ?? 0),capacity:\(sources[.capacity] ?? 0)"
+    }
+
     static func localRescueModeLabel(for failedEngine: RecognitionMode) -> String {
         switch failedEngine {
         case .gemini: return "Appleオンデバイス（Gemini失敗時の救済）"
@@ -1749,6 +1891,46 @@ import KoeBridgeEngines
             let adopted = take.adoptFinalText(result)
             let original = take.commandCandidate == nil && take.transformSelection == nil && take.preferred == .gemini && take.style == .agent
                 ? AgentInstructionFormatting.format(adopted) : adopted
+            // R-03 案B-2: sentence work already ran ahead. The take-level
+            // review still applies to the whole assembled raw text exactly as
+            // before; only the post-process step is replaced by its finished
+            // per-sentence results.
+            if let streaming = take.streaming, take.commandCandidate == nil {
+                let sealed = await streaming.seal(finalText: result) {
+                    take.postProcessOriginal = $0
+                }
+                // The seal-time watchdog fallback is valid only while
+                // per-sentence work may still be running. From here the
+                // review session must win the watchdog exactly like the
+                // whole-take (OFF) path.
+                take.postProcessOriginal = nil
+                if !sealed.degraded {
+                    DiagnosticLog.record("clause streaming; id=\(take.id.uuidString.prefix(8)) sentences=\(sealed.unitCount) boundaries=\(Self.boundarySummary(sealed.boundarySources)) applied=\(sealed.appliedSentences) fallback=\(sealed.fallbackSentences)")
+                    let review = DictationReviewSession(
+                        originalText: original, engine: take.successfulEngine, options: take.options,
+                        stoppedAt: take.stoppingAt, audio: take.audioBackup,
+                        vocabulary: take.vocabulary, style: take.style, japaneseHint: take.japaneseHint,
+                        context: take.capturedContext)
+                    take.reviewSession = review
+                    let output = await review.run { [weak self, weak take] in
+                        guard let self, let take, !take.finished else { return }
+                        if self.overlayOwner == take.id, self.active == nil { self.overlayFeedback = .checking }
+                        if self.active == nil { self.status = "追加チェック中。次の録音は開始できます" }
+                    }
+                    guard !take.finished, !Task.isCancelled else { return }
+                    if output == original, take.review?.status != .needsReview {
+                        resolve(take, text: sealed.processedText, reason: nil, postProcessed: true)
+                    } else {
+                        // Review changed or held the text: continue exactly as
+                        // the whole-take path. Clear the seal-time fallback so
+                        // resolve can schedule its own inline post-process.
+                        take.postProcessOriginal = nil
+                        resolve(take, text: output, reason: nil)
+                    }
+                    return
+                }
+                DiagnosticLog.record("clause streaming degraded; id=\(take.id.uuidString.prefix(8)) sentences=\(sealed.unitCount); whole-take path")
+            }
             // Only an actually confirmed primary result can survive a review
             // timeout. Pending/interim text never takes this route.
             let review = DictationReviewSession(
