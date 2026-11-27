@@ -70,6 +70,8 @@ public enum SettingsSearchCatalog {
         .init(id: "amivoice-apikey", section: .amivoice, title: "AmiVoice APIキー", keywords: "AmiVoice APPKEY API key Keychain 接続 登録 更新 削除 キーチェーン"),
         .init(id: "amivoice-engine", section: .amivoice, title: "AmiVoice 認識エンジン", keywords: "AmiVoice エンジン E2E Hybrid 汎用 会話 バッチ -a2-ja-general"),
         .init(id: "amivoice-privacy", section: .amivoice, title: "AmiVoice プライバシーと料金", keywords: "AmiVoice プライバシー 料金 nolog ログ保存なし 無料枠 60分 0.04125 2.475"),
+        .init(id: "amivoice-vocabulary-sync", section: .amivoice, title: "学習修正を AmiVoice 単語登録へ自動同期する", keywords: "AmiVoice 自動同期 語彙 用語 sync 同意 オプトイン 学習修正 単語登録"),
+        .init(id: "amivoice-vocabulary-management", section: .amivoice, title: "用語管理（AmiVoice 自動同期）", keywords: "AmiVoice 用語管理 確認待ち 除外 削除 一時停止 同期履歴 ロールバック 一括削除 vocabulary"),
         .init(id: "japanese", section: .gemini, title: "日本語での認識を優先する", keywords: "Japanese hint ja-JP 日本語ヒント 言語"),
         .init(id: "smart", section: .gemini, title: "文字起こしスタイル", keywords: "style SMART VERBATIM 逐語 読みやすく AIエージェント指示 プロンプト 技術用語 命令 文章整形"),
         .init(id: "vocabulary-assistance", section: .gemini, title: "専門用語の補助", keywords: "登録した用語を使う 開発 IT 話題 辞書 チェックボックス"),

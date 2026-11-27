@@ -44,13 +44,15 @@ struct SettingsNavigationSelfTests {
         check(SettingsSection.amivoice.group == "基本")
         check(SettingsSection.bench.group == "開発ツール")
         check(SettingsSection.bench.title == "ベンチ録音")
-        for id in ["amivoice-apikey", "amivoice-engine", "amivoice-privacy"] {
+        for id in ["amivoice-apikey", "amivoice-engine", "amivoice-privacy", "amivoice-vocabulary-sync", "amivoice-vocabulary-management"] {
             let entry = try require(SettingsSearchCatalog.entries.first { $0.id == id })
             check(entry.section == .amivoice)
         }
         check(SettingsSearchCatalog.find("AmiVoice APIキー").contains { $0.section == .amivoice && $0.id == "amivoice-apikey" })
         check(SettingsSearchCatalog.find("AmiVoice エンジン").contains { $0.section == .amivoice && $0.id == "amivoice-engine" })
         check(SettingsSearchCatalog.find("AmiVoice nolog").contains { $0.section == .amivoice && $0.id == "amivoice-privacy" })
+        check(SettingsSearchCatalog.find("AmiVoice 自動同期").contains { $0.section == .amivoice && $0.id == "amivoice-vocabulary-sync" })
+        check(SettingsSearchCatalog.find("用語管理").contains { $0.section == .amivoice && $0.id == "amivoice-vocabulary-management" })
         check(SettingsSearchCatalog.find("AmiVoice").contains { $0.section == .voice && $0.id == "engine" })
         check(SettingsSearchCatalog.find("AmiVoice").contains { $0.section == .history && $0.id == "usage" })
         check(SettingsSearchCatalog.find("入力証拠 最小化").contains { $0.section == .history && $0.id == "protected-apps" })

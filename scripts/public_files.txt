@@ -73,6 +73,7 @@ Sources/KoeBridge/SettingsSnippetsPage.swift
 Sources/KoeBridge/SettingsSupportPages.swift
 Sources/KoeBridge/SettingsTransformPresets.swift
 Sources/KoeBridge/SettingsView.swift
+Sources/KoeBridge/SettingsVocabularyManagement.swift
 Sources/KoeBridge/SettingsVoicePage.swift
 Sources/KoeBridge/StatusPopoverView.swift
 Sources/KoeBridge/SystemAudioCapture.swift
@@ -86,6 +87,8 @@ Sources/KoeBridgeAudioTap/include/KoeBridgeAudioTap.h
 Sources/KoeBridgeCore/AmiVoiceDictionary.swift
 Sources/KoeBridgeCore/AmiVoiceDictionarySyncEngine.swift
 Sources/KoeBridgeCore/AmiVoiceDictionarySyncMonitoring.swift
+Sources/KoeBridgeCore/AmiVoiceVocabularyManagement.swift
+Sources/KoeBridgeCore/AmiVoiceVocabularyManagementCopy.swift
 Sources/KoeBridgeCore/AmiVoiceWire.swift
 Sources/KoeBridgeCore/AppProfiles.swift
 Sources/KoeBridgeCore/AudioActivityEvidence.swift
@@ -241,6 +244,7 @@ Sources/KoeBridgeSelfTest/VoiceCommandTests.swift
 TEST_REPORT.md
 Tests/KoeBridgeCoreTests/AmiVoiceDictionarySyncMonitoringTests.swift
 Tests/KoeBridgeCoreTests/AmiVoiceDictionarySyncTests.swift
+Tests/KoeBridgeCoreTests/AmiVoiceVocabularyManagementTests.swift
 Tests/KoeBridgeCoreTests/AmiVoiceWireTests.swift
 Tests/KoeBridgeCoreTests/AppProfileTests.swift
 Tests/KoeBridgeCoreTests/AudioActivityEvidenceTests.swift
