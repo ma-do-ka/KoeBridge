@@ -713,16 +713,25 @@ public final class AmiVoiceDictionarySyncStore: @unchecked Sendable {
     public static let entriesKey = "amiVoiceDictionaryEntries"
     public static let profilesKey = "amiVoiceDictionaryProfiles"
     public static let automaticSyncEnabledKey = "amiVoiceDictionaryAutoSyncEnabled"
+    public static let snapshotsKey = "amiVoiceDictionarySyncSnapshots"
+    public static let monitoringRecordsKey = "amiVoiceDictionaryMonitoringRecords"
+    public static let observedCorrectionsKey = "amiVoiceDictionaryObservedCorrections"
 
     private let defaults: UserDefaults
     private let lock = NSLock()
     private var entriesStore: SettingsArray<AmiVoiceDictionaryEntry>
     private var profilesStore: SettingsArray<AmiVoiceDictionaryProfile>
+    private var snapshotsStore: SettingsArray<AmiVoiceDictionarySyncSnapshot>
+    private var monitoringStore: SettingsArray<AmiVoiceDictionaryMonitoringRecord>
+    private var observedCorrectionsStore: SettingsArray<AmiVoiceDictionaryObservedCorrection>
 
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         entriesStore = SettingsArray(Self.entriesKey, defaults: defaults)
         profilesStore = SettingsArray(Self.profilesKey, defaults: defaults)
+        snapshotsStore = SettingsArray(Self.snapshotsKey, defaults: defaults)
+        monitoringStore = SettingsArray(Self.monitoringRecordsKey, defaults: defaults)
+        observedCorrectionsStore = SettingsArray(Self.observedCorrectionsKey, defaults: defaults)
     }
 
     public var automaticSyncEnabled: Bool {
@@ -768,6 +777,94 @@ public final class AmiVoiceDictionarySyncStore: @unchecked Sendable {
         loadProfiles().first { $0.key == key }
     }
 
+    public func loadSnapshots() -> [AmiVoiceDictionarySyncSnapshot] {
+        lock.lock()
+        defer { lock.unlock() }
+        recoverCorruptValuesLocked()
+        return snapshotsStore.rows
+    }
+
+    @discardableResult public func saveSnapshots(_ rows: [AmiVoiceDictionarySyncSnapshot]) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return snapshotsStore.save(rows)
+    }
+
+    /// Appends one snapshot and prunes each profile's history to the most
+    /// recent `AmiVoiceDictionaryMonitoringPolicy.snapshotRetentionLimit`
+    /// rows (U-03).
+    @discardableResult public func appendSnapshot(_ snapshot: AmiVoiceDictionarySyncSnapshot) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        // This path reads rows directly, so it must run the same recovery the
+        // load paths perform — otherwise a corrupt snapshots value makes every
+        // save fail and appended snapshots are silently dropped.
+        recoverCorruptValuesLocked()
+        var rows = snapshotsStore.rows
+        rows.append(snapshot)
+        // Later array position wins on equal timestamps: it is the newer append.
+        let newestFirst = rows.enumerated().sorted { lhs, rhs in
+            if lhs.element.createdAt != rhs.element.createdAt {
+                return lhs.element.createdAt > rhs.element.createdAt
+            }
+            return lhs.offset > rhs.offset
+        }
+        var keptIDs = Set<UUID>()
+        var counts: [AmiVoiceDictionaryProfileKey: Int] = [:]
+        for row in newestFirst {
+            let count = counts[row.element.profileKey, default: 0]
+            guard count < AmiVoiceDictionaryMonitoringPolicy.snapshotRetentionLimit else { continue }
+            counts[row.element.profileKey] = count + 1
+            keptIDs.insert(row.element.id)
+        }
+        return snapshotsStore.save(rows.filter { keptIDs.contains($0.id) })
+    }
+
+    /// Snapshot history for one profile, newest first.
+    public func snapshots(for key: AmiVoiceDictionaryProfileKey) -> [AmiVoiceDictionarySyncSnapshot] {
+        loadSnapshots()
+            .enumerated()
+            .filter { $0.element.profileKey == key }
+            .sorted { lhs, rhs in
+                if lhs.element.createdAt != rhs.element.createdAt {
+                    return lhs.element.createdAt > rhs.element.createdAt
+                }
+                return lhs.offset > rhs.offset
+            }
+            .map(\.element)
+    }
+
+    /// The most recent snapshot whose send was reflected for this profile.
+    public func latestReflectedSnapshot(for key: AmiVoiceDictionaryProfileKey) -> AmiVoiceDictionarySyncSnapshot? {
+        snapshots(for: key).first { $0.status == .reflected }
+    }
+
+    public func loadMonitoringRecords() -> [AmiVoiceDictionaryMonitoringRecord] {
+        lock.lock()
+        defer { lock.unlock() }
+        recoverCorruptValuesLocked()
+        return monitoringStore.rows
+    }
+
+    @discardableResult public func saveMonitoringRecords(_ rows: [AmiVoiceDictionaryMonitoringRecord]) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return monitoringStore.save(rows)
+    }
+
+    public func loadObservedCorrections() -> [AmiVoiceDictionaryObservedCorrection] {
+        lock.lock()
+        defer { lock.unlock() }
+        recoverCorruptValuesLocked()
+        return observedCorrectionsStore.rows
+    }
+
+    @discardableResult public func saveObservedCorrections(_ rows: [AmiVoiceDictionaryObservedCorrection]) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return observedCorrectionsStore.save(rows)
+    }
+
     public func resetCorruptValues() {
         lock.lock()
         defer { lock.unlock() }
@@ -777,10 +874,15 @@ public final class AmiVoiceDictionarySyncStore: @unchecked Sendable {
     /// A persisted value that no longer decodes used to wedge every sync into
     /// `storeFailure`, because both load and save refuse a corrupt store. Recovery
     /// on the load path drops the unreadable value so the sync can run again from
-    /// the empty store.
+    /// the empty store. The same fail-safe applies to the B-3 stores: a corrupt
+    /// snapshot or monitoring value is dropped (counters reset, history lost)
+    /// without ever touching the dictionary entries themselves.
     private func recoverCorruptValuesLocked() {
         if entriesStore.state == .corrupt { entriesStore.resetCorruptValue() }
         if profilesStore.state == .corrupt { profilesStore.resetCorruptValue() }
+        if snapshotsStore.state == .corrupt { snapshotsStore.resetCorruptValue() }
+        if monitoringStore.state == .corrupt { monitoringStore.resetCorruptValue() }
+        if observedCorrectionsStore.state == .corrupt { observedCorrectionsStore.resetCorruptValue() }
     }
 }
 

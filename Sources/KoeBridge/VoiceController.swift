@@ -393,12 +393,24 @@ import KoeBridgeEngines
             if learnedTermsStore.save(newValue) {
                 refreshVocabularyDictionaryCandidates()
                 scheduleWarmGemini()
+                scheduleLearnedTermsObservation(newValue)
             }
         }
     }
     func resetLearnedTerms() {
         learnedTermsStore.resetCorruptValue()
         refreshVocabularyDictionaryCandidates()
+    }
+
+    /// B-3: new LearnedTerm records are the correction signal for dictionary
+    /// sync monitoring. The monitor is inert while the opt-in sync setting is
+    /// off.
+    private func scheduleLearnedTermsObservation(_ terms: [LearnedTerm]) {
+        let profileKey = currentAmiVoiceDictionaryProfileKey
+        Task { [weak self] in
+            guard let self else { return }
+            _ = await self.amiVoiceDictionarySyncMonitor.observe(learnedTerms: terms, for: profileKey)
+        }
     }
 
     func learn(fragment: String, term: String, from record: TranscriptRecord) -> Bool {
@@ -408,6 +420,7 @@ import KoeBridgeEngines
         guard learnedTermsStore.save(updated) else { return false }
         refreshVocabularyDictionaryCandidates()
         scheduleWarmGemini()
+        scheduleLearnedTermsObservation(updated)
         return true
     }
 
@@ -856,6 +869,7 @@ import KoeBridgeEngines
     private let preparation: PreparationEnvironment
     private let amiVoiceDictionaryStore: AmiVoiceDictionarySyncStore
     let amiVoiceDictionarySyncEngine: AmiVoiceDictionarySyncEngine
+    let amiVoiceDictionarySyncMonitor: AmiVoiceDictionarySyncMonitor
     /// B-2 pipeline owner that reconciles the learned-term store with the
     /// dictionary sync store. Only live for the production runtime; isolated
     /// test instances never touch the real dictionary store.
@@ -981,6 +995,10 @@ import KoeBridgeEngines
             store: dictionaryStore,
             transport: AmiVoiceDictionaryAPIClient(),
             apiKeyProvider: { KeychainStore.load(provider: .amivoice) }
+        )
+        amiVoiceDictionarySyncMonitor = AmiVoiceDictionarySyncMonitor(
+            store: dictionaryStore,
+            engine: amiVoiceDictionarySyncEngine
         )
         vocabularySyncWired = storageDirectory == nil
 

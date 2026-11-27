@@ -6,6 +6,7 @@ public enum AmiVoiceDictionarySyncTrigger: String, Sendable {
     case launch
     case retry
     case deleteAll = "delete_all"
+    case rollback
 }
 
 public struct AmiVoiceDictionarySyncOutcome: Equatable, Sendable {
@@ -104,6 +105,13 @@ public actor AmiVoiceDictionarySyncEngine {
 
     public func entries() -> [AmiVoiceDictionaryEntry] {
         store.loadEntries()
+    }
+
+    /// True while a sync for `key` is inside its single-flight section.
+    /// Exposed for B-4 status surfaces and for tests that must observe a
+    /// spawned immediate sync fully drained.
+    public func isSyncInFlight(for key: AmiVoiceDictionaryProfileKey) -> Bool {
+        inFlight.contains(key)
     }
 
     public func status(for key: AmiVoiceDictionaryProfileKey) -> AmiVoiceDictionarySyncStatus {
@@ -223,6 +231,38 @@ public actor AmiVoiceDictionarySyncEngine {
         return true
     }
 
+    /// B-3 monitoring hook: transitions an entry out of the synced set with
+    /// evidence attached. The guard on the current state makes it impossible
+    /// for monitoring to move entries that are not currently synced, even if
+    /// the entry's state changed between evaluation and this call. The sync
+    /// trigger itself is left to the caller (immediate for quarantine, debounce
+    /// for review).
+    @discardableResult public func transitionMonitoredEntry(
+        id: UUID,
+        for key: AmiVoiceDictionaryProfileKey,
+        to requestedState: AmiVoiceDictionaryEntryState,
+        errorClass: AmiVoiceDictionarySyncErrorClass?,
+        detail: String?
+    ) -> Bool {
+        guard requestedState != .autoSynced else { return false }
+        var rows = store.loadEntries()
+        guard let index = rows.firstIndex(where: { $0.id == id }) else { return false }
+        var applied = false
+        rows[index].updateEngineState(for: key) { engineState in
+            guard engineState.state.participatesInSnapshot else { return }
+            engineState.state = requestedState
+            engineState.dirty = true
+            engineState.generation &+= 1
+            engineState.lastErrorClass = errorClass
+            engineState.lastErrorDetail = detail
+            applied = true
+        }
+        guard applied else { return false }
+        guard store.saveEntries(rows) else { return false }
+        notifyStatus(key)
+        return true
+    }
+
     public func scheduleDebouncedSync(for key: AmiVoiceDictionaryProfileKey) {
         guard store.automaticSyncEnabled else { return }
         debounceTasks[key]?.cancel()
@@ -241,6 +281,35 @@ public actor AmiVoiceDictionarySyncEngine {
         trigger: AmiVoiceDictionarySyncTrigger = .userAction
     ) async -> AmiVoiceDictionarySyncOutcome {
         await performSync(for: key, trigger: trigger, forceUpload: trigger == .userAction)
+    }
+
+    /// U-02 path for the correction monitor: an immediate send that is allowed
+    /// to overwrite with an EMPTY set. B-1's empty-send guard protects against
+    /// repeating a failing set; a monitored quarantine instead needs the empty
+    /// overwrite to clear the word from the server now (the same operation
+    /// `deleteAll` already performs). When the send cannot complete — failed
+    /// or never attempted — it is recorded as a failed snapshot, the
+    /// pending-operation record that lets a later retry still push the
+    /// (possibly empty) removal.
+    public func resyncAfterMonitoredQuarantine(for key: AmiVoiceDictionaryProfileKey) async -> AmiVoiceDictionarySyncOutcome {
+        let snapshotIDsBefore = Set(store.loadSnapshots().map(\.id))
+        let outcome = await performSync(for: key, trigger: .userAction, forceUpload: true, allowEmptyOverwrite: true)
+        let sendRecorded = store.snapshots(for: key).contains { !snapshotIDsBefore.contains($0.id) }
+        let sendReflected = outcome.kind == .success || outcome.kind == .capExceeded
+        if !sendRecorded, !sendReflected, outcome.kind != .disabled {
+            // The send never ran (already in flight, auth required, store
+            // failure). Record the pending clear the same way the rollback
+            // fallback does, so a later trigger can still finish it.
+            _ = appendSyncSnapshot(
+                for: key,
+                profileID: store.profile(for: key)?.profileID,
+                trigger: .userAction,
+                status: .failed,
+                entries: pendingSnapshotEntries(for: key),
+                rollbackSourceSnapshotID: nil
+            )
+        }
+        return outcome
     }
 
     /// Explicit delete-all control for B-4. Active local entries are archived
@@ -267,6 +336,170 @@ public actor AmiVoiceDictionarySyncEngine {
             notifyStatus(key)
         }
         return await performSync(for: key, trigger: .deleteAll, forceUpload: true)
+    }
+
+    /// Snapshot history for one profile, newest first. B-4 renders this list;
+    /// the `rollbackSourceSnapshotID` field links rollback snapshots to the
+    /// snapshot they restored.
+    public func syncSnapshots(for key: AmiVoiceDictionaryProfileKey) -> [AmiVoiceDictionarySyncSnapshot] {
+        store.snapshots(for: key)
+    }
+
+    /// The most recent snapshot whose send was reflected on the server.
+    public func latestReflectedSyncSnapshot(for key: AmiVoiceDictionaryProfileKey) -> AmiVoiceDictionarySyncSnapshot? {
+        store.latestReflectedSnapshot(for: key)
+    }
+
+    /// U-04 manual retry: resends the currently dirty set through the normal
+    /// immediate path. After a rollback whose send failed, this is the
+    /// exposed retry entry point; automatic retry falls out of the dirty rows
+    /// on the next normal trigger.
+    public func retryPendingRollbackReflection(for key: AmiVoiceDictionaryProfileKey) async -> AmiVoiceDictionarySyncOutcome {
+        await performSync(for: key, trigger: .userAction, forceUpload: true)
+    }
+
+    /// Per-profile rollback (U-05): restores the syncable set of `key` to the
+    /// snapshot's set, then fires an immediate full-overwrite sync of the
+    /// restored set and appends a new rollback snapshot. Hard invariant: an
+    /// entry currently `ignored` is never revived, even when it is a snapshot
+    /// member. Entries sent in the snapshot are restored with their snapshot
+    /// content (and recreated if the row vanished); participating entries
+    /// absent from the snapshot are archived so the overwrite drops them.
+    ///
+    /// The restored rows get fresh generations and stay dirty until a send is
+    /// reflected, so a stale in-flight sync that completes afterwards cannot
+    /// mark them reflected (generation check), a failed send leaves the
+    /// restore standing, and the pending reflection is retried by the next
+    /// normal trigger or `retryPendingRollbackReflection` (U-04).
+    @discardableResult
+    public func rollbackProfile(
+        for key: AmiVoiceDictionaryProfileKey,
+        toSnapshotID sourceSnapshotID: UUID
+    ) async -> AmiVoiceDictionaryRollbackOutcome {
+        // Same contract as deleteAllServerWords: while sync is off, rollback
+        // mutates no local rows and appends no failed snapshot.
+        guard store.automaticSyncEnabled else {
+            return AmiVoiceDictionaryRollbackOutcome(
+                kind: .disabled,
+                sourceSnapshotID: sourceSnapshotID,
+                timestamp: now()
+            )
+        }
+        guard let source = store.loadSnapshots().first(where: { $0.id == sourceSnapshotID && $0.profileKey == key }) else {
+            return AmiVoiceDictionaryRollbackOutcome(
+                kind: .snapshotNotFound,
+                sourceSnapshotID: sourceSnapshotID,
+                timestamp: now()
+            )
+        }
+
+        var rows = store.loadEntries()
+        let snapshotMembers = Dictionary(uniqueKeysWithValues: source.entries.map { ($0.entryID, $0) })
+        var restoredCount = 0
+        var recreatedCount = 0
+        var archivedCount = 0
+        var keptIgnoredCount = 0
+        for index in rows.indices {
+            let entryID = rows[index].id
+            if let snapshotEntry = snapshotMembers[entryID] {
+                if rows[index].engineState(for: key)?.state == .ignored {
+                    keptIgnoredCount += 1
+                    continue
+                }
+                // Restore the sent content so the overwrite reflects the
+                // snapshot's set exactly. `updatedAt` is deliberately left
+                // alone: bumping it would look like a manual edit to the
+                // correction monitor.
+                rows[index].written = snapshotEntry.written
+                rows[index].spoken = snapshotEntry.spoken
+                rows[index].className = snapshotEntry.className
+                rows[index].alternativeWritten = snapshotEntry.alternativeWritten
+                rows[index].biasing = snapshotEntry.biasing
+                rows[index].isProtected = snapshotEntry.isProtected
+                rows[index].updateEngineState(for: key) { engineState in
+                    engineState.state = .readyToSync
+                    engineState.dirty = true
+                    engineState.failureCount = 0
+                    engineState.lastErrorClass = nil
+                    engineState.lastErrorDetail = nil
+                    engineState.generation &+= 1
+                }
+                restoredCount += 1
+            } else if rows[index].engineState(for: key)?.state.participatesInSnapshot == true {
+                rows[index].updateEngineState(for: key) { engineState in
+                    engineState.state = .archived
+                    engineState.dirty = true
+                    engineState.lastErrorDetail = "rollback to snapshot \(sourceSnapshotID.uuidString)"
+                    engineState.generation &+= 1
+                }
+                archivedCount += 1
+            }
+        }
+        for snapshotEntry in source.entries where !rows.contains(where: { $0.id == snapshotEntry.entryID }) {
+            var recreated = AmiVoiceDictionaryEntry(
+                id: snapshotEntry.entryID,
+                written: snapshotEntry.written,
+                spoken: snapshotEntry.spoken,
+                className: snapshotEntry.className,
+                alternativeWritten: snapshotEntry.alternativeWritten,
+                biasing: snapshotEntry.biasing,
+                isProtected: snapshotEntry.isProtected,
+                createdAt: snapshotEntry.createdAt,
+                updatedAt: snapshotEntry.updatedAt
+            )
+            recreated.updateEngineState(for: key) { engineState in
+                engineState.state = .readyToSync
+                engineState.dirty = true
+                engineState.generation &+= 1
+            }
+            rows.append(recreated)
+            recreatedCount += 1
+        }
+        guard store.saveEntries(rows) else {
+            return AmiVoiceDictionaryRollbackOutcome(
+                kind: .storeFailure,
+                sourceSnapshotID: sourceSnapshotID,
+                timestamp: now()
+            )
+        }
+        notifyStatus(key)
+
+        let snapshotIDsBefore = Set(store.loadSnapshots().map(\.id))
+        let outcome = await performSync(
+            for: key,
+            trigger: .rollback,
+            forceUpload: true,
+            rollbackSourceSnapshotID: sourceSnapshotID,
+            allowEmptyOverwrite: true
+        )
+        var rollbackSnapshotID = store.snapshots(for: key)
+            .first { $0.trigger == .rollback && !snapshotIDsBefore.contains($0.id) }?
+            .id
+        if rollbackSnapshotID == nil {
+            // The send never ran (already in flight, auth missing, store
+            // failure). The local restore stands; record the pending
+            // reflection as a failed rollback snapshot so history stays
+            // append-only and retry has a concrete target.
+            rollbackSnapshotID = appendSyncSnapshot(
+                for: key,
+                profileID: store.profile(for: key)?.profileID,
+                trigger: .rollback,
+                status: .failed,
+                entries: pendingSnapshotEntries(for: key),
+                rollbackSourceSnapshotID: sourceSnapshotID
+            )
+        }
+        return AmiVoiceDictionaryRollbackOutcome(
+            kind: outcome.kind == .success ? .applied : .appliedReflectionPending,
+            sourceSnapshotID: sourceSnapshotID,
+            rollbackSnapshotID: rollbackSnapshotID,
+            syncResult: outcome.kind,
+            restoredEntryCount: restoredCount,
+            recreatedEntryCount: recreatedCount,
+            archivedEntryCount: archivedCount,
+            keptIgnoredCount: keptIgnoredCount,
+            timestamp: now()
+        )
     }
 
     /// Launch-time consistency pass. It performs zero transport calls while the
@@ -459,7 +692,9 @@ public actor AmiVoiceDictionarySyncEngine {
     private func performSync(
         for key: AmiVoiceDictionaryProfileKey,
         trigger: AmiVoiceDictionarySyncTrigger,
-        forceUpload: Bool
+        forceUpload: Bool,
+        rollbackSourceSnapshotID: UUID? = nil,
+        allowEmptyOverwrite: Bool = false
     ) async -> AmiVoiceDictionarySyncOutcome {
         guard store.automaticSyncEnabled else {
             return AmiVoiceDictionarySyncOutcome(kind: .disabled, profileKey: key, timestamp: now())
@@ -470,7 +705,7 @@ public actor AmiVoiceDictionarySyncEngine {
         guard var profile = ensureProfile(for: key) else {
             return AmiVoiceDictionarySyncOutcome(kind: .storeFailure, profileKey: key, timestamp: now())
         }
-        if (trigger == .userAction || trigger == .launch || trigger == .deleteAll) && profile.authenticationBlocked {
+        if (trigger == .userAction || trigger == .launch || trigger == .deleteAll || trigger == .rollback) && profile.authenticationBlocked {
             profile.authenticationBlocked = false
             _ = updateProfile(profile)
         }
@@ -493,6 +728,10 @@ public actor AmiVoiceDictionarySyncEngine {
         var validationAttempts = 0
         var totalServerQuarantined = 0
         var lastPreparation: SnapshotPreparation?
+        // B-3: the pair set most recently handed to the transport this sync.
+        // One snapshot is appended per completed send (reflected or failed);
+        // paths that return before any send produce no snapshot.
+        var lastAttemptedPairs: [SnapshotPair]?
         while validationAttempts <= AmiVoiceDictionarySyncPolicy.maximumValidationIsolationAttempts {
             let initialRows = store.loadEntries()
             let preparation = prepareSnapshot(initialRows, for: key)
@@ -526,13 +765,14 @@ public actor AmiVoiceDictionarySyncEngine {
                     timestamp: now()
                 )
             }
-            if payloads.isEmpty && trigger != .deleteAll {
+            if payloads.isEmpty && trigger != .deleteAll && !allowEmptyOverwrite && !hasPendingEmptyOverwrite(for: key) {
                 let quarantinedRows = quarantinedRowCount(rows, key: key)
                 if quarantinedCount > 0 || quarantinedRows > 0 {
                     // The candidate set is empty because everything left is
                     // quarantined. Never send an empty full-overwrite here: it would
                     // delete every word on the server and would repeat a failing set
                     // on the next sync.
+                    recordFailedSyncSnapshotIfAttempted(for: key, trigger: trigger, attemptedPairs: lastAttemptedPairs, rollbackSourceSnapshotID: rollbackSourceSnapshotID)
                     return validationFailureOutcome(
                         profile: profile,
                         key: key,
@@ -560,6 +800,7 @@ public actor AmiVoiceDictionarySyncEngine {
                       !engineState.state.participatesInSnapshot else { return nil }
                 return (row.id, engineState.generation)
             })
+            lastAttemptedPairs = preparation.pairs
             do {
                 _ = try await transport.replaceWords(
                     engine: key.engine,
@@ -567,6 +808,17 @@ public actor AmiVoiceDictionarySyncEngine {
                     profileID: profile.profileID,
                     apiKey: apiKey,
                     payloads: payloads
+                )
+                // The server accepted this overwrite; record the reflected
+                // snapshot before local bookkeeping so a later store failure
+                // cannot misreport the send.
+                recordSyncSnapshot(
+                    for: key,
+                    profileID: profile.profileID,
+                    trigger: trigger,
+                    pairs: preparation.pairs,
+                    status: .reflected,
+                    rollbackSourceSnapshotID: rollbackSourceSnapshotID
                 )
                 rows = store.loadEntries()
                 let finishedAt = now()
@@ -662,6 +914,7 @@ public actor AmiVoiceDictionarySyncEngine {
                     _ = quarantineEntries([unattributedCandidate], detail: Self.unattributedIsolationDetail, key: key)
                     notifyStatus(key)
                 }
+                recordFailedSyncSnapshotIfAttempted(for: key, trigger: trigger, attemptedPairs: lastAttemptedPairs, rollbackSourceSnapshotID: rollbackSourceSnapshotID)
                 return validationFailureOutcome(
                     profile: profile,
                     key: key,
@@ -677,6 +930,7 @@ public actor AmiVoiceDictionarySyncEngine {
                 _ = updateProfile(updated)
                 cancelScheduledRetry(for: key)
                 notifyStatus(key)
+                recordFailedSyncSnapshotIfAttempted(for: key, trigger: trigger, attemptedPairs: lastAttemptedPairs, rollbackSourceSnapshotID: rollbackSourceSnapshotID)
                 return AmiVoiceDictionarySyncOutcome(kind: .authenticationRejected, profileKey: key, timestamp: now())
             } catch AmiVoiceDictionaryTransportError.limitExceeded {
                 var updated = profile
@@ -684,6 +938,7 @@ public actor AmiVoiceDictionarySyncEngine {
                 updated.lastErrorClass = .capExceeded
                 _ = updateProfile(updated)
                 notifyStatus(key)
+                recordFailedSyncSnapshotIfAttempted(for: key, trigger: trigger, attemptedPairs: lastAttemptedPairs, rollbackSourceSnapshotID: rollbackSourceSnapshotID)
                 return AmiVoiceDictionarySyncOutcome(kind: .capExceeded, profileKey: key, timestamp: now())
             } catch AmiVoiceDictionaryTransportError.temporary(let temporary) {
                 var updated = profile
@@ -691,6 +946,7 @@ public actor AmiVoiceDictionarySyncEngine {
                 _ = updateProfile(updated)
                 scheduleRetryIfNeeded(for: key, profile: updated, verifyConsistency: trigger == .launch, forceUpload: forceUpload)
                 notifyStatus(key)
+                recordFailedSyncSnapshotIfAttempted(for: key, trigger: trigger, attemptedPairs: lastAttemptedPairs, rollbackSourceSnapshotID: rollbackSourceSnapshotID)
                 return AmiVoiceDictionarySyncOutcome(kind: .temporaryFailure, profileKey: key, timestamp: now())
             } catch AmiVoiceDictionaryTransportError.profileMissing {
                 var updated = profile
@@ -699,6 +955,7 @@ public actor AmiVoiceDictionarySyncEngine {
                 _ = updateProfile(updated)
                 scheduleRetryIfNeeded(for: key, profile: updated, verifyConsistency: trigger == .launch, forceUpload: forceUpload)
                 notifyStatus(key)
+                recordFailedSyncSnapshotIfAttempted(for: key, trigger: trigger, attemptedPairs: lastAttemptedPairs, rollbackSourceSnapshotID: rollbackSourceSnapshotID)
                 return AmiVoiceDictionarySyncOutcome(kind: .temporaryFailure, profileKey: key, timestamp: now())
             } catch AmiVoiceDictionaryTransportError.malformedResponse {
                 var updated = profile
@@ -706,6 +963,7 @@ public actor AmiVoiceDictionarySyncEngine {
                 _ = updateProfile(updated)
                 scheduleRetryIfNeeded(for: key, profile: updated, verifyConsistency: trigger == .launch, forceUpload: forceUpload)
                 notifyStatus(key)
+                recordFailedSyncSnapshotIfAttempted(for: key, trigger: trigger, attemptedPairs: lastAttemptedPairs, rollbackSourceSnapshotID: rollbackSourceSnapshotID)
                 return AmiVoiceDictionarySyncOutcome(kind: .temporaryFailure, profileKey: key, timestamp: now())
             } catch AmiVoiceDictionaryTransportError.invalidRequest {
                 var updated = profile
@@ -713,6 +971,7 @@ public actor AmiVoiceDictionarySyncEngine {
                 _ = updateProfile(updated)
                 scheduleRetryIfNeeded(for: key, profile: updated, verifyConsistency: trigger == .launch, forceUpload: forceUpload)
                 notifyStatus(key)
+                recordFailedSyncSnapshotIfAttempted(for: key, trigger: trigger, attemptedPairs: lastAttemptedPairs, rollbackSourceSnapshotID: rollbackSourceSnapshotID)
                 return AmiVoiceDictionarySyncOutcome(kind: .temporaryFailure, profileKey: key, timestamp: now())
             } catch {
                 var updated = profile
@@ -720,12 +979,14 @@ public actor AmiVoiceDictionarySyncEngine {
                 _ = updateProfile(updated)
                 scheduleRetryIfNeeded(for: key, profile: updated, verifyConsistency: trigger == .launch, forceUpload: forceUpload)
                 notifyStatus(key)
+                recordFailedSyncSnapshotIfAttempted(for: key, trigger: trigger, attemptedPairs: lastAttemptedPairs, rollbackSourceSnapshotID: rollbackSourceSnapshotID)
                 return AmiVoiceDictionarySyncOutcome(kind: .temporaryFailure, profileKey: key, timestamp: now())
             }
         }
 
         // Defensive fallback: every isolation path above returns, so this is only
         // reachable if the loop bound changes.
+        recordFailedSyncSnapshotIfAttempted(for: key, trigger: trigger, attemptedPairs: lastAttemptedPairs, rollbackSourceSnapshotID: rollbackSourceSnapshotID)
         return validationFailureOutcome(
             profile: profile,
             key: key,
@@ -754,6 +1015,132 @@ public actor AmiVoiceDictionarySyncEngine {
             archivedCount: archivedCount,
             timestamp: now()
         )
+    }
+
+    private static func snapshotTrigger(
+        for trigger: AmiVoiceDictionarySyncTrigger
+    ) -> AmiVoiceDictionarySnapshotTrigger {
+        switch trigger {
+        case .debounced, .retry:
+            return .normal
+        case .userAction, .deleteAll:
+            return .manualImmediate
+        case .launch:
+            return .launchRestore
+        case .rollback:
+            return .rollback
+        }
+    }
+
+    /// Appends one snapshot to the per-profile history (store enforces the
+    /// U-03 retention limit). Returns the new snapshot's ID.
+    @discardableResult
+    private func appendSyncSnapshot(
+        for key: AmiVoiceDictionaryProfileKey,
+        profileID: AmiVoiceProfileID?,
+        trigger: AmiVoiceDictionarySyncTrigger,
+        status: AmiVoiceDictionarySnapshotStatus,
+        entries: [AmiVoiceDictionarySnapshotEntry],
+        rollbackSourceSnapshotID: UUID?
+    ) -> UUID {
+        let snapshot = AmiVoiceDictionarySyncSnapshot(
+            createdAt: now(),
+            profileKey: key,
+            profileID: profileID?.rawValue,
+            trigger: Self.snapshotTrigger(for: trigger),
+            status: status,
+            entries: entries,
+            rollbackSourceSnapshotID: rollbackSourceSnapshotID
+        )
+        _ = store.appendSnapshot(snapshot)
+        return snapshot.id
+    }
+
+    private func recordSyncSnapshot(
+        for key: AmiVoiceDictionaryProfileKey,
+        profileID: AmiVoiceProfileID?,
+        trigger: AmiVoiceDictionarySyncTrigger,
+        pairs: [SnapshotPair],
+        status: AmiVoiceDictionarySnapshotStatus,
+        rollbackSourceSnapshotID: UUID?
+    ) {
+        appendSyncSnapshot(
+            for: key,
+            profileID: profileID,
+            trigger: trigger,
+            status: status,
+            entries: pairs.map { pair in
+                AmiVoiceDictionarySnapshotEntry(
+                    entryID: pair.entry.id,
+                    written: pair.payload.written,
+                    spoken: pair.payload.spoken,
+                    className: pair.payload.className,
+                    alternativeWritten: pair.payload.alternativeWritten,
+                    biasing: pair.payload.biasing,
+                    isProtected: pair.entry.isProtected,
+                    createdAt: pair.entry.createdAt,
+                    updatedAt: pair.entry.updatedAt,
+                    stateAtSend: pair.engineState.state
+                )
+            },
+            rollbackSourceSnapshotID: rollbackSourceSnapshotID
+        )
+    }
+
+    /// Records a failed snapshot only when this sync actually attempted a
+    /// send; pre-send exits (disabled, already in flight, auth required, no
+    /// changes) append nothing.
+    private func recordFailedSyncSnapshotIfAttempted(
+        for key: AmiVoiceDictionaryProfileKey,
+        trigger: AmiVoiceDictionarySyncTrigger,
+        attemptedPairs: [SnapshotPair]?,
+        rollbackSourceSnapshotID: UUID?
+    ) {
+        guard let attemptedPairs else { return }
+        recordSyncSnapshot(
+            for: key,
+            profileID: store.profile(for: key)?.profileID,
+            trigger: trigger,
+            pairs: attemptedPairs,
+            status: .failed,
+            rollbackSourceSnapshotID: rollbackSourceSnapshotID
+        )
+    }
+
+    /// The pending-operation record for an intentional empty overwrite: the
+    /// newest snapshot for `key` is a failed send of an empty set. Only
+    /// `allowEmptyOverwrite` sends (rollback, monitored quarantine) and
+    /// delete-all can produce that record — an ordinary empty snapshot never
+    /// reaches the transport — so its presence means a caller explicitly
+    /// asked the server set to be cleared and that send never completed.
+    /// Any later trigger may then finish it, while an ordinary empty
+    /// snapshot still skips the send (B-1 fix5).
+    private func hasPendingEmptyOverwrite(for key: AmiVoiceDictionaryProfileKey) -> Bool {
+        guard let newest = store.snapshots(for: key).first else { return false }
+        return newest.status == .failed && newest.entries.isEmpty
+    }
+
+    /// The participating set this profile would send right now, in snapshot
+    /// form. Used to record a pending reflection when a required send never
+    /// ran (rollback blocked in flight, quarantine re-sync blocked, auth
+    /// missing).
+    private func pendingSnapshotEntries(for key: AmiVoiceDictionaryProfileKey) -> [AmiVoiceDictionarySnapshotEntry] {
+        store.loadEntries().compactMap { entry -> AmiVoiceDictionarySnapshotEntry? in
+            guard let engineState = entry.engineState(for: key),
+                  engineState.state.participatesInSnapshot else { return nil }
+            return AmiVoiceDictionarySnapshotEntry(
+                entryID: entry.id,
+                written: entry.written,
+                spoken: entry.spoken,
+                className: entry.className,
+                alternativeWritten: entry.alternativeWritten,
+                biasing: entry.biasing,
+                isProtected: entry.isProtected,
+                createdAt: entry.createdAt,
+                updatedAt: entry.updatedAt,
+                stateAtSend: engineState.state
+            )
+        }
     }
 
     @discardableResult
