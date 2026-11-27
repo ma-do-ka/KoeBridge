@@ -15,7 +15,9 @@ struct VocabularySyncAdapterTests {
         let store = AmiVoiceDictionarySyncStore(defaults: defaults)
         let transport = MockAmiVoiceDictionaryTransport()
         let engine = AmiVoiceDictionarySyncEngine(store: store, transport: transport, apiKeyProvider: { "fixture-key" })
-        return (engine, transport, { defaults.removePersistentDomain(forName: suite) })
+        // Only the suite name crosses the @Sendable boundary; UserDefaults is
+        // not Sendable, so the cleanup closure rebuilds it inside.
+        return (engine, transport, { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) })
     }
 
     private func apply(
@@ -142,6 +144,162 @@ struct VocabularySyncAdapterTests {
         #expect(coordinator.trackedCandidates.isEmpty)
         _ = coordinator.ingest(terms: [], existingEntries: [], for: hybridKey)
         #expect(coordinator.trackedCandidates.isEmpty)
+    }
+
+    // MARK: - Tracker eviction on delete
+
+    @Test func deletingATermEvictsItsTrackedCandidate() {
+        let deleted = LearnedTerm(term: "クロハネ", originalFragment: "黒羽")
+        let kept = LearnedTerm(term: "ハルカゼ", originalFragment: "春風")
+        let coordinator = VocabularySyncCoordinator()
+        let first = coordinator.ingest(terms: [deleted, kept], existingEntries: [], for: e2eKey)
+        #expect(first.readyUpserts.count == 2)
+        let syncedRows = first.readyUpserts.map { entry -> AmiVoiceDictionaryEntry in
+            var row = entry
+            row.engineStates = [AmiVoiceDictionaryEngineState(key: e2eKey, state: .autoSynced)]
+            return row
+        }
+
+        // The terms list shrinks with no replacement row for the deleted id.
+        let removal = coordinator.ingest(terms: [kept], existingEntries: syncedRows, for: e2eKey)
+        #expect(removal.archivedIDs == [deleted.id])
+        #expect(coordinator.trackedCandidates.map(\.learnedTermID) == [kept.id])
+
+        // A new term reusing the deleted term's reading is admitted instead of
+        // colliding with the evicted ghost.
+        let revived = LearnedTerm(term: "くろはね", originalFragment: "黒羽")
+        let grown = coordinator.ingest(terms: [kept, revived], existingEntries: syncedRows, for: e2eKey)
+        guard let last = grown.outcomes.last, case .ready = last else {
+            Issue.record("deleted term's reading still collides after eviction")
+            return
+        }
+        #expect(grown.readyUpserts.map(\.written) == ["くろはね"])
+    }
+
+    @Test func deletedTermsStopCountingTowardCaps() {
+        var config = VocabularyCandidatePipeline.Configuration()
+        config.softCap = 1
+        config.safetyCap = 2
+        let coordinator = VocabularySyncCoordinator(configuration: config)
+        let first = LearnedTerm(term: "クロハネ", originalFragment: "黒羽")
+        let second = LearnedTerm(term: "ハルカゼ", originalFragment: "春風")
+
+        _ = coordinator.ingest(terms: [first], existingEntries: [], for: e2eKey)
+        let held = coordinator.ingest(terms: [first, second], existingEntries: [], for: e2eKey)
+        guard let heldOutcome = held.outcomes.last,
+              case .pendingReview(let reason, _) = heldOutcome else {
+            Issue.record("second term was not cap-held before the delete")
+            return
+        }
+        #expect(reason == .capExceededSoft)
+
+        // Deleting the first term frees its cap slot, so the previously held
+        // term is admitted on the next reconcile.
+        let regrown = coordinator.ingest(terms: [second], existingEntries: [], for: e2eKey)
+        guard let outcome = regrown.outcomes.last, case .ready = outcome else {
+            Issue.record("deleted term still counts toward the caps")
+            return
+        }
+        #expect(coordinator.trackedCandidates.map(\.learnedTermID) == [second.id])
+    }
+
+    // MARK: - Reconcile vs. terminal engine states
+
+    private func existingRow(
+        _ entry: AmiVoiceDictionaryEntry,
+        state: AmiVoiceDictionaryEntryState
+    ) -> AmiVoiceDictionaryEntry {
+        var row = entry
+        row.engineStates = [AmiVoiceDictionaryEngineState(key: e2eKey, state: state)]
+        return row
+    }
+
+    @Test func reconcileNeverResurrectsParkedRows() {
+        let archivedTerm = LearnedTerm(term: "クロハネ", originalFragment: "黒羽")
+        let ignoredTerm = LearnedTerm(term: "ハルカゼ", originalFragment: "春風")
+        let failedTerm = LearnedTerm(term: "シロガネ", originalFragment: "白銀")
+        let disabledTerm = LearnedTerm(term: "アカツキ", originalFragment: "暁")
+        let heldTerm = LearnedTerm(term: "QA", originalFragment: "課")
+        let heldArchivedTerm = LearnedTerm(term: "QB", originalFragment: "級")
+        let heldIgnoredTerm = LearnedTerm(term: "QC", originalFragment: "休")
+        let heldDisabledTerm = LearnedTerm(term: "QD", originalFragment: "駄")
+        let excludedTerm = LearnedTerm(term: "子ども", originalFragment: "子供")
+        let ignoredExcludedTerm = LearnedTerm(term: "アストラ同期", originalFragment: "アストラ同期、")
+        let terms = [
+            archivedTerm, ignoredTerm, failedTerm, disabledTerm,
+            heldTerm, heldArchivedTerm, heldIgnoredTerm, heldDisabledTerm,
+            excludedTerm, ignoredExcludedTerm,
+        ]
+
+        // Seed the tracker and reuse the coordinator's own emitted entries so
+        // every parked row below is content-identical to a fresh upsert.
+        let coordinator = VocabularySyncCoordinator()
+        let seed = coordinator.ingest(terms: terms, existingEntries: [], for: e2eKey)
+        let readyByID = Dictionary(uniqueKeysWithValues: seed.readyUpserts.map { ($0.id, $0) })
+        let pendingByID = Dictionary(uniqueKeysWithValues: seed.pendingUpserts.map { ($0.id, $0) })
+        #expect(readyByID.count == 4)
+        #expect(pendingByID.count == 4)
+
+        let existing = [
+            existingRow(readyByID[archivedTerm.id]!, state: .archived),
+            existingRow(readyByID[ignoredTerm.id]!, state: .ignored),
+            existingRow(readyByID[failedTerm.id]!, state: .syncFailed),
+            existingRow(readyByID[disabledTerm.id]!, state: .autoDisabled),
+            existingRow(pendingByID[heldTerm.id]!, state: .pendingReview),
+            existingRow(pendingByID[heldArchivedTerm.id]!, state: .archived),
+            existingRow(pendingByID[heldIgnoredTerm.id]!, state: .ignored),
+            existingRow(pendingByID[heldDisabledTerm.id]!, state: .autoDisabled),
+            existingRow(
+                AmiVoiceDictionaryEntry(id: excludedTerm.id, written: "子ども"),
+                state: .readyToSync
+            ),
+            existingRow(
+                AmiVoiceDictionaryEntry(id: ignoredExcludedTerm.id, written: "アストラ同期"),
+                state: .ignored
+            ),
+        ]
+        let plan = coordinator.ingest(terms: terms, existingEntries: existing, for: e2eKey)
+        // Parked rows are never re-emitted; the only mutation left is the
+        // participating row whose term became pipeline-excluded.
+        #expect(plan.readyUpserts.isEmpty)
+        #expect(plan.pendingUpserts.isEmpty)
+        #expect(plan.ignoredIDs == [excludedTerm.id])
+        #expect(plan.archivedIDs.isEmpty)
+    }
+
+    @Test func deleteAllThenIngestEmitsNoUpserts() async throws {
+        let (engine, transport, cleanup) = try makeEngine()
+        defer { cleanup() }
+        await engine.setAutomaticSyncEnabled(true)
+        let terms = [
+            LearnedTerm(term: "クロハネ", originalFragment: "黒羽"),
+            LearnedTerm(term: "ハルカゼ", originalFragment: "春風"),
+            LearnedTerm(term: "QA", originalFragment: "課"),
+        ]
+        let coordinator = VocabularySyncCoordinator()
+        await apply(coordinator.ingest(terms: terms, existingEntries: [], for: e2eKey), to: engine, for: e2eKey)
+        #expect(await engine.syncNow(for: e2eKey).kind == .success)
+
+        let delete = await engine.deleteAllServerWords(for: e2eKey)
+        #expect(delete.kind == .success)
+        let rows = await engine.entries()
+        #expect(rows.allSatisfy {
+            let state = $0.engineState(for: e2eKey)?.state
+            return state == .archived || state == .pendingReview
+        })
+
+        // The delete-all archive is terminal for reconcile: the next ingest
+        // must not re-upload the whole dictionary.
+        let plan = coordinator.ingest(terms: terms, existingEntries: rows, for: e2eKey)
+        #expect(plan.readyUpserts.isEmpty)
+        #expect(plan.pendingUpserts.isEmpty)
+        #expect(plan.ignoredIDs.isEmpty)
+        #expect(plan.archivedIDs.isEmpty)
+        await apply(plan, to: engine, for: e2eKey)
+        transport.resetCalls()
+        try? await Task.sleep(for: .milliseconds(200))
+        _ = await engine.syncNow(for: e2eKey)
+        #expect(transport.calls.filter { $0.method == "POST" }.isEmpty)
     }
 
     // MARK: - End-to-end store -> pipeline -> adapter -> sync input

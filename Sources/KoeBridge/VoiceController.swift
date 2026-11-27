@@ -58,6 +58,9 @@ import KoeBridgeEngines
     @Published var amiVoiceEngine: AmiVoiceEngine {
         didSet {
             UserDefaults.standard.set(amiVoiceEngine.rawValue, forKey: "amiVoiceEngine")
+            // The selected profile key follows the engine; reconcile the
+            // learned-term store into the newly selected profile.
+            refreshVocabularyDictionaryCandidates()
         }
     }
     @Published var outputVolumeGuardEnabled: Bool {
@@ -858,8 +861,12 @@ import KoeBridgeEngines
             objectWillChange.send()
             guard newValue else { return }
             let key = currentAmiVoiceDictionaryProfileKey
+            // Reconcile first, in launch order, so the consistency pass sees
+            // the learned-term rows in their proper state.
+            refreshVocabularyDictionaryCandidates()
             Task { [weak self] in
                 guard let self else { return }
+                await self.vocabularySyncTask?.value
                 _ = await self.amiVoiceDictionarySyncEngine.performLaunchConsistencyPass(for: key)
             }
         }
