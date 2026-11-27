@@ -211,6 +211,10 @@ struct CorpusManifest: Codable {
     let audio_format: CorpusAudioFormat
     let clips: [CorpusClip]
 
+    var isP1Corpus: Bool {
+        !clips.isEmpty && clips.allSatisfy { $0.id.hasPrefix("p1-") }
+    }
+
     static func load(from path: String) throws -> CorpusManifest {
         let url = URL(fileURLWithPath: path)
         let data: Data
@@ -239,6 +243,10 @@ struct CorpusManifest: Codable {
               audio_format.channels == 1 else {
             throw BenchFailure.manifest("audio_format は WAV / PCM_S16LE / 16000 Hz / mono である必要があります")
         }
+        if isP1Corpus {
+            try validateP1()
+            return
+        }
         guard clips.count == 36 else { throw BenchFailure.manifest("clips は 36 件である必要があります") }
 
         var seen = Set<String>()
@@ -255,6 +263,101 @@ struct CorpusManifest: Codable {
             guard clips.filter({ $0.track == 2 && $0.category == category }).count == 2 else {
                 throw BenchFailure.manifest("Track 2 category \(category) は 2 本である必要があります")
             }
+        }
+    }
+
+    private func validateP1() throws {
+        guard clips.count == 48 else { throw BenchFailure.manifest("clips は 48 件である必要があります") }
+
+        var seen = Set<String>()
+        var combinations = Set<String>()
+        for clip in clips {
+            guard seen.insert(clip.id).inserted else {
+                throw BenchFailure.manifest("clip id が重複しています: \(clip.id)")
+            }
+            let combination = try validateP1Clip(clip)
+            guard combinations.insert(combination).inserted else {
+                throw BenchFailure.manifest("clip id が重複しています: \(clip.id)")
+            }
+        }
+        for item in Self.p1Items {
+            for voice in Self.p1Voices {
+                for rep in Self.p1Reps {
+                    let combination = "\(item)-\(voice)-\(rep)"
+                    guard combinations.contains(combination) else {
+                        throw BenchFailure.manifest("clip id が不足しています: p1-\(combination)")
+                    }
+                }
+            }
+        }
+    }
+
+    private func validateP1Clip(_ clip: CorpusClip) throws -> String {
+        let parts = clip.id.split(separator: "-", omittingEmptySubsequences: false).map(String.init)
+        guard parts.count == 4,
+              parts[0] == "p1",
+              Self.p1Items.contains(parts[1]),
+              Self.p1Voices.contains(parts[2]),
+              Self.p1Reps.contains(parts[3]) else {
+            throw BenchFailure.manifest("clip id の形式が不正です: \(clip.id)")
+        }
+        let item = parts[1]
+        let voicePart = parts[2]
+        let rep = parts[3]
+        let expectedTrack = voicePart == "normal" ? 1 : 2
+        guard clip.track == expectedTrack else {
+            throw BenchFailure.manifest("track が不正です: \(clip.id)")
+        }
+        let expectedCategory = Self.expectedP1Category(item: item)
+        guard clip.category == expectedCategory else {
+            throw BenchFailure.manifest("category が不正です: \(clip.id)")
+        }
+        guard clip.file == clip.id + ".wav" else {
+            throw BenchFailure.manifest("file は <id>.wav である必要があります: \(clip.id)")
+        }
+        guard !clip.reference.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw BenchFailure.manifest("reference が空です: \(clip.id)")
+        }
+        guard clip.category_name == Self.expectedP1CategoryName(category: expectedCategory) else {
+            throw BenchFailure.manifest("category_name が不正です: \(clip.id)")
+        }
+        guard clip.estimated_seconds.isFinite,
+              (1.0...30.0).contains(clip.estimated_seconds) else {
+            throw BenchFailure.manifest("estimated_seconds が範囲外です: \(clip.id)")
+        }
+        if let sha256 = clip.sha256 {
+            let validHex = sha256.count == 64 && sha256.unicodeScalars.allSatisfy { scalar in
+                (0x30...0x39).contains(scalar.value) || (0x61...0x66).contains(scalar.value)
+            }
+            guard validHex else {
+                throw BenchFailure.manifest("sha256 は小文字 hex 64 文字である必要があります: \(clip.id)")
+            }
+        }
+        guard clip.voice == voicePart else {
+            throw BenchFailure.manifest("voice が不正です: \(clip.id)")
+        }
+        return "\(item)-\(voicePart)-\(rep)"
+    }
+
+    private static let p1Items = [
+        "d1", "d2", "d3", "d4",
+        "n1", "n2", "n3", "n4",
+        "m1", "m2", "m3", "m4"
+    ]
+    private static let p1Voices = ["normal", "whisper"]
+    private static let p1Reps = ["1", "2"]
+
+    private static func expectedP1Category(item: String) -> Int {
+        if item.hasPrefix("d") { return 1 }
+        if item.hasPrefix("n") { return 2 }
+        return 3
+    }
+
+    private static func expectedP1CategoryName(category: Int) -> String {
+        switch category {
+        case 1: return "日常文"
+        case 2: return "固有名詞"
+        default: return "数値・英字"
         }
     }
 

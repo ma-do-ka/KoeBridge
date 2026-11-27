@@ -60,13 +60,20 @@ enum BenchReportBuilder {
         return lines.joined(separator: "\n") + "\n"
     }
 
+    private static func trackTitle(track: Int, manifest: CorpusManifest) -> String {
+        if manifest.isP1Corpus {
+            return track == 1 ? "Track 1（normal）" : "Track 2（whisper）"
+        }
+        return track == 1 ? "Track 1（実音声）" : "Track 2（合成音声・再現性付録）"
+    }
+
     private static func appendTrackSection(
         lines: inout [String],
         track: Int,
         manifest: CorpusManifest,
         results: [BenchResultRecord]
     ) {
-        let title = track == 1 ? "Track 1（実音声）" : "Track 2（合成音声・再現性付録）"
+        let title = trackTitle(track: track, manifest: manifest)
         lines.append("## \(title)")
         lines.append("")
         lines.append("Track 1 と Track 2 は音声特性が異なるため、常に別表として扱います。")
@@ -75,7 +82,8 @@ enum BenchReportBuilder {
         lines.append("")
         lines.append("| カテゴリ | N_ref | Apple | Gemini Live | AmiVoice |")
         lines.append("| --- | ---: | --- | --- | --- |")
-        for category in 1...6 {
+        let categories = Set(manifest.clips.filter { $0.track == track }.map(\.category)).sorted()
+        for category in categories {
             let clips = manifest.clips.filter { $0.track == track && $0.category == category }
             let nref = referenceLength(clips)
             let name = clips.first?.category_name ?? "category \(category)"
