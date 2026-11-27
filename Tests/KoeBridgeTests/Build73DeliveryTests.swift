@@ -1120,6 +1120,15 @@ import KoeBridgeCore
             let f = Fixture()
             f.bundle = "com.google.Chrome"
             f.currentField = nil
+            // Unavailable-capture recovery resolves the host's bundle identity from
+            // the pending take's start target or NSRunningApplication; the fake pid
+            // has no running app, so the take supplies the identity a live take would.
+            let takeStart = InsertionTarget(bundleIdentifier: f.bundle, localizedName: "Chrome",
+                pid: f.pid, focused: f.field, window: f.window,
+                selectionAttribute: kAXSelectedTextRangeAttribute,
+                selection: f.range(0, 0).value, textSnapshot: nil,
+                capturedAt: 0, blockedReason: nil)
+                .withReceiptFieldNature(.normal)
             var t = f.transport()
             t.capture = { _, _ in
                 f.captures += 1
@@ -1133,7 +1142,7 @@ import KoeBridgeCore
                 f.selection = f.range(0, 0)
                 f.fieldDescription = descriptionRead
             }
-            let report = await TextInsertion.deliver("x", to: nil, transport: t)
+            let report = await TextInsertion.deliver("x", to: takeStart, transport: t)
             #expect(report.outcome == .inserted)
             #expect(report.target?.receiptFieldNature == expectedNature)
             if expectedNature != .normal {
