@@ -368,6 +368,15 @@ import KoeBridgeEngines
         set { appProfilesStore.save(newValue) }
     }
     func resetAppProfiles() { appProfilesStore.resetCorruptValue() }
+    @Published private(set) var protectedAppsStore = SettingsArray<ProtectedApp>("protectedApps")
+    var protectedApps: [ProtectedApp] {
+        get { protectedAppsStore.rows }
+        set { protectedAppsStore.save(newValue) }
+    }
+    func resetProtectedApps() { protectedAppsStore.resetCorruptValue() }
+    private var protectedBundleIdentifiers: Set<String>? {
+        ProtectedAppPolicy.bundleIdentifiers(in: protectedAppsStore)
+    }
     @Published private(set) var learnedTermsStore = SettingsArray<LearnedTerm>("learnedTerms")
     var learnedTerms: [LearnedTerm] {
         get { learnedTermsStore.rows }
@@ -409,7 +418,7 @@ import KoeBridgeEngines
         guard KeychainStore.loadForUse() != nil else { status = AppError.noKey.localizedDescription; return }
         var selectedTarget: InsertionTarget?
         let admitted = postingGate.withSelectionWrite {
-            guard let current = InsertionTarget.capture().target,
+            guard let current = InsertionTarget.capture(protectedBundleIdentifiers: protectedBundleIdentifiers).target,
                   current.sameField(as: anchor.target), current.textSnapshot == anchor.after else { return }
             selectedTarget = current.selectDeliveredSpan(before: anchor.before, after: anchor.after, submitted: anchor.submittedText)
         }
@@ -754,9 +763,11 @@ import KoeBridgeEngines
     private var warmScheduleTask: Task<Void, Never>?
     private var active: DictationTake?
     private var microphoneNoticeStore = MicrophoneNoticeStore()
-    private lazy var postingGate = TextInsertion.PostingGate { [unowned self] report, sourceID in
+    private lazy var postingGate = TextInsertion.PostingGate(reconcile: { [unowned self] report, sourceID in
         reconcileDelivery(report, sourceTakeID: sourceID)
-    }
+    }, protectedBundleIdentifiers: { [unowned self] in
+        self.protectedBundleIdentifiers
+    })
     private var inFlight: [UUID: DictationTake] = [:]
     private var finished = OrderedResultBuffer<Completion>(maximumPending: 8)
     /// Presentation only: report a live fallback accurately; idle text names the OS default.
@@ -1198,7 +1209,8 @@ import KoeBridgeEngines
         let focusStartedAt = ProcessInfo.processInfo.systemUptime
         let targetResult = transformTarget.map { (target: Optional($0), reason: "ok") }
             ?? preparation.captureTarget?(take.inputDiagnostics)
-            ?? InsertionTarget.capture(diagnostics: take.inputDiagnostics) // BEFORE the overlay is shown
+            ?? InsertionTarget.capture(diagnostics: take.inputDiagnostics,
+                                       protectedBundleIdentifiers: protectedBundleIdentifiers) // BEFORE the overlay is shown
         take.target = targetResult.target?.removingTextSnapshotUnlessNormal()
         take.targetCaptureReason = targetResult.reason
         if recheckContextEnabled && selection == nil {

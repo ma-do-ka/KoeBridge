@@ -133,6 +133,7 @@ Sources/KoeBridgeCore/OverlayFeedback.swift
 Sources/KoeBridgeCore/PCM16WAV.swift
 Sources/KoeBridgeCore/PermissionSetupPolicy.swift
 Sources/KoeBridgeCore/PostProcessing.swift
+Sources/KoeBridgeCore/ProtectedApps.swift
 Sources/KoeBridgeCore/ProtectedTextSpans.swift
 Sources/KoeBridgeCore/QuickNoInputPolicy.swift
 Sources/KoeBridgeCore/RecentHistoryMenuPolicy.swift
@@ -213,6 +214,7 @@ Sources/KoeBridgeSelfTest/OverlayFeedbackTests.swift
 Sources/KoeBridgeSelfTest/PermissionSetupPolicyTests.swift
 Sources/KoeBridgeSelfTest/PersistenceRecoveryTests.swift
 Sources/KoeBridgeSelfTest/PostProcessingTests.swift
+Sources/KoeBridgeSelfTest/ProtectedAppsTests.swift
 Sources/KoeBridgeSelfTest/RecentHistoryMenuSelfTests.swift
 Sources/KoeBridgeSelfTest/RecentTranscriptArchiveTests.swift
 Sources/KoeBridgeSelfTest/ReleaseUpdatePolicySelfTests.swift
@@ -277,6 +279,7 @@ Tests/KoeBridgeCoreTests/OverlayFeedbackTests.swift
 Tests/KoeBridgeCoreTests/PermissionSetupPolicyTests.swift
 Tests/KoeBridgeCoreTests/PersistenceRecoveryTests.swift
 Tests/KoeBridgeCoreTests/PostProcessingTests.swift
+Tests/KoeBridgeCoreTests/ProtectedAppsTests.swift
 Tests/KoeBridgeCoreTests/RecentHistoryMenuPolicyTests.swift
 Tests/KoeBridgeCoreTests/RecentTranscriptArchiveTests.swift
 Tests/KoeBridgeCoreTests/ReleaseUpdatePolicyTests.swift

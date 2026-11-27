@@ -74,6 +74,10 @@ struct SettingsArrayTests {
         try verify("learnedTerms", row: LearnedTerm(term: "test", originalFragment: "term"))
     }
 
+    @Test func protectedApps() throws {
+        try verify("protectedApps", row: ProtectedApp(bundleIdentifier: "com.example.Protected", displayName: "Protected"))
+    }
+
     @Test func snippets() throws {
         try verify("snippets", row: SnippetRule(trigger: "test", template: "fixture"))
     }

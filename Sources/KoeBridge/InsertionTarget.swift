@@ -245,14 +245,16 @@ import KoeBridgeCore
 
     static func capture(diagnostics: InputDiagnosticTrace? = nil,
                         stage: InputDiagnosticEvent.Stage = .capture, requireTextInput: Bool = false,
-                        externalText: ExternalTextAccess? = nil)
+                        externalText: ExternalTextAccess? = nil,
+                        protectedBundleIdentifiers: Set<String>? = [])
         -> (target: InsertionTarget?, reason: String) {
         captureSample(diagnostics: diagnostics, stage: stage, requireTextInput: requireTextInput,
-                      externalText: externalText).resolution
+                      externalText: externalText, protectedBundleIdentifiers: protectedBundleIdentifiers).resolution
     }
 
     static func captureSample(diagnostics: InputDiagnosticTrace?, stage: InputDiagnosticEvent.Stage,
-                              requireTextInput: Bool, externalText: ExternalTextAccess? = nil) -> CaptureSample {
+                              requireTextInput: Bool, externalText: ExternalTextAccess? = nil,
+                              protectedBundleIdentifiers: Set<String>? = []) -> CaptureSample {
         let diagnostics = diagnostics?.isCollecting == true ? diagnostics : nil
         let began = diagnostics.map { _ in ProcessInfo.processInfo.systemUptime }
         func failure(_ reason: Token, pid: pid_t? = nil, focused: CFTypeRef? = nil,
@@ -371,7 +373,8 @@ import KoeBridgeCore
                 bundleIdentifier: target.bundleIdentifier,
                 labelHints: fieldHints,
                 secureInputEnabled: secureInputEnabled,
-                attributesReadable: attributesReadable
+                attributesReadable: attributesReadable,
+                protectedBundleIdentifiers: protectedBundleIdentifiers
             )
             target = target.withReceiptFieldNature(receiptFieldNature)
         }

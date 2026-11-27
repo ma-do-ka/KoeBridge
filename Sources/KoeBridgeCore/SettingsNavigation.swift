@@ -78,6 +78,7 @@ public enum SettingsSearchCatalog {
         .init(id: "usage", section: .history, title: "認識エンジンの利用回数", keywords: "使用統計 グラフ Gemini Apple 失敗 切替"),
         .init(id: "token", section: .history, title: "Gemini APIのトークン使用量", keywords: "API usageMetadata 料金 回数 秒数"),
         .init(id: "history", section: .history, title: "文字起こし履歴", keywords: "history copy delete learning original alternative 過去の文章 コピー 削除 修正 学習 元の文章 候補"),
+        .init(id: "protected-apps", section: .history, title: "入力証拠を最小化するアプリ", keywords: "privacy protected apps receipt evidence プライバシー 保護 アプリ 入力証拠 最小化 バンドル"),
         .init(id: "logging", section: .history, title: "問題調査用の記録を残す", keywords: "diagnostics log consent 診断ログ デバッグ 履歴 開発 削除 保存先"),
         .init(id: "accessibility", section: .permissions, title: "入力先へのアクセスを許可", keywords: "accessibility permission 権限 アクセシビリティ セキュリティ"),
         .init(id: "post", section: .permissions, title: "文字の入力操作を許可", keywords: "PostEvent permission 権限 キーボード"),
