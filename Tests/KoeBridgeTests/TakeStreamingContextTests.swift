@@ -18,7 +18,7 @@ import KoeBridgeCore
             }
             return ("[\(text)]", true)
         }
-        context.ingest("一つ目です。二つ目です。三つ目です。")
+        context.ingest(finalizedPrefix: "一つ目です。二つ目です。三つ目です。")
         for _ in 0..<1_000 where gates.count < 3 { await Task.yield() }
         try #require(gates.count == 3)
         // Release the sentences out of order; seal awaits every task anyway.
@@ -38,7 +38,7 @@ import KoeBridgeCore
         let context = TakeStreamingContext(postProcessEligible: true) { text in
             text.contains("失敗") ? (text, false) : ("[\(text)]", true)
         }
-        context.ingest("成功です。失敗です。これも成功です。")
+        context.ingest(finalizedPrefix: "成功です。失敗です。これも成功です。")
         let outcome = await context.seal(finalText: "成功です。失敗です。これも成功です。") { _ in }
         #expect(!outcome.degraded)
         #expect(outcome.processedText == "[成功です。]失敗です。[これも成功です。]")
@@ -54,7 +54,7 @@ import KoeBridgeCore
             try? await Task.sleep(for: .seconds(3_600))
             return ("[\(text)]", true)
         }
-        context.ingest("確定した一つ目です。確定した二つ目です。")
+        context.ingest(finalizedPrefix: "確定した一つ目です。確定した二つ目です。")
         let outcome = await context.seal(finalText: "まったく別の確定文") { armed.append($0) }
         #expect(outcome.degraded)
         #expect(armed.isEmpty)
@@ -92,7 +92,7 @@ import KoeBridgeCore
             seen.append(text)
             return ("[\(text)]", true)
         }
-        context.ingest("一です。")
+        context.ingest(finalizedPrefix: "一です。")
         let outcome = await context.seal(finalText: "一です。二です。") { _ in }
         #expect(!outcome.degraded)
         #expect(outcome.unitCount == 2)
@@ -112,7 +112,7 @@ import KoeBridgeCore
             calls += 1
             return ("[\(text)]", true)
         }
-        context.ingest("一です。二です。")
+        context.ingest(finalizedPrefix: "一です。二です。")
         let outcome = await context.seal(finalText: "一です。二です。") { armed.append($0) }
         #expect(calls == 0)
         #expect(armed.isEmpty)
@@ -127,7 +127,7 @@ import KoeBridgeCore
     @Test func eligibleSealArmsRawTextFallback() async {
         var armed: [String] = []
         let context = TakeStreamingContext(postProcessEligible: true) { ($0, true) }
-        context.ingest("一です。")
+        context.ingest(finalizedPrefix: "一です。")
         let outcome = await context.seal(finalText: "一です。二です。") { armed.append($0) }
         #expect(armed == ["一です。二です。"])
         #expect(!outcome.degraded)
