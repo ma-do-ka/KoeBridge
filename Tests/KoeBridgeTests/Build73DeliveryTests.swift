@@ -1121,9 +1121,11 @@ import KoeBridgeCore
             f.bundle = "com.google.Chrome"
             f.currentField = nil
             var t = f.transport()
-            t.capture = { _ in
+            t.capture = { _, _ in
                 f.captures += 1
-                return .unavailable(.focusedTextElementUnavailable, pid: f.pid, focused: nil, ownerStatus: nil)
+                let sample: InsertionTarget.CaptureSample = .unavailable(
+                    .focusedTextElementUnavailable, pid: f.pid, focused: nil, ownerStatus: nil)
+                return sample
             }
             f.onWait = {
                 f.currentField = f.field
