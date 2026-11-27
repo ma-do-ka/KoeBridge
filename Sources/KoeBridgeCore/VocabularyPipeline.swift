@@ -477,4 +477,40 @@ public final class CandidateSetTracker: @unchecked Sendable {
         // (We don't track class context; treat all as same class per OQ‑04.)
         return existingWrittens.contains { $0 != written }
     }
+
+    /// Snapshot of the tracked candidate set in insertion order.
+    public var trackedCandidates: [VocabularyCandidate] {
+        lock.lock()
+        defer { lock.unlock() }
+        return candidates
+    }
+
+    /// Upserts a tracked candidate keyed by `learnedTermID`. Seeding the same
+    /// term twice converges to identical state, so replaying the persisted
+    /// learned-term store at launch is idempotent.
+    public func seedCandidate(_ candidate: VocabularyCandidate) {
+        lock.lock()
+        defer { lock.unlock() }
+        removeCandidateLocked(learnedTermID: candidate.learnedTermID)
+        candidates.append(candidate)
+        let normalizedReading = VocabularyReadingGeneration.canonicalHiragana(candidate.reading)
+        readingToWritten[normalizedReading, default: []].append(candidate.written)
+    }
+
+    /// Drops the tracked candidate for a LearnedTerm id; a no-op when absent.
+    public func removeCandidate(learnedTermID: UUID) {
+        lock.lock()
+        defer { lock.unlock() }
+        removeCandidateLocked(learnedTermID: learnedTermID)
+    }
+
+    private func removeCandidateLocked(learnedTermID: UUID) {
+        guard let index = candidates.firstIndex(where: { $0.learnedTermID == learnedTermID }) else { return }
+        let removed = candidates.remove(at: index)
+        let normalizedReading = VocabularyReadingGeneration.canonicalHiragana(removed.reading)
+        guard var writtens = readingToWritten[normalizedReading],
+              let writtenIndex = writtens.firstIndex(of: removed.written) else { return }
+        writtens.remove(at: writtenIndex)
+        readingToWritten[normalizedReading] = writtens.isEmpty ? nil : writtens
+    }
 }

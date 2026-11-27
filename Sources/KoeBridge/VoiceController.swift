@@ -371,15 +371,24 @@ import KoeBridgeEngines
     @Published private(set) var learnedTermsStore = SettingsArray<LearnedTerm>("learnedTerms")
     var learnedTerms: [LearnedTerm] {
         get { learnedTermsStore.rows }
-        set { if learnedTermsStore.save(newValue) { scheduleWarmGemini() } }
+        set {
+            if learnedTermsStore.save(newValue) {
+                refreshVocabularyDictionaryCandidates()
+                scheduleWarmGemini()
+            }
+        }
     }
-    func resetLearnedTerms() { learnedTermsStore.resetCorruptValue() }
+    func resetLearnedTerms() {
+        learnedTermsStore.resetCorruptValue()
+        refreshVocabularyDictionaryCandidates()
+    }
 
     func learn(fragment: String, term: String, from record: TranscriptRecord) -> Bool {
         guard LearnedTermPolicy.validationHint(fragment: fragment, term: term, recordText: record.text) == nil else { return false }
         let updated = LearnedTermPolicy.saving(
             LearnedTerm(term: term, originalFragment: fragment, sourceRecordID: record.id), in: learnedTerms)
         guard learnedTermsStore.save(updated) else { return false }
+        refreshVocabularyDictionaryCandidates()
         scheduleWarmGemini()
         return true
     }
@@ -827,6 +836,14 @@ import KoeBridgeEngines
     private let preparation: PreparationEnvironment
     private let amiVoiceDictionaryStore: AmiVoiceDictionarySyncStore
     let amiVoiceDictionarySyncEngine: AmiVoiceDictionarySyncEngine
+    /// B-2 pipeline owner that reconciles the learned-term store with the
+    /// dictionary sync store. Only live for the production runtime; isolated
+    /// test instances never touch the real dictionary store.
+    private let vocabularySyncCoordinator = VocabularySyncCoordinator()
+    private let vocabularySyncWired: Bool
+    /// Serializes reconcile passes so an older learned-term snapshot can never
+    /// overwrite the effects of a newer one.
+    private var vocabularySyncTask: Task<Void, Never>?
 
     private var currentAmiVoiceDictionaryProfileKey: AmiVoiceDictionaryProfileKey {
         AmiVoiceDictionaryProfileKey(engine: amiVoiceEngine, samplingRate: .rate16k)
@@ -862,6 +879,44 @@ import KoeBridgeEngines
 
     func refreshAmiVoiceDictionarySyncStatus() async -> AmiVoiceDictionarySyncStatus {
         await amiVoiceDictionarySyncEngine.status(for: currentAmiVoiceDictionaryProfileKey)
+    }
+
+    /// Replays the learned-term store through the B-2 candidate pipeline and
+    /// applies the reconcile plan to B-1's sync engine. `.ready` candidates are
+    /// upserted as `.readyToSync`, which is the trigger B-1 already uses for
+    /// learned terms (it schedules the debounced upload itself). Held and
+    /// excluded terms move to non-participating states, and rows whose learned
+    /// term disappeared are archived. No trigger issued here is `.deleteAll`,
+    /// so B-1's empty-snapshot guard keeps an empty ready set a no-op rather
+    /// than an empty upload.
+    private func refreshVocabularyDictionaryCandidates() {
+        guard vocabularySyncWired else { return }
+        let previous = vocabularySyncTask
+        vocabularySyncTask = Task { [weak self] in
+            await previous?.value
+            await self?.applyVocabularySyncPlan()
+        }
+    }
+
+    private func applyVocabularySyncPlan() async {
+        let key = currentAmiVoiceDictionaryProfileKey
+        let plan = vocabularySyncCoordinator.ingest(
+            terms: learnedTermsStore.rows,
+            existingEntries: amiVoiceDictionaryStore.loadEntries(),
+            for: key
+        )
+        for id in plan.ignoredIDs {
+            _ = await amiVoiceDictionarySyncEngine.transitionEntry(id: id, for: key, to: .ignored)
+        }
+        for id in plan.archivedIDs {
+            _ = await amiVoiceDictionarySyncEngine.transitionEntry(id: id, for: key, to: .archived)
+        }
+        for entry in plan.pendingUpserts {
+            _ = await amiVoiceDictionarySyncEngine.upsertEntry(entry, for: key, state: .pendingReview)
+        }
+        for entry in plan.readyUpserts {
+            _ = await amiVoiceDictionarySyncEngine.upsertEntry(entry, for: key, state: .readyToSync)
+        }
     }
 
     func amiVoiceRecognitionProfileID(for engine: AmiVoiceEngine) -> String? {
@@ -903,6 +958,7 @@ import KoeBridgeEngines
             transport: AmiVoiceDictionaryAPIClient(),
             apiKeyProvider: { KeychainStore.load(provider: .amivoice) }
         )
+        vocabularySyncWired = storageDirectory == nil
 
         let d = UserDefaults.standard
         let guardEnabled = storageDirectory == nil && d.bool(forKey: OutputVolumeGuard.preferenceKey)
@@ -953,6 +1009,11 @@ import KoeBridgeEngines
         let launchProfileKey = currentAmiVoiceDictionaryProfileKey
         Task { [weak self] in
             guard let self else { return }
+            // Re-seed the pipeline tracker and reconcile the dictionary store
+            // before the consistency pass so locally stored terms are in their
+            // proper state when B-1 decides whether an upload is needed.
+            self.refreshVocabularyDictionaryCandidates()
+            await self.vocabularySyncTask?.value
             _ = await self.amiVoiceDictionarySyncEngine.performLaunchConsistencyPass(for: launchProfileKey)
         }
         scheduleWarmGemini()
