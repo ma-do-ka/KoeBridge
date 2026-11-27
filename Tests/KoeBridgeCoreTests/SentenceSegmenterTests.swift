@@ -328,7 +328,7 @@ struct SentenceSegmenterTests {
     @Test func perSentenceFallbackKeepsOriginalText() {
         let r = runOne("第一報です。現場は異常なし！続報を出す。")
         let processed: [Int: String?] = [0: "加工済み。", 1: nil, 2: "末尾加工。"]
-        let assembled = r.units.map { $0.separator + (processed[$0.index] ?? nil ?? $0.text) }.joined()
+        let assembled = r.units.map { $0.separator + (processed[$0.index].flatMap { $0 } ?? $0.text) }.joined()
         #expect(assembled == "加工済み。現場は異常なし！末尾加工。")
     }
 

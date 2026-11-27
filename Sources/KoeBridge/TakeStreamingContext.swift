@@ -82,7 +82,11 @@ import KoeBridgeCore
             register(remainder)
         }
         let rawText = units.map { $0.separator + $0.text }.joined()
-        markFallback(rawText)
+        // Arm the watchdog's raw-text fallback only while per-sentence work
+        // may actually be pending. An ineligible take runs no tasks; arming
+        // postProcessOriginal here would mask review expiry on the OFF path's
+        // 15 s watchdog precedence.
+        if postProcessEligible { markFallback(rawText) }
         for task in tasks { await task.value }
         tasks.removeAll()
         let processedText = units.map { $0.separator + (processed[$0.index] ?? $0.text) }.joined()

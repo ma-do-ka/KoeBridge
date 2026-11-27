@@ -1180,7 +1180,13 @@ import KoeBridgeEngines
             take.streaming = TakeStreamingContext(
                 postProcessEligible: PostProcessingPolicy.shouldApply(
                     mode: take.postProcessMode, enabled: take.postProcessEnabled,
-                    style: take.style, isTransform: false, skipped: false, noInput: false),
+                    style: take.style, isTransform: false,
+                    skipped: DictationDelivery.skipped(
+                        suppressed: take.automaticDeliverySuppressed,
+                        requiresReview: take.review?.status == .needsReview,
+                        acousticReviewRequired: take.acousticReviewRequired,
+                        shouldPaste: take.shouldPaste) != nil,
+                    noInput: false),
                 postProcess: makeSentenceProcessor(for: take))
         }
         guard finished.begin(take.id) else { return }
@@ -1812,6 +1818,11 @@ import KoeBridgeEngines
                 let sealed = await streaming.seal(finalText: result) {
                     take.postProcessOriginal = $0
                 }
+                // The seal-time watchdog fallback is valid only while
+                // per-sentence work may still be running. From here the
+                // review session must win the watchdog exactly like the
+                // whole-take (OFF) path.
+                take.postProcessOriginal = nil
                 if !sealed.degraded {
                     DiagnosticLog.record("clause streaming; id=\(take.id.uuidString.prefix(8)) sentences=\(sealed.unitCount) boundaries=\(Self.boundarySummary(sealed.boundarySources)) applied=\(sealed.appliedSentences) fallback=\(sealed.fallbackSentences)")
                     let review = DictationReviewSession(

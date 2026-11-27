@@ -318,6 +318,7 @@ Tests/KoeBridgeTests/MicrophoneNoticeBindingTests.swift
 Tests/KoeBridgeTests/MicrophoneRecoveryTests.swift
 Tests/KoeBridgeTests/OutputVolumeGuardTests.swift
 Tests/KoeBridgeTests/RetainedAudioStoreTests.swift
+Tests/KoeBridgeTests/TakeStreamingContextTests.swift
 Tests/KoeBridgeTests/TextInsertionTransportTests.swift
 Tests/KoeBridgeTests/UsageMonitorAggregationTests.swift
 Tests/KoeBridgeTests/VoiceCommandPresentationTests.swift
