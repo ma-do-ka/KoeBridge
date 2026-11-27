@@ -229,7 +229,9 @@ struct SettingsGeminiPage: View {
             }
             .toggleStyle(.checkbox)
             .settingsControlFocus("topic-vocabulary").settingsTarget("topic-vocabulary")
-            Text("GitHub、Pythonなど、アプリ内の開発・IT用語を認識の候補として使います。")
+            Text(controller.topicVocabularyEnabled
+                 ? "GitHub、Pythonなど、アプリ内の開発・IT用語を認識の候補として使います。"
+                 : "オフの間は、アプリ内の開発・IT用語を認識の候補に送りません。")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

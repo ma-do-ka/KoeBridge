@@ -122,6 +122,9 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
     var finalizationTimeout: Task<Void, Never>?
     var cloud: GeminiLiveConnection?
     var amiVoice: AmiVoiceWebSocketConnection?
+    /// Engine configured at connection setup; survives `amiVoice` being released
+    /// so usage rows keep their variant, as in MeetingSession.
+    var amiVoiceEngine: AmiVoiceEngine?
     var local: LocalTranscribing?
     var audioIntegrity = AudioIntegrityState()
     var retainAudioGeneration: UUID?
@@ -291,7 +294,7 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
                                           audioSeconds: Double(amiVoice?.sentAudioBytes ?? 0) / 32_000,
                                           outcome: outcome(for: .amivoice),
                                           speechSeconds: speechSeconds,
-                                          engineVariant: amiVoice?.engine.rawValue))
+                                          engineVariant: amiVoice?.engine.rawValue ?? amiVoiceEngine?.rawValue))
         }
         if appleAttempted {
             rows.append(EngineUsageSample(at: appleStartedAt ?? fallbackTime, engine: .apple,

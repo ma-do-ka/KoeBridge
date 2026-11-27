@@ -63,7 +63,7 @@ public enum SettingsSearchCatalog {
     public static let entries: [SettingsSearchEntry] = [
         .init(id: "general", section: .general, title: "基本設定・準備状況", keywords: "readiness 準備 問題 API キー 許可 トラブル"),
         .init(id: "app-profiles", section: .profiles, title: "アプリ別プロファイル", keywords: "アプリ 設定 エンジン 文体 用語 後処理 bundle profile"),
-        .init(id: "engine", section: .voice, title: "文字起こしの方法", keywords: "音声入力 認識エンジン engine SpeechAnalyzer SFSpeechRecognizer Gemini Apple ローカル オンライン"),
+        .init(id: "engine", section: .voice, title: "文字起こしの方法", keywords: "音声入力 認識エンジン engine SpeechAnalyzer SFSpeechRecognizer Gemini AmiVoice Apple ローカル オンライン"),
         .init(id: "shortcut", section: .shortcuts, title: "録音の開始・終了キー", keywords: "recording shortcut ホットキー ショートカット Command Fn F8"),
         .init(id: "autopaste", section: .voice, title: "認識した文章を自動入力する", keywords: "autoPaste safety 貼り付け 文字入力 クリップボード"),
         .init(id: "apikey", section: .gemini, title: "Gemini APIキー", keywords: "API key Keychain 接続 登録 更新 削除 キーチェーン"),
@@ -75,7 +75,7 @@ public enum SettingsSearchCatalog {
         .init(id: "vocabulary-assistance", section: .gemini, title: "専門用語の補助", keywords: "登録した用語を使う 開発 IT 話題 辞書 チェックボックス"),
         .init(id: "words", section: .gemini, title: "固有名詞・専門用語を登録", keywords: "vocabulary dictionary 辞書 GitHub Python 用語"),
         .init(id: "context-check", section: .gemini, title: "Mac内の句読点整理", keywords: "文章のつながり 句読点 音声 再認識 照合 疑わしい 毎回 チェックボックス"),
-        .init(id: "usage", section: .history, title: "認識エンジンの利用回数", keywords: "使用統計 グラフ Gemini Apple 失敗 切替"),
+        .init(id: "usage", section: .history, title: "認識エンジンの利用回数", keywords: "使用統計 グラフ Gemini AmiVoice Apple 失敗 切替"),
         .init(id: "token", section: .history, title: "Gemini APIのトークン使用量", keywords: "API usageMetadata 料金 回数 秒数"),
         .init(id: "history", section: .history, title: "文字起こし履歴", keywords: "history copy delete learning original alternative 過去の文章 コピー 削除 修正 学習 元の文章 候補"),
         .init(id: "protected-apps", section: .history, title: "入力証拠を最小化するアプリ", keywords: "privacy protected apps receipt evidence プライバシー 保護 アプリ 入力証拠 最小化 バンドル"),

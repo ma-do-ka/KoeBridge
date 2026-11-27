@@ -348,6 +348,11 @@ private struct HistoryMenuButtonStyle: ButtonStyle {
             if controller.monitorEvents.isEmpty {
                 Text("まだ利用記録がありません").font(.caption2).foregroundStyle(.secondary)
             }
+            if today.amiVoiceSeconds > 0 {
+                Text("AmiVoice分は送信した音声の時間です。無料枠の消費はVAD発話秒数で計上されます。")
+                    .font(.caption2).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
                 HStack(alignment: .bottom, spacing: 6) {
                     ForEach(days, id: \.dayStart) { day in
                         RoundedRectangle(cornerRadius: 3)
