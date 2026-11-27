@@ -541,7 +541,8 @@ import KoeBridgeEngines
         let session = MeetingSession(engine: requestedMode, vocabulary: currentAudioVocabulary,
             style: transcriptionStyle, japaneseHint: japaneseHint, apiKey: geminiKey,
             microphoneUID: MicrophoneDeviceStore.shared.selectedUID,
-            amiVoiceKey: amiVoiceKey, amiVoiceEngine: amiVoiceEngine)
+            amiVoiceKey: amiVoiceKey, amiVoiceEngine: amiVoiceEngine,
+            amiVoiceProfileId: amiVoiceRecognitionProfileID(for: amiVoiceEngine))
         meetingSession = session
         meetingStatus = session.liveStatus
         session.onStatus = { [weak self] in self?.meetingStatus = $0 }
@@ -697,8 +698,7 @@ import KoeBridgeEngines
                         japaneseHint: japaneseHint, apiKey: key, timeout: 60).text
                 case .amivoice:
                     guard let key = loadKeyForUse(provider: .amivoice) else { throw AppError.noAmiVoiceKey }
-                    let connection = preparation.makeAmiVoiceConnection?(key, amiVoiceEngine, currentAudioVocabulary)
-                        ?? AmiVoiceWebSocketConnection(apiKey: key, engine: amiVoiceEngine, vocabulary: currentAudioVocabulary)
+                    let connection = makeAmiVoiceConnectionInstance(apiKey: key, engine: amiVoiceEngine, vocabulary: currentAudioVocabulary)
                     replayAmiVoice = connection
                     defer {
                         connection.cancel()
@@ -821,9 +821,58 @@ import KoeBridgeEngines
         var keyRegistered: (@MainActor (CredentialProvider) -> Bool)?
         var makeLocalTranscriber: (@MainActor () -> LocalTranscribing)?
         var makeAmiVoiceConnection: (@MainActor (String, AmiVoiceEngine, [String]) -> AmiVoiceWebSocketConnection)?
+        var makeAmiVoiceConnectionWithProfile: (@MainActor (String, AmiVoiceEngine, [String], String?) -> AmiVoiceWebSocketConnection)?
     }
 
     private let preparation: PreparationEnvironment
+    private let amiVoiceDictionaryStore: AmiVoiceDictionarySyncStore
+    let amiVoiceDictionarySyncEngine: AmiVoiceDictionarySyncEngine
+
+    private var currentAmiVoiceDictionaryProfileKey: AmiVoiceDictionaryProfileKey {
+        AmiVoiceDictionaryProfileKey(engine: amiVoiceEngine, samplingRate: .rate16k)
+    }
+
+    /// B-4-facing opt-in setting. It is deliberately false on a fresh install;
+    /// while false every sync entry point returns before touching transport.
+    var amiVoiceDictionarySyncEnabled: Bool {
+        get { amiVoiceDictionaryStore.automaticSyncEnabled }
+        set {
+            amiVoiceDictionaryStore.automaticSyncEnabled = newValue
+            objectWillChange.send()
+            guard newValue else { return }
+            let key = currentAmiVoiceDictionaryProfileKey
+            Task { [weak self] in
+                guard let self else { return }
+                _ = await self.amiVoiceDictionarySyncEngine.performLaunchConsistencyPass(for: key)
+            }
+        }
+    }
+
+    /// Synchronous snapshot for settings UI rendering; the actor exposes the
+    /// same surface to asynchronous callers through `status(for:)`.
+    var currentAmiVoiceDictionarySyncStatus: AmiVoiceDictionarySyncStatus {
+        let key = currentAmiVoiceDictionaryProfileKey
+        return AmiVoiceDictionarySyncStatus.make(
+            automaticSyncEnabled: amiVoiceDictionaryStore.automaticSyncEnabled,
+            entries: amiVoiceDictionaryStore.loadEntries(),
+            profile: amiVoiceDictionaryStore.profile(for: key),
+            key: key
+        )
+    }
+
+    func refreshAmiVoiceDictionarySyncStatus() async -> AmiVoiceDictionarySyncStatus {
+        await amiVoiceDictionarySyncEngine.status(for: currentAmiVoiceDictionaryProfileKey)
+    }
+
+    func amiVoiceRecognitionProfileID(for engine: AmiVoiceEngine) -> String? {
+        let key = AmiVoiceDictionaryProfileKey(engine: engine, samplingRate: .rate16k)
+        return AmiVoiceDictionarySyncPolicy.recognitionProfileID(
+            automaticSyncEnabled: amiVoiceDictionaryStore.automaticSyncEnabled,
+            entries: amiVoiceDictionaryStore.loadEntries(),
+            profile: amiVoiceDictionaryStore.profile(for: key),
+            key: key
+        )
+    }
 
     private func loadKeyForUse(provider: CredentialProvider) -> String? {
         if let load = preparation.loadKeyForUse { return load(provider) }
@@ -834,8 +883,26 @@ import KoeBridgeEngines
         preparation.makeLocalTranscriber?() ?? LocalTranscriberFactory.make()
     }
 
+    private func makeAmiVoiceConnectionInstance(apiKey: String, engine: AmiVoiceEngine, vocabulary: [String]) -> AmiVoiceWebSocketConnection {
+        let profileID = amiVoiceRecognitionProfileID(for: engine)
+        if let make = preparation.makeAmiVoiceConnectionWithProfile {
+            return make(apiKey, engine, vocabulary, profileID)
+        }
+        if let make = preparation.makeAmiVoiceConnection {
+            return make(apiKey, engine, vocabulary)
+        }
+        return AmiVoiceWebSocketConnection(apiKey: apiKey, engine: engine, vocabulary: vocabulary, profileId: profileID)
+    }
+
     init(preparation: PreparationEnvironment? = nil, storageDirectory: URL? = nil) {
         self.preparation = preparation ?? PreparationEnvironment()
+        let dictionaryStore = AmiVoiceDictionarySyncStore()
+        amiVoiceDictionaryStore = dictionaryStore
+        amiVoiceDictionarySyncEngine = AmiVoiceDictionarySyncEngine(
+            store: dictionaryStore,
+            transport: AmiVoiceDictionaryAPIClient(),
+            apiKeyProvider: { KeychainStore.load(provider: .amivoice) }
+        )
 
         let d = UserDefaults.standard
         let guardEnabled = storageDirectory == nil && d.bool(forKey: OutputVolumeGuard.preferenceKey)
@@ -883,6 +950,11 @@ import KoeBridgeEngines
         retainedAudio.reconcileAtLaunch(history: &historyStore, retentionEnabled: retainAudioEnabled)
         updateRetentionStatus()
         guard storageDirectory == nil else { return }
+        let launchProfileKey = currentAmiVoiceDictionaryProfileKey
+        Task { [weak self] in
+            guard let self else { return }
+            _ = await self.amiVoiceDictionarySyncEngine.performLaunchConsistencyPass(for: launchProfileKey)
+        }
         scheduleWarmGemini()
         microphoneWarmKeeper.onConfigurationChange = { [weak self] in
             self?.resumeMicrophoneWarm(reason: "configuration")
@@ -1370,8 +1442,7 @@ import KoeBridgeEngines
             }
         case .amivoice:
             if let key = loadKeyForUse(provider: .amivoice) {
-                let connection = preparation.makeAmiVoiceConnection?(key, amiVoiceEngine, take.vocabulary)
-                    ?? AmiVoiceWebSocketConnection(apiKey: key, engine: amiVoiceEngine, vocabulary: take.vocabulary)
+                let connection = makeAmiVoiceConnectionInstance(apiKey: key, engine: amiVoiceEngine, vocabulary: take.vocabulary)
                 take.amiVoiceAttempted = true
                 take.amiVoiceStartedAt = Date()
                 take.amiVoice = connection
