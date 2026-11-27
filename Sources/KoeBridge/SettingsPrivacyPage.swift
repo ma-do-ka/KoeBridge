@@ -1,4 +1,5 @@
 #if os(macOS)
+import AppKit
 import SwiftUI
 import KoeBridgeCore
 
@@ -16,6 +17,7 @@ struct SettingsPrivacyPage: View {
             VStack(alignment: .leading, spacing: 18) {
                 MeetingAndRetentionSettings(showMeeting: false).settingsTarget("retention")
                 UsageMonitorView(controller: controller, focusRequest: focusRequest)
+                ProtectedAppsSettings(controller: controller)
                 GroupBox {
                     VStack(alignment: .leading, spacing: 10) {
                         SettingsRow("保存件数：\(historyCount) / \(RecentTranscriptArchive.maximumRecords)件",
@@ -82,4 +84,130 @@ struct SettingsPrivacyPage: View {
         }
     }
 }
+
+private struct ProtectedAppsSettings: View {
+    @ObservedObject var controller: VoiceController
+    @State private var selectedBundle = ""
+    @State private var manualBundle = ""
+    @State private var runningApps: [RunningApp] = []
+
+    private struct RunningApp: Identifiable {
+        let id: String
+        let name: String
+    }
+
+    private func refreshApps() {
+        var seen = Set<String>()
+        runningApps = NSWorkspace.shared.runningApplications.compactMap { app in
+            guard app.activationPolicy == .regular, let id = app.bundleIdentifier,
+                  seen.insert(id).inserted else { return nil }
+            return RunningApp(id: id, name: app.localizedName ?? id)
+        }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    private var bundleToAdd: String {
+        let manual = manualBundle.trimmingCharacters(in: .whitespacesAndNewlines)
+        return manual.isEmpty ? selectedBundle : manual
+    }
+
+    private var validationHint: String? {
+        guard !bundleToAdd.isEmpty else { return nil }
+        return ProtectedAppPolicy.validationHint(for: bundleToAdd)
+    }
+
+    private func addProtectedApp() {
+        let bundle = ProtectedAppPolicy.normalizedBundleIdentifier(bundleToAdd)
+        guard validationHint == nil else { return }
+        let displayName = runningApps.first(where: { ProtectedAppPolicy.isSameBundle($0.id, bundle) })?.name ?? bundle
+        controller.protectedApps = ProtectedAppPolicy.saving(
+            ProtectedApp(bundleIdentifier: bundle, displayName: displayName),
+            in: controller.protectedApps
+        )
+        selectedBundle = ""
+        manualBundle = ""
+    }
+
+    var body: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 12) {
+                Picker("起動中のアプリ", selection: $selectedBundle) {
+                    Text("アプリを選択").tag("")
+                    ForEach(runningApps) { app in Text(app.name).tag(app.id) }
+                }
+                .pickerStyle(.menu)
+                .settingsControlFocus("protected-apps")
+                .accessibilityLabel("証拠を最小化するアプリを起動中のアプリから選択")
+
+                if controller.protectedAppsStore.state == .corrupt {
+                    CorruptSettingsNotice(reset: controller.resetProtectedApps)
+                } else if controller.protectedApps.isEmpty {
+                    Text("まだ登録がありません。入力内容を証拠に残したくないアプリを追加できます。")
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(controller.protectedApps) { app in
+                            HStack(alignment: .center, spacing: 12) {
+                                Image(systemName: "lock.shield")
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 24, height: 24)
+                                    .accessibilityHidden(true)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(app.displayName)
+                                        .font(.system(size: 13, weight: .medium))
+                                    Text(app.bundleIdentifier)
+                                        .font(.system(.caption, design: .monospaced))
+                                        .foregroundStyle(.secondary)
+                                        .textSelection(.enabled)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                Button(role: .destructive) {
+                                    controller.protectedApps.removeAll { $0.id == app.id }
+                                } label: {
+                                    Image(systemName: "trash")
+                                }
+                                .help("このアプリを一覧から削除")
+                                .accessibilityLabel("「\(app.displayName)」を証拠最小化の一覧から削除")
+                            }
+                            .padding(.vertical, 7)
+                            if app.id != controller.protectedApps.last?.id {
+                                Divider()
+                            }
+                        }
+                    }
+                }
+
+                HStack(spacing: 8) {
+                    TextField("またはバンドルIDを入力（例：com.apple.TextEdit）", text: $manualBundle)
+                        .textFieldStyle(.roundedBorder)
+                    Button("一覧を更新") { refreshApps() }
+                }
+                if let validationHint {
+                    Text(validationHint)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Button {
+                    addProtectedApp()
+                } label: {
+                    Label("アプリを追加", systemImage: "plus")
+                }
+                .disabled(bundleToAdd.isEmpty || validationHint != nil || controller.protectedAppsStore.state == .corrupt)
+
+                Text("登録したアプリでは、入力確認の証拠に本文を残しません（文字数とハッシュのみ）。そのため、後からの修正や位置合わせの精度は制限されます。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } label: {
+            Label("入力証拠を最小化するアプリ", systemImage: "lock.shield")
+        }
+        .settingsTarget("protected-apps")
+        .onAppear { refreshApps() }
+    }
+}
+
 #endif

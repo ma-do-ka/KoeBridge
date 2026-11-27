@@ -134,7 +134,7 @@ public enum InsertionReceiptPolicy {
                                    hasTextSelection: Bool, bundleIdentifier: String?,
                                    labelHints: [String?] = [], explicitlyProtected: Bool = false,
                                    secureInputEnabled: Bool = false, attributesReadable: Bool = true,
-                                   protectedBundleIdentifiers: Set<String> = []) -> FieldNature {
+                                   protectedBundleIdentifiers: Set<String>? = []) -> FieldNature {
         let sensitiveMarkers = [
             "password", "passcode", "pin", "security code", "authentication code",
             "token", "secret", "one-time", "otp", "2fa",
@@ -145,8 +145,18 @@ public enum InsertionReceiptPolicy {
             || role == "AXSecureTextField" || subrole == "AXSecureTextField" {
             return .protected
         }
-        if let bundleIdentifier,
-           protectedBundleIdentifiers.contains(where: { $0.caseInsensitiveCompare(bundleIdentifier) == .orderedSame }) {
+        // A nil registry means the stored list is unreadable/corrupt: fail
+        // closed rather than guessing which apps the user registered.
+        guard let protectedBundleIdentifiers else { return .unknown }
+        // An unobtainable bundle identifier cannot be cleared against the
+        // registry, so it also classifies as unknown (protected side).
+        guard let bundleIdentifier,
+              !ProtectedAppPolicy.normalizedBundleIdentifier(bundleIdentifier).isEmpty else {
+            return .unknown
+        }
+        if protectedBundleIdentifiers.contains(where: {
+            ProtectedAppPolicy.isSameBundle($0, bundleIdentifier)
+        }) {
             return .protected
         }
         let hints = ([bundleIdentifier, subrole] + labelHints).compactMap { $0?.lowercased() }
