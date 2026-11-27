@@ -161,7 +161,7 @@ struct AmiVoiceDictionarySyncMonitoringTests {
         #expect(report.transitions.first?.kind == .reCorrection)
         #expect(report.transitions.first?.toState == .pendingReview)
         #expect(report.transitions.first?.occurrenceCount == 3)
-        #expect(report.transitions.first?.windowDays == 14)
+        #expect(report.transitions.first?.windowDays == Int(AmiVoiceDictionaryMonitoringPolicy.reCorrectionWindow / 86_400))
 
         // U-01: review state leaves the syncable set.
         let rows = await fixture.engine.entries()
@@ -205,9 +205,9 @@ struct AmiVoiceDictionarySyncMonitoringTests {
         _ = await fixture.monitor.observe(learnedTerms: [source, c1, c2], for: fixture.key)
         #expect(await fixture.monitor.monitoringRecord(entryID: entryID, for: fixture.key)?.reCorrectionTimestamps.count == 2)
 
-        // Fifteen days later the first two occurrences fall outside the
-        // 14-day window; the third alone cannot reach the threshold.
-        fixture.clock.advance(by: 15 * 86_400)
+        // One day past the re-correction window the first two occurrences
+        // fall outside it; the third alone cannot reach the threshold.
+        fixture.clock.advance(by: AmiVoiceDictionaryMonitoringPolicy.reCorrectionWindow + 86_400)
         let c3 = LearnedTerm(term: "KoeBridge", originalFragment: "KoeBride", createdAt: fixture.clock.now)
         let report = await fixture.monitor.observe(learnedTerms: [source, c1, c2, c3], for: fixture.key)
         #expect(report.transitions.isEmpty)
@@ -246,7 +246,7 @@ struct AmiVoiceDictionarySyncMonitoringTests {
         #expect(report.transitions.count == 1)
         #expect(report.transitions.first?.kind == .reverseCorrection)
         #expect(report.transitions.first?.toState == .autoDisabled)
-        #expect(report.transitions.first?.windowDays == 7)
+        #expect(report.transitions.first?.windowDays == Int(AmiVoiceDictionaryMonitoringPolicy.reverseCorrectionWindow / 86_400))
 
         let rows = await fixture.engine.entries()
         let engineState = rows.first { $0.id == entryID }?.engineState(for: fixture.key)
@@ -277,7 +277,7 @@ struct AmiVoiceDictionarySyncMonitoringTests {
         #expect(rows.first { $0.id == entryID }?.engineState(for: fixture.key)?.state == .autoSynced)
 
         // Once the guard interval elapses, the same accumulated count fires.
-        fixture.clock.advance(by: 25 * 3_600)
+        fixture.clock.advance(by: AmiVoiceDictionaryMonitoringPolicy.manualEditGuardInterval + 3_600)
         let r3 = LearnedTerm(term: "YetAnother", originalFragment: "KoeBridge", createdAt: fixture.clock.now)
         report = await fixture.monitor.observe(learnedTerms: [r1, r2, r3], for: fixture.key)
         #expect(report.transitions.first?.kind == .reverseCorrection)
@@ -439,7 +439,7 @@ struct AmiVoiceDictionarySyncMonitoringTests {
         _ = try await syncedEntry(fixture, id: UUID(), written: "KoeBridge", createdAt: t0)
         let firstSnapshotID = try #require(await fixture.engine.syncSnapshots(for: fixture.key).first?.id)
 
-        for _ in 0..<34 {
+        for _ in 0..<(AmiVoiceDictionaryMonitoringPolicy.snapshotRetentionLimit + 4) {
             fixture.clock.advance(by: 1)
             let outcome = await fixture.engine.syncNow(for: fixture.key)
             #expect(outcome.kind == .success)
@@ -639,6 +639,251 @@ struct AmiVoiceDictionarySyncMonitoringTests {
         #expect(retry.kind == .success)
         rows = await fixture.engine.entries()
         #expect(rows.first { $0.id == aID }?.engineState(for: fixture.key)?.state == .autoSynced)
+    }
+
+    @Test func reverseCorrectionOutsideWindowDoesNotAccumulateOrResync() async throws {
+        let fixture = try makeMonitoringFixture(start: t0)
+        defer { fixture.cleanup() }
+        let entryID = UUID()
+        _ = try await syncedEntry(fixture, id: entryID, written: "KoeBridge", createdAt: t0)
+        let syncedAt = fixture.clock.now
+        let r1 = LearnedTerm(term: "Different", originalFragment: "KoeBridge", createdAt: syncedAt.addingTimeInterval(100))
+        let first = await fixture.monitor.observe(learnedTerms: [r1], for: fixture.key)
+        #expect(first.transitions.isEmpty)
+        #expect(await fixture.monitor.monitoringRecord(entryID: entryID, for: fixture.key)?.reverseCorrectionTimestamps.count == 1)
+
+        // GD-731 AC-07: past the reverse-correction window the first
+        // occurrence ages out; a new one must not reach the threshold nor
+        // fire the immediate re-sync path.
+        fixture.clock.advance(by: AmiVoiceDictionaryMonitoringPolicy.reverseCorrectionWindow + 3_600)
+        fixture.transport.resetCalls()
+        let r2 = LearnedTerm(term: "OtherText", originalFragment: "KoeBridge", createdAt: fixture.clock.now)
+        let report = await fixture.monitor.observe(learnedTerms: [r1, r2], for: fixture.key)
+        #expect(report.transitions.isEmpty)
+        #expect(await fixture.monitor.monitoringRecord(entryID: entryID, for: fixture.key)?.reverseCorrectionTimestamps.count == 1)
+        let rows = await fixture.engine.entries()
+        #expect(rows.first { $0.id == entryID }?.engineState(for: fixture.key)?.state == .autoSynced)
+        #expect(fixture.transport.calls.filter { $0.method == "POST" }.isEmpty)
+    }
+
+    @Test func resetCorrectionTrackingClearsAccumulatedCounters() async throws {
+        let fixture = try makeMonitoringFixture(start: t0)
+        defer { fixture.cleanup() }
+        let entryID = UUID()
+        _ = try await syncedEntry(fixture, id: entryID, written: "KoeBridge", createdAt: t0)
+        let syncedAt = fixture.clock.now
+        let source = LearnedTerm(term: "KoeBridge", originalFragment: "KoeBride", createdAt: t0.addingTimeInterval(-60))
+        let c1 = LearnedTerm(term: "KoeBridge", originalFragment: "KoeBride", createdAt: syncedAt.addingTimeInterval(100))
+        let r1 = LearnedTerm(term: "Different", originalFragment: "KoeBridge", createdAt: syncedAt.addingTimeInterval(150))
+        _ = await fixture.monitor.observe(learnedTerms: [source, c1, r1], for: fixture.key)
+        var record = await fixture.monitor.monitoringRecord(entryID: entryID, for: fixture.key)
+        #expect(record?.reCorrectionTimestamps.count == 1)
+        #expect(record?.reverseCorrectionTimestamps.count == 1)
+
+        // The B-4 hook must clear counters that already accumulated, not only
+        // arm the guard on an empty record.
+        fixture.clock.advance(by: 60)
+        await fixture.monitor.resetCorrectionTracking(entryID: entryID, for: fixture.key)
+        record = await fixture.monitor.monitoringRecord(entryID: entryID, for: fixture.key)
+        #expect(record?.reCorrectionTimestamps.isEmpty == true)
+        #expect(record?.reverseCorrectionTimestamps.isEmpty == true)
+        #expect(record?.lastManualEditAt == fixture.clock.now)
+    }
+
+    @Test func monitoringRecordPersistsFingerprintNotFragmentText() async throws {
+        let fixture = try makeMonitoringFixture(start: t0)
+        defer { fixture.cleanup() }
+        let entryID = UUID()
+        _ = try await syncedEntry(fixture, id: entryID, written: "KoeBridge", createdAt: t0)
+        let syncedAt = fixture.clock.now
+        let source = LearnedTerm(term: "KoeBridge", originalFragment: "KoeBride", createdAt: t0.addingTimeInterval(-60))
+        let c1 = LearnedTerm(term: "KoeBridge", originalFragment: "KoeBride", createdAt: syncedAt.addingTimeInterval(100))
+        _ = await fixture.monitor.observe(learnedTerms: [source, c1], for: fixture.key)
+
+        // Pair matching still works through the fingerprint alone.
+        let record = try #require(await fixture.monitor.monitoringRecord(entryID: entryID, for: fixture.key))
+        #expect(record.sourceTermID == source.id)
+        #expect(record.sourcePairFingerprint != nil)
+        #expect(record.reCorrectionTimestamps.count == 1)
+
+        // The persisted row carries no fragment text.
+        let raw = try #require(fixture.defaults.data(forKey: AmiVoiceDictionarySyncStore.monitoringRecordsKey))
+        let persisted = String(decoding: raw, as: UTF8.self)
+        #expect(!persisted.contains("KoeBride"))
+        #expect(!persisted.contains("originalFragment"))
+    }
+
+    @Test func legacyMonitoringRecordWithPlaintextFragmentStillDecodes() async throws {
+        let fixture = try makeMonitoringFixture(start: t0)
+        defer { fixture.cleanup() }
+        let entryID = UUID()
+        // Rows written before the fingerprint migration carried the fragment
+        // in plaintext; the decoder ignores the dropped key instead of
+        // corrupting the whole store.
+        let legacyRow: [String: Any] = [
+            "entryID": entryID.uuidString,
+            "profileKey": [
+                "engine": fixture.key.engine.rawValue,
+                "samplingRate": fixture.key.samplingRate.rawValue
+            ],
+            "originalFragment": "KoeBride",
+            "reCorrectionTimestamps": [],
+            "reverseCorrectionTimestamps": []
+        ]
+        let data = try JSONSerialization.data(withJSONObject: [legacyRow])
+        fixture.defaults.set(data, forKey: AmiVoiceDictionarySyncStore.monitoringRecordsKey)
+
+        // A store constructed over the legacy value decodes it; provenance is
+        // simply absent until the next observe re-derives it.
+        let reloaded = AmiVoiceDictionarySyncStore(defaults: fixture.defaults)
+        let records = reloaded.loadMonitoringRecords()
+        #expect(records.count == 1)
+        #expect(records.first?.entryID == entryID)
+        #expect(records.first?.sourcePairFingerprint == nil)
+        #expect(records.first?.sourceTermID == nil)
+    }
+
+    @Test func appendSnapshotRecoversAfterCorruptStoreInsteadOfDropping() async throws {
+        let fixture = try makeMonitoringFixture(start: t0)
+        defer { fixture.cleanup() }
+        _ = try await syncedEntry(fixture, id: UUID(), written: "KoeBridge", createdAt: t0)
+
+        fixture.defaults.set(Data("not-json".utf8), forKey: AmiVoiceDictionarySyncStore.snapshotsKey)
+        let corrupted = AmiVoiceDictionarySyncSnapshot(
+            createdAt: t0,
+            profileKey: fixture.key,
+            trigger: .normal,
+            status: .reflected,
+            entries: []
+        )
+        // The first append exposes the conflict: the save fails and the store
+        // reloads the value as corrupt. The NEXT append must run the same
+        // recovery the load paths do instead of silently dropping snapshots.
+        _ = fixture.store.appendSnapshot(corrupted)
+        let healed = AmiVoiceDictionarySyncSnapshot(
+            createdAt: t0.addingTimeInterval(1),
+            profileKey: fixture.key,
+            trigger: .normal,
+            status: .reflected,
+            entries: []
+        )
+        #expect(fixture.store.appendSnapshot(healed))
+        #expect(fixture.store.loadSnapshots().map(\.id) == [healed.id])
+    }
+
+    @Test func rollbackToEmptySnapshotRetriesPushEmptyOverwrite() async throws {
+        let fixture = try makeMonitoringFixture(start: t0)
+        defer { fixture.cleanup() }
+        let aID = UUID()
+        _ = try await syncedEntry(fixture, id: aID, written: "AlphaWord", createdAt: t0)
+
+        // A reflected snapshot of the empty set, e.g. left by an earlier
+        // delete-all. Rolling back to it must clear the server again.
+        let emptySnapshot = AmiVoiceDictionarySyncSnapshot(
+            createdAt: t0,
+            profileKey: fixture.key,
+            trigger: .manualImmediate,
+            status: .reflected,
+            entries: []
+        )
+        #expect(fixture.store.appendSnapshot(emptySnapshot))
+
+        fixture.transport.replaceHandler = { _ in throw AmiVoiceDictionaryTransportError.temporary(.network) }
+        let outcome = await fixture.engine.rollbackProfile(for: fixture.key, toSnapshotID: emptySnapshot.id)
+        #expect(outcome.kind == .appliedReflectionPending)
+        #expect(outcome.syncResult == .temporaryFailure)
+        let rows = await fixture.engine.entries()
+        #expect(rows.first { $0.id == aID }?.engineState(for: fixture.key)?.state == .archived)
+
+        // The failed empty send is the pending-operation record (U-04).
+        let pending = try #require(await fixture.engine.syncSnapshots(for: fixture.key).first)
+        #expect(pending.status == .failed)
+        #expect(pending.trigger == .rollback)
+        #expect(pending.entries.isEmpty)
+
+        // The explicit retry still pushes [] — it is not swallowed by the
+        // ordinary empty-snapshot guard.
+        fixture.transport.replaceHandler = nil
+        fixture.transport.resetCalls()
+        let retry = await fixture.engine.retryPendingRollbackReflection(for: fixture.key)
+        #expect(retry.kind == .success)
+        let posts = fixture.transport.calls.filter { $0.method == "POST" }
+        #expect(posts.count == 1)
+        #expect(posts[0].payloads.isEmpty)
+    }
+
+    @Test func loneQuarantineFailedResyncRetryPushesRemoval() async throws {
+        let fixture = try makeMonitoringFixture(start: t0)
+        defer { fixture.cleanup() }
+        let entryID = UUID()
+        _ = try await syncedEntry(fixture, id: entryID, written: "KoeBridge", createdAt: t0)
+        let syncedAt = fixture.clock.now
+        fixture.transport.replaceHandler = { _ in throw AmiVoiceDictionaryTransportError.temporary(.network) }
+        fixture.transport.resetCalls()
+
+        let r1 = LearnedTerm(term: "Different", originalFragment: "KoeBridge", createdAt: syncedAt.addingTimeInterval(100))
+        let r2 = LearnedTerm(term: "OtherText", originalFragment: "KoeBridge", createdAt: syncedAt.addingTimeInterval(200))
+        let report = await fixture.monitor.observe(learnedTerms: [r1, r2], for: fixture.key)
+        #expect(report.transitions.count == 1)
+
+        // The immediate U-02 re-sync attempted the empty overwrite and failed.
+        let posts = fixture.transport.calls.filter { $0.method == "POST" }
+        #expect(posts.count == 1)
+        #expect(posts[0].payloads.isEmpty)
+        let rows = await fixture.engine.entries()
+        #expect(rows.first { $0.id == entryID }?.engineState(for: fixture.key)?.state == .autoDisabled)
+
+        // The failed empty send is the pending-operation record: the backoff
+        // retry still pushes the removal.
+        fixture.transport.replaceHandler = nil
+        fixture.transport.resetCalls()
+        let retried = await fixture.engine.syncNow(for: fixture.key, trigger: .retry)
+        #expect(retried.kind == .success)
+        let retryPosts = fixture.transport.calls.filter { $0.method == "POST" }
+        #expect(retryPosts.count == 1)
+        #expect(retryPosts[0].payloads.isEmpty)
+    }
+
+    @Test func ordinaryEmptySetNeverPostsDeleteAll() async throws {
+        let fixture = try makeMonitoringFixture(start: t0)
+        defer { fixture.cleanup() }
+        let entryID = UUID()
+        _ = try await syncedEntry(fixture, id: entryID, written: "KoeBridge", createdAt: t0)
+        fixture.transport.resetCalls()
+
+        // fix5 stays intact: the last synced word leaving the set by an
+        // ordinary transition must not become a delete-all — no pending
+        // empty-overwrite operation was ever recorded.
+        #expect(await fixture.engine.transitionEntry(id: entryID, for: fixture.key, to: .ignored))
+        // The transition spawns an immediate sync; wait until it finishes.
+        for _ in 0..<400 {
+            if await !fixture.engine.isSyncInFlight(for: fixture.key),
+               await fixture.engine.status(for: fixture.key).lastResult == .noChanges { break }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        let outcome = await fixture.engine.syncNow(for: fixture.key)
+        #expect(outcome.kind == .noChanges)
+        #expect(fixture.transport.calls.filter { $0.method == "POST" }.isEmpty)
+    }
+
+    @Test func rollbackWhileSyncDisabledMutatesNothing() async throws {
+        let fixture = try makeMonitoringFixture(start: t0)
+        defer { fixture.cleanup() }
+        let entryID = UUID()
+        _ = try await syncedEntry(fixture, id: entryID, written: "KoeBridge", createdAt: t0)
+        let snapshot = try #require(await fixture.engine.latestReflectedSyncSnapshot(for: fixture.key))
+        let snapshotCount = await fixture.engine.syncSnapshots(for: fixture.key).count
+        await fixture.engine.setAutomaticSyncEnabled(false)
+        fixture.transport.resetCalls()
+
+        // Same contract as deleteAllServerWords: no local mutation and no
+        // failed-snapshot append while sync is OFF.
+        let outcome = await fixture.engine.rollbackProfile(for: fixture.key, toSnapshotID: snapshot.id)
+        #expect(outcome.kind == .disabled)
+        let rows = await fixture.engine.entries()
+        #expect(rows.first { $0.id == entryID }?.engineState(for: fixture.key)?.state == .autoSynced)
+        #expect(await fixture.engine.syncSnapshots(for: fixture.key).count == snapshotCount)
+        #expect(fixture.transport.calls.isEmpty)
     }
 }
 

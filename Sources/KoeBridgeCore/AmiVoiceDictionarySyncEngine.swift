@@ -287,9 +287,29 @@ public actor AmiVoiceDictionarySyncEngine {
     /// to overwrite with an EMPTY set. B-1's empty-send guard protects against
     /// repeating a failing set; a monitored quarantine instead needs the empty
     /// overwrite to clear the word from the server now (the same operation
-    /// `deleteAll` already performs).
+    /// `deleteAll` already performs). When the send cannot complete — failed
+    /// or never attempted — it is recorded as a failed snapshot, the
+    /// pending-operation record that lets a later retry still push the
+    /// (possibly empty) removal.
     public func resyncAfterMonitoredQuarantine(for key: AmiVoiceDictionaryProfileKey) async -> AmiVoiceDictionarySyncOutcome {
-        await performSync(for: key, trigger: .userAction, forceUpload: true, allowEmptyOverwrite: true)
+        let snapshotIDsBefore = Set(store.loadSnapshots().map(\.id))
+        let outcome = await performSync(for: key, trigger: .userAction, forceUpload: true, allowEmptyOverwrite: true)
+        let sendRecorded = store.snapshots(for: key).contains { !snapshotIDsBefore.contains($0.id) }
+        let sendReflected = outcome.kind == .success || outcome.kind == .capExceeded
+        if !sendRecorded, !sendReflected, outcome.kind != .disabled {
+            // The send never ran (already in flight, auth required, store
+            // failure). Record the pending clear the same way the rollback
+            // fallback does, so a later trigger can still finish it.
+            _ = appendSyncSnapshot(
+                for: key,
+                profileID: store.profile(for: key)?.profileID,
+                trigger: .userAction,
+                status: .failed,
+                entries: pendingSnapshotEntries(for: key),
+                rollbackSourceSnapshotID: nil
+            )
+        }
+        return outcome
     }
 
     /// Explicit delete-all control for B-4. Active local entries are archived
@@ -356,6 +376,15 @@ public actor AmiVoiceDictionarySyncEngine {
         for key: AmiVoiceDictionaryProfileKey,
         toSnapshotID sourceSnapshotID: UUID
     ) async -> AmiVoiceDictionaryRollbackOutcome {
+        // Same contract as deleteAllServerWords: while sync is off, rollback
+        // mutates no local rows and appends no failed snapshot.
+        guard store.automaticSyncEnabled else {
+            return AmiVoiceDictionaryRollbackOutcome(
+                kind: .disabled,
+                sourceSnapshotID: sourceSnapshotID,
+                timestamp: now()
+            )
+        }
         guard let source = store.loadSnapshots().first(where: { $0.id == sourceSnapshotID && $0.profileKey == key }) else {
             return AmiVoiceDictionaryRollbackOutcome(
                 kind: .snapshotNotFound,
@@ -447,32 +476,16 @@ public actor AmiVoiceDictionarySyncEngine {
             .first { $0.trigger == .rollback && !snapshotIDsBefore.contains($0.id) }?
             .id
         if rollbackSnapshotID == nil {
-            // The send never ran (sync disabled, already in flight, auth
-            // missing). The local restore stands; record the pending
+            // The send never ran (already in flight, auth missing, store
+            // failure). The local restore stands; record the pending
             // reflection as a failed rollback snapshot so history stays
             // append-only and retry has a concrete target.
-            let pendingEntries = store.loadEntries().compactMap { entry -> AmiVoiceDictionarySnapshotEntry? in
-                guard let engineState = entry.engineState(for: key),
-                      engineState.state.participatesInSnapshot else { return nil }
-                return AmiVoiceDictionarySnapshotEntry(
-                    entryID: entry.id,
-                    written: entry.written,
-                    spoken: entry.spoken,
-                    className: entry.className,
-                    alternativeWritten: entry.alternativeWritten,
-                    biasing: entry.biasing,
-                    isProtected: entry.isProtected,
-                    createdAt: entry.createdAt,
-                    updatedAt: entry.updatedAt,
-                    stateAtSend: engineState.state
-                )
-            }
             rollbackSnapshotID = appendSyncSnapshot(
                 for: key,
                 profileID: store.profile(for: key)?.profileID,
                 trigger: .rollback,
                 status: .failed,
-                entries: pendingEntries,
+                entries: pendingSnapshotEntries(for: key),
                 rollbackSourceSnapshotID: sourceSnapshotID
             )
         }
@@ -752,7 +765,7 @@ public actor AmiVoiceDictionarySyncEngine {
                     timestamp: now()
                 )
             }
-            if payloads.isEmpty && trigger != .deleteAll && !allowEmptyOverwrite {
+            if payloads.isEmpty && trigger != .deleteAll && !allowEmptyOverwrite && !hasPendingEmptyOverwrite(for: key) {
                 let quarantinedRows = quarantinedRowCount(rows, key: key)
                 if quarantinedCount > 0 || quarantinedRows > 0 {
                     // The candidate set is empty because everything left is
@@ -1092,6 +1105,42 @@ public actor AmiVoiceDictionarySyncEngine {
             status: .failed,
             rollbackSourceSnapshotID: rollbackSourceSnapshotID
         )
+    }
+
+    /// The pending-operation record for an intentional empty overwrite: the
+    /// newest snapshot for `key` is a failed send of an empty set. Only
+    /// `allowEmptyOverwrite` sends (rollback, monitored quarantine) and
+    /// delete-all can produce that record — an ordinary empty snapshot never
+    /// reaches the transport — so its presence means a caller explicitly
+    /// asked the server set to be cleared and that send never completed.
+    /// Any later trigger may then finish it, while an ordinary empty
+    /// snapshot still skips the send (B-1 fix5).
+    private func hasPendingEmptyOverwrite(for key: AmiVoiceDictionaryProfileKey) -> Bool {
+        guard let newest = store.snapshots(for: key).first else { return false }
+        return newest.status == .failed && newest.entries.isEmpty
+    }
+
+    /// The participating set this profile would send right now, in snapshot
+    /// form. Used to record a pending reflection when a required send never
+    /// ran (rollback blocked in flight, quarantine re-sync blocked, auth
+    /// missing).
+    private func pendingSnapshotEntries(for key: AmiVoiceDictionaryProfileKey) -> [AmiVoiceDictionarySnapshotEntry] {
+        store.loadEntries().compactMap { entry -> AmiVoiceDictionarySnapshotEntry? in
+            guard let engineState = entry.engineState(for: key),
+                  engineState.state.participatesInSnapshot else { return nil }
+            return AmiVoiceDictionarySnapshotEntry(
+                entryID: entry.id,
+                written: entry.written,
+                spoken: entry.spoken,
+                className: entry.className,
+                alternativeWritten: entry.alternativeWritten,
+                biasing: entry.biasing,
+                isProtected: entry.isProtected,
+                createdAt: entry.createdAt,
+                updatedAt: entry.updatedAt,
+                stateAtSend: engineState.state
+            )
+        }
     }
 
     @discardableResult

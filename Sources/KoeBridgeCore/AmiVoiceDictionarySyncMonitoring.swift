@@ -161,10 +161,17 @@ public struct AmiVoiceDictionaryMonitoringTransition: Codable, Equatable, Sendab
 public struct AmiVoiceDictionaryMonitoringRecord: Codable, Equatable, Sendable {
     public var entryID: UUID
     public var profileKey: AmiVoiceDictionaryProfileKey
-    /// Pre-correction fragment that produced the entry, derived from the
-    /// LearnedTerm store. Needed for re-correction pair matching; nil while
-    /// no matching source term is known.
-    public var originalFragment: String?
+    /// FNV-1a fingerprint of the source correction pair
+    /// (originalFragment -> term) that produced the entry, derived from the
+    /// LearnedTerm store and computed with the same scheme as observed
+    /// corrections. Needed for re-correction pair matching; nil while no
+    /// matching source term is known. The fragment text itself is never
+    /// duplicated into monitoring storage — a consumer that needs it
+    /// resolves the LearnedTerm by `sourceTermID` at read time.
+    public var sourcePairFingerprint: String?
+    /// LearnedTerm the source pair was derived from; lets a consumer resolve
+    /// the fragment text at read time without persisting it here.
+    public var sourceTermID: UUID?
     public var reCorrectionTimestamps: [Date]
     public var reverseCorrectionTimestamps: [Date]
     /// Last manual action on the entry (content edit or explicit reset). Drives
@@ -177,7 +184,8 @@ public struct AmiVoiceDictionaryMonitoringRecord: Codable, Equatable, Sendable {
     public init(
         entryID: UUID,
         profileKey: AmiVoiceDictionaryProfileKey,
-        originalFragment: String? = nil,
+        sourcePairFingerprint: String? = nil,
+        sourceTermID: UUID? = nil,
         reCorrectionTimestamps: [Date] = [],
         reverseCorrectionTimestamps: [Date] = [],
         lastManualEditAt: Date? = nil,
@@ -187,7 +195,8 @@ public struct AmiVoiceDictionaryMonitoringRecord: Codable, Equatable, Sendable {
     ) {
         self.entryID = entryID
         self.profileKey = profileKey
-        self.originalFragment = originalFragment
+        self.sourcePairFingerprint = sourcePairFingerprint
+        self.sourceTermID = sourceTermID
         self.reCorrectionTimestamps = reCorrectionTimestamps
         self.reverseCorrectionTimestamps = reverseCorrectionTimestamps
         self.lastManualEditAt = lastManualEditAt
@@ -224,6 +233,9 @@ public enum AmiVoiceDictionaryRollbackResultKind: String, Equatable, Sendable {
     /// reflection retries on the next normal sync trigger or via the explicit
     /// retry entry point (U-04).
     case appliedReflectionPending = "applied_reflection_pending"
+    /// Automatic sync is off: the rollback refused to touch local rows or
+    /// append a snapshot, matching `deleteAllServerWords`.
+    case disabled
     case snapshotNotFound = "snapshot_not_found"
     case storeFailure = "store_failure"
 }
@@ -388,7 +400,8 @@ public actor AmiVoiceDictionarySyncMonitor {
                 record.reCorrectionTimestamps = []
                 record.reverseCorrectionTimestamps = []
                 record.lastManualEditAt = entry.updatedAt
-                record.originalFragment = nil
+                record.sourcePairFingerprint = nil
+                record.sourceTermID = nil
             }
             // Re-entry into the synced set (manual re-approval) resets both
             // counters and counts as a manual action for the guard.
@@ -408,8 +421,9 @@ public actor AmiVoiceDictionarySyncMonitor {
                 continue
             }
 
-            if record.originalFragment == nil {
-                record.originalFragment = sourceFragment(for: entry, in: learnedTerms)
+            if record.sourcePairFingerprint == nil, let source = sourceTerm(for: entry, in: learnedTerms) {
+                record.sourcePairFingerprint = Self.pairFingerprint(term: source.term, fragment: source.originalFragment)
+                record.sourceTermID = source.id
             }
             evaluatedCount += 1
 
@@ -419,11 +433,12 @@ public actor AmiVoiceDictionarySyncMonitor {
                 continue
             }
             let writtenNorm = LearnedTermPolicy.normalized(entry.written)
-            let originalNorm = record.originalFragment.map { LearnedTermPolicy.normalized($0) }
             for event in events where event.occurredAt > lastSyncedAt {
                 let termNorm = LearnedTermPolicy.normalized(event.term.term)
                 let fragmentNorm = LearnedTermPolicy.normalized(event.term.originalFragment)
-                if let originalNorm, fragmentNorm == originalNorm, termNorm == writtenNorm {
+                let isReCorrection = record.sourcePairFingerprint
+                    == Self.pairFingerprint(term: event.term.term, fragment: event.term.originalFragment)
+                if isReCorrection {
                     record.reCorrectionTimestamps.append(event.occurredAt)
                     countedOccurrences += 1
                 } else if fragmentNorm == writtenNorm, termNorm != writtenNorm {
@@ -551,13 +566,12 @@ public actor AmiVoiceDictionarySyncMonitor {
         return String(hash, radix: 16)
     }
 
-    private func sourceFragment(for entry: AmiVoiceDictionaryEntry, in terms: [LearnedTerm]) -> String? {
+    private func sourceTerm(for entry: AmiVoiceDictionaryEntry, in terms: [LearnedTerm]) -> LearnedTerm? {
         let writtenNorm = LearnedTermPolicy.normalized(entry.written)
         return terms
             .filter { $0.createdAt <= entry.updatedAt }
             .filter { LearnedTermPolicy.normalized($0.term) == writtenNorm }
-            .max { $0.createdAt < $1.createdAt }?
-            .originalFragment
+            .max { $0.createdAt < $1.createdAt }
     }
 
     private func upsert(

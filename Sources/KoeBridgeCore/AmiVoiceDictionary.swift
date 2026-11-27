@@ -796,6 +796,10 @@ public final class AmiVoiceDictionarySyncStore: @unchecked Sendable {
     @discardableResult public func appendSnapshot(_ snapshot: AmiVoiceDictionarySyncSnapshot) -> Bool {
         lock.lock()
         defer { lock.unlock() }
+        // This path reads rows directly, so it must run the same recovery the
+        // load paths perform — otherwise a corrupt snapshots value makes every
+        // save fail and appended snapshots are silently dropped.
+        recoverCorruptValuesLocked()
         var rows = snapshotsStore.rows
         rows.append(snapshot)
         // Later array position wins on equal timestamps: it is the newer append.
@@ -808,10 +812,10 @@ public final class AmiVoiceDictionarySyncStore: @unchecked Sendable {
         var keptIDs = Set<UUID>()
         var counts: [AmiVoiceDictionaryProfileKey: Int] = [:]
         for row in newestFirst {
-            let count = counts[row.profileKey, default: 0]
+            let count = counts[row.element.profileKey, default: 0]
             guard count < AmiVoiceDictionaryMonitoringPolicy.snapshotRetentionLimit else { continue }
-            counts[row.profileKey] = count + 1
-            keptIDs.insert(row.id)
+            counts[row.element.profileKey] = count + 1
+            keptIDs.insert(row.element.id)
         }
         return snapshotsStore.save(rows.filter { keptIDs.contains($0.id) })
     }
