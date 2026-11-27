@@ -204,8 +204,9 @@ import KoeBridgeCore
 
     struct Transport {
         var ax = RecoveryAX()
-        var capture: @MainActor (InputDiagnosticTrace?) -> InsertionTarget.CaptureSample = {
-            InsertionTarget.captureSample(diagnostics: $0, stage: .preflight, requireTextInput: true)
+        var capture: @MainActor (InputDiagnosticTrace?, Set<String>?) -> InsertionTarget.CaptureSample = {
+            InsertionTarget.captureSample(diagnostics: $0, stage: .preflight, requireTextInput: true,
+                                          protectedBundleIdentifiers: $1)
         }
         var permissions: @MainActor () -> (Bool, Bool) = { (isTrusted, mayPostEvents) }
         var checkFocus: @MainActor (InsertionTarget, Bool, InputDiagnosticTrace?, InputDiagnosticEvent.Stage, Int) -> (allowed: Bool, reason: String) = {
@@ -366,7 +367,7 @@ import KoeBridgeCore
                                               settledUnconfirmedPredecessors: [SettledUnconfirmedPredecessor],
                                               operation: InsertionReceiptPolicy.SettledUnconfirmedOperation,
                                               diagnostics: InputDiagnosticTrace?, capture: TargetCapture?,
-                                              transport: Transport,
+                                              protectedBundleIdentifiers: Set<String>?, transport: Transport,
                                               onAdoptUnavailable: (@escaping () -> AXError) -> Void,
                                               shouldContinue: @MainActor () -> Bool,
                                               stopReason: (InsertionTarget) -> String?) async
@@ -378,7 +379,7 @@ import KoeBridgeCore
             sample = nil
             initial = capture(diagnostics)
         } else {
-            let observed = transport.capture(diagnostics)
+            let observed = transport.capture(diagnostics, protectedBundleIdentifiers)
             sample = observed
             initial = observed.resolution
         }
@@ -397,12 +398,14 @@ import KoeBridgeCore
                    let deniedWindow = denied.target.window,
                    CFGetTypeID(deniedWindow) == AXUIElementGetTypeID(),
                    CFEqual(startWindow, deniedWindow) {
-                    recoveryCandidate = (DeliveryRecovery(rejection: denied, ax: transport.ax), denied.target)
+                    recoveryCandidate = (DeliveryRecovery(rejection: denied, ax: transport.ax,
+                                                          protectedBundleIdentifiers: protectedBundleIdentifiers), denied.target)
                 } else {
                     recoveryCandidate = nil
                 }
             } else {
-                recoveryCandidate = (DeliveryRecovery(rejection: denied, ax: transport.ax), denied.target)
+                recoveryCandidate = (DeliveryRecovery(rejection: denied, ax: transport.ax,
+                                                      protectedBundleIdentifiers: protectedBundleIdentifiers), denied.target)
             }
         case .unavailable(.focusedTextElementUnavailable, let pid?, _, _):
             let app = AXUIElementCreateApplication(pid)
@@ -422,7 +425,8 @@ import KoeBridgeCore
                     pid: pid, focused: app, window: window, selectionAttribute: nil,
                     selection: nil, textSnapshot: nil, capturedAt: now, blockedReason: nil)
                     .withReceiptFieldNature(.unknown)
-                recoveryCandidate = (DeliveryRecovery(unavailableTarget: placeholder, rejectedAt: now, ax: transport.ax), placeholder)
+                recoveryCandidate = (DeliveryRecovery(unavailableTarget: placeholder, rejectedAt: now, ax: transport.ax,
+                                                      protectedBundleIdentifiers: protectedBundleIdentifiers), placeholder)
             } else {
                 recoveryCandidate = nil
             }
@@ -488,9 +492,12 @@ import KoeBridgeCore
         }
 
         private let reconcile: (Report, UUID?) -> Void
+        private let protectedBundleIdentifiersProvider: @MainActor () -> Set<String>?
 
-        init(reconcile: @escaping (Report, UUID?) -> Void) {
+        init(reconcile: @escaping (Report, UUID?) -> Void,
+             protectedBundleIdentifiers: @escaping @MainActor () -> Set<String>? = { [] }) {
             self.reconcile = reconcile
+            self.protectedBundleIdentifiersProvider = protectedBundleIdentifiers
         }
 
         var lastDeliveryAnchor: LastDeliveryAnchor?
@@ -581,7 +588,8 @@ import KoeBridgeCore
             if case .history = source { pinHistoryTarget = true } else { pinHistoryTarget = false }
             let report = await deliverPayload(payload, takeStart: takeStart(), diagnostics: diagnostics,
                 unverifiedPredecessors: unverifiedPredecessors(), settledUnconfirmedPredecessors: settledUnconfirmedPredecessors(),
-                capture: capture, transport: transport, livePriorBlock: livePriorBlock,
+                capture: capture, protectedBundleIdentifiers: protectedBundleIdentifiersProvider(),
+                transport: transport, livePriorBlock: livePriorBlock,
                 pinHistoryTarget: pinHistoryTarget, shouldContinue: { self.generation == owner && shouldContinue() })
             finalize(report)
             reconcile(report, sourceTakeID)
@@ -602,8 +610,8 @@ import KoeBridgeCore
                                        diagnostics: InputDiagnosticTrace?,
                                        unverifiedPredecessors: [InsertionTarget],
                                        settledUnconfirmedPredecessors: [SettledUnconfirmedPredecessor],
-                                       capture: TargetCapture?, transport: Transport,
-                                       livePriorBlock: (InsertionTarget) -> Bool,
+                                       capture: TargetCapture?, protectedBundleIdentifiers: Set<String>?,
+                                       transport: Transport, livePriorBlock: (InsertionTarget) -> Bool,
                                        pinHistoryTarget: Bool, shouldContinue: @MainActor () -> Bool) async -> Report {
         let beganAt = ProcessInfo.processInfo.systemUptime
         var sent = 0
@@ -720,8 +728,8 @@ import KoeBridgeCore
         defer { _ = restoreSystemTimeout?() }
         let recaptured = await acquireDeliveryTarget(takeStart: takeStart, unverifiedPredecessors: unverifiedPredecessors,
             settledUnconfirmedPredecessors: effectiveSettled, operation: operation,
-            diagnostics: diagnostics, capture: capture, transport: transport,
-            onAdoptUnavailable: { restoreSystemTimeout = $0 },
+            diagnostics: diagnostics, capture: capture, protectedBundleIdentifiers: protectedBundleIdentifiers,
+            transport: transport, onAdoptUnavailable: { restoreSystemTimeout = $0 },
             shouldContinue: shouldContinue, stopReason: stopReason)
         target = recaptured.target
         pacingProfile = target.map { DeliveryPacingPolicy.profile(selectionKind: $0.selectionKind) }

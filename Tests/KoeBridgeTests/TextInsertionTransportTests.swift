@@ -597,7 +597,7 @@ import KoeBridgeCore
         failingTransport.ax.frontPID = { 10_001 }
         failingTransport.ax.owner = { _ in 10_001 }
         failingTransport.ax.attribute = { _, _ in .init(value: nil, status: .noValue) }
-        failingTransport.capture = { _ in .accepted(markerFieldA) }
+        failingTransport.capture = { _, _ in .accepted(markerFieldA) }
         let blockedOnNoLiveSelection = await TextInsertion.deliver(
             "追加入力", to: settledOnlyTake.target,
             unverifiedPredecessors: settledOnlyTake.unverifiedInputTargets,
@@ -667,7 +667,7 @@ import KoeBridgeCore
                 return .init(value: nil, status: .noValue)
             }
         }
-        i10Transport.capture = { _ in .accepted(markerFieldA) }
+        i10Transport.capture = { _, _ in .accepted(markerFieldA) }
         i10Transport.permissions = { (true, true) }
         i10Transport.snapshot = { _, _ in (nil, .markerNotNumeric) }
         i10Transport.checkFocus = { _, _, _, _, _ in (true, "ok") }
