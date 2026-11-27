@@ -501,25 +501,29 @@ struct AmiVoiceVocabularyManagementSelfTests {
         let (store, transport, engine, management) = try makeManagement(suite: suite)
         let approveID = UUID()
         let rejectID = UUID()
-        check(await engine.upsertEntry(
+        let approveInserted = await engine.upsertEntry(
             AmiVoiceDictionaryEntry(id: approveID, written: "霧峰システム", spoken: "きりみねしすてむ"),
             for: key, state: .pendingReview
-        ))
-        check(await engine.upsertEntry(
+        )
+        let rejectInserted = await engine.upsertEntry(
             AmiVoiceDictionaryEntry(id: rejectID, written: "黒羽重工", spoken: "くろはねじゅうこう"),
             for: key, state: .pendingReview
-        ))
+        )
+        check(approveInserted)
+        check(rejectInserted)
         await engine.setAutomaticSyncEnabled(true)
         transport.resetCalls()
 
-        check(await management.approveReviewEntry(id: approveID, reading: "きりみねしすてむ", for: key))
+        let approved = await management.approveReviewEntry(id: approveID, reading: "きりみねしすてむ", for: key)
+        check(approved)
         check(transport.calls.contains { $0.method == "POST" })
         var rows = await engine.entries()
         check(rows.first { $0.id == approveID }?.engineState(for: key)?.state == .autoSynced)
         check(rows.first { $0.id == approveID }?.isProtected == true)
         check(store.loadMonitoringRecords().first { $0.entryID == approveID }?.lastManualEditAt != nil)
 
-        check(await management.rejectReviewEntry(id: rejectID, for: key))
+        let rejected = await management.rejectReviewEntry(id: rejectID, for: key)
+        check(rejected)
         rows = await engine.entries()
         check(rows.first { $0.id == rejectID }?.engineState(for: key)?.state == .ignored)
         _ = await management.syncNow(for: key)
@@ -534,20 +538,22 @@ struct AmiVoiceVocabularyManagementSelfTests {
         let (store, transport, engine, management) = try makeManagement(suite: suite)
 
         // OFF path: local-only, zero transport.
-        check(await engine.upsertEntry(
+        let offInserted = await engine.upsertEntry(
             AmiVoiceDictionaryEntry(written: "黒羽重工", spoken: "くろはねじゅうこう"),
             for: key, state: .readyToSync
-        ))
+        )
+        check(offInserted)
         var outcomes = await management.deleteAll(scope: .localAndServer, currentKey: key)
         check(outcomes[key]?.kind == .disabled)
         check(store.loadEntries().isEmpty)
         check(transport.calls.isEmpty)
 
         // ON path: empty-array overwrite per profile, sync turned OFF.
-        check(await engine.upsertEntry(
+        let onInserted = await engine.upsertEntry(
             AmiVoiceDictionaryEntry(written: "霧峰システム", spoken: "きりみねしすてむ"),
             for: key, state: .readyToSync
-        ))
+        )
+        check(onInserted)
         await engine.setAutomaticSyncEnabled(true)
         let initial = await engine.syncNow(for: key)
         check(initial.kind == .success)

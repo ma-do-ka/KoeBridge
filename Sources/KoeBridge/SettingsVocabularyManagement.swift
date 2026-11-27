@@ -7,7 +7,7 @@ private enum AmiVoiceVocabularyUI {
 
     static func timestamp(_ date: Date) -> String {
         date.formatted(.dateTime.year(.defaultDigits).month(.twoDigits).day(.twoDigits)
-            .hour(.twoDigits(amClock: .omitAMorPM)).minute(.twoDigits).locale(Locale(identifier: "ja_JP")))
+            .hour(.twoDigits(amPM: .omitted)).minute(.twoDigits).locale(Locale(identifier: "ja_JP")))
     }
 
     static func tint(for state: AmiVoiceDictionaryEntryState?) -> Color {
@@ -359,12 +359,13 @@ struct AmiVoiceSyncHistorySheet: View {
         .alert(item: $confirmTarget) { target in
             let list = snapshots
             let newer = list.first { $0.createdAt > target.createdAt && $0.id != target.id } ?? list.first
-            let counts = newer.map { AmiVoiceVocabularyManagement.snapshotDiff(newer: $0, older: target) } ?? (0, 0, 0)
+            let (addedCount, updatedCount, removedCount) = newer
+                .map { AmiVoiceVocabularyManagement.snapshotDiff(newer: $0, older: target) } ?? (0, 0, 0)
             return Alert(
                 title: Text(copy.rollbackTitle),
                 message: Text(copy.rollbackBody(
                     lastSyncAt: newer.map { AmiVoiceVocabularyUI.timestamp($0.createdAt) } ?? "",
-                    added: counts.added, updated: counts.updated, removed: counts.removed
+                    added: addedCount, updated: updatedCount, removed: removedCount
                 )),
                 primaryButton: .destructive(Text(copy.rollbackConfirmButton)) {
                     Task {
