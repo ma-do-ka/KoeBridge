@@ -164,6 +164,7 @@ Sources/KoeBridgeCore/UsageSummary.swift
 Sources/KoeBridgeCore/UserFacingErrorMessage.swift
 Sources/KoeBridgeCore/VocabularyPipeline.swift
 Sources/KoeBridgeCore/VocabularyReadingGeneration.swift
+Sources/KoeBridgeCore/VocabularySyncAdapter.swift
 Sources/KoeBridgeCore/VoiceCommands.swift
 Sources/KoeBridgeEngines/AmiVoiceWebSocketConnection.swift
 Sources/KoeBridgeEngines/AppleLocalTranscriber.swift
@@ -303,6 +304,7 @@ Tests/KoeBridgeCoreTests/UsageSummaryTests.swift
 Tests/KoeBridgeCoreTests/UserFacingErrorMessageTests.swift
 Tests/KoeBridgeCoreTests/VocabularyPipelineGD308GateTests.swift
 Tests/KoeBridgeCoreTests/VocabularyPipelineTests.swift
+Tests/KoeBridgeCoreTests/VocabularySyncAdapterTests.swift
 Tests/KoeBridgeCoreTests/VoiceCommandTests.swift
 Tests/KoeBridgeTapFixtures/FakeTapNode.m
 Tests/KoeBridgeTapFixtures/include/KoeBridgeTapFixtures.h
