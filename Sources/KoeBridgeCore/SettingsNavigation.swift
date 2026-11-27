@@ -90,6 +90,7 @@ public enum SettingsSearchCatalog {
         .init(id: "microphone-device", section: .voice, title: "マイクを選択", keywords: "microphone device 入力機器"),
         .init(id: "bluetooth-warm", section: .voice, title: "Bluetoothマイクの接続準備", keywords: "Bluetooth warm 接続維持"),
         .init(id: "output-volume-guard", section: .voice, title: "録音中の音量ガード", keywords: "volume guard 再生音量 上限 Bluetooth"),
+        .init(id: "clause-streaming", section: .voice, title: "文節ストリーミング", keywords: "文 確定 先行 後処理 試験的 streaming sentence"),
         .init(id: "preview", section: .voice, title: "録音プレビュー", keywords: "progressive preview 確定 暫定"),
         .init(id: "snippets", section: .voice, title: "定型文・スニペット", keywords: "snippets DATE TIME CLIPBOARD 署名"),
         .init(id: "voice-commands", section: .voice, title: "音声コマンド", keywords: "voice commands 入力をキャンセルして 改行して 段落を変えて 改行 送信 取消"),

@@ -224,6 +224,10 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
     var finished = false
     var automaticDeliverySuppressed = false
     var reviewSession: DictationReviewSession?
+    /// R-03 文節ストリーミング (B-2 Soft Commit). Created per take when the
+    /// setting snapshot allows it; discarded in releaseResources. Sentence
+    /// work never crosses into the next take.
+    var streaming: TakeStreamingContext?
     var historyRecordID: UUID?
     var inputDiagnostics: InputDiagnosticTrace?
     var acousticEvidence = AudioActivityMeter().evidence
@@ -317,6 +321,8 @@ enum RecognitionMode: String, CaseIterable, Identifiable {
         finalizationTimeout?.cancel()
         worker?.cancel()
         reviewSession?.cancel()
+        streaming?.cancel()
+        streaming = nil
         // A capture may still be preparing; late callbacks are gated by
         // 'finished', and the original startup task releases its own mic.
         mic?.stop(.cancelled) { _ in }

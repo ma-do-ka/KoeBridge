@@ -36,6 +36,12 @@ import KoeBridgeEngines
     @Published var progressivePreviewEnabled = UserDefaults.standard.object(forKey: "progressivePreviewEnabled") as? Bool ?? true {
         didSet { UserDefaults.standard.set(progressivePreviewEnabled, forKey: "progressivePreviewEnabled") }
     }
+    /// R-03 文節ストリーミング（案B-2 Soft Commit）。任意設定・既定 OFF。
+    /// Snapshotted into each DictationTake at take start; mid-recording
+    /// changes never apply to the take already capturing.
+    @Published var clauseStreamingEnabled = UserDefaults.standard.bool(forKey: "clauseStreamingEnabled") {
+        didSet { UserDefaults.standard.set(clauseStreamingEnabled, forKey: "clauseStreamingEnabled") }
+    }
     @Published var isRecording = false
     @Published private(set) var benchRecordingActive = false
     private var cancelBenchRecording: (@MainActor () -> Void)?
@@ -1167,6 +1173,16 @@ import KoeBridgeEngines
         }
         take.transformSelection = selection
         take.isFixLastInput = fixingLastInput
+        // R-03: normal single dictation only. App profiles, transforms, fix-
+        // last-input and agent style keep the whole-take path untouched.
+        if clauseStreamingEnabled, profile == nil, selection == nil, !fixingLastInput,
+           take.style != .agent {
+            take.streaming = TakeStreamingContext(
+                postProcessEligible: PostProcessingPolicy.shouldApply(
+                    mode: take.postProcessMode, enabled: take.postProcessEnabled,
+                    style: take.style, isTransform: false, skipped: false, noInput: false),
+                postProcess: makeSentenceProcessor(for: take))
+        }
         guard finished.begin(take.id) else { return }
         take.inputDiagnostics = preparation.makeInputTrace(take.id)
         take.inputDiagnostics?.record(.session, stage: .requested, [
@@ -1408,6 +1424,9 @@ import KoeBridgeEngines
                             take.partialText = preview.text
                             take.previewFinalizedText = preview.finalizedPrefix
                             take.previewVolatileText = preview.volatileTail
+                            if case .final = event {
+                                take.streaming?.ingest(finalizedPrefix: preview.finalizedPrefix)
+                            }
                             if take.firstPreviewAt == nil, !take.partialText.isEmpty {
                                 take.firstPreviewAt = Date()
                             }
@@ -1451,6 +1470,7 @@ import KoeBridgeEngines
                     take.partialText = preview.text
                     take.previewFinalizedText = preview.finalizedPrefix
                     take.previewVolatileText = preview.volatileTail
+                    take.streaming?.ingest(finalizedPrefix: preview.finalizedPrefix)
                     if take.firstPreviewAt == nil, !preview.text.isEmpty {
                         take.firstPreviewAt = Date()
                     }
@@ -1511,6 +1531,7 @@ import KoeBridgeEngines
                 take.partialText = update.text
                 take.previewFinalizedText = update.finalizedPrefix
                 take.previewVolatileText = update.volatileTail
+                take.streaming?.ingest(finalizedPrefix: update.finalizedPrefix)
                 if take.firstPreviewAt == nil, !update.text.isEmpty { take.firstPreviewAt = Date() }
                 if self.active === take {
                     self.updatePreview(for: take, isFinal: !update.finalizedPrefix.isEmpty)
@@ -1689,6 +1710,41 @@ import KoeBridgeEngines
         return result
     }
 
+    /// Per-sentence post-processing through the existing path: the same
+    /// GeminiTextTransformer.postProcess call, the same PostProcessingPolicy
+    /// adoption contract (C-Q01), and on any failure the sentence's original
+    /// text is kept. No per-sentence timeout exists; while recording the
+    /// request gets a plain HTTP bound, and after stop the take's existing
+    /// 15 s watchdog bounds whatever is still running.
+    private func makeSentenceProcessor(for take: DictationTake)
+        -> @MainActor (String) async -> (text: String, applied: Bool) {
+        let mode = take.postProcessMode
+        return { [weak take] sentence in
+            guard let take else { return (sentence, false) }
+            do {
+                let budget: TimeInterval = take.stoppingAt != nil
+                    ? TranscriptReviewDeadline.available(stoppedAt: take.stoppingAt, now: Date())
+                    : 30
+                guard budget > 0, let key = KeychainStore.loadForUse() else { return (sentence, false) }
+                let result = try await GeminiTextTransformer.postProcess(
+                    text: sentence, mode: mode, apiKey: key, timeout: budget)
+                let adoption = PostProcessingPolicy.adoption(original: sentence, processed: result.text)
+                if let rejection = adoption.rejection {
+                    DiagnosticLog.record("clause postprocess rejected \(rejection.rawValue)")
+                }
+                return (adoption.text, adoption.rejection == nil)
+            } catch {
+                guard !take.finished, !Task.isCancelled else { return (sentence, false) }
+                DiagnosticLog.record("clause postprocess failed; sentence original retained")
+                return (sentence, false)
+            }
+        }
+    }
+
+    private static func boundarySummary(_ sources: [SentenceBoundarySource: Int]) -> String {
+        "terminator:\(sources[.terminator] ?? 0),quoteClose:\(sources[.quoteClose] ?? 0),flush:\(sources[.flush] ?? 0),capacity:\(sources[.capacity] ?? 0)"
+    }
+
     static func localRescueModeLabel(for failedEngine: RecognitionMode) -> String {
         switch failedEngine {
         case .gemini: return "Appleオンデバイス（Gemini失敗時の救済）"
@@ -1748,6 +1804,41 @@ import KoeBridgeEngines
             let adopted = take.adoptFinalText(result)
             let original = take.commandCandidate == nil && take.transformSelection == nil && take.preferred == .gemini && take.style == .agent
                 ? AgentInstructionFormatting.format(adopted) : adopted
+            // R-03 案B-2: sentence work already ran ahead. The take-level
+            // review still applies to the whole assembled raw text exactly as
+            // before; only the post-process step is replaced by its finished
+            // per-sentence results.
+            if let streaming = take.streaming, take.commandCandidate == nil {
+                let sealed = await streaming.seal(finalText: result) {
+                    take.postProcessOriginal = $0
+                }
+                if !sealed.degraded {
+                    DiagnosticLog.record("clause streaming; id=\(take.id.uuidString.prefix(8)) sentences=\(sealed.unitCount) boundaries=\(Self.boundarySummary(sealed.boundarySources)) applied=\(sealed.appliedSentences) fallback=\(sealed.fallbackSentences)")
+                    let review = DictationReviewSession(
+                        originalText: original, engine: take.successfulEngine, options: take.options,
+                        stoppedAt: take.stoppingAt, audio: take.audioBackup,
+                        vocabulary: take.vocabulary, style: take.style, japaneseHint: take.japaneseHint,
+                        context: take.capturedContext)
+                    take.reviewSession = review
+                    let output = await review.run { [weak self, weak take] in
+                        guard let self, let take, !take.finished else { return }
+                        if self.overlayOwner == take.id, self.active == nil { self.overlayFeedback = .checking }
+                        if self.active == nil { self.status = "追加チェック中。次の録音は開始できます" }
+                    }
+                    guard !take.finished, !Task.isCancelled else { return }
+                    if output == original, take.review?.status != .needsReview {
+                        resolve(take, text: sealed.processedText, reason: nil, postProcessed: true)
+                    } else {
+                        // Review changed or held the text: continue exactly as
+                        // the whole-take path. Clear the seal-time fallback so
+                        // resolve can schedule its own inline post-process.
+                        take.postProcessOriginal = nil
+                        resolve(take, text: output, reason: nil)
+                    }
+                    return
+                }
+                DiagnosticLog.record("clause streaming degraded; id=\(take.id.uuidString.prefix(8)) sentences=\(sealed.unitCount); whole-take path")
+            }
             // Only an actually confirmed primary result can survive a review
             // timeout. Pending/interim text never takes this route.
             let review = DictationReviewSession(
