@@ -90,11 +90,14 @@ import KoeBridgeCore
             guard MicWarmPolicy.shouldWarm(enabled: enabled,
                 selectedDeviceIsBluetooth: hardware.isBluetooth(selected.deviceID),
                 takeActive: takeActive) else { stop(reason: "policy"); return }
-            if let lease, lifetime.isCurrent(token: lease.token), target == selected, lease.resource.isRunning {
+            if let lease, lifetime.isCurrent(token: lease.token), target == selected,
+               LeasedMicrophoneTapGraph.readEngineRunning(lease.resource) == true {
                 let node = hardware.inputNode(lease.resource)
                 if hardware.isStillSelected(selected, node),
-                   tap.hardwareMatches(node.inputFormat(forBus: 0)),
-                   tap.appliedMatches(node.outputFormat(forBus: 0)) {
+                   LeasedMicrophoneTapGraph.readNodeFormat(node, input: true, bus: 0)
+                       .map({ tap.hardwareMatches($0) }) == true,
+                   LeasedMicrophoneTapGraph.readNodeFormat(node, input: false, bus: 0)
+                       .map({ tap.appliedMatches($0) }) == true {
                     volumeGuard.check()
                     return
                 }
@@ -115,7 +118,14 @@ import KoeBridgeCore
                 try hardware.bind(selected, node, nil)
                 observer = NotificationCenter.default.addObserver(
                     forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil
-                ) { _ in
+                ) { [weak self, weak engine] _ in
+                    // A churned route may rebuild the input unit while it still
+                    // renders. Disarm this warm engine on the lifecycle lane now;
+                    // the lease and tap stay for the normal re-resume release.
+                    MicrophoneCapture.warmLifecycleQueue.async { [weak self, weak engine] in
+                        guard let self, let engine, self.lease?.resource === engine else { return }
+                        _ = LeasedMicrophoneTapGraph.stopEngine(engine)
+                    }
                     if gate.warmConfigurationChanged() { changed() }
                 }
                 let graph = LeasedMicrophoneTapGraph(lifetime: lifetime,

@@ -338,7 +338,7 @@ final class MicrophoneCapture: @unchecked Sendable {
     private func checkReadiness(deadline: TimeInterval) async -> MicrophoneStartupGate.Decision {
         await withCheckedContinuation { continuation in
             Self.lifecycleQueue.async { [self] in
-                let running = engine?.isRunning == true
+                let running = engine.flatMap { LeasedMicrophoneTapGraph.readEngineRunning($0) } ?? false
                 // Settling is notification-driven only. Polls neither probe the HAL
                 // during debounce nor turn a poll-detected failure into revalidation.
                 switch startupGate.currentPhase {
@@ -363,11 +363,19 @@ final class MicrophoneCapture: @unchecked Sendable {
                     startupDiagnostics?.note(.inputRouteChanged)
                     if let lease = engineLease, lifetime.isVerifying(lease) {
                         let engine = lease.resource
-                        let graphIsIntact = running && engine.isRunning && tap.isInstalled
-                            && inputNode.engine === engine && inputNode.numberOfOutputs > 0
-                            && engine.outputConnectionPoints(for: inputNode, outputBus: 0).isEmpty
-                            && tap.hardwareMatches(inputNode.inputFormat(forBus: 0))
-                            && tap.appliedMatches(inputNode.outputFormat(forBus: 0))
+                        // The engine may be intentionally stopped for a settled
+                        // revalidation probe; liveness then comes from the
+                        // snapshot taken when input was disarmed.
+                        let graphIsIntact = (running || revalidationWasRunning)
+                            && tap.isInstalled
+                            && LeasedMicrophoneTapGraph.readNodeEngine(inputNode) === engine
+                            && (LeasedMicrophoneTapGraph.readNodeOutputCount(inputNode) ?? 0) > 0
+                            && LeasedMicrophoneTapGraph.readEngineConnectionPoints(
+                                engine, node: inputNode, outputBus: 0)?.isEmpty == true
+                            && LeasedMicrophoneTapGraph.readNodeFormat(
+                                inputNode, input: true, bus: 0).map { tap.hardwareMatches($0) } == true
+                            && LeasedMicrophoneTapGraph.readNodeFormat(
+                                inputNode, input: false, bus: 0).map { tap.appliedMatches($0) } == true
                         healthLock.lock()
                         let buffersAreIntact = droppedBuffers == 0 && conversionErrors == 0
                         healthLock.unlock()
@@ -454,11 +462,44 @@ final class MicrophoneCapture: @unchecked Sendable {
 
     private func notifyInterruption(_ reason: MicrophoneStartupGate.Failure,
                                     onDeviceChanged: @escaping (MicrophoneInputInterruption) -> Void) {
-        // Never stop/deallocate an engine in its notification callback.
+        // Never stop/deallocate an engine in its notification callback. Disarm
+        // input on the lifecycle lane immediately instead of leaving it live
+        // for the whole UI round trip; teardown ownership stays with stop().
+        Self.lifecycleQueue.async { [weak self] in self?.quiesceEngine() }
         DispatchQueue.main.async { [weak self] in
             guard let self, !self.startupGate.isStopped else { return }
             self.microphoneEvidence?.write("mic_interrupted capture=\(self.diagnosticID.uuidString) category=\(reason.rawValue)")
             onDeviceChanged(reason == .inputRouteChanged ? .deviceRemoval : .inputChange)
+        }
+    }
+
+    /// Stop input rendering without releasing the lease or the tap. A live
+    /// engine during a route change is what lets a CoreAudio input callback
+    /// reach a graph that AVFAudio is rebuilding underneath it; full teardown
+    /// ownership stays with stopBlocking().
+    private func quiesceEngine() {
+        guard let lease = engineLease else { return }
+        _ = LeasedMicrophoneTapGraph.stopEngine(lease.resource)
+    }
+
+    /// Liveness observed when input was first disarmed for this engine.
+    /// Revalidation probes run against the stopped engine, so the verdict and
+    /// graph-intact checks use this snapshot instead of a live read.
+    private var revalidationWasRunning = false // lifecycleQueue only
+
+    /// Disarm input while a route change settles. AVFAudio rebuilds the input
+    /// unit under a running engine; a stopped engine cannot deliver the input
+    /// callback that aborts when that rebuild removes the tap behind our back.
+    private func quiesceForRevalidation() {
+        guard !teardownStarted, case .revalidating = startupGate.currentPhase else { return }
+        guard let lease = engineLease else { return }
+        let running = LeasedMicrophoneTapGraph.readEngineRunning(lease.resource)
+        // An already-stopped engine keeps the earlier snapshot: we may be the
+        // ones holding it. An unreadable isRunning is treated as live.
+        guard running != false else { return }
+        revalidationWasRunning = true
+        if !LeasedMicrophoneTapGraph.stopEngine(lease.resource) {
+            startupGate.invalidate(.engineStopped, at: hardware.now())
         }
     }
 
@@ -481,10 +522,12 @@ final class MicrophoneCapture: @unchecked Sendable {
             startupDiagnostics?.noteChurn(epoch: startupGate.currentEpoch)
             updateSettlingDiagnostics()
             startupDiagnostics?.note(.settlingBudget)
+            Self.lifecycleQueue.async { [weak self] in self?.quiesceEngine() }
         case .revalidate(let epoch, _):
             startupDiagnostics?.noteChurn(epoch: epoch)
             Self.lifecycleQueue.async { [weak self] in
                 guard let self else { return }
+                self.quiesceForRevalidation()
                 self.scheduleRevalidation(after: 0)
             }
         }
@@ -520,21 +563,31 @@ final class MicrophoneCapture: @unchecked Sendable {
         }
         startupDiagnostics?.begin(.revalidating)
         volumeGuard?.check()
+        // Disarm input before probing: the engine stays stopped through the
+        // settle window so a CoreAudio input callback cannot reach the graph
+        // while AVFAudio rebuilds it. The verdict sees quiesce-time liveness.
+        quiesceForRevalidation()
+        guard !teardownStarted, case .revalidating = startupGate.currentPhase else {
+            startupDiagnostics?.end(.revalidating)
+            return
+        }
         let engine = self.engine
         let node = inputNode
         let selected = selectedTarget.map { target in
             node.map { hardware.isStillSelected(target, $0) } ?? false
         } ?? false
-        let hardwareFormat = node?.inputFormat(forBus: 0)
-        let applied = node?.outputFormat(forBus: 0)
+        let hardwareFormat = node.flatMap { LeasedMicrophoneTapGraph.readNodeFormat($0, input: true, bus: 0) }
+        let applied = node.flatMap { LeasedMicrophoneTapGraph.readNodeFormat($0, input: false, bus: 0) }
         healthLock.lock()
         let losses = droppedBuffers, errors = conversionErrors
         healthLock.unlock()
-        let running = engine?.isRunning == true
+        let running = revalidationWasRunning
         let input = MicrophoneRevalidationInput(
             hasEngineAndTarget: engineLease != nil && selectedTarget != nil,
             deviceStillSelected: selected, engineRunning: running, tapInstalled: tap.isInstalled,
-            outputConnectionsEmpty: node.map { engine?.outputConnectionPoints(for: $0, outputBus: 0).isEmpty == true } ?? false,
+            outputConnectionsEmpty: node.flatMap { n in
+                engine.flatMap { LeasedMicrophoneTapGraph.readEngineConnectionPoints($0, node: n, outputBus: 0)?.isEmpty }
+            } ?? false,
             hardwareFormatValid: hardwareFormat.map { MicrophoneTapFormatPlan(hardwareSampleRate: $0.sampleRate, hardwareChannels: $0.channelCount) != nil } ?? false,
             hardwareMatchesPlan: hardwareFormat.map { tap.hardwareMatches($0) } ?? false,
             appliedMatchesPlan: applied.map { tap.appliedMatches($0) } ?? false,
@@ -552,7 +605,8 @@ final class MicrophoneCapture: @unchecked Sendable {
             if reason == .inputRouteChanged, component == .selection,
                let lease = engineLease, lifetime.isVerifying(lease) {
                 let graphIsIntact = input.engineRunning && input.tapInstalled && input.outputConnectionsEmpty
-                    && node?.engine === lease.resource && (node?.numberOfOutputs ?? 0) > 0
+                    && node.flatMap({ LeasedMicrophoneTapGraph.readNodeEngine($0) }) === lease.resource
+                    && (node.flatMap { LeasedMicrophoneTapGraph.readNodeOutputCount($0) } ?? 0) > 0
                     && input.hardwareFormatValid && input.hardwareMatchesPlan && input.appliedMatchesPlan
                 let accepted = startupGate.invalidateForVerification(reason, expectedEpoch: epoch,
                     at: hardware.now(), deadline: attemptDeadline)
@@ -563,6 +617,21 @@ final class MicrophoneCapture: @unchecked Sendable {
                 startupGate.invalidate(reason, expectedEpoch: epoch, at: hardware.now())
             }
         case .resume:
+            do {
+                guard let lease = engineLease, let node else {
+                    throw MicrophoneGraphError.unexpectedTopology
+                }
+                // Input was disarmed for the settled probe; restart it only
+                // after the checklist passes, on the settled route.
+                try LeasedMicrophoneTapGraph(lifetime: lifetime, lease: lease,
+                                             node: node) { true }.start()
+            } catch {
+                startupDiagnostics?.end(.revalidating)
+                updateSettlingDiagnostics()
+                startupGate.invalidate(.engineStopped, expectedEpoch: epoch, at: hardware.now())
+                if case .failed = startupGate.currentPhase { startupDiagnostics?.note(.settlingBudget) }
+                return
+            }
             let resumed = processingQueue.sync { [self] in
                 discardStartupBuffers()
                 // Retain the converter but discard any internally buffered old PCM.
@@ -641,8 +710,11 @@ final class MicrophoneCapture: @unchecked Sendable {
         do {
             try hardware.bind(target, node, startupDiagnostics)
         } catch MicrophoneDevices.DeviceError.selectionNotApplied {
-            if lifetime.isVerifying(lease), node.engine === engine, node.numberOfOutputs > 0,
-               engine.outputConnectionPoints(for: node, outputBus: 0).isEmpty {
+            if lifetime.isVerifying(lease),
+               LeasedMicrophoneTapGraph.readNodeEngine(node) === engine,
+               (LeasedMicrophoneTapGraph.readNodeOutputCount(node) ?? 0) > 0,
+               LeasedMicrophoneTapGraph.readEngineConnectionPoints(
+                   engine, node: node, outputBus: 0)?.isEmpty == true {
                 recordSynchronousVerificationFailure(.binding)
             }
             throw MicrophoneDevices.DeviceError.selectionNotApplied
@@ -719,15 +791,19 @@ final class MicrophoneCapture: @unchecked Sendable {
         guard !startupGate.isStopped else { throw CancellationError() }
         guard hardware.now() < attemptDeadline else { throw CaptureError.notReady(.unstableBuffers) }
         let phase = startupGate.finishConfiguring(at: hardware.now())
-        if case .revalidating = phase { scheduleRevalidation(after: 0) }
-        else { startupDiagnostics?.begin(.awaitPCM) }
+        if case .revalidating = phase {
+            quiesceForRevalidation()
+            scheduleRevalidation(after: 0)
+        } else { startupDiagnostics?.begin(.awaitPCM) }
         let timer = DispatchSource.makeTimerSource(queue: Self.lifecycleQueue)
         timer.schedule(deadline: .now() + 0.25, repeating: 0.25, leeway: .milliseconds(30))
         timer.setEventHandler { [weak self] in
             guard let self else { return }
             if let failure = self.startupGate.recordingFailure(
                 at: self.hardware.now(),
-                engineRunning: self.engine?.isRunning == true) {
+                engineRunning: self.engine.flatMap {
+                    LeasedMicrophoneTapGraph.readEngineRunning($0)
+                } ?? false) {
                 self.invalidateStartup(failure, onDeviceChanged: onDeviceChanged)
             } else if self.startupGate.didCommit,
                       let node = self.inputNode, let target = self.selectedTarget,
@@ -776,18 +852,19 @@ final class MicrophoneCapture: @unchecked Sendable {
             throw CaptureError.engineInUse
         }
         engineLease = acquired
+        revalidationWasRunning = false
         startupDiagnostics?.end(.engineLease)
     }
 
     /// Read back both scopes; never promote a successful API call alone to a
     /// valid stream. This does not change the system device or hardware rate.
     private func verifyTapFormat(_ node: AVAudioNode) throws {
-        let hardware = node.inputFormat(forBus: 0)
-        let applied = node.outputFormat(forBus: 0)
-        formatSnapshot?.appliedRate = applied.sampleRate
-        formatSnapshot?.appliedChannels = applied.channelCount
-        guard tap.hardwareMatches(hardware),
-              tap.appliedMatches(applied) else {
+        let hardware = LeasedMicrophoneTapGraph.readNodeFormat(node, input: true, bus: 0)
+        let applied = LeasedMicrophoneTapGraph.readNodeFormat(node, input: false, bus: 0)
+        formatSnapshot?.appliedRate = applied?.sampleRate ?? 0
+        formatSnapshot?.appliedChannels = applied?.channelCount ?? 0
+        guard let hardware, let applied,
+              tap.hardwareMatches(hardware), tap.appliedMatches(applied) else {
             throw CaptureError.notReady(.formatChanged)
         }
     }
@@ -992,6 +1069,7 @@ final class MicrophoneCapture: @unchecked Sendable {
         startupDiagnostics?.end(.processingDrain)
         startupDiagnostics?.begin(.leaseRelease)
         engineLease = nil
+        revalidationWasRunning = false
         if !flushPendingAudio { speechDetector.cancel() }
         if let lease = cleanupLease, let cleanupEvidence {
             let record: ((String) -> Void)? = microphoneEvidence.map { writer in { _ = writer.enqueue($0) } }

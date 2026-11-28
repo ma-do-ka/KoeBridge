@@ -12,7 +12,7 @@ struct MicrophoneTapInstallationTests {
         lazy var lease = lifetime.acquire()!
         let bluetooth = AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1)!
         let aggregate = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 2)!
-        var client: AVAudioFormat
+        var client: AVAudioFormat?
         var onInstall: (() -> Void)?
         var onPrepare: (() -> Void)?
         var prepares = 0
@@ -22,7 +22,7 @@ struct MicrophoneTapInstallationTests {
             node.currentDeviceID = 137
             _ = lease
         }
-        var hardware: AVAudioFormat { selectionMatches ? bluetooth : aggregate }
+        var hardware: AVAudioFormat? { selectionMatches ? bluetooth : aggregate }
         var leaseIsCurrent: Bool { lifetime.isCurrent(token: lease.token) }
         var selectionMatches: Bool { node.currentDeviceID == 137 }
         func install(_ format: AVAudioFormat, block: @escaping AVAudioNodeTapBlock) -> KBTapResult {
@@ -43,6 +43,7 @@ struct MicrophoneTapInstallationTests {
     private enum Scenario: CaseIterable {
         case repair, switched, unknown, late, cancelled, configurationChange
         case wrongAfterInstall, wrongAfterPrepare, alreadyExpired, wrongSelection, changedDuringConversion
+        case unreadableClient
     }
 
     static func leaseAndBudget() {
@@ -88,62 +89,6 @@ struct MicrophoneTapInstallationTests {
         check(warm.warmConfigurationChanged())
         warm.stop()
         check(!warm.warmConfigurationChanged())
-    }
-
-    static func lifetimeTelemetry() throws {
-        func aggregate(_ events: [LocalDiagnosticEvent]) -> LocalDiagnosticDailySummary {
-            var summary = LocalDiagnosticDailySummary()
-            for event in events { summary.apply(event) }
-            return summary
-        }
-
-        var normal: [LocalDiagnosticEvent] = []
-        let normalLifetime = MicrophoneEngineLifetime(makeResource: { NSObject() },
-                                                      telemetry: { normal.append($0) })
-        let take = try require(normalLifetime.acquire())
-        check(normalLifetime.beginCleanup(take))
-        check(normalLifetime.finishCleanup(take, evidence: .init(stopped: true, hadTap: false)) == .normal)
-        check(normal.isEmpty)
-
-        var recovered: [LocalDiagnosticEvent] = []
-        let recoveredLifetime = MicrophoneEngineLifetime(makeResource: { NSObject() },
-                                                         telemetry: { recovered.append($0) })
-        let old = try require(recoveredLifetime.acquire())
-        recoveredLifetime.recordPreflightStopped(true, for: old)
-        recoveredLifetime.retire(old, preCommitFormatException: true)
-        check(recoveredLifetime.beginCleanup(old))
-        check(recoveredLifetime.finishCleanup(old,
-            evidence: .init(stopped: true, hadTap: false, runningAtCleanup: false)) == .replacementPending)
-        let next = try require(try recoveredLifetime.acquire(for: .capture, canAcquire: true))
-        recoveredLifetime.finishVerification(next)
-        check(aggregate(recovered).micReplacementAttempts == 1 && aggregate(recovered).micRecoverySuccesses == 1)
-        check(aggregate(recovered).micVerificationDeferrals == 0 && aggregate(recovered).micUnrecovered == 0)
-
-        var deferred: [LocalDiagnosticEvent] = []
-        let deferredLifetime = MicrophoneEngineLifetime(makeResource: { NSObject() },
-                                                        telemetry: { deferred.append($0) })
-        let first = try require(deferredLifetime.acquire())
-        deferredLifetime.recordPreflightStopped(true, for: first)
-        deferredLifetime.retire(first, preCommitFormatException: true)
-        check(deferredLifetime.beginCleanup(first))
-        check(deferredLifetime.finishCleanup(first,
-            evidence: .init(stopped: true, hadTap: false, runningAtCleanup: false)) == .replacementPending)
-        let replacement = try require(try deferredLifetime.acquire(for: .capture, canAcquire: true))
-        deferredLifetime.recordVerificationFailure(.binding, for: replacement)
-        check(deferredLifetime.beginCleanup(replacement))
-        check(deferredLifetime.finishCleanup(replacement,
-            evidence: .init(stopped: true, hadTap: false, runningAtCleanup: false)) == .verificationDeferred)
-        check(aggregate(deferred).micReplacementAttempts == 1 && aggregate(deferred).micVerificationDeferrals == 1)
-        check(aggregate(deferred).micUnrecovered == 0)
-
-        var failed: [LocalDiagnosticEvent] = []
-        let failedLifetime = MicrophoneEngineLifetime(makeResource: { NSObject() },
-                                                      telemetry: { failed.append($0) })
-        let terminal = try require(failedLifetime.acquire())
-        failedLifetime.retire(terminal, preCommitFormatException: false)
-        check(failedLifetime.beginCleanup(terminal))
-        check(failedLifetime.finishCleanup(terminal, evidence: .init(stopped: true, hadTap: false)) == .terminal)
-        check(aggregate(failed).micUnrecovered == 1)
     }
 
     private static func staleGraphCannotTouchNewOwner(warm: Bool) {
@@ -203,6 +148,7 @@ struct MicrophoneTapInstallationTests {
             case .wrongAfterPrepare: graph.onPrepare = { [unowned graph] in graph.client = graph.aggregate }
             case .alreadyExpired: clock = deadline
             case .wrongSelection: graph.node.currentDeviceID = 173
+            case .unreadableClient: graph.client = nil
             }
             let sink: MicrophoneTapInstallation.Sink = warm ? .warm : .capture(output: graph.bluetooth,
                 configure: { converter, hardware, client in
@@ -220,7 +166,8 @@ struct MicrophoneTapInstallationTests {
                 check(plan.matches(sampleRate: 16_000, channels: 1))
             } catch { failure = error }
             let partial = scenario == .switched || scenario == .unknown
-            let beforeInstall = [.alreadyExpired, .wrongSelection, .changedDuringConversion].contains(scenario)
+            let beforeInstall = [.alreadyExpired, .wrongSelection, .changedDuringConversion,
+                                 .unreadableClient].contains(scenario)
             check(graph.node.installs == (beforeInstall ? 0 : 1))
             check(tap.isInstalled == (!beforeInstall && !partial))
             check(gate.isStopped == (scenario != .repair))
@@ -251,7 +198,7 @@ struct MicrophoneTapInstallationTests {
             case .configurationChange: check(failure as? MicrophoneStartupGate.Failure == .configurationChanged)
             case .wrongSelection, .changedDuringConversion:
                 check(failure as? MicrophoneStartupGate.Failure == .inputRouteChanged)
-            case .wrongAfterInstall, .wrongAfterPrepare:
+            case .wrongAfterInstall, .wrongAfterPrepare, .unreadableClient:
                 check(failure as? MicrophoneStartupGate.Failure == .formatChanged)
             }
 

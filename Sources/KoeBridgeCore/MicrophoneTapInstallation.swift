@@ -1,4 +1,5 @@
 #if os(macOS)
+import AudioToolbox
 import AVFAudio
 import Foundation
 import KoeBridgeAudioTap
@@ -21,8 +22,10 @@ package protocol MicrophoneTapGraph {
     var stoppedAndUnconnected: Bool { get }
     var selectionMatches: Bool { get }
     func recordPreflightStopped(_ stopped: Bool)
-    var hardware: AVAudioFormat { get }
-    var client: AVAudioFormat { get }
+    // A nil read means the native property threw; callers classify it as a
+    // format change instead of dying on an uncaught NSException.
+    var hardware: AVAudioFormat? { get }
+    var client: AVAudioFormat? { get }
     func install(_ format: AVAudioFormat, block: @escaping AVAudioNodeTapBlock) -> KBTapResult
     func prepare() throws
     func retire(preCommitFormatException: Bool)
@@ -48,8 +51,10 @@ package struct LeasedMicrophoneTapGraph: MicrophoneTapGraph {
     package var leaseIsCurrent: Bool { lifetime.isCurrent(token: lease.token) }
     package var stoppedAndUnconnected: Bool {
         let engine = lease.resource
-        return node.engine === engine && node.numberOfOutputs > 0
-            && !engine.isRunning && engine.outputConnectionPoints(for: node, outputBus: 0).isEmpty
+        // Any unreadable native property makes the graph suspect.
+        return Self.readNodeEngine(node) === engine && (Self.readNodeOutputCount(node) ?? 0) > 0
+            && Self.readEngineRunning(engine) == false
+            && Self.readEngineConnectionPoints(engine, node: node, outputBus: 0)?.isEmpty == true
     }
     package var selectionMatches: Bool { selected() }
     package func recordPreflightStopped(_ stopped: Bool) {
@@ -58,11 +63,14 @@ package struct LeasedMicrophoneTapGraph: MicrophoneTapGraph {
     package func start() throws {
         guard leaseIsCurrent else { throw MicrophoneGraphError.quarantined }
         lifetime.recordStart(.calling, for: lease)
-        try lease.resource.start()
+        var startError: NSError?
+        guard KBStartMicrophoneEngine(lease.resource, &startError) else {
+            throw startError ?? PreparationError.nativeException
+        }
         lifetime.recordStart(.started, for: lease)
     }
-    package var hardware: AVAudioFormat { node.inputFormat(forBus: 0) }
-    package var client: AVAudioFormat { node.outputFormat(forBus: 0) }
+    package var hardware: AVAudioFormat? { Self.readNodeFormat(node, input: true, bus: 0) }
+    package var client: AVAudioFormat? { Self.readNodeFormat(node, input: false, bus: 0) }
     package func install(_ format: AVAudioFormat, block: @escaping AVAudioNodeTapBlock) -> KBTapResult {
         lifetime.recordInstall(for: lease)
         return KBInstallInputTap(node, format, block)
@@ -82,6 +90,23 @@ package struct LeasedMicrophoneTapGraph: MicrophoneTapGraph {
     package static func stopEngine(_ engine: AVAudioEngine) -> Bool { KBStopMicrophoneEngine(engine) }
     package static func readEngineRunning(_ engine: AVAudioEngine) -> Bool? {
         KBReadMicrophoneEngineRunning(engine)?.boolValue
+    }
+    package static func readNodeFormat(_ node: AVAudioNode, input: Bool,
+                                       bus: AVAudioNodeBus) -> AVAudioFormat? {
+        KBReadMicrophoneNodeFormat(node, input, bus)
+    }
+    package static func readNodeEngine(_ node: AVAudioNode) -> AVAudioEngine? {
+        KBReadMicrophoneNodeEngine(node)
+    }
+    package static func readNodeOutputCount(_ node: AVAudioNode) -> Int? {
+        KBReadMicrophoneNodeOutputCount(node)?.intValue
+    }
+    package static func readEngineConnectionPoints(_ engine: AVAudioEngine, node: AVAudioNode,
+                                                   outputBus: AVAudioNodeBus) -> [AVAudioConnectionPoint]? {
+        KBReadMicrophoneEngineConnectionPoints(engine, node, outputBus)
+    }
+    package static func readInputNodeAudioUnit(_ node: AVAudioInputNode) -> AudioUnit? {
+        KBReadMicrophoneInputNodeAudioUnit(node)
     }
 }
 
@@ -161,8 +186,9 @@ package final class MicrophoneTapInstallation {
             try checkGraph()
             guard !isInstalled else { throw MicrophoneStartupGate.Failure.formatChanged }
             diagnostics?.begin(.formats)
-            let hardware = graph.hardware
-            let client = graph.client
+            guard let hardware = graph.hardware, let client = graph.client else {
+                throw MicrophoneStartupGate.Failure.formatChanged
+            }
             guard let plan = MicrophoneTapFormatPlan(hardwareSampleRate: hardware.sampleRate,
                                                      hardwareChannels: hardware.channelCount),
                   let input = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: plan.sampleRate,
@@ -176,7 +202,9 @@ package final class MicrophoneTapInstallation {
             diagnostics?.end(.converter)
 
             try checkGraph(recordPreflight: true)
-            let current = graph.hardware
+            guard let current = graph.hardware else {
+                throw MicrophoneStartupGate.Failure.formatChanged
+            }
             _ = graph.client // A stale client is repairable by the explicit-format install.
             guard Self.sameFormat(current, hardware) else {
                 throw MicrophoneStartupGate.Failure.formatChanged
@@ -191,8 +219,9 @@ package final class MicrophoneTapInstallation {
             diagnostics?.end(.tapInstall)
             func verifyApplied() throws {
                 try checkGraph()
-                let hw = graph.hardware
-                let applied = graph.client
+                guard let hw = graph.hardware, let applied = graph.client else {
+                    throw MicrophoneStartupGate.Failure.formatChanged
+                }
                 if case let .capture(_, _, readback, _) = sink { readback(applied) }
                 guard Self.sameFormat(hw, hardware),
                       Self.sameFormat(applied, input) else { throw MicrophoneStartupGate.Failure.formatChanged }

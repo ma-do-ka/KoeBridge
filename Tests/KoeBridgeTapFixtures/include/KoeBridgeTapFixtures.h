@@ -7,6 +7,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic) BOOL switchDeviceDuringInstall;
 @property(nonatomic) BOOL raiseUnknown;
 @property(nonatomic) BOOL raiseOnRemove;
+@property(nonatomic) BOOL raiseOnFormatRead;
 @property(nonatomic, readonly) unsigned removes;
 @property(nonatomic, nullable) AVAudioFormat *fixtureHardware;
 @property(nonatomic, nullable) AVAudioFormat *fixtureClient;
@@ -23,6 +24,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic) BOOL fixtureRunning;
 @property(nonatomic) BOOL raiseOnPrepare;
 @property(nonatomic) BOOL failStart;
+@property(nonatomic) BOOL raiseOnStart;
 @property(nonatomic) BOOL raiseOnStop;
 @property(nonatomic) BOOL raiseAfterStopping;
 @property(nonatomic) BOOL remainRunningAfterStop;
