@@ -394,6 +394,8 @@ struct KoeBridgeSelfTest {
         await run("SettingsNavigationSelfTests.repeatedSearchAndUpdateRequestsStillScroll", { try SettingsNavigationSelfTests().repeatedSearchAndUpdateRequestsStillScroll() })
         await run("SettingsNavigationSelfTests.pageChangesDoNotReplayAStaleSearch", { try SettingsNavigationSelfTests().pageChangesDoNotReplayAStaleSearch() })
         await run("SettingsNavigationSelfTests.amiVoiceSectionAndSearchCatalogEntriesRouteCorrectly", { try SettingsNavigationSelfTests().amiVoiceSectionAndSearchCatalogEntriesRouteCorrectly() })
+        await run("SettingsNavigationSelfTests.developerToolsStayHiddenUntilKonamiUnlock", { try SettingsNavigationSelfTests().developerToolsStayHiddenUntilKonamiUnlock() })
+        await run("SettingsNavigationSelfTests.relockingDropsBenchFromNavigationHistory", { try SettingsNavigationSelfTests().relockingDropsBenchFromNavigationHistory() })
         await run("TranscriptReviewSelfTests.mixedLiteralBoundariesKeepStableUnicodeOffsets", { TranscriptReviewSelfTests().mixedLiteralBoundariesKeepStableUnicodeOffsets() })
         await run("UsageSummaryTests.zeroFillsThroughToday", { UsageSummaryTests().zeroFillsThroughToday() })
         await run("UsageSummaryTests.bucketsAtCalendarDayBoundaries", { UsageSummaryTests().bucketsAtCalendarDayBoundaries() })

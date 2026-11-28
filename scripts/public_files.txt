@@ -99,6 +99,7 @@ Sources/KoeBridgeCore/BenchmarkMetrics.swift
 Sources/KoeBridgeCore/ContextTextPolicy.swift
 Sources/KoeBridgeCore/DeliveryDiagnostics.swift
 Sources/KoeBridgeCore/DeliveryPacingPolicy.swift
+Sources/KoeBridgeCore/DeveloperToolsUnlock.swift
 Sources/KoeBridgeCore/DiagnosticFileStore.swift
 Sources/KoeBridgeCore/DiagnosticLogPolicy.swift
 Sources/KoeBridgeCore/DirectInputObservation.swift
@@ -256,6 +257,7 @@ Tests/KoeBridgeCoreTests/BenchmarkMetricsTests.swift
 Tests/KoeBridgeCoreTests/ContextAndTransformTests.swift
 Tests/KoeBridgeCoreTests/DeliveryDiagnosticsTests.swift
 Tests/KoeBridgeCoreTests/DeliveryPacingPolicyTests.swift
+Tests/KoeBridgeCoreTests/DeveloperToolsUnlockTests.swift
 Tests/KoeBridgeCoreTests/DiagnosticLogPolicyTests.swift
 Tests/KoeBridgeCoreTests/DirectInputObservationTests.swift
 Tests/KoeBridgeCoreTests/DirectTypingPlanTests.swift

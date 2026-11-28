@@ -1,3 +1,4 @@
+import Foundation
 import KoeBridgeCore
 
 struct SettingsNavigationSelfTests {
@@ -57,8 +58,64 @@ struct SettingsNavigationSelfTests {
         check(SettingsSearchCatalog.find("AmiVoice").contains { $0.section == .history && $0.id == "usage" })
         check(SettingsSearchCatalog.find("入力証拠 最小化").contains { $0.section == .history && $0.id == "protected-apps" })
         check(SettingsSearchCatalog.find("診断カウンタ").contains { $0.section == .history && $0.id == "local-diagnostics" })
-        check(SettingsSearchCatalog.find("ベンチ録音").contains { $0.section == .bench && $0.id == "bench-recording" })
-        check(SettingsSearchCatalog.find("録音").contains { $0.section == .bench && $0.id == "bench-recording" })
-        check(SettingsSearchCatalog.find("ベンチマーク").contains { $0.section == .bench && $0.id == "bench-recording" })
+        check(SettingsSearchCatalog.find("ベンチ録音", developerToolsUnlocked: true).contains { $0.section == .bench && $0.id == "bench-recording" })
+        check(SettingsSearchCatalog.find("録音", developerToolsUnlocked: true).contains { $0.section == .bench && $0.id == "bench-recording" })
+        check(SettingsSearchCatalog.find("ベンチマーク", developerToolsUnlocked: true).contains { $0.section == .bench && $0.id == "bench-recording" })
+        check(SettingsSearchCatalog.find("ベンチ録音").isEmpty)
+    }
+
+    func developerToolsStayHiddenUntilKonamiUnlock() throws {
+        check(!SettingsSection.bench.isAvailable(developerToolsUnlocked: false))
+        check(SettingsSection.bench.isAvailable(developerToolsUnlocked: true))
+        check(SettingsSection.general.isAvailable(developerToolsUnlocked: false))
+        check(SettingsSearchCatalog.find("録音").allSatisfy { $0.section != .bench })
+
+        var sequence = DeveloperToolsUnlockSequence()
+        for keyCode in DeveloperToolsUnlockSequence.keyCodes.dropLast() {
+            let completed = sequence.advance(keyCode: keyCode)
+            check(!completed)
+        }
+        check(sequence.progress == DeveloperToolsUnlockSequence.keyCodes.count - 1)
+        let finalKey = DeveloperToolsUnlockSequence.keyCodes[DeveloperToolsUnlockSequence.keyCodes.count - 1]
+        let completed = sequence.advance(keyCode: finalKey)
+        check(completed)
+        check(sequence.progress == 0)
+
+        let suite = "KoeBridge.Konami." + UUID().uuidString
+        let defaults = try require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        check(!DeveloperToolsUnlockStore.isUnlocked(defaults: defaults))
+        let unlocked = DeveloperToolsUnlockStore.toggle(defaults: defaults)
+        check(unlocked)
+        check(DeveloperToolsUnlockStore.isUnlocked(defaults: defaults))
+        let relocked = DeveloperToolsUnlockStore.toggle(defaults: defaults)
+        check(!relocked)
+        check(!DeveloperToolsUnlockStore.isUnlocked(defaults: defaults))
+    }
+
+    func relockingDropsBenchFromNavigationHistory() throws {
+        let locked = { (section: SettingsSection) in section.isAvailable(developerToolsUnlocked: false) }
+
+        // (a) Re-lock while the bench page is open: Forward cannot return.
+        var viewingBench = SettingsNavigation()
+        viewingBench.select(.bench)
+        check(viewingBench.selected == .bench)
+        viewingBench.pruneUnavailable(locked, fallback: .voice)
+        check(viewingBench.selected == .voice)
+        check(!viewingBench.canGoForward)
+        viewingBench.forward()
+        check(viewingBench.selected == .voice)
+        check(!viewingBench.pages.contains(.bench))
+
+        // (b) Re-lock on a later page after visiting bench: Back cannot return.
+        var behindBench = SettingsNavigation()
+        behindBench.select(.bench)
+        behindBench.select(.about)
+        behindBench.pruneUnavailable(locked, fallback: .voice)
+        check(behindBench.selected == .about)
+        check(behindBench.pages == [.voice, .about])
+        behindBench.back()
+        check(behindBench.selected == .voice)
+        check(!behindBench.pages.contains(.bench))
     }
 }

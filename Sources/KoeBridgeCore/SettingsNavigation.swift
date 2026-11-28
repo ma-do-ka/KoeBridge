@@ -126,10 +126,13 @@ public enum SettingsSearchCatalog {
         .init(id: "bench-recording", section: .bench, title: "ベンチ録音", keywords: "ベンチ録音 録音 ベンチマーク コーパス WAV")
     ]
 
-    public static func find(_ query: String) -> [SettingsSearchEntry] {
+    /// Search never surfaces the developer-tools entry until it is unlocked.
+    public static func find(_ query: String,
+                            developerToolsUnlocked: Bool = false) -> [SettingsSearchEntry] {
         let words = query.split(whereSeparator: \.isWhitespace).map(String.init)
         guard !words.isEmpty else { return [] }
         return entries.filter { entry in
+            guard entry.section.isAvailable(developerToolsUnlocked: developerToolsUnlocked) else { return false }
             let haystack = entry.title + " " + entry.keywords + " " + entry.section.title
             return words.allSatisfy { haystack.localizedStandardContains($0) }
         }
@@ -172,6 +175,37 @@ public struct SettingsNavigation: Equatable, Sendable {
             pages.removeFirst(pages.count - 40)
             index = pages.count - 1
         }
+    }
+
+    /// Drops pages that are no longer available (for example the hidden
+    /// developer-tools page after re-locking). Removing a page can join two
+    /// equal neighbours, so adjacent duplicates are collapsed. Back and
+    /// Forward then can never return to a page that is no longer reachable.
+    /// If the selected page is removed, the fallback becomes the selection
+    /// after the retained history.
+    public mutating func pruneUnavailable(_ isAvailable: (SettingsSection) -> Bool,
+                                          fallback: SettingsSection) {
+        guard !pages.allSatisfy(isAvailable) else { return }
+        let previous = selected
+        var retained: [SettingsSection] = []
+        for page in pages where isAvailable(page) {
+            if retained.last != page { retained.append(page) }
+        }
+        focusRequest = nil
+        guard isAvailable(previous) else {
+            if retained.last != fallback { retained.append(fallback) }
+            pages = retained
+            index = pages.count - 1
+            return
+        }
+        // The retained prefix has the same shape as the retained history, so
+        // its last entry is the still-available selection.
+        var retainedThroughSelection: [SettingsSection] = []
+        for page in pages[0...index] where isAvailable(page) {
+            if retainedThroughSelection.last != page { retainedThroughSelection.append(page) }
+        }
+        pages = retained
+        index = max(0, retainedThroughSelection.count - 1)
     }
 
     public mutating func focus(_ entry: SettingsSearchEntry) {

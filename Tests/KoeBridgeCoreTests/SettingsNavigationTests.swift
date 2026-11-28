@@ -33,9 +33,10 @@ struct SettingsNavigationTests {
         #expect(SettingsSearchCatalog.find("AmiVoice").contains { $0.section == .history && $0.id == "usage" })
         #expect(SettingsSearchCatalog.find("入力証拠 最小化").contains { $0.section == .history && $0.id == "protected-apps" })
         #expect(SettingsSearchCatalog.find("診断カウンタ").contains { $0.section == .history && $0.id == "local-diagnostics" })
-        #expect(SettingsSearchCatalog.find("ベンチ録音").contains { $0.section == .bench && $0.id == "bench-recording" })
-        #expect(SettingsSearchCatalog.find("録音").contains { $0.section == .bench && $0.id == "bench-recording" })
-        #expect(SettingsSearchCatalog.find("ベンチマーク").contains { $0.section == .bench && $0.id == "bench-recording" })
+        #expect(SettingsSearchCatalog.find("ベンチ録音", developerToolsUnlocked: true).contains { $0.section == .bench && $0.id == "bench-recording" })
+        #expect(SettingsSearchCatalog.find("録音", developerToolsUnlocked: true).contains { $0.section == .bench && $0.id == "bench-recording" })
+        #expect(SettingsSearchCatalog.find("ベンチマーク", developerToolsUnlocked: true).contains { $0.section == .bench && $0.id == "bench-recording" })
+        #expect(SettingsSearchCatalog.find("ベンチ録音").isEmpty)
         #expect(SettingsSearchCatalog.find("  ").isEmpty)
         #expect(SettingsSearchCatalog.find("never_present_keyword_123").isEmpty)
     }
@@ -97,6 +98,37 @@ struct SettingsNavigationTests {
         #expect(nav.selected == .gemini)
         nav.forward()
         #expect(nav.selected == .permissions)
+    }
+
+    @Test func relockingWhileViewingBenchDropsForwardHistory() {
+        var nav = SettingsNavigation()
+        nav.select(.bench)
+        #expect(nav.selected == .bench)
+        #expect(nav.canGoBack)
+
+        nav.pruneUnavailable({ $0.isAvailable(developerToolsUnlocked: false) }, fallback: .voice)
+
+        #expect(nav.selected == .voice)
+        #expect(!nav.pages.contains(.bench))
+        #expect(!nav.canGoForward)
+        nav.forward()
+        #expect(nav.selected == .voice)
+    }
+
+    @Test func relockingOnAnotherPageDropsBenchFromBackHistory() {
+        var nav = SettingsNavigation()
+        nav.select(.bench)
+        nav.select(.about)
+        #expect(nav.selected == .about)
+
+        nav.pruneUnavailable({ $0.isAvailable(developerToolsUnlocked: false) }, fallback: .voice)
+
+        #expect(nav.selected == .about)
+        #expect(nav.pages == [.voice, .about])
+        #expect(nav.canGoBack)
+        nav.back()
+        #expect(nav.selected == .voice)
+        #expect(!nav.pages.contains(.bench))
     }
 
     @Test func repeatedPageDoesNotAddDuplicateNavigation() {

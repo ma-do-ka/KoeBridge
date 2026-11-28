@@ -22,6 +22,8 @@ struct SettingsView: View {
              : Color(red: 0.916, green: 0.932, blue: 0.955)
     }
     @AppStorage("diagnosticsEnabled") private var diagnosticsEnabled = false
+    // Hidden in every build until the Konami command is entered in this window.
+    @AppStorage(DeveloperToolsUnlockStore.defaultsKey) private var developerToolsUnlocked = false
     @AppStorage("localDiagnosticsEnabled") private var localDiagnosticsEnabled = true
     @StateObject private var presetEditor = TransformPresetEditorState()
     @StateObject private var benchRecorder: BenchRecordingCoordinator
@@ -157,14 +159,14 @@ struct SettingsView: View {
         .onReceive(NotificationCenter.default.publisher(for: .settingsDestinationRequested)) { note in
             if let id = note.object as? String,
                let entry = SettingsSearchCatalog.entries.first(where: { $0.id == id }) {
-                navigation.focus(entry)
+                focus(entry)
                 SettingsDestination.pending = nil
             }
         }
         .onAppear {
             if let id = SettingsDestination.pending,
                let entry = SettingsSearchCatalog.entries.first(where: { $0.id == id }) {
-                navigation.focus(entry)
+                focus(entry)
                 SettingsDestination.pending = nil
             }
             Task { @MainActor in openPendingUpdatePage() }
@@ -173,6 +175,17 @@ struct SettingsView: View {
             guard request > 0 else { return }
             // @Published publishes in willSet. Defer until storage updates.
             Task { @MainActor in openPendingUpdatePage() }
+        }
+        .onChange(of: developerToolsUnlocked) { _, unlocked in
+            guard !unlocked else { return }
+            // A page that is about to disappear must not keep capturing audio
+            // without any visible controls.
+            DeveloperToolsRelockAction.cancelRecordingIfActive(benchRecorder)
+            // Re-locking hides the page even while it is open and strips it
+            // from Back/Forward history, not just from the selection.
+            navigation.pruneUnavailable(
+                { $0.isAvailable(developerToolsUnlocked: false) },
+                fallback: .voice)
         }
     }
 
@@ -194,13 +207,21 @@ struct SettingsView: View {
     }
 
     private func openFirstSearchResult() {
-        guard let result = SettingsSearchCatalog.find(searchText).first else { return }
-        navigation.focus(result)
+        guard let result = SettingsSearchCatalog.find(
+            searchText, developerToolsUnlocked: developerToolsUnlocked).first else { return }
+        focus(result)
         searchText = ""
     }
 
     private func go(_ section: SettingsSection) {
+        guard section.isAvailable(developerToolsUnlocked: developerToolsUnlocked) else { return }
         navigation.select(section)
+    }
+
+    /// Programmatic destinations cannot reveal the bench page while locked.
+    private func focus(_ entry: SettingsSearchEntry) {
+        guard entry.section.isAvailable(developerToolsUnlocked: developerToolsUnlocked) else { return }
+        navigation.focus(entry)
     }
 
     private func openPendingUpdatePage() {
@@ -282,14 +303,17 @@ struct SettingsView: View {
                         sidebarGroup("データと安全", pages: [.history, .permissions])
                         Divider().padding(.horizontal, 16)
                         sidebarGroup("サポート", pages: [.about])
-                        Divider().padding(.horizontal, 16)
-                        sidebarGroup("開発ツール", pages: [.bench])
+                        if developerToolsUnlocked {
+                            Divider().padding(.horizontal, 16)
+                            sidebarGroup("開発ツール", pages: [.bench])
+                        }
                     } else {
                         Text("検索結果")
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.secondary)
                             .padding(.horizontal, 18)
-                        let results = SettingsSearchCatalog.find(searchText)
+                        let results = SettingsSearchCatalog.find(
+                            searchText, developerToolsUnlocked: developerToolsUnlocked)
                         if results.isEmpty {
                             Text("一致する設定がありません")
                                 .font(.caption)
@@ -298,7 +322,7 @@ struct SettingsView: View {
                         } else {
                             ForEach(results) { result in
                                 Button {
-                                    navigation.focus(result)
+                                    focus(result)
                                     searchText = ""
                                 } label: {
                                     HStack(spacing: 10) {
@@ -421,6 +445,25 @@ struct SettingsView: View {
         }
     }
 }
+
+/// Re-locking the developer tools hides the bench page, so an in-flight
+/// capture must stop with it instead of recording invisibly.
+@MainActor
+enum DeveloperToolsRelockAction {
+    /// Cancels only a session that can still be running; `.stopping` already
+    /// owns its completion and `.idle` has nothing to stop.
+    @discardableResult
+    static func cancelRecordingIfActive(_ recorder: BenchRecordingCoordinator) -> Bool {
+        switch recorder.state {
+        case .preparing, .recording:
+            recorder.cancelRecording(reason: "開発ツールが再ロックされたため、ベンチ録音を中止しました。")
+            return true
+        case .idle, .stopping:
+            return false
+        }
+    }
+}
+
 struct CorruptSettingsNotice: View {
     let reset: () -> Void
     @State private var confirming = false
