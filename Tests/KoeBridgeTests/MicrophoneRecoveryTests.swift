@@ -1319,10 +1319,11 @@ struct MicrophoneRecoveryTests {
         defer { replay.finish() }
         replay.controller.toggle()
         let attempt = try await awaitEngine(replay, index: 0)
-        let (device, tap) = try await lane {
+        let (device, installedTap) = await lane {
             let device = replay.rig.devices[0]
-            return (device, try #require(device.node.partialTap))
+            return (device, device.node.partialTap)
         }
+        let tap = try #require(installedTap)
         stablePCM(replay, device: device, tap: tap)
         try await observe("Capture did not become recording", log: replay.log) {
             replay.controller.phase == .recording
