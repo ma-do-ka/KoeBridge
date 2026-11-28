@@ -2163,6 +2163,7 @@ import KoeBridgeEngines
                 .outcome: .token(cancelled ? .cancelled : .skipped),
                 .reason: .reason(cancelled ? "delivery_cancelled_before_post" : "no_input"), .eventsPosted: .flag(false)
             ])
+            LocalDiagnostics.record(.failure(code: cancelled ? "delivery_cancelled_before_post" : "no_input"))
             DiagnosticLog.record("empty rapid recording discarded; id=\(id.uuidString.prefix(8))")
             return
         }
@@ -2171,6 +2172,7 @@ import KoeBridgeEngines
                 .outcome: .token(take.automaticDeliverySuppressed ? .cancelled : .skipped),
                 .reason: .reason(take.automaticDeliverySuppressed ? "system_suppressed" : "recognition_failed"), .eventsPosted: .flag(false)
             ])
+            LocalDiagnostics.record(.failure(code: take.automaticDeliverySuppressed ? "system_suppressed" : "recognition_failed"))
             let recovered = result.partial.trimmingCharacters(in: .whitespacesAndNewlines)
             if !recovered.isEmpty, take.historyRecordID == nil {
                 _ = remember(recovered, isPartial: true, delivery: .recognitionInterrupted,
@@ -2204,6 +2206,9 @@ import KoeBridgeEngines
                         : (take.review?.status == .needsReview ? "review_required" : "automatic_input_disabled"))),
                 .eventsPosted: .flag(false)
             ])
+            LocalDiagnostics.record(.failure(code: take.automaticDeliverySuppressed ? "system_suppressed"
+                : (take.acousticReviewRequired ? "acoustic_review_required"
+                    : (take.review?.status == .needsReview ? "review_required" : "automatic_input_disabled"))))
         } else {
             deliveringTakeID = id
             let report = await postingGate.post(.dictation(text), from: .take(take), finalize: { report in

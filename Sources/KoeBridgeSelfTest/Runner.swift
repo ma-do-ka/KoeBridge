@@ -443,6 +443,14 @@ struct KoeBridgeSelfTest {
         await run("BenchRecordingSelfTests.itemTableIntegrityAndRoundTrip", { try BenchRecordingSelfTests().itemTableIntegrityAndRoundTrip() })
         await run("BenchRecordingSelfTests.canonicalWAVHeaderAndPayloadRoundTrip", { try BenchRecordingSelfTests().canonicalWAVHeaderAndPayloadRoundTrip() })
         await run("BenchRecordingSelfTests.progressStorePersistenceAndCorruptRecovery", { try BenchRecordingSelfTests().progressStorePersistenceAndCorruptRecovery() })
+        await run("LocalDiagnosticsSelfTests.fieldReadBucketsAndTimeouts", { LocalDiagnosticsSelfTests().fieldReadBucketsAndTimeouts() })
+        await run("LocalDiagnosticsSelfTests.countersAndCodeAllowlist", { LocalDiagnosticsSelfTests().countersAndCodeAllowlist() })
+        await run("LocalDiagnosticsSelfTests.dailyRollupMergesStoredAndNewCounts", { try LocalDiagnosticsSelfTests().dailyRollupMergesStoredAndNewCounts() })
+        await run("LocalDiagnosticsSelfTests.rollingRetentionPrunesOldFutureAndOverCapDays", { try LocalDiagnosticsSelfTests().rollingRetentionPrunesOldFutureAndOverCapDays() })
+        await run("LocalDiagnosticsSelfTests.disabledCounterNeverWrites", { try LocalDiagnosticsSelfTests().disabledCounterNeverWrites() })
+        await run("LocalDiagnosticsSelfTests.deleteAllRemovesFileAndCounters", { try LocalDiagnosticsSelfTests().deleteAllRemovesFileAndCounters() })
+        await run("LocalDiagnosticsSelfTests.failingWriterDoesNotPropagateOrLoseCounters", { LocalDiagnosticsSelfTests().failingWriterDoesNotPropagateOrLoseCounters() })
+        await run("LocalDiagnosticsSelfTests.serializedAggregateContainsOnlyNumbersAndCodes", { try LocalDiagnosticsSelfTests().serializedAggregateContainsOnlyNumbersAndCodes() })
         print("KoeBridge portable self-test: \(testCount) cases, \(TestRecorder.checked) assertions, \(TestRecorder.failures) failures")
         if TestRecorder.failures > 0 { exit(1) }
     }

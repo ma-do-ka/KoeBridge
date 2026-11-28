@@ -353,6 +353,7 @@ import KoeBridgeCore
             if let reason = gate.rejection(hasTextSelection: selection != nil, diagnostics: diagnostics,
                                            stage: stage, began: began,
                                            retryCandidate: rejection.eligible) {
+                LocalDiagnostics.record(.failClosed(code: reason))
                 return .rejected(rejection, reason)
             }
             let roleValue: String? = roleRead.value as? String
@@ -376,6 +377,7 @@ import KoeBridgeCore
                 attributesReadable: attributesReadable,
                 protectedBundleIdentifiers: protectedBundleIdentifiers
             )
+            LocalDiagnostics.record(.fieldNature(receiptFieldNature))
             target = target.withReceiptFieldNature(receiptFieldNature)
         }
         // Keep this delivery baseline ephemeral. External surrounding context
@@ -478,8 +480,13 @@ import KoeBridgeCore
         var evidence: [Field: Value]? = diagnostics.map { _ in [.operation: .token(.value)] }
         var outcome: Token = .unavailable
         var attempted = false
+        var readTimedOut = false
         let began = diagnostics.map { _ in ProcessInfo.processInfo.systemUptime }
+        let counterBegan = ProcessInfo.processInfo.systemUptime
         defer {
+            LocalDiagnostics.record(.fieldRead(
+                milliseconds: Self.elapsedMilliseconds(since: counterBegan),
+                timedOut: readTimedOut))
             observation?(attempted, outcome)
             if let diagnostics, var fields = evidence {
                 fields[.outcome] = .token(outcome)
@@ -497,9 +504,11 @@ import KoeBridgeCore
         let element = unsafeBitCast(focused, to: AXUIElement.self)
         let subrole = reads.attribute(element, kAXSubroleAttribute as CFString, .subrole, .focusedElement,
                                       timeout, diagnostics, stage)
+        readTimedOut = subrole.status == .cannotComplete
         if let externalText {
             let role = reads.attribute(element, kAXRoleAttribute as CFString, .role, .focusedElement,
                                        timeout, diagnostics, stage)
+            readTimedOut = readTimedOut || role.status == .cannotComplete
             guard externalText.permits(role: role, subrole: subrole) else { return nil }
         }
         guard !subrole.timeoutConfigurationFailed else { return nil }
@@ -520,6 +529,7 @@ import KoeBridgeCore
         attempted = true
         let value = reads.attribute(element, kAXValueAttribute as CFString, .value, .focusedElement,
                                     timeout, diagnostics, stage)
+        readTimedOut = readTimedOut || value.status == .cannotComplete
         guard let raw = value.value else {
             outcome = value.status == .attributeUnsupported ? .unsupported : value.status == .success ? .missing : .unavailable
             return nil
@@ -746,6 +756,7 @@ import KoeBridgeCore
     }
 
     func blockedByPriorInput(hard: Bool = false) -> InsertionTarget {
+        LocalDiagnostics.record(.failClosed(code: "prior_input_unverified"))
         var updated = self
         updated.blockedReason = "prior_input_unverified"
         if hard { updated.hasHardPredecessorBlock = true }
@@ -793,6 +804,7 @@ import KoeBridgeCore
                 fields[.elapsedMS] = .integer(began.map { Self.elapsedMilliseconds(since: $0) } ?? 0)
                 diagnostics.record(.focus, stage: stage, fields)
             }
+            if !allowed { LocalDiagnostics.record(.failClosed(code: reason)) }
             return (allowed, reason)
         }
         if let blockedReason { return result(false, blockedReason) }

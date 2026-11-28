@@ -115,6 +115,7 @@ Sources/KoeBridgeCore/InsertionFocusPolicy.swift
 Sources/KoeBridgeCore/InsertionReceiptPolicy.swift
 Sources/KoeBridgeCore/JapaneseDictationSpacing.swift
 Sources/KoeBridgeCore/LearnedTerms.swift
+Sources/KoeBridgeCore/LocalDiagnostics.swift
 Sources/KoeBridgeCore/LocalRecognitionState.swift
 Sources/KoeBridgeCore/LoginItemRegistrationPolicy.swift
 Sources/KoeBridgeCore/MeetingTranscript.swift
@@ -203,6 +204,7 @@ Sources/KoeBridgeSelfTest/InsertionReceiptPolicyTests.swift
 Sources/KoeBridgeSelfTest/InsertionSafetyTests.swift
 Sources/KoeBridgeSelfTest/JapaneseDictationSpacingTests.swift
 Sources/KoeBridgeSelfTest/LearnedTermsTests.swift
+Sources/KoeBridgeSelfTest/LocalDiagnosticsSelfTests.swift
 Sources/KoeBridgeSelfTest/LocalRecognitionStateTests.swift
 Sources/KoeBridgeSelfTest/LoginItemRegistrationPolicyTests.swift
 Sources/KoeBridgeSelfTest/MeetingRetentionTests.swift
@@ -266,6 +268,7 @@ Tests/KoeBridgeCoreTests/InputReceiptObservationTests.swift
 Tests/KoeBridgeCoreTests/InsertionReceiptPolicyTests.swift
 Tests/KoeBridgeCoreTests/InsertionSafetyTests.swift
 Tests/KoeBridgeCoreTests/LearnedTermsTests.swift
+Tests/KoeBridgeCoreTests/LocalDiagnosticsTests.swift
 Tests/KoeBridgeCoreTests/LocalRecognitionStateTests.swift
 Tests/KoeBridgeCoreTests/LoginItemRegistrationPolicyTests.swift
 Tests/KoeBridgeCoreTests/MeetingRetentionTests.swift
