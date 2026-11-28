@@ -12,7 +12,7 @@ struct MicrophoneTapInstallationTests {
         lazy var lease = lifetime.acquire()!
         let bluetooth = AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1)!
         let aggregate = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 2)!
-        var client: AVAudioFormat
+        var client: AVAudioFormat?
         var onInstall: (() -> Void)?
         var onPrepare: (() -> Void)?
         var prepares = 0
@@ -22,7 +22,7 @@ struct MicrophoneTapInstallationTests {
             node.currentDeviceID = 137
             _ = lease
         }
-        var hardware: AVAudioFormat { selectionMatches ? bluetooth : aggregate }
+        var hardware: AVAudioFormat? { selectionMatches ? bluetooth : aggregate }
         var leaseIsCurrent: Bool { lifetime.isCurrent(token: lease.token) }
         var selectionMatches: Bool { node.currentDeviceID == 137 }
         func install(_ format: AVAudioFormat, block: @escaping AVAudioNodeTapBlock) -> KBTapResult {
@@ -43,6 +43,7 @@ struct MicrophoneTapInstallationTests {
     private enum Scenario: CaseIterable {
         case repair, switched, unknown, late, cancelled, configurationChange
         case wrongAfterInstall, wrongAfterPrepare, alreadyExpired, wrongSelection, changedDuringConversion
+        case unreadableClient
     }
 
     static func leaseAndBudget() {
@@ -203,6 +204,7 @@ struct MicrophoneTapInstallationTests {
             case .wrongAfterPrepare: graph.onPrepare = { [unowned graph] in graph.client = graph.aggregate }
             case .alreadyExpired: clock = deadline
             case .wrongSelection: graph.node.currentDeviceID = 173
+            case .unreadableClient: graph.client = nil
             }
             let sink: MicrophoneTapInstallation.Sink = warm ? .warm : .capture(output: graph.bluetooth,
                 configure: { converter, hardware, client in
@@ -220,7 +222,8 @@ struct MicrophoneTapInstallationTests {
                 check(plan.matches(sampleRate: 16_000, channels: 1))
             } catch { failure = error }
             let partial = scenario == .switched || scenario == .unknown
-            let beforeInstall = [.alreadyExpired, .wrongSelection, .changedDuringConversion].contains(scenario)
+            let beforeInstall = [.alreadyExpired, .wrongSelection, .changedDuringConversion,
+                                 .unreadableClient].contains(scenario)
             check(graph.node.installs == (beforeInstall ? 0 : 1))
             check(tap.isInstalled == (!beforeInstall && !partial))
             check(gate.isStopped == (scenario != .repair))
@@ -251,7 +254,7 @@ struct MicrophoneTapInstallationTests {
             case .configurationChange: check(failure as? MicrophoneStartupGate.Failure == .configurationChanged)
             case .wrongSelection, .changedDuringConversion:
                 check(failure as? MicrophoneStartupGate.Failure == .inputRouteChanged)
-            case .wrongAfterInstall, .wrongAfterPrepare:
+            case .wrongAfterInstall, .wrongAfterPrepare, .unreadableClient:
                 check(failure as? MicrophoneStartupGate.Failure == .formatChanged)
             }
 

@@ -22,12 +22,18 @@
 }
 
 - (AVAudioFormat *)inputFormatForBus:(AVAudioNodeBus)bus {
+    if (_raiseOnFormatRead) {
+        [NSException raise:NSInternalInconsistencyException format:@"Fixture format read failed"];
+    }
     AVAudioFormat *format = _fixtureHardware ?: [super inputFormatForBus:bus];
     if (_afterHardwareRead != nil) { _afterHardwareRead(); }
     return format;
 }
 
 - (AVAudioFormat *)outputFormatForBus:(AVAudioNodeBus)bus {
+    if (_raiseOnFormatRead) {
+        [NSException raise:NSInternalInconsistencyException format:@"Fixture format read failed"];
+    }
     return _fixtureClient ?: [super outputFormatForBus:bus];
 }
 
@@ -66,6 +72,9 @@
 
 - (BOOL)startAndReturnError:(NSError **)outError {
     _starts++;
+    if (_raiseOnStart) {
+        [NSException raise:NSInternalInconsistencyException format:@"Fixture start failed"];
+    }
     if (_failStart) {
         if (outError != NULL) *outError = [NSError errorWithDomain:NSOSStatusErrorDomain code:-50 userInfo:nil];
         return NO;

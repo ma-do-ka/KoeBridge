@@ -25,6 +25,7 @@ struct MicrophoneRecoveryTests {
     private enum Fault: CaseIterable {
         case none, formatException, unknownException, topologyBefore, topologyAfter, preflight, bind
         case prepare, readback, start, noPCM, deadlineOnStart, unprovenStop, stopException, unreadableStop, removeException
+        case startException, formatReadException
     }
 
     private final class Clock: @unchecked Sendable {
@@ -68,6 +69,8 @@ struct MicrophoneRecoveryTests {
                 }
             case .prepare: engine.raiseOnPrepare = true
             case .start: engine.failStart = true
+            case .startException: engine.raiseOnStart = true
+            case .formatReadException: node.raiseOnFormatRead = true
             case .readback: node.afterInstall = { [weak node] in node?.fixtureClient = staleClient }
             case .deadlineOnStart: engine.afterStart = { clock.set(12.5) }
             default: break
@@ -521,7 +524,8 @@ struct MicrophoneRecoveryTests {
     }
 
     @Test(arguments: [Fault.unknownException, .topologyBefore, .topologyAfter, .removeException,
-                       .stopException, .unprovenStop, .unreadableStop, .preflight, .readback], [false, true])
+                       .stopException, .unprovenStop, .unreadableStop, .preflight, .readback,
+                       .formatReadException], [false, true])
     private func firstGenerationFailures(_ fault: Fault, warm: Bool) async {
         let rig = Rig(fault)
         if warm {
@@ -545,7 +549,7 @@ struct MicrophoneRecoveryTests {
             case .unknownException: expectGraphError(error, .unknownException, code: 1)
             case .topologyBefore, .topologyAfter, .removeException: expectGraphError(error, .unexpectedTopology, code: 2)
             case .stopException, .unprovenStop, .unreadableStop: expectGraphError(error, .formatException, code: 0)
-            case .preflight, .readback:
+            case .preflight, .readback, .formatReadException:
                 #expect((error as? MicrophoneCapture.CaptureError)?.diagnosticCategory == "format_changed")
             default: Issue.record("Unexpected fixture")
             }
@@ -555,13 +559,14 @@ struct MicrophoneRecoveryTests {
             #expect(device.engine.stops == 1)
             #expect(device.engine.starts == 0)
             #expect(device.engine.prepares == 0)
-            #expect(device.node.installs == ([.topologyBefore, .preflight].contains(fault) ? 0 : 1))
+            #expect(device.node.installs == ([.topologyBefore, .preflight, .formatReadException]
+                .contains(fault) ? 0 : 1))
             #expect(device.node.removes == ([.topologyAfter, .readback, .removeException].contains(fault) ? 1 : 0))
             #expect(rig.factoryCalls == 1)
         }
         let expected: MicrophoneCapture.EngineLifetime.Disposition
         switch fault {
-        case .preflight, .readback: expected = .normal
+        case .preflight, .readback, .formatReadException: expected = .normal
         case .stopException: expected = .replacementPending
         default: expected = .terminal
         }
@@ -614,7 +619,8 @@ struct MicrophoneRecoveryTests {
         await handed.cancelAndWait()
     }
 
-    @Test(arguments: [Fault.prepare, .readback, .start, .noPCM, .formatException, .deadlineOnStart])
+    @Test(arguments: [Fault.prepare, .readback, .start, .startException, .noPCM, .formatException,
+                       .deadlineOnStart])
     private func replacementVerificationFailureIsTerminal(_ fault: Fault) async throws {
         let rig = Rig(.formatException, fault)
         _ = await failure(rig.capture())
@@ -631,6 +637,8 @@ struct MicrophoneRecoveryTests {
         case .start:
             #expect((error as NSError).domain == NSOSStatusErrorDomain)
             #expect((error as NSError).code == -50)
+        case .startException:
+            #expect((error as NSError).code == -10814)
         case .formatException: expectGraphError(error, .formatException, code: 0)
         case .readback: #expect((error as? MicrophoneCapture.CaptureError)?.diagnosticCategory == "format_changed")
         case .noPCM: #expect((error as? MicrophoneCapture.CaptureError)?.diagnosticCategory == "no_buffers")
@@ -830,6 +838,11 @@ struct MicrophoneRecoveryTests {
         #expect(capture.lostBufferCount == 1)
         await capture.cancelAndWait()
         #expect(rig.lifetime.disposition == .normal)
+        await lane {
+            // Interruption disarmed input on the lifecycle lane; teardown's
+            // own stop is the second one.
+            #expect(rig.devices[1].engine.stops == 2)
+        }
     }
 
     @Test func committedInputRouteLossReportsDeviceRemoval() async throws {
@@ -853,6 +866,11 @@ struct MicrophoneRecoveryTests {
         #expect(interrupted.now() == 1)
         #expect(capture.lostBufferCount == 1)
         await capture.cancelAndWait()
+        await lane {
+            // Interruption disarmed input on the lifecycle lane; teardown's
+            // own stop is the second one.
+            #expect(rig.devices[0].engine.stops == 2)
+        }
     }
 
     /// The next HAL selection read owns this barrier. The test supplies only
@@ -1166,7 +1184,10 @@ struct MicrophoneRecoveryTests {
             #expect(device.bound == [137, 137])
             #expect(old.deviceListReads == 1 && fresh.deviceListReads == 1)
             #expect(old.snapshots == [137] && fresh.snapshots == [137])
-            #expect(device.engine.stops == 1)
+            // Starts: initial, the resume restart after the settled probe, the
+            // retry. Stops: one disarms input for the probe, one ends the take.
+            #expect(device.engine.starts == 3)
+            #expect(device.engine.stops == 2)
             #expect(device.node.removes == 1)
             return device.node.partialTap
         })
@@ -1197,6 +1218,143 @@ struct MicrophoneRecoveryTests {
         #expect(replay.log.read().filter { $0.hasPrefix("session resolved;") }.count == 1)
         let cleanup = try await replay.log.dispositions(count: 2)
         #expect(cleanup.allSatisfy { $0.contains("succeeded=true disposition=normal") })
+    }
+
+    @Test func routeChangeDisarmsInputBeforeTheSettledProbeThenResumes() async throws {
+        let replay = PreparationReplay()
+        defer { replay.finish() }
+        replay.controller.toggle()
+        let attempt = try await awaitEngine(replay, index: 0)
+        let device = await lane {
+            let device = replay.rig.devices[0]
+            attempt.read.arm()
+            NotificationCenter.default.post(name: .AVAudioEngineConfigurationChange, object: device.engine)
+            replay.rig.clock.set(replay.rig.clock.now() + 0.08)
+            return device
+        }
+        try await observe("Settled probe did not reach the HAL read", log: replay.log) {
+            attempt.read.isBlocked
+        }
+        attempt.read.complete(matches: true)
+        try await observe("Disarmed probe did not resume", log: replay.log) {
+            !replay.stage(attempt, "revalidation_outcome=resume").isEmpty
+        }
+        // One stop disarmed input for the whole settled probe and the verdict
+        // still saw quiesce-time liveness, so resume restarts input in place
+        // instead of retiring the take.
+        #expect(replay.stage(attempt, "revalidation_outcome=resume")
+            .contains { $0.contains("engine_running=1") })
+        await lane {
+            #expect(device.engine.starts == 2)
+            #expect(device.engine.stops == 1)
+            #expect(device.engine.fixtureRunning == true)
+            #expect(device.node.removes == 0)
+            #expect(device.node.partialTap != nil)
+        }
+        let tap = try #require(await lane { device.node.partialTap })
+        stablePCM(replay, device: device, tap: tap)
+        try await observe("Resumed capture did not become recording", log: replay.log) {
+            replay.controller.phase == .recording
+        }
+        try await awaitPreparationEnd(replay)
+        #expect(attempt.gate.didCommit)
+        #expect(replay.attempts.count == 1)
+        #expect(replay.waits.isEmpty)
+        replay.controller.toggle()
+        _ = try await awaitDelivery(replay, take: attempt.takeID)
+        let cleanup = try await replay.log.dispositions(count: 1)
+        #expect(cleanup.first?.contains("succeeded=true disposition=normal") == true)
+        await lane {
+            #expect(device.engine.stops == 2)
+            #expect(device.node.removes == 1)
+        }
+    }
+
+    @Test func unreadableGraphReadsDuringSettleFailAsClassified() async throws {
+        let replay = PreparationReplay()
+        defer { replay.finish() }
+        // The retry reuses the retained engine, so the raising reads must
+        // model a transient rebuild that has settled by the next attempt.
+        // Hold the retry until the fixture is cleared below.
+        let release = Clock()
+        replay.wait = { _ in
+            while release.now() == 10 { try await Task.sleep(for: .milliseconds(5)) }
+        }
+        defer { release.set(11) }
+        replay.controller.toggle()
+        let attempt = try await awaitEngine(replay, index: 0)
+        let device = await lane {
+            let device = replay.rig.devices[0]
+            // Model AVFAudio rebuilding the graph under the probe: native
+            // format reads raise an NSException. Wrapped reads must turn that
+            // into a classified failure, never an abort on the lifecycle lane.
+            device.node.raiseOnFormatRead = true
+            attempt.read.arm()
+            NotificationCenter.default.post(name: .AVAudioEngineConfigurationChange, object: device.engine)
+            replay.rig.clock.set(replay.rig.clock.now() + 0.08)
+            return device
+        }
+        try await observe("Settled probe did not reach the HAL read", log: replay.log) {
+            attempt.read.isBlocked
+        }
+        attempt.read.complete(matches: true)
+        try await observe("Raising graph reads were not classified", log: replay.log) {
+            replay.failures().contains { $0.contains("category=format_changed") }
+        }
+        // The take classified instead of crashing. Input stayed disarmed
+        // through the settled probe; teardown owns the release as usual.
+        let cleanup = try await replay.log.dispositions(count: 1)
+        #expect(cleanup.first?.contains("succeeded=true") == true)
+        await lane {
+            // The transient rebuild has settled by the retry's format reads.
+            device.node.raiseOnFormatRead = false
+            #expect(device.engine.stops == 2)
+            #expect(device.node.removes == 1)
+        }
+        release.set(11)
+        // A classified pre-commit failure still retries within the same take.
+        _ = try await awaitEngine(replay, index: 1)
+        #expect(replay.attempts.count == 2)
+        let tap = try #require(await lane { device.node.partialTap })
+        stablePCM(replay, device: device, tap: tap)
+        try await observe("Retry did not become recording", log: replay.log) {
+            replay.controller.phase == .recording
+        }
+        replay.controller.toggle()
+        _ = try await awaitDelivery(replay, take: attempt.takeID)
+        try await awaitPreparationEnd(replay)
+    }
+
+    @Test func tapCallbacksAfterTeardownAreDroppedByTheEpochGuard() async throws {
+        let replay = PreparationReplay()
+        defer { replay.finish() }
+        replay.controller.toggle()
+        let attempt = try await awaitEngine(replay, index: 0)
+        let (device, installedTap) = await lane {
+            let device = replay.rig.devices[0]
+            return (device, device.node.partialTap)
+        }
+        let tap = try #require(installedTap)
+        stablePCM(replay, device: device, tap: tap)
+        try await observe("Capture did not become recording", log: replay.log) {
+            replay.controller.phase == .recording
+        }
+        #expect(attempt.gate.didCommit)
+        replay.controller.toggle()
+        _ = try await awaitDelivery(replay, take: attempt.takeID)
+        await lane {
+            #expect(device.node.removes == 1)
+            #expect(device.node.partialTap == nil)
+        }
+        // The installed closure survives removal in the fixture, modelling a
+        // CoreAudio callback already in flight when teardown committed. The
+        // gate stopped minting tokens, so the delivery never reaches receive.
+        #expect(attempt.gate.captureTokenForTap(tapGeneration: attempt.gate.currentTapGeneration) == nil)
+        device.deliver(tap, value: 0.5)
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(attempt.capture.lostBufferCount == 0)
+        #expect(replay.results(take: attempt.takeID).count == 1)
+        #expect(!replay.hasPostingActivity(take: attempt.takeID))
     }
 
     @Test func preparingCancelWinsBeforeTheHALReadReturns() async throws {
@@ -1441,6 +1599,11 @@ struct MicrophoneRecoveryTests {
         #expect(replay.log.read().filter { $0.hasPrefix("session resolved;") }.count == 1)
         let cleanup = try await replay.log.dispositions(count: 1)
         #expect(cleanup.count == 1 && cleanup.first?.contains("succeeded=true disposition=normal") == true)
+        await lane {
+            // The committed interruption disarmed input on the lifecycle lane;
+            // teardown's own stop is the second one.
+            #expect(device.engine.stops == 2)
+        }
     }
 
     @Test func preparationDiagnosticSinksPreserveLineOrderAndMirrorDestinations() async throws {
@@ -1550,13 +1713,17 @@ struct MicrophoneRecoveryTests {
         _ = try await awaitDelivery(replay, take: failed.takeID)
     }
 
-    private func holdVerificationSelection(_ replay: PreparationReplay, attempt: Int) async throws
+    private func holdVerificationSelection(_ replay: PreparationReplay, attempt: Int,
+                                           beforeDisarm: @escaping (Device) -> Void = { _ in }) async throws
         -> (PreparationAttempt, Device, AVAudioNodeTapBlock) {
         let current = try await awaitEngine(replay, index: attempt)
         let (device, block) = await lane {
             let device = replay.rig.devices[1]
             current.read.arm()
             NotificationCenter.default.post(name: .AVAudioEngineConfigurationChange, object: device.engine)
+            // Runs before the queued disarm: this is what quiesceForRevalidation()
+            // observes when it samples liveness before stopping input.
+            beforeDisarm(device)
             replay.rig.clock.set(replay.rig.clock.now() + 0.08)
             return (device, device.node.partialTap)
         }
@@ -1742,7 +1909,8 @@ struct MicrophoneRecoveryTests {
         #expect(cleanup.contains("runningAtCleanup=\(running) succeeded=false disposition=terminal"))
         #expect(replay.waits.isEmpty)
         await lane {
-            #expect(replay.rig.devices[1].engine.stops == 1)
+            // One stop disarms input for the settled probe, one ends the take.
+            #expect(replay.rig.devices[1].engine.stops == 2)
             #expect(replay.rig.devices[1].node.removes == 1)
         }
         try await assertQuarantined(replay)
@@ -1965,11 +2133,17 @@ struct MicrophoneRecoveryTests {
         defer { replay.finish() }
         try await retireFirstEngine(replay)
         replay.controller.toggle()
-        let (attempt, device, _) = try await holdVerificationSelection(replay, attempt: 1)
+        // The stopped-engine veto must land before quiesceForRevalidation()
+        // samples liveness: once input is disarmed, isRunning reads false
+        // whether the engine died or we stopped it, so a post-disarm veto is
+        // indistinguishable from our own quiesce.
+        let (attempt, device, _) = try await holdVerificationSelection(replay, attempt: 1) {
+            if veto == .stoppedEngine { $0.engine.fixtureRunning = false }
+        }
         switch veto {
         case .cancelled: replay.controller.toggle()
         case .deadline: replay.rig.clock.set(replay.rig.clock.now() + 2.5)
-        case .stoppedEngine: device.engine.fixtureRunning = false
+        case .stoppedEngine: break
         }
         attempt.read.complete(matches: false)
         try await awaitPreparationEnd(replay)
