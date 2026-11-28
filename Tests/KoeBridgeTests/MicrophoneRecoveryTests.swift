@@ -1273,6 +1273,14 @@ struct MicrophoneRecoveryTests {
     @Test func unreadableGraphReadsDuringSettleFailAsClassified() async throws {
         let replay = PreparationReplay()
         defer { replay.finish() }
+        // The retry reuses the retained engine, so the raising reads must
+        // model a transient rebuild that has settled by the next attempt.
+        // Hold the retry until the fixture is cleared below.
+        let release = Clock()
+        replay.wait = { _ in
+            while release.now() == 10 { try await Task.sleep(for: .milliseconds(5)) }
+        }
+        defer { release.set(11) }
         replay.controller.toggle()
         let attempt = try await awaitEngine(replay, index: 0)
         let device = await lane {
@@ -1298,9 +1306,12 @@ struct MicrophoneRecoveryTests {
         let cleanup = try await replay.log.dispositions(count: 1)
         #expect(cleanup.first?.contains("succeeded=true") == true)
         await lane {
+            // The transient rebuild has settled by the retry's format reads.
+            device.node.raiseOnFormatRead = false
             #expect(device.engine.stops == 2)
             #expect(device.node.removes == 1)
         }
+        release.set(11)
         // A classified pre-commit failure still retries within the same take.
         _ = try await awaitEngine(replay, index: 1)
         #expect(replay.attempts.count == 2)
@@ -1702,13 +1713,17 @@ struct MicrophoneRecoveryTests {
         _ = try await awaitDelivery(replay, take: failed.takeID)
     }
 
-    private func holdVerificationSelection(_ replay: PreparationReplay, attempt: Int) async throws
+    private func holdVerificationSelection(_ replay: PreparationReplay, attempt: Int,
+                                           beforeDisarm: (Device) -> Void = { _ in }) async throws
         -> (PreparationAttempt, Device, AVAudioNodeTapBlock) {
         let current = try await awaitEngine(replay, index: attempt)
         let (device, block) = await lane {
             let device = replay.rig.devices[1]
             current.read.arm()
             NotificationCenter.default.post(name: .AVAudioEngineConfigurationChange, object: device.engine)
+            // Runs before the queued disarm: this is what quiesceForRevalidation()
+            // observes when it samples liveness before stopping input.
+            beforeDisarm(device)
             replay.rig.clock.set(replay.rig.clock.now() + 0.08)
             return (device, device.node.partialTap)
         }
@@ -2118,11 +2133,17 @@ struct MicrophoneRecoveryTests {
         defer { replay.finish() }
         try await retireFirstEngine(replay)
         replay.controller.toggle()
-        let (attempt, device, _) = try await holdVerificationSelection(replay, attempt: 1)
+        // The stopped-engine veto must land before quiesceForRevalidation()
+        // samples liveness: once input is disarmed, isRunning reads false
+        // whether the engine died or we stopped it, so a post-disarm veto is
+        // indistinguishable from our own quiesce.
+        let (attempt, device, _) = try await holdVerificationSelection(replay, attempt: 1) {
+            if veto == .stoppedEngine { $0.engine.fixtureRunning = false }
+        }
         switch veto {
         case .cancelled: replay.controller.toggle()
         case .deadline: replay.rig.clock.set(replay.rig.clock.now() + 2.5)
-        case .stoppedEngine: device.engine.fixtureRunning = false
+        case .stoppedEngine: break
         }
         attempt.read.complete(matches: false)
         try await awaitPreparationEnd(replay)
