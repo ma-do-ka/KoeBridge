@@ -346,8 +346,13 @@ public final class LocalDiagnosticCounter: @unchecked Sendable {
         let directory = fileURL.deletingLastPathComponent()
         try fm.createDirectory(at: directory, withIntermediateDirectories: true,
                                attributes: [.posixPermissions: NSNumber(value: 0o700)])
-        try fm.setAttributes([.posixPermissions: NSNumber(value: 0o700)],
-                             ofItemAtPath: directory.path)
+        // Tightening an existing directory is best effort. A parent we do not
+        // control (or one the OS flags immutable, such as the per-user TMPDIR
+        // on some macOS installs) fails chmod with EPERM. That must not abort
+        // the write: the archive's own 0o600 file mode protects its contents,
+        // and a failed persist would silently lose every later flush too.
+        try? fm.setAttributes([.posixPermissions: NSNumber(value: 0o700)],
+                              ofItemAtPath: directory.path)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(archive)
