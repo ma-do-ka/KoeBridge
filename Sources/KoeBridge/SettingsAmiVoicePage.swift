@@ -11,6 +11,39 @@ struct SettingsAmiVoicePage: View {
     let focusRequest: SettingsFocusRequest?
     let requestKeyDeletion: () -> Void
     let navigateToTerms: () -> Void
+    @State private var showSyncConsent = false
+    @State private var showVocabularyManagement = false
+    @State private var showSyncHistory = false
+    @State private var showSyncDeleteAll = false
+    @State private var stepBNotice = ""
+
+    private var copy: AmiVoiceVocabularyManagementCopy.Type { AmiVoiceVocabularyManagementCopy.self }
+
+    /// First ON requires the consent panel unless a consent record is already
+    /// persisted; OFF always applies directly through B-1's opt-in setting.
+    private var autoSyncBinding: Binding<Bool> {
+        Binding(
+            get: { controller.amiVoiceDictionarySyncEnabled },
+            set: { newValue in
+                if newValue {
+                    if controller.hasAmiVoiceDictionarySyncConsent {
+                        controller.amiVoiceDictionarySyncEnabled = true
+                        stepBNotice = copy.syncEnabledNotice
+                    } else {
+                        showSyncConsent = true
+                    }
+                } else {
+                    controller.amiVoiceDictionarySyncEnabled = false
+                    stepBNotice = copy.syncDisabledNotice
+                }
+            }
+        )
+    }
+
+    private func postSettingsDestination(_ id: String) {
+        SettingsDestination.pending = id
+        NotificationCenter.default.post(name: .settingsDestinationRequested, object: id)
+    }
 
     var body: some View {
         SettingsPageScrollView(section: .amivoice, focusRequest: focusRequest) {
@@ -136,6 +169,46 @@ struct SettingsAmiVoicePage: View {
                             Spacer()
                             Button("専門用語の登録を開く") { navigateToTerms() }
                         }
+                        Divider()
+                        // Step B: vocabulary auto-sync opt-in + management
+                        // (GD-369 §3 / GD-469 01). The toggle is consent-gated.
+                        VStack(alignment: .leading, spacing: 10) {
+                            Toggle(isOn: autoSyncBinding) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(copy.autoSyncToggleTitle)
+                                        .font(.system(size: 14, weight: .medium))
+                                    Text(AmiVoiceDictionaryEngineFamily(engine: controller.amiVoiceEngine) == .hybrid
+                                         ? copy.autoSyncToggleSupplementHybrid
+                                         : copy.autoSyncToggleSupplementE2E)
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                            .settingsControlFocus("amivoice-vocabulary-sync")
+                            AmiVoiceSyncStatusSection(
+                                controller: controller,
+                                onOpenManagement: { showVocabularyManagement = true },
+                                onOpenApiKey: { postSettingsDestination("amivoice-apikey") }
+                            )
+                            HStack(spacing: 12) {
+                                Button(copy.openManagementButton) { showVocabularyManagement = true }
+                                Button(copy.rollbackButton) { showSyncHistory = true }
+                                    .disabled(!controller.amiVoiceDictionarySyncEnabled
+                                              || controller.amiVoiceVocabularyManagement
+                                                .snapshotHistory(for: controller.amiVoiceDictionaryProfileKey).count < 2)
+                                Spacer()
+                                Button(copy.deleteAllButton, role: .destructive) { showSyncDeleteAll = true }
+                                    .controlSize(.small)
+                            }
+                            .settingsTarget("amivoice-vocabulary-management")
+                            if !stepBNotice.isEmpty {
+                                Text(stepBNotice)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .settingsTarget("amivoice-vocabulary-sync")
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(8)
@@ -149,6 +222,7 @@ struct SettingsAmiVoicePage: View {
                         Text("接続先は「\(AmiVoiceWire.nologWebSocketEndpoint)」（nolog/・ログ保存なしエンドポイント）を使用します。")
                         Text("無料枠：エンジンごとに月60分（3,600秒）のVAD検出発話時間（音声が検出された発話区間）が無料です（毎月1日0:00 JSTにリセット）。")
                         Text("超過料金：無料枠を超えた分は ¥0.04125/秒（¥2.475/分、税込）です。実際の利用量・請求額はAmiVoice Cloud Platformのマイページで確認してください。")
+                        Text(LocalizedStringKey(copy.privacyAddendum))
                     }
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -162,6 +236,32 @@ struct SettingsAmiVoicePage: View {
             }
             .padding(18)
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .sheet(isPresented: $showSyncConsent) {
+            AmiVoiceSyncConsentPanel(
+                onAgree: {
+                    controller.agreeAmiVoiceDictionarySyncConsentAndEnable()
+                    stepBNotice = copy.syncEnabledNotice
+                    showSyncConsent = false
+                },
+                onCancel: { showSyncConsent = false },
+                onShowDetails: {
+                    showSyncConsent = false
+                    postSettingsDestination("amivoice-privacy")
+                }
+            )
+        }
+        .sheet(isPresented: $showVocabularyManagement) {
+            AmiVoiceVocabularyManagementSheet(
+                controller: controller,
+                onOpenApiKey: { postSettingsDestination("amivoice-apikey") }
+            )
+        }
+        .sheet(isPresented: $showSyncHistory) {
+            AmiVoiceSyncHistorySheet(controller: controller) { stepBNotice = $0 }
+        }
+        .sheet(isPresented: $showSyncDeleteAll) {
+            AmiVoiceDeleteAllSheet(controller: controller) { stepBNotice = $0 }
         }
     }
 }

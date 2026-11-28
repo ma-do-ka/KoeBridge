@@ -870,6 +870,9 @@ import KoeBridgeEngines
     private let amiVoiceDictionaryStore: AmiVoiceDictionarySyncStore
     let amiVoiceDictionarySyncEngine: AmiVoiceDictionarySyncEngine
     let amiVoiceDictionarySyncMonitor: AmiVoiceDictionarySyncMonitor
+    /// B-4 wiring surface: all vocabulary-management and consent operations
+    /// funnel through this coordinator into B-1/B-3 public operations.
+    let amiVoiceVocabularyManagement: AmiVoiceVocabularyManagement
     /// B-2 pipeline owner that reconciles the learned-term store with the
     /// dictionary sync store. Only live for the production runtime; isolated
     /// test instances never touch the real dictionary store.
@@ -881,6 +884,11 @@ import KoeBridgeEngines
 
     private var currentAmiVoiceDictionaryProfileKey: AmiVoiceDictionaryProfileKey {
         AmiVoiceDictionaryProfileKey(engine: amiVoiceEngine, samplingRate: .rate16k)
+    }
+
+    /// B-4-facing profile key for the management UI (current engine, 16k).
+    var amiVoiceDictionaryProfileKey: AmiVoiceDictionaryProfileKey {
+        currentAmiVoiceDictionaryProfileKey
     }
 
     /// B-4-facing opt-in setting. It is deliberately false on a fresh install;
@@ -917,6 +925,48 @@ import KoeBridgeEngines
 
     func refreshAmiVoiceDictionarySyncStatus() async -> AmiVoiceDictionarySyncStatus {
         await amiVoiceDictionarySyncEngine.status(for: currentAmiVoiceDictionaryProfileKey)
+    }
+
+    /// True while B-1's single-flight send for the current profile is running;
+    /// the settings status bar shows its "syncing" line from this.
+    func amiVoiceDictionarySyncInFlight() async -> Bool {
+        await amiVoiceDictionarySyncEngine.isSyncInFlight(for: currentAmiVoiceDictionaryProfileKey)
+    }
+
+    // MARK: - B-4 consent
+
+    /// A recorded opt-in consent is required before auto-sync may be turned
+    /// on. The toggle checks this first; an absent record opens the consent
+    /// panel instead of enabling the feature.
+    var hasAmiVoiceDictionarySyncConsent: Bool {
+        amiVoiceVocabularyManagement.hasRecordedSyncConsent
+    }
+
+    /// The consent panel's agree action: persist the consent record (with the
+    /// shown copy's identifier) and enable the feature through the existing
+    /// opt-in setter — never a parallel flag.
+    func agreeAmiVoiceDictionarySyncConsentAndEnable() {
+        amiVoiceVocabularyManagement.recordSyncConsent()
+        amiVoiceDictionarySyncEnabled = true
+    }
+
+    // MARK: - B-4 entry actions
+
+    /// Per-entry delete: the learned term backing the entry goes through the
+    /// normal setter so the vocabulary UI, the B-2 reconcile and the monitor
+    /// observe the same removal before the dictionary row is dropped.
+    func removeAmiVoiceLearnedTerms(ids: Set<UUID>) {
+        let remaining = learnedTermsStore.rows.filter { !ids.contains($0.id) }
+        guard remaining.count != learnedTermsStore.rows.count else { return }
+        learnedTerms = remaining
+    }
+
+    func deleteAmiVoiceDictionaryEntry(_ id: UUID) async -> AmiVoiceDictionarySyncOutcome {
+        await amiVoiceVocabularyManagement.deleteEntry(
+            id: id,
+            for: currentAmiVoiceDictionaryProfileKey,
+            removeLearnedTerms: { ids in self.removeAmiVoiceLearnedTerms(ids: ids) }
+        )
     }
 
     /// Replays the learned-term store through the B-2 candidate pipeline and
@@ -1000,6 +1050,12 @@ import KoeBridgeEngines
             store: dictionaryStore,
             engine: amiVoiceDictionarySyncEngine
         )
+        amiVoiceVocabularyManagement = AmiVoiceVocabularyManagement(
+            store: dictionaryStore,
+            engine: amiVoiceDictionarySyncEngine,
+            monitor: amiVoiceDictionarySyncMonitor,
+            consentStore: AmiVoiceDictionarySyncConsentStore()
+        )
         vocabularySyncWired = storageDirectory == nil
 
         let d = UserDefaults.standard
@@ -1057,6 +1113,15 @@ import KoeBridgeEngines
             self.refreshVocabularyDictionaryCandidates()
             await self.vocabularySyncTask?.value
             _ = await self.amiVoiceDictionarySyncEngine.performLaunchConsistencyPass(for: launchProfileKey)
+        }
+        // B-4 surfaces re-render when the engine reports a store change
+        // (state transitions, profile sync results).
+        Task { [weak self] in
+            await self?.amiVoiceDictionarySyncEngine.setStatusObserver { _ in
+                Task { @MainActor [weak self] in
+                    self?.objectWillChange.send()
+                }
+            }
         }
         scheduleWarmGemini()
         microphoneWarmKeeper.onConfigurationChange = { [weak self] in

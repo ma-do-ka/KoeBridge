@@ -410,3 +410,333 @@ struct AmiVoiceDictionarySyncTests {
         check(rows.count == 1)
     }
 }
+
+/// B-4 mirrors for the vocabulary-management wiring layer and consent gate.
+struct AmiVoiceVocabularyManagementSelfTests {
+    private func makeManagement(
+        suite: String
+    ) throws -> (
+        store: AmiVoiceDictionarySyncStore,
+        transport: SelfTestMockAmiVoiceDictionaryTransport,
+        engine: AmiVoiceDictionarySyncEngine,
+        management: AmiVoiceVocabularyManagement
+    ) {
+        let defaults = try require(UserDefaults(suiteName: suite))
+        let store = AmiVoiceDictionarySyncStore(defaults: defaults)
+        let transport = SelfTestMockAmiVoiceDictionaryTransport()
+        let engine = AmiVoiceDictionarySyncEngine(
+            store: store, transport: transport, apiKeyProvider: { "fixture-key" }
+        )
+        let monitor = AmiVoiceDictionarySyncMonitor(store: store, engine: engine)
+        let management = AmiVoiceVocabularyManagement(
+            store: store,
+            engine: engine,
+            monitor: monitor,
+            consentStore: AmiVoiceDictionarySyncConsentStore(defaults: defaults)
+        )
+        return (store, transport, engine, management)
+    }
+
+    private let key = AmiVoiceDictionaryProfileKey(
+        engine: .hybridJapaneseConversation, samplingRate: .rate16k
+    )
+
+    func consentGateRequiresRecordedConsentAndPersistsAcrossRelaunch() async throws {
+        let suite = "KoeBridge.AmiVoiceVocabMgmtSelfTest." + UUID().uuidString
+        let defaults = try require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let (store, transport, _, management) = try makeManagement(suite: suite)
+
+        check(!management.hasRecordedSyncConsent)
+        check(!store.automaticSyncEnabled)
+        let declined = await management.syncNow(for: key)
+        check(declined.kind == .disabled)
+        check(transport.calls.isEmpty)
+
+        let consent = management.recordSyncConsent()
+        check(consent.copyIdentifier == AmiVoiceVocabularyManagementCopy.consentCopyIdentifier)
+        check(management.hasRecordedSyncConsent)
+        check(!store.automaticSyncEnabled)
+        let persisted = try require(
+            AmiVoiceDictionarySyncConsentStore(defaults: defaults).recordedConsent
+        )
+        check(persisted.copyIdentifier == consent.copyIdentifier)
+
+        defaults.set(Data("not-json".utf8), forKey: AmiVoiceDictionarySyncConsentStore.consentKey)
+        check(AmiVoiceDictionarySyncConsentStore(defaults: defaults).recordedConsent == nil)
+    }
+
+    func offInertnessProducesZeroTransportCallsAcrossSurfaces() async throws {
+        let suite = "KoeBridge.AmiVoiceVocabMgmtSelfTest." + UUID().uuidString
+        let defaults = try require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let (store, transport, _, management) = try makeManagement(suite: suite)
+
+        var local = AmiVoiceDictionaryEntry(written: "KoeBridge", isProtected: true)
+        local.updateEngineState(for: key) { $0.state = .ignored }
+        check(store.saveEntries([local]))
+        check(management.rows(for: key, filter: .all, query: "").count == 1)
+        check(management.summary(for: key).totalCount == 1)
+
+        let saveOutcome = await management.saveManualEntry(
+            id: nil, written: "アストラ", spoken: "あすとら", className: nil,
+            mode: .sync, for: key
+        )
+        check(saveOutcome.saved)
+        check(saveOutcome.syncOutcome?.kind == .disabled)
+        let deleteOutcome = await management.deleteEntry(
+            id: try require(saveOutcome.entryID), for: key
+        )
+        check(deleteOutcome.kind == .disabled)
+        let allOutcomes = await management.deleteAll(scope: .localAndServer, currentKey: key)
+        check(allOutcomes[key]?.kind == .disabled)
+        check(store.loadEntries().isEmpty)
+        check(transport.calls.isEmpty)
+    }
+
+    func approveMovesToSyncableAndRejectsMoveToIgnored() async throws {
+        let suite = "KoeBridge.AmiVoiceVocabMgmtSelfTest." + UUID().uuidString
+        let defaults = try require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let (store, transport, engine, management) = try makeManagement(suite: suite)
+        let approveID = UUID()
+        let rejectID = UUID()
+        let approveInserted = await engine.upsertEntry(
+            AmiVoiceDictionaryEntry(id: approveID, written: "霧峰システム", spoken: "きりみねしすてむ"),
+            for: key, state: .pendingReview
+        )
+        let rejectInserted = await engine.upsertEntry(
+            AmiVoiceDictionaryEntry(id: rejectID, written: "黒羽重工", spoken: "くろはねじゅうこう"),
+            for: key, state: .pendingReview
+        )
+        check(approveInserted)
+        check(rejectInserted)
+        await engine.setAutomaticSyncEnabled(true)
+        transport.resetCalls()
+
+        let approved = await management.approveReviewEntry(id: approveID, reading: "きりみねしすてむ", for: key)
+        check(approved)
+        check(transport.calls.contains { $0.method == "POST" })
+        var rows = await engine.entries()
+        check(rows.first { $0.id == approveID }?.engineState(for: key)?.state == .autoSynced)
+        check(rows.first { $0.id == approveID }?.isProtected == true)
+        check(store.loadMonitoringRecords().first { $0.entryID == approveID }?.lastManualEditAt != nil)
+
+        let rejected = await management.rejectReviewEntry(id: rejectID, for: key)
+        check(rejected)
+        rows = await engine.entries()
+        check(rows.first { $0.id == rejectID }?.engineState(for: key)?.state == .ignored)
+        _ = await management.syncNow(for: key)
+        rows = await engine.entries()
+        check(rows.first { $0.id == rejectID }?.engineState(for: key)?.state == .ignored)
+    }
+
+    func deleteAllWithSyncOnSendsEmptyArrayAndOffSendsNothing() async throws {
+        let suite = "KoeBridge.AmiVoiceVocabMgmtSelfTest." + UUID().uuidString
+        let defaults = try require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let (store, transport, engine, management) = try makeManagement(suite: suite)
+
+        // OFF path: local-only, zero transport.
+        let offInserted = await engine.upsertEntry(
+            AmiVoiceDictionaryEntry(written: "黒羽重工", spoken: "くろはねじゅうこう"),
+            for: key, state: .readyToSync
+        )
+        check(offInserted)
+        var outcomes = await management.deleteAll(scope: .localAndServer, currentKey: key)
+        check(outcomes[key]?.kind == .disabled)
+        check(store.loadEntries().isEmpty)
+        check(transport.calls.isEmpty)
+
+        // ON path: empty-array overwrite per profile, sync turned OFF.
+        let onInserted = await engine.upsertEntry(
+            AmiVoiceDictionaryEntry(written: "霧峰システム", spoken: "きりみねしすてむ"),
+            for: key, state: .readyToSync
+        )
+        check(onInserted)
+        await engine.setAutomaticSyncEnabled(true)
+        let initial = await engine.syncNow(for: key)
+        check(initial.kind == .success)
+        transport.resetCalls()
+        outcomes = await management.deleteAll(scope: .serverOnly, currentKey: key)
+        check(outcomes[key]?.kind == .success)
+        check(transport.calls.filter { $0.method == "POST" }.contains { $0.payloads.isEmpty })
+        check(!store.automaticSyncEnabled)
+        check(store.loadEntries().count == 1)
+    }
+
+    func capsAndQuarantineSurfaceRecordedReasons() async throws {
+        let suite = "KoeBridge.AmiVoiceVocabMgmtSelfTest." + UUID().uuidString
+        let defaults = try require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let (store, _, _, management) = try makeManagement(suite: suite)
+
+        func seededEntries(_ count: Int) -> [AmiVoiceDictionaryEntry] {
+            (0..<count).map { index in
+                var entry = AmiVoiceDictionaryEntry(written: "Word\(index)")
+                entry.updateEngineState(for: key) { $0.state = .autoSynced }
+                return entry
+            }
+        }
+        check(store.saveEntries(seededEntries(AmiVoiceDictionarySyncPolicy.softEntryLimit)))
+        var summary = management.summary(for: key)
+        check(summary.softCapExceeded)
+        check(!summary.hardCapReached)
+        check(store.saveEntries(seededEntries(AmiVoiceDictionarySyncPolicy.hardEntryLimit)))
+        summary = management.summary(for: key)
+        check(summary.hardCapReached)
+        check(summary.syncedCount == AmiVoiceDictionarySyncPolicy.hardEntryLimit)
+
+        let entryID = UUID()
+        let occurrences = [Date(timeIntervalSince1970: 1_000), Date(timeIntervalSince1970: 2_000)]
+        var quarantined = AmiVoiceDictionaryEntry(id: entryID, written: "霧峰システム")
+        quarantined.updateEngineState(for: key) { $0.state = .autoDisabled }
+        var rows = store.loadEntries()
+        rows.append(quarantined)
+        check(store.saveEntries(rows))
+        check(store.saveMonitoringRecords([AmiVoiceDictionaryMonitoringRecord(
+            entryID: entryID,
+            profileKey: key,
+            lastAutoTransition: AmiVoiceDictionaryMonitoringTransition(
+                entryID: entryID,
+                kind: .reverseCorrection,
+                toState: .autoDisabled,
+                at: Date(timeIntervalSince1970: 2_000),
+                occurrenceCount: occurrences.count,
+                windowDays: 7,
+                occurrenceTimestamps: occurrences
+            )
+        )]))
+        let row = try require(
+            management.rows(for: key, filter: .autoDisabled, query: "").first
+        )
+        let info = try require(management.quarantineInfo(for: row))
+        check(info.occurrenceCount == 2)
+        check(info.windowDays == 7)
+        check(info.occurrenceTimestamps == occurrences)
+    }
+
+    func unreflectedSnapshotClearsAfterSuccessfulRetry() async throws {
+        let suite = "KoeBridge.AmiVoiceVocabMgmtSelfTest." + UUID().uuidString
+        let defaults = try require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let (_, transport, engine, management) = try makeManagement(suite: suite)
+
+        let aID = UUID()
+        let inserted = await engine.upsertEntry(
+            AmiVoiceDictionaryEntry(id: aID, written: "霧峰システム", spoken: "きりみねしすてむ"),
+            for: key, state: .readyToSync
+        )
+        check(inserted)
+        await engine.setAutomaticSyncEnabled(true)
+        let initial = await engine.syncNow(for: key)
+        check(initial.kind == .success)
+        let snapshotA = try require(await management.syncSnapshots(for: key).first)
+        let secondInserted = await engine.upsertEntry(
+            AmiVoiceDictionaryEntry(id: UUID(), written: "黒羽重工", spoken: "くろはねじゅうこう"),
+            for: key, state: .readyToSync
+        )
+        check(secondInserted)
+        let second = await engine.syncNow(for: key)
+        check(second.kind == .success)
+        check(management.unreflectedSnapshot(for: key) == nil)
+
+        transport.replaceHandler = { _ in throw AmiVoiceDictionaryTransportError.temporary(.network) }
+        let rollback = await management.rollback(for: key, toSnapshotID: snapshotA.id)
+        check(rollback.kind == .appliedReflectionPending)
+        check(management.unreflectedSnapshot(for: key)?.status == .failed)
+
+        // History is append-only: the stale .failed record stays, but a
+        // successful retry's newer .reflected snapshot must clear the warning.
+        transport.replaceHandler = nil
+        let retry = await management.retryPendingReflection(for: key)
+        check(retry.kind == .success)
+        check(management.unreflectedSnapshot(for: key) == nil)
+        check(management.snapshotHistory(for: key).contains { $0.status == .failed })
+    }
+
+    func reconcilePreservesProtectedRowsWhileUnprotectedFollowPipeline() async throws {
+        let suite = "KoeBridge.AmiVoiceVocabMgmtSelfTest." + UUID().uuidString
+        let defaults = try require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let (store, _, engine, management) = try makeManagement(suite: suite)
+
+        // Protected rows: one approved review entry, one manual save whose
+        // reading differs from the pipeline's (TS-03).
+        let reviewTerm = LearnedTerm(term: "霧峰システム", originalFragment: "霧峰システム株式会社")
+        let reviewInserted = await engine.upsertEntry(
+            AmiVoiceDictionaryEntry(id: reviewTerm.id, written: "霧峰システム", spoken: nil),
+            for: key, state: .pendingReview
+        )
+        check(reviewInserted)
+        await engine.setAutomaticSyncEnabled(true)
+        let approved = await management.approveReviewEntry(
+            id: reviewTerm.id, reading: "きりみねしすてむ", for: key
+        )
+        check(approved)
+        // Seeded with the LearnedTerm id so the manual edit keeps that id.
+        let manualTerm = LearnedTerm(term: "黒羽重工", originalFragment: "黒羽")
+        let manualSeeded = await engine.upsertEntry(
+            AmiVoiceDictionaryEntry(id: manualTerm.id, written: "黒羽重工", spoken: "くろはねじゅうこう"),
+            for: key, state: .readyToSync
+        )
+        check(manualSeeded)
+        let manualOutcome = await management.saveManualEntry(
+            id: manualTerm.id, written: "黒羽重工", spoken: "にせよみ",
+            className: nil, mode: .sync, for: key
+        )
+        check(manualOutcome.saved)
+        check(manualOutcome.entryID == manualTerm.id)
+
+        // An unprotected row still follows the pipeline outcome.
+        let plainTerm = LearnedTerm(term: "クロハネ", originalFragment: "黒羽")
+        let plainInserted = await engine.upsertEntry(
+            AmiVoiceDictionaryEntry(id: plainTerm.id, written: "クロハネ", spoken: "まちがい"),
+            for: key, state: .pendingReview
+        )
+        check(plainInserted)
+
+        let coordinator = VocabularySyncCoordinator()
+        let plan = coordinator.ingest(
+            terms: [reviewTerm, manualTerm, plainTerm],
+            existingEntries: store.loadEntries(),
+            for: key
+        )
+        let protectedIDs: Set<UUID> = [reviewTerm.id, manualTerm.id]
+        check(plan.readyUpserts.allSatisfy { !protectedIDs.contains($0.id) })
+        check(plan.pendingUpserts.allSatisfy { !protectedIDs.contains($0.id) })
+        check(plan.ignoredIDs.allSatisfy { !protectedIDs.contains($0) })
+        check(plan.archivedIDs.allSatisfy { !protectedIDs.contains($0) })
+        check(plan.readyUpserts.contains { $0.id == plainTerm.id })
+
+        // Apply the plan the way VoiceController.applyVocabularySyncPlan does.
+        for id in plan.ignoredIDs { _ = await engine.transitionEntry(id: id, for: key, to: .ignored) }
+        for id in plan.archivedIDs { _ = await engine.transitionEntry(id: id, for: key, to: .archived) }
+        for entry in plan.pendingUpserts { _ = await engine.upsertEntry(entry, for: key, state: .pendingReview) }
+        for entry in plan.readyUpserts { _ = await engine.upsertEntry(entry, for: key, state: .readyToSync) }
+
+        let rows = await engine.entries()
+        check(rows.first { $0.id == reviewTerm.id }?.spoken == "きりみねしすてむ")
+        check(rows.first { $0.id == reviewTerm.id }?.isProtected == true)
+        check(rows.first { $0.id == reviewTerm.id }?.engineState(for: key)?.state == .autoSynced)
+        check(rows.first { $0.id == manualTerm.id }?.spoken == "にせよみ")
+        check(rows.first { $0.id == manualTerm.id }?.isProtected == true)
+        check(rows.first { $0.id == manualTerm.id }?.engineState(for: key)?.state == .autoSynced)
+        check(rows.first { $0.id == plainTerm.id }?.spoken == "くろはね")
+        check(rows.first { $0.id == plainTerm.id }?.isProtected == false)
+        check(rows.first { $0.id == plainTerm.id }?.engineState(for: key)?.state == .readyToSync)
+    }
+
+    func consentCopyKeepsVerificationMarkersVerbatim() throws {
+        check(AmiVoiceVocabularyManagementCopy.consentItemDestinationBody
+            .contains("[要確認：OQ-07 サーバー側プロファイルの保持期間・削除時挙動に関する確定文言を1行追記]"))
+        check(AmiVoiceVocabularyManagementCopy.formReadingNote
+            .contains("[要確認：OQ-05 文字種統一]"))
+        check(AmiVoiceVocabularyManagementCopy.deleteAllBody(syncedCount: 3)
+            .contains("[要確認：OQ-04/OQ-07 サーバー側即時削除の反映タイミングを追記]"))
+        check(AmiVoiceVocabularyManagementCopy.consentTitle == "学習した語彙の AmiVoice 自動同期を有効にしますか？")
+        check(AmiVoiceVocabularyManagementCopy.consentItemSentBody.contains("**「表記」**"))
+        check(AmiVoiceVocabularyManagementCopy.consentItemDestinationBody.contains("`nolog`"))
+        check(AmiVoiceVocabularyManagementCopy.consentAgreeButton == "同意して有効にする")
+    }
+}
