@@ -1,3 +1,4 @@
+import Foundation
 import KoeBridgeCore
 
 struct SettingsNavigationSelfTests {
@@ -56,8 +57,38 @@ struct SettingsNavigationSelfTests {
         check(SettingsSearchCatalog.find("AmiVoice").contains { $0.section == .voice && $0.id == "engine" })
         check(SettingsSearchCatalog.find("AmiVoice").contains { $0.section == .history && $0.id == "usage" })
         check(SettingsSearchCatalog.find("入力証拠 最小化").contains { $0.section == .history && $0.id == "protected-apps" })
-        check(SettingsSearchCatalog.find("ベンチ録音").contains { $0.section == .bench && $0.id == "bench-recording" })
-        check(SettingsSearchCatalog.find("録音").contains { $0.section == .bench && $0.id == "bench-recording" })
-        check(SettingsSearchCatalog.find("ベンチマーク").contains { $0.section == .bench && $0.id == "bench-recording" })
+        check(SettingsSearchCatalog.find("ベンチ録音", developerToolsUnlocked: true).contains { $0.section == .bench && $0.id == "bench-recording" })
+        check(SettingsSearchCatalog.find("録音", developerToolsUnlocked: true).contains { $0.section == .bench && $0.id == "bench-recording" })
+        check(SettingsSearchCatalog.find("ベンチマーク", developerToolsUnlocked: true).contains { $0.section == .bench && $0.id == "bench-recording" })
+        check(SettingsSearchCatalog.find("ベンチ録音").isEmpty)
+    }
+
+    func developerToolsStayHiddenUntilKonamiUnlock() throws {
+        check(!SettingsSection.bench.isAvailable(developerToolsUnlocked: false))
+        check(SettingsSection.bench.isAvailable(developerToolsUnlocked: true))
+        check(SettingsSection.general.isAvailable(developerToolsUnlocked: false))
+        check(SettingsSearchCatalog.find("録音").allSatisfy { $0.section != .bench })
+
+        var sequence = DeveloperToolsUnlockSequence()
+        for keyCode in DeveloperToolsUnlockSequence.keyCodes.dropLast() {
+            let completed = sequence.advance(keyCode: keyCode)
+            check(!completed)
+        }
+        check(sequence.progress == DeveloperToolsUnlockSequence.keyCodes.count - 1)
+        let finalKey = DeveloperToolsUnlockSequence.keyCodes[DeveloperToolsUnlockSequence.keyCodes.count - 1]
+        let completed = sequence.advance(keyCode: finalKey)
+        check(completed)
+        check(sequence.progress == 0)
+
+        let suite = "KoeBridge.Konami." + UUID().uuidString
+        let defaults = try require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        check(!DeveloperToolsUnlockStore.isUnlocked(defaults: defaults))
+        let unlocked = DeveloperToolsUnlockStore.toggle(defaults: defaults)
+        check(unlocked)
+        check(DeveloperToolsUnlockStore.isUnlocked(defaults: defaults))
+        let relocked = DeveloperToolsUnlockStore.toggle(defaults: defaults)
+        check(!relocked)
+        check(!DeveloperToolsUnlockStore.isUnlocked(defaults: defaults))
     }
 }

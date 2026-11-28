@@ -22,6 +22,8 @@ struct SettingsView: View {
              : Color(red: 0.916, green: 0.932, blue: 0.955)
     }
     @AppStorage("diagnosticsEnabled") private var diagnosticsEnabled = false
+    // Hidden in every build until the Konami command is entered in this window.
+    @AppStorage(DeveloperToolsUnlockStore.defaultsKey) private var developerToolsUnlocked = false
     @StateObject private var presetEditor = TransformPresetEditorState()
     @StateObject private var benchRecorder: BenchRecordingCoordinator
     @State private var apiKeyDraft = ""
@@ -141,14 +143,14 @@ struct SettingsView: View {
         .onReceive(NotificationCenter.default.publisher(for: .settingsDestinationRequested)) { note in
             if let id = note.object as? String,
                let entry = SettingsSearchCatalog.entries.first(where: { $0.id == id }) {
-                navigation.focus(entry)
+                focus(entry)
                 SettingsDestination.pending = nil
             }
         }
         .onAppear {
             if let id = SettingsDestination.pending,
                let entry = SettingsSearchCatalog.entries.first(where: { $0.id == id }) {
-                navigation.focus(entry)
+                focus(entry)
                 SettingsDestination.pending = nil
             }
             Task { @MainActor in openPendingUpdatePage() }
@@ -157,6 +159,11 @@ struct SettingsView: View {
             guard request > 0 else { return }
             // @Published publishes in willSet. Defer until storage updates.
             Task { @MainActor in openPendingUpdatePage() }
+        }
+        .onChange(of: developerToolsUnlocked) { _, unlocked in
+            guard !unlocked, navigation.selected == .bench else { return }
+            // Re-locking hides the page even while it is open.
+            if navigation.canGoBack { navigation.back() } else { navigation.select(.voice) }
         }
     }
 
@@ -178,13 +185,21 @@ struct SettingsView: View {
     }
 
     private func openFirstSearchResult() {
-        guard let result = SettingsSearchCatalog.find(searchText).first else { return }
-        navigation.focus(result)
+        guard let result = SettingsSearchCatalog.find(
+            searchText, developerToolsUnlocked: developerToolsUnlocked).first else { return }
+        focus(result)
         searchText = ""
     }
 
     private func go(_ section: SettingsSection) {
+        guard section.isAvailable(developerToolsUnlocked: developerToolsUnlocked) else { return }
         navigation.select(section)
+    }
+
+    /// Programmatic destinations cannot reveal the bench page while locked.
+    private func focus(_ entry: SettingsSearchEntry) {
+        guard entry.section.isAvailable(developerToolsUnlocked: developerToolsUnlocked) else { return }
+        navigation.focus(entry)
     }
 
     private func openPendingUpdatePage() {
@@ -266,14 +281,17 @@ struct SettingsView: View {
                         sidebarGroup("データと安全", pages: [.history, .permissions])
                         Divider().padding(.horizontal, 16)
                         sidebarGroup("サポート", pages: [.about])
-                        Divider().padding(.horizontal, 16)
-                        sidebarGroup("開発ツール", pages: [.bench])
+                        if developerToolsUnlocked {
+                            Divider().padding(.horizontal, 16)
+                            sidebarGroup("開発ツール", pages: [.bench])
+                        }
                     } else {
                         Text("検索結果")
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.secondary)
                             .padding(.horizontal, 18)
-                        let results = SettingsSearchCatalog.find(searchText)
+                        let results = SettingsSearchCatalog.find(
+                            searchText, developerToolsUnlocked: developerToolsUnlocked)
                         if results.isEmpty {
                             Text("一致する設定がありません")
                                 .font(.caption)
@@ -282,7 +300,7 @@ struct SettingsView: View {
                         } else {
                             ForEach(results) { result in
                                 Button {
-                                    navigation.focus(result)
+                                    focus(result)
                                     searchText = ""
                                 } label: {
                                     HStack(spacing: 10) {

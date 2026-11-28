@@ -32,9 +32,10 @@ struct SettingsNavigationTests {
         #expect(SettingsSearchCatalog.find("AmiVoice").contains { $0.section == .voice && $0.id == "engine" })
         #expect(SettingsSearchCatalog.find("AmiVoice").contains { $0.section == .history && $0.id == "usage" })
         #expect(SettingsSearchCatalog.find("入力証拠 最小化").contains { $0.section == .history && $0.id == "protected-apps" })
-        #expect(SettingsSearchCatalog.find("ベンチ録音").contains { $0.section == .bench && $0.id == "bench-recording" })
-        #expect(SettingsSearchCatalog.find("録音").contains { $0.section == .bench && $0.id == "bench-recording" })
-        #expect(SettingsSearchCatalog.find("ベンチマーク").contains { $0.section == .bench && $0.id == "bench-recording" })
+        #expect(SettingsSearchCatalog.find("ベンチ録音", developerToolsUnlocked: true).contains { $0.section == .bench && $0.id == "bench-recording" })
+        #expect(SettingsSearchCatalog.find("録音", developerToolsUnlocked: true).contains { $0.section == .bench && $0.id == "bench-recording" })
+        #expect(SettingsSearchCatalog.find("ベンチマーク", developerToolsUnlocked: true).contains { $0.section == .bench && $0.id == "bench-recording" })
+        #expect(SettingsSearchCatalog.find("ベンチ録音").isEmpty)
         #expect(SettingsSearchCatalog.find("  ").isEmpty)
         #expect(SettingsSearchCatalog.find("never_present_keyword_123").isEmpty)
     }

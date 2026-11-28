@@ -125,10 +125,13 @@ public enum SettingsSearchCatalog {
         .init(id: "bench-recording", section: .bench, title: "ベンチ録音", keywords: "ベンチ録音 録音 ベンチマーク コーパス WAV")
     ]
 
-    public static func find(_ query: String) -> [SettingsSearchEntry] {
+    /// Search never surfaces the developer-tools entry until it is unlocked.
+    public static func find(_ query: String,
+                            developerToolsUnlocked: Bool = false) -> [SettingsSearchEntry] {
         let words = query.split(whereSeparator: \.isWhitespace).map(String.init)
         guard !words.isEmpty else { return [] }
         return entries.filter { entry in
+            guard entry.section.isAvailable(developerToolsUnlocked: developerToolsUnlocked) else { return false }
             let haystack = entry.title + " " + entry.keywords + " " + entry.section.title
             return words.allSatisfy { haystack.localizedStandardContains($0) }
         }

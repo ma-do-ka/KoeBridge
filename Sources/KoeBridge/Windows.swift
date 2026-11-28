@@ -15,6 +15,9 @@ import KoeBridgeCore
     private var displayObserver: NSObjectProtocol?
     private var clipboardFeedbackPanel: NSPanel?
     private var clipboardFeedbackDismissal: Task<Void, Never>?
+    private var settingsKeyMonitor: Any?
+    private var settingsCloseObserver: NSObjectProtocol?
+    private var developerToolsSequence = DeveloperToolsUnlockSequence()
 
     init() {
         displayObserver = NotificationCenter.default.addObserver(
@@ -67,6 +70,47 @@ import KoeBridgeCore
         }
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
+        installDeveloperToolsUnlockMonitor(for: window)
+    }
+
+    /// The Konami command only unlocks the hidden developer-tools group; it
+    /// never consumes the key. The monitor lives only while Settings is open
+    /// and ignores anything typed into a text field or text editor.
+    private func installDeveloperToolsUnlockMonitor(for window: NSWindow) {
+        guard settingsKeyMonitor == nil else { return }
+        settingsKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self, weak window] event in
+            guard let self, let window, (event.window ?? NSApp.keyWindow) === window else { return event }
+            guard !Self.isEditingText(in: window) else {
+                // B/A and the arrows are ordinary editing in a focused field.
+                self.developerToolsSequence.reset()
+                return event
+            }
+            if self.developerToolsSequence.advance(keyCode: event.keyCode) {
+                DeveloperToolsUnlockStore.toggle()
+            }
+            return event // observe only; never alter or consume keystrokes
+        }
+        settingsCloseObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification, object: window, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.removeDeveloperToolsUnlockMonitor() }
+        }
+    }
+
+    private func removeDeveloperToolsUnlockMonitor() {
+        if let settingsKeyMonitor { NSEvent.removeMonitor(settingsKeyMonitor) }
+        settingsKeyMonitor = nil
+        if let settingsCloseObserver { NotificationCenter.default.removeObserver(settingsCloseObserver) }
+        settingsCloseObserver = nil
+        developerToolsSequence.reset()
+    }
+
+    /// Both SwiftUI TextField and TextEditor edit through the window's field
+    /// editor, which is an NSTextView. A focused text view means every key is
+    /// ordinary editing, so the sequence must not advance.
+    private static func isEditingText(in window: NSWindow) -> Bool {
+        guard let responder = window.firstResponder else { return false }
+        return responder is NSTextView || responder is NSTextField
     }
 
     func showPreview() {
