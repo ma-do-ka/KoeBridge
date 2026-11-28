@@ -27,7 +27,7 @@ public struct LocalDiagnosticDailySummary: Codable, Equatable, Sendable {
         "0-5ms", "6-10ms", "11-20ms", "21-40ms", "41-80ms", "81-160ms", "161ms+"
     ]
 
-    /// Ordered upper bounds (exclusive) matching `fieldReadBucketLabels`.
+    /// Ordered upper bounds (inclusive) matching `fieldReadBucketLabels`.
     private static let fieldReadBucketEdges = [5, 10, 20, 40, 80, 160]
 
     public static func fieldReadBucket(milliseconds: Int) -> String {
@@ -78,12 +78,15 @@ public struct LocalDiagnosticDailySummary: Codable, Equatable, Sendable {
         fieldNatureUnknown += other.fieldNatureUnknown
         volumeGuardActivations += other.volumeGuardActivations
         for (key, count) in other.fieldReadMilliseconds {
+            guard Self.fieldReadBucketLabels.contains(key) else { continue }
             fieldReadMilliseconds[key] = (fieldReadMilliseconds[key] ?? 0) + count
         }
         for (key, count) in other.failures {
+            guard Self.isAllowedCode(key) else { continue }
             failures[key] = (failures[key] ?? 0) + count
         }
         for (key, count) in other.failClosed {
+            guard Self.isAllowedCode(key) else { continue }
             failClosed[key] = (failClosed[key] ?? 0) + count
         }
     }
@@ -240,11 +243,15 @@ public final class LocalDiagnosticCounter: @unchecked Sendable {
         lock.withLock {
             loaded = true
             writable = readable
-            for (key, summary) in storedDays {
-                days[key, default: LocalDiagnosticDailySummary()].merge(summary)
+            // A wipe or OFF that landed while the file was being read must
+            // not be undone by repopulating counters from the archive.
+            if enabled {
+                for (key, summary) in storedDays {
+                    days[key, default: LocalDiagnosticDailySummary()].merge(summary)
+                }
+                if readable { pruneLocked() }
+                if !days.isEmpty { scheduleFlushLocked() }
             }
-            if readable { pruneLocked() }
-            if !days.isEmpty { scheduleFlushLocked() }
         }
     }
 
@@ -313,14 +320,20 @@ public final class LocalDiagnosticCounter: @unchecked Sendable {
         queue.sync { persist() }
     }
 
-    /// Remove the stored aggregate and clear in-memory counters.
+    /// Remove the stored aggregate and clear in-memory counters. Removal and
+    /// the in-memory clear run on the counter's own queue so a startup
+    /// `load()` still in flight cannot resurrect wiped aggregates, and a
+    /// previously unreadable archive stops blocking persistence afterwards.
     public func deleteAll() throws {
-        lock.withLock {
-            days = [:]
-            pendingFlush?.cancel()
-            pendingFlush = nil
+        try queue.sync {
+            try remove(fileURL)
+            lock.withLock {
+                days = [:]
+                pendingFlush?.cancel()
+                pendingFlush = nil
+                writable = true
+            }
         }
-        try queue.sync { try remove(fileURL) }
     }
 
     /// Current in-memory snapshot (for inspection and tests).

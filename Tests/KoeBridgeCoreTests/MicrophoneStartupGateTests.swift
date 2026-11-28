@@ -750,5 +750,66 @@ struct MicrophoneGenerationTests {
         #expect(lifetime.finishCleanup(warm, evidence: .init(stopped: true, hadTap: false)) == .terminal)
         #expect((try? lifetime.acquire(for: .capture, canAcquire: true)) == nil)
     }
+
+    private func aggregate(_ events: [LocalDiagnosticEvent]) -> LocalDiagnosticDailySummary {
+        var summary = LocalDiagnosticDailySummary()
+        for event in events { summary.apply(event) }
+        return summary
+    }
+
+    @Test func normalAvailableTeardownRecordsNoTelemetry() throws {
+        var events: [LocalDiagnosticEvent] = []
+        let lifetime = MicrophoneEngineLifetime(makeResource: { NSObject() },
+                                                telemetry: { events.append($0) })
+        let lease = try #require(lifetime.acquire())
+        #expect(lifetime.beginCleanup(lease))
+        #expect(lifetime.finishCleanup(lease, evidence: .init(stopped: true, hadTap: false)) == .normal)
+        #expect(events.isEmpty)
+    }
+
+    @Test func verifiedReplacementCountsAttemptAndRecovery() throws {
+        var events: [LocalDiagnosticEvent] = []
+        let lifetime = MicrophoneEngineLifetime(makeResource: { NSObject() },
+                                                telemetry: { events.append($0) })
+        let old = try #require(lifetime.acquire())
+        lifetime.recordPreflightStopped(true, for: old)
+        lifetime.retire(old, preCommitFormatException: true)
+        #expect(lifetime.beginCleanup(old))
+        #expect(lifetime.finishCleanup(old, evidence: .init(stopped: true, hadTap: false, runningAtCleanup: false)) == .replacementPending)
+        let next = try #require(try lifetime.acquire(for: .capture, canAcquire: true))
+        lifetime.finishVerification(next)
+        let counts = aggregate(events)
+        #expect(counts.micReplacementAttempts == 1 && counts.micRecoverySuccesses == 1)
+        #expect(counts.micVerificationDeferrals == 0 && counts.micUnrecovered == 0)
+    }
+
+    @Test func deferredVerificationCountsDeferral() throws {
+        var events: [LocalDiagnosticEvent] = []
+        let lifetime = MicrophoneEngineLifetime(makeResource: { NSObject() },
+                                                telemetry: { events.append($0) })
+        let old = try #require(lifetime.acquire())
+        lifetime.recordPreflightStopped(true, for: old)
+        lifetime.retire(old, preCommitFormatException: true)
+        #expect(lifetime.beginCleanup(old))
+        #expect(lifetime.finishCleanup(old, evidence: .init(stopped: true, hadTap: false, runningAtCleanup: false)) == .replacementPending)
+        let next = try #require(try lifetime.acquire(for: .capture, canAcquire: true))
+        lifetime.recordVerificationFailure(.binding, for: next)
+        #expect(lifetime.beginCleanup(next))
+        #expect(lifetime.finishCleanup(next, evidence: .init(stopped: true, hadTap: false, runningAtCleanup: false)) == .verificationDeferred)
+        let counts = aggregate(events)
+        #expect(counts.micReplacementAttempts == 1 && counts.micVerificationDeferrals == 1)
+        #expect(counts.micUnrecovered == 0)
+    }
+
+    @Test func cleanTeardownOfUnrecoverableRetiringEngineCountsUnrecovered() throws {
+        var events: [LocalDiagnosticEvent] = []
+        let lifetime = MicrophoneEngineLifetime(makeResource: { NSObject() },
+                                                telemetry: { events.append($0) })
+        let lease = try #require(lifetime.acquire())
+        lifetime.retire(lease, preCommitFormatException: false)
+        #expect(lifetime.beginCleanup(lease))
+        #expect(lifetime.finishCleanup(lease, evidence: .init(stopped: true, hadTap: false)) == .terminal)
+        #expect(aggregate(events).micUnrecovered == 1)
+    }
 }
 #endif

@@ -130,6 +130,7 @@ struct KoeBridgeSelfTest {
         await run("ContextAndTransformTests.transformRequestAndResponse", { try ContextAndTransformTests().transformRequestAndResponse() })
         #if os(macOS)
         await run("MicrophoneTapInstallationTests.leaseAndBudget", { MicrophoneTapInstallationTests.leaseAndBudget() })
+        await run("MicrophoneTapInstallationTests.lifetimeTelemetry", { try MicrophoneTapInstallationTests.lifetimeTelemetry() })
         await run("MicrophoneTapInstallationTests.capture", { MicrophoneTapInstallationTests.exercise(warm: false) })
         await run("MicrophoneTapInstallationTests.warmer", { MicrophoneTapInstallationTests.exercise(warm: true) })
         #endif

@@ -317,6 +317,7 @@ enum ApplicationRelauncher {
             Task { @MainActor [weak self] in
                 self?.controller.interruptForSystemEvent("Macのスリープにより録音を中断しました。途中結果は履歴に保存しました")
                 DiagnosticLog.flush()
+                LocalDiagnostics.counter.flushBlocking()
             }
         })
         workspaceObservers.append(center.addObserver(
@@ -325,6 +326,7 @@ enum ApplicationRelauncher {
             Task { @MainActor [weak self] in
                 self?.controller.interruptForSystemEvent("ユーザーセッションが切り替わったため録音を中断しました")
                 DiagnosticLog.flush()
+                LocalDiagnostics.counter.flushBlocking()
             }
         })
         workspaceObservers.append(center.addObserver(
@@ -392,6 +394,7 @@ enum ApplicationRelauncher {
         workspaceObservers.removeAll()
         controller.interruptForSystemEvent("アプリ終了により録音を中断しました")
         DiagnosticLog.flush()
+        LocalDiagnostics.counter.flushBlocking()
         if let windowKeyMonitor { NSEvent.removeMonitor(windowKeyMonitor); self.windowKeyMonitor = nil }
     }
 

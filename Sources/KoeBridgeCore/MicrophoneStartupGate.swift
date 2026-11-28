@@ -583,6 +583,7 @@ public final class MicrophoneEngineLifetime<Resource: AnyObject>: @unchecked Sen
 
     private let lock = NSLock()
     private let makeResource: () -> Resource?
+    private let telemetry: (LocalDiagnosticEvent) -> Void
     private var state = State.available
     private var resource: Resource?
     private var retired: Resource?
@@ -697,8 +698,10 @@ public final class MicrophoneEngineLifetime<Resource: AnyObject>: @unchecked Sen
         }
     }
 
-    public init(makeResource: @escaping () -> Resource?) {
+    public init(makeResource: @escaping () -> Resource?,
+                telemetry: @escaping (LocalDiagnosticEvent) -> Void = LocalDiagnostics.record) {
         self.makeResource = makeResource
+        self.telemetry = telemetry
     }
 
     public func acquire() -> Lease? { try? acquire(for: .warm, canAcquire: true) }
@@ -707,7 +710,7 @@ public final class MicrophoneEngineLifetime<Resource: AnyObject>: @unchecked Sen
                          canAcquire: @autoclosure () -> Bool) throws -> Lease? {
         var telemetry: [LocalDiagnosticEvent] = []
         var wasReplacement = false
-        defer { for event in telemetry { LocalDiagnostics.record(event) } }
+        defer { for event in telemetry { self.telemetry(event) } }
         let token = UUID()
         let reservation = try lock.withLock { () -> (accepted: Bool, existing: Lease?) in
             guard activeToken == nil, canAcquire() else { return (false, nil) }
@@ -774,7 +777,7 @@ public final class MicrophoneEngineLifetime<Resource: AnyObject>: @unchecked Sen
             state = .available
             return true
         }
-        if recovered { LocalDiagnostics.record(.micRecoverySuccess) }
+        if recovered { telemetry(.micRecoverySuccess) }
     }
 
     @discardableResult package func finishCleanup(_ lease: Lease, evidence: CleanupEvidence,
@@ -802,9 +805,10 @@ public final class MicrophoneEngineLifetime<Resource: AnyObject>: @unchecked Sen
                     state = .pending
                 } else {
                     state = .terminal
-                    // A clean teardown of a normal take is not an
-                    // unrecovered outcome; only failed cleanups count.
-                    if !succeeded { telemetry.append(.micUnrecovered) }
+                    // `.retiring` is only entered on a MicrophoneGraphError,
+                    // never on normal take teardowns, so every transition to
+                    // `.terminal` here is a permanent unrecovered failure.
+                    telemetry.append(.micUnrecovered)
                 }
             case .verifying:
                 if deferring && succeeded {
@@ -833,7 +837,7 @@ public final class MicrophoneEngineLifetime<Resource: AnyObject>: @unchecked Sen
             history = LeaseHistory()
             return (disposition, diagnostic, telemetry)
         }
-        for event in telemetry { LocalDiagnostics.record(event) }
+        for event in telemetry { self.telemetry(event) }
         if let diagnostic { record?(diagnostic) }
         return disposition
     }
