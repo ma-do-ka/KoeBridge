@@ -30,8 +30,9 @@ public struct DeveloperToolsUnlockSequence: Sendable {
             progress = 0
             return true
         }
-        // A non-matching key clears the partial sequence. The command's first
-        // key may still begin a fresh attempt.
+        // A non-matching key clears the partial sequence. The first key may
+        // still begin a fresh attempt, so a mismatching ↑ restarts progress at
+        // 1, not 2: repeating ↑ does not build a shortcut into the sequence.
         progress = keyCode == sequence[0] ? 1 : 0
         return false
     }

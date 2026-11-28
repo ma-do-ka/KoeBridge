@@ -91,4 +91,30 @@ struct SettingsNavigationSelfTests {
         check(!relocked)
         check(!DeveloperToolsUnlockStore.isUnlocked(defaults: defaults))
     }
+
+    func relockingDropsBenchFromNavigationHistory() throws {
+        let locked = { (section: SettingsSection) in section.isAvailable(developerToolsUnlocked: false) }
+
+        // (a) Re-lock while the bench page is open: Forward cannot return.
+        var viewingBench = SettingsNavigation()
+        viewingBench.select(.bench)
+        check(viewingBench.selected == .bench)
+        viewingBench.pruneUnavailable(locked, fallback: .voice)
+        check(viewingBench.selected == .voice)
+        check(!viewingBench.canGoForward)
+        viewingBench.forward()
+        check(viewingBench.selected == .voice)
+        check(!viewingBench.pages.contains(.bench))
+
+        // (b) Re-lock on a later page after visiting bench: Back cannot return.
+        var behindBench = SettingsNavigation()
+        behindBench.select(.bench)
+        behindBench.select(.about)
+        behindBench.pruneUnavailable(locked, fallback: .voice)
+        check(behindBench.selected == .about)
+        check(behindBench.pages == [.voice, .about])
+        behindBench.back()
+        check(behindBench.selected == .voice)
+        check(!behindBench.pages.contains(.bench))
+    }
 }

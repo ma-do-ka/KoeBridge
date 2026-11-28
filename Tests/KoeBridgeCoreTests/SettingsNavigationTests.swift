@@ -99,6 +99,37 @@ struct SettingsNavigationTests {
         #expect(nav.selected == .permissions)
     }
 
+    @Test func relockingWhileViewingBenchDropsForwardHistory() {
+        var nav = SettingsNavigation()
+        nav.select(.bench)
+        #expect(nav.selected == .bench)
+        #expect(nav.canGoBack)
+
+        nav.pruneUnavailable({ $0.isAvailable(developerToolsUnlocked: false) }, fallback: .voice)
+
+        #expect(nav.selected == .voice)
+        #expect(!nav.pages.contains(.bench))
+        #expect(!nav.canGoForward)
+        nav.forward()
+        #expect(nav.selected == .voice)
+    }
+
+    @Test func relockingOnAnotherPageDropsBenchFromBackHistory() {
+        var nav = SettingsNavigation()
+        nav.select(.bench)
+        nav.select(.about)
+        #expect(nav.selected == .about)
+
+        nav.pruneUnavailable({ $0.isAvailable(developerToolsUnlocked: false) }, fallback: .voice)
+
+        #expect(nav.selected == .about)
+        #expect(nav.pages == [.voice, .about])
+        #expect(nav.canGoBack)
+        nav.back()
+        #expect(nav.selected == .voice)
+        #expect(!nav.pages.contains(.bench))
+    }
+
     @Test func repeatedPageDoesNotAddDuplicateNavigation() {
         var nav = SettingsNavigation()
         nav.select(.voice)

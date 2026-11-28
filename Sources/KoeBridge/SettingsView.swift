@@ -161,9 +161,15 @@ struct SettingsView: View {
             Task { @MainActor in openPendingUpdatePage() }
         }
         .onChange(of: developerToolsUnlocked) { _, unlocked in
-            guard !unlocked, navigation.selected == .bench else { return }
-            // Re-locking hides the page even while it is open.
-            if navigation.canGoBack { navigation.back() } else { navigation.select(.voice) }
+            guard !unlocked else { return }
+            // A page that is about to disappear must not keep capturing audio
+            // without any visible controls.
+            DeveloperToolsRelockAction.cancelRecordingIfActive(benchRecorder)
+            // Re-locking hides the page even while it is open and strips it
+            // from Back/Forward history, not just from the selection.
+            navigation.pruneUnavailable(
+                { $0.isAvailable(developerToolsUnlocked: false) },
+                fallback: .voice)
         }
     }
 
@@ -421,6 +427,25 @@ struct SettingsView: View {
         }
     }
 }
+
+/// Re-locking the developer tools hides the bench page, so an in-flight
+/// capture must stop with it instead of recording invisibly.
+@MainActor
+enum DeveloperToolsRelockAction {
+    /// Cancels only a session that can still be running; `.stopping` already
+    /// owns its completion and `.idle` has nothing to stop.
+    @discardableResult
+    static func cancelRecordingIfActive(_ recorder: BenchRecordingCoordinator) -> Bool {
+        switch recorder.state {
+        case .preparing, .recording:
+            recorder.cancelRecording(reason: "開発ツールが再ロックされたため、ベンチ録音を中止しました。")
+            return true
+        case .idle, .stopping:
+            return false
+        }
+    }
+}
+
 struct CorruptSettingsNotice: View {
     let reset: () -> Void
     @State private var confirming = false

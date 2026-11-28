@@ -193,6 +193,33 @@ import KoeBridgeCore
         #expect(fixture.coordinator.recordedCount == 0)
     }
 
+    @Test func relockingCancelsActiveBenchRecording() async throws {
+        let fixture = Fixture(audio: Data(repeating: 1, count: 16_000))
+        defer { fixture.clean() }
+
+        fixture.coordinator.startRecording()
+        await awaitState(fixture.coordinator, .recording)
+        #expect(fixture.controller.benchRecordingActive)
+
+        #expect(DeveloperToolsRelockAction.cancelRecordingIfActive(fixture.coordinator))
+
+        #expect(fixture.coordinator.state == .idle)
+        #expect(fixture.coordinator.recordedCount == 0)
+        let captureCancelled = await awaitCondition { fixture.capture.cancelled }
+        #expect(captureCancelled)
+        let sessionEnded = await awaitCondition { !fixture.controller.benchRecordingActive }
+        #expect(sessionEnded)
+    }
+
+    @Test func relockingLeavesIdleBenchRecordingAlone() throws {
+        let fixture = Fixture(audio: Data())
+        defer { fixture.clean() }
+
+        #expect(fixture.coordinator.state == .idle)
+        #expect(!DeveloperToolsRelockAction.cancelRecordingIfActive(fixture.coordinator))
+        #expect(fixture.coordinator.state == .idle)
+    }
+
     @Test func zeroByteCaptureIsNotSaved() async throws {
         let fixture = Fixture(audio: Data())
         defer { fixture.clean() }

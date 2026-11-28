@@ -93,7 +93,10 @@ import KoeBridgeCore
         settingsCloseObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.willCloseNotification, object: window, queue: .main
         ) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.removeDeveloperToolsUnlockMonitor() }
+            // The observer already runs on the main queue; remove in this
+            // runloop turn. Deferring to a Task let a synchronous reopen
+            // install a new monitor that the late removal then deleted.
+            MainActor.assumeIsolated { self?.removeDeveloperToolsUnlockMonitor() }
         }
     }
 

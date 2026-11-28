@@ -176,6 +176,37 @@ public struct SettingsNavigation: Equatable, Sendable {
         }
     }
 
+    /// Drops pages that are no longer available (for example the hidden
+    /// developer-tools page after re-locking). Removing a page can join two
+    /// equal neighbours, so adjacent duplicates are collapsed. Back and
+    /// Forward then can never return to a page that is no longer reachable.
+    /// If the selected page is removed, the fallback becomes the selection
+    /// after the retained history.
+    public mutating func pruneUnavailable(_ isAvailable: (SettingsSection) -> Bool,
+                                          fallback: SettingsSection) {
+        guard !pages.allSatisfy(isAvailable) else { return }
+        let previous = selected
+        var retained: [SettingsSection] = []
+        for page in pages where isAvailable(page) {
+            if retained.last != page { retained.append(page) }
+        }
+        focusRequest = nil
+        guard isAvailable(previous) else {
+            if retained.last != fallback { retained.append(fallback) }
+            pages = retained
+            index = pages.count - 1
+            return
+        }
+        // The retained prefix has the same shape as the retained history, so
+        // its last entry is the still-available selection.
+        var retainedThroughSelection: [SettingsSection] = []
+        for page in pages[0...index] where isAvailable(page) {
+            if retainedThroughSelection.last != page { retainedThroughSelection.append(page) }
+        }
+        pages = retained
+        index = max(0, retainedThroughSelection.count - 1)
+    }
+
     public mutating func focus(_ entry: SettingsSearchEntry) {
         select(entry.section)
         focusSequence &+= 1
