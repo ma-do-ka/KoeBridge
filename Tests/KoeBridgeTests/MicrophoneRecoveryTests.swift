@@ -1714,7 +1714,7 @@ struct MicrophoneRecoveryTests {
     }
 
     private func holdVerificationSelection(_ replay: PreparationReplay, attempt: Int,
-                                           beforeDisarm: (Device) -> Void = { _ in }) async throws
+                                           beforeDisarm: @escaping (Device) -> Void = { _ in }) async throws
         -> (PreparationAttempt, Device, AVAudioNodeTapBlock) {
         let current = try await awaitEngine(replay, index: attempt)
         let (device, block) = await lane {
