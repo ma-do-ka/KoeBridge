@@ -93,7 +93,7 @@ package struct LeasedMicrophoneTapGraph: MicrophoneTapGraph {
     }
     package static func readNodeFormat(_ node: AVAudioNode, input: Bool,
                                        bus: AVAudioNodeBus) -> AVAudioFormat? {
-        KBReadMicrophoneNodeFormat(node, input, bus)
+        KBReadMicrophoneNodeFormat(node, input, UInt(bus))
     }
     package static func readNodeEngine(_ node: AVAudioNode) -> AVAudioEngine? {
         KBReadMicrophoneNodeEngine(node)
@@ -103,7 +103,7 @@ package struct LeasedMicrophoneTapGraph: MicrophoneTapGraph {
     }
     package static func readEngineConnectionPoints(_ engine: AVAudioEngine, node: AVAudioNode,
                                                    outputBus: AVAudioNodeBus) -> [AVAudioConnectionPoint]? {
-        KBReadMicrophoneEngineConnectionPoints(engine, node, outputBus)
+        KBReadMicrophoneEngineConnectionPoints(engine, node, UInt(outputBus))
     }
     package static func readInputNodeAudioUnit(_ node: AVAudioInputNode) -> AudioUnit? {
         KBReadMicrophoneInputNodeAudioUnit(node)
