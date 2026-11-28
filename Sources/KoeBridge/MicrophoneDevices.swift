@@ -11,7 +11,9 @@ import KoeBridgeCore
 struct MicrophoneHardware {
     var snapshot: () throws -> MicrophoneDevices.Snapshot = MicrophoneDevices.snapshot
     var isBluetooth: (UInt32) -> Bool = MicrophoneDevices.isBluetooth
-    var inputNode: (AVAudioEngine) -> AVAudioNode = { $0.inputNode }
+    var inputNode: (AVAudioEngine) -> AVAudioNode? = {
+        LeasedMicrophoneTapGraph.readEngineInputNode($0)
+    }
     var bind: (MicrophoneSelectionTarget, AVAudioNode, MicrophonePreparationDiagnostics?) throws -> Void = {
         guard let input = $1 as? AVAudioInputNode else { throw MicrophoneDevices.DeviceError.noAudioUnit }
         try MicrophoneDevices.bind($0, to: input, diagnostics: $2)

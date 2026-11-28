@@ -91,6 +91,62 @@ struct MicrophoneTapInstallationTests {
         check(!warm.warmConfigurationChanged())
     }
 
+    static func lifetimeTelemetry() throws {
+        func aggregate(_ events: [LocalDiagnosticEvent]) -> LocalDiagnosticDailySummary {
+            var summary = LocalDiagnosticDailySummary()
+            for event in events { summary.apply(event) }
+            return summary
+        }
+
+        var normal: [LocalDiagnosticEvent] = []
+        let normalLifetime = MicrophoneEngineLifetime(makeResource: { NSObject() },
+                                                      telemetry: { normal.append($0) })
+        let take = try require(normalLifetime.acquire())
+        check(normalLifetime.beginCleanup(take))
+        check(normalLifetime.finishCleanup(take, evidence: .init(stopped: true, hadTap: false)) == .normal)
+        check(normal.isEmpty)
+
+        var recovered: [LocalDiagnosticEvent] = []
+        let recoveredLifetime = MicrophoneEngineLifetime(makeResource: { NSObject() },
+                                                         telemetry: { recovered.append($0) })
+        let old = try require(recoveredLifetime.acquire())
+        recoveredLifetime.recordPreflightStopped(true, for: old)
+        recoveredLifetime.retire(old, preCommitFormatException: true)
+        check(recoveredLifetime.beginCleanup(old))
+        check(recoveredLifetime.finishCleanup(old,
+            evidence: .init(stopped: true, hadTap: false, runningAtCleanup: false)) == .replacementPending)
+        let next = try require(try recoveredLifetime.acquire(for: .capture, canAcquire: true))
+        recoveredLifetime.finishVerification(next)
+        check(aggregate(recovered).micReplacementAttempts == 1 && aggregate(recovered).micRecoverySuccesses == 1)
+        check(aggregate(recovered).micVerificationDeferrals == 0 && aggregate(recovered).micUnrecovered == 0)
+
+        var deferred: [LocalDiagnosticEvent] = []
+        let deferredLifetime = MicrophoneEngineLifetime(makeResource: { NSObject() },
+                                                        telemetry: { deferred.append($0) })
+        let first = try require(deferredLifetime.acquire())
+        deferredLifetime.recordPreflightStopped(true, for: first)
+        deferredLifetime.retire(first, preCommitFormatException: true)
+        check(deferredLifetime.beginCleanup(first))
+        check(deferredLifetime.finishCleanup(first,
+            evidence: .init(stopped: true, hadTap: false, runningAtCleanup: false)) == .replacementPending)
+        let replacement = try require(try deferredLifetime.acquire(for: .capture, canAcquire: true))
+        deferredLifetime.recordVerificationFailure(.binding, for: replacement)
+        check(deferredLifetime.beginCleanup(replacement))
+        check(deferredLifetime.finishCleanup(replacement,
+            evidence: .init(stopped: true, hadTap: false, runningAtCleanup: false)) == .verificationDeferred)
+        check(aggregate(deferred).micReplacementAttempts == 1 && aggregate(deferred).micVerificationDeferrals == 1)
+        check(aggregate(deferred).micUnrecovered == 0)
+
+        var failed: [LocalDiagnosticEvent] = []
+        let failedLifetime = MicrophoneEngineLifetime(makeResource: { NSObject() },
+                                                      telemetry: { failed.append($0) })
+        let terminal = try require(failedLifetime.acquire())
+        failedLifetime.retire(terminal, preCommitFormatException: false)
+        check(failedLifetime.beginCleanup(terminal))
+        check(failedLifetime.finishCleanup(terminal, evidence: .init(stopped: true, hadTap: false)) == .terminal)
+        check(aggregate(failed).micUnrecovered == 1)
+    }
+
     private static func staleGraphCannotTouchNewOwner(warm: Bool) {
         let lifetime = MicrophoneEngineLifetime { KBFakeMicrophoneEngine() as AVAudioEngine }
         let old = lifetime.acquire()!

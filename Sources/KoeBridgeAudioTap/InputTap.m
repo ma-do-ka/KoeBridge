@@ -76,3 +76,8 @@ AudioUnit KBReadMicrophoneInputNodeAudioUnit(AVAudioInputNode *node) {
     @try { return node.audioUnit; }
     @catch (NSException *exception) { return NULL; }
 }
+
+AVAudioInputNode *KBReadMicrophoneEngineInputNode(AVAudioEngine *engine) {
+    @try { return engine.inputNode; }
+    @catch (NSException *exception) { return nil; }
+}

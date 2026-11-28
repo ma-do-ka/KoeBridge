@@ -363,10 +363,9 @@ final class MicrophoneCapture: @unchecked Sendable {
                     startupDiagnostics?.note(.inputRouteChanged)
                     if let lease = engineLease, lifetime.isVerifying(lease) {
                         let engine = lease.resource
-                        // The engine may be intentionally stopped for a settled
-                        // revalidation probe; liveness then comes from the
-                        // snapshot taken when input was disarmed.
-                        let graphIsIntact = (running || revalidationWasRunning)
+                        // .revalidating returned early above, so a stopped
+                        // engine here means input is genuinely down.
+                        let graphIsIntact = running
                             && tap.isInstalled
                             && LeasedMicrophoneTapGraph.readNodeEngine(inputNode) === engine
                             && (LeasedMicrophoneTapGraph.readNodeOutputCount(inputNode) ?? 0) > 0
@@ -632,6 +631,9 @@ final class MicrophoneCapture: @unchecked Sendable {
                 if case .failed = startupGate.currentPhase { startupDiagnostics?.note(.settlingBudget) }
                 return
             }
+            // Input is live again: the quiesce-time snapshot must not leak into
+            // later liveness checks or the next quiesce read.
+            revalidationWasRunning = false
             let resumed = processingQueue.sync { [self] in
                 discardStartupBuffers()
                 // Retain the converter but discard any internally buffered old PCM.
@@ -707,6 +709,7 @@ final class MicrophoneCapture: @unchecked Sendable {
         let node = hardware.inputNode(engine)
         inputNode = node
         startupDiagnostics?.end(.inputNode)
+        guard let node else { throw MicrophoneDevices.DeviceError.noAudioUnit }
         do {
             try hardware.bind(target, node, startupDiagnostics)
         } catch MicrophoneDevices.DeviceError.selectionNotApplied {

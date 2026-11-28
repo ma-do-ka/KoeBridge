@@ -92,8 +92,8 @@ import KoeBridgeCore
                 takeActive: takeActive) else { stop(reason: "policy"); return }
             if let lease, lifetime.isCurrent(token: lease.token), target == selected,
                LeasedMicrophoneTapGraph.readEngineRunning(lease.resource) == true {
-                let node = hardware.inputNode(lease.resource)
-                if hardware.isStillSelected(selected, node),
+                if let node = hardware.inputNode(lease.resource),
+                   hardware.isStillSelected(selected, node),
                    LeasedMicrophoneTapGraph.readNodeFormat(node, input: true, bus: 0)
                        .map({ tap.hardwareMatches($0) }) == true,
                    LeasedMicrophoneTapGraph.readNodeFormat(node, input: false, bus: 0)
@@ -114,7 +114,9 @@ import KoeBridgeCore
             cleanupWriter = cleanupEvidence
             let engine = acquired.resource
             do {
-                let node = hardware.inputNode(engine)
+                guard let node = hardware.inputNode(engine) else {
+                    throw MicrophoneDevices.DeviceError.noAudioUnit
+                }
                 try hardware.bind(selected, node, nil)
                 observer = NotificationCenter.default.addObserver(
                     forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil

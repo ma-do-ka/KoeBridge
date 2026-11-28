@@ -31,5 +31,6 @@ FOUNDATION_EXPORT NSArray<AVAudioConnectionPoint *> * _Nullable
     KBReadMicrophoneEngineConnectionPoints(AVAudioEngine *engine, AVAudioNode *node,
                                            AVAudioNodeBus bus);
 FOUNDATION_EXPORT AudioUnit _Nullable KBReadMicrophoneInputNodeAudioUnit(AVAudioInputNode *node);
+FOUNDATION_EXPORT AVAudioInputNode * _Nullable KBReadMicrophoneEngineInputNode(AVAudioEngine *engine);
 
 NS_ASSUME_NONNULL_END

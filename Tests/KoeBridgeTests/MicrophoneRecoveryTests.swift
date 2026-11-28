@@ -838,6 +838,11 @@ struct MicrophoneRecoveryTests {
         #expect(capture.lostBufferCount == 1)
         await capture.cancelAndWait()
         #expect(rig.lifetime.disposition == .normal)
+        await lane {
+            // Interruption disarmed input on the lifecycle lane; teardown's
+            // own stop is the second one.
+            #expect(rig.devices[1].engine.stops == 2)
+        }
     }
 
     @Test func committedInputRouteLossReportsDeviceRemoval() async throws {
@@ -861,6 +866,11 @@ struct MicrophoneRecoveryTests {
         #expect(interrupted.now() == 1)
         #expect(capture.lostBufferCount == 1)
         await capture.cancelAndWait()
+        await lane {
+            // Interruption disarmed input on the lifecycle lane; teardown's
+            // own stop is the second one.
+            #expect(rig.devices[0].engine.stops == 2)
+        }
     }
 
     /// The next HAL selection read owns this barrier. The test supplies only
@@ -1577,6 +1587,11 @@ struct MicrophoneRecoveryTests {
         #expect(replay.log.read().filter { $0.hasPrefix("session resolved;") }.count == 1)
         let cleanup = try await replay.log.dispositions(count: 1)
         #expect(cleanup.count == 1 && cleanup.first?.contains("succeeded=true disposition=normal") == true)
+        await lane {
+            // The committed interruption disarmed input on the lifecycle lane;
+            // teardown's own stop is the second one.
+            #expect(device.engine.stops == 2)
+        }
     }
 
     @Test func preparationDiagnosticSinksPreserveLineOrderAndMirrorDestinations() async throws {
