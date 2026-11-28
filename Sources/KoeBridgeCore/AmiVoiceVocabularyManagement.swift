@@ -144,7 +144,7 @@ public struct AmiVoiceVocabularyListSummary: Equatable, Sendable {
 }
 
 /// Form validation issue. Blocking issues prevent saving; warnings allow it.
-public enum AmiVoiceVocabularyFormIssue: Equatable, Sendable {
+public enum AmiVoiceVocabularyFormIssue: Equatable, Hashable, Sendable {
     case emptyWritten
     case forbiddenWrittenCharacter
     case missingSpoken
@@ -463,10 +463,13 @@ public final class AmiVoiceVocabularyManagement: @unchecked Sendable {
         store.snapshots(for: key)
     }
 
-    /// The newest snapshot for `key` that did not reflect — drives the
-    /// failed-reflection warning and the retry affordance.
+    /// The pending-reflection marker for `key`: non-nil only while the newest
+    /// snapshot is a failed send. History is append-only, so a stale `.failed`
+    /// record keeps existing after a successful retry — only the newest
+    /// snapshot decides whether the warning and retry affordance show.
     public func unreflectedSnapshot(for key: AmiVoiceDictionaryProfileKey) -> AmiVoiceDictionarySyncSnapshot? {
-        store.snapshots(for: key).first { $0.status == .failed }
+        guard let latest = store.snapshots(for: key).first, latest.status == .failed else { return nil }
+        return latest
     }
 
     // MARK: - Form validation
@@ -524,9 +527,14 @@ public final class AmiVoiceVocabularyManagement: @unchecked Sendable {
 
         for other in entries where other.id != entryID {
             let sameWritten = LearnedTermPolicy.normalized(other.written) == normalizedWrittenKey
-            if sameWritten,
-               normalizedSpoken != nil,
-               other.spoken.map({ LearnedTermPolicy.normalized($0) == normalizedSpoken! }) == true {
+            guard sameWritten else { continue }
+            let otherSpoken = other.spoken.map { LearnedTermPolicy.normalized($0) }
+            let candidateSpokenEmpty = normalizedSpoken?.isEmpty ?? true
+            let otherSpokenEmpty = otherSpoken?.isEmpty ?? true
+            // E2E entries carry no reading: when both sides are reading-less a
+            // matching written form alone is the duplicate pair.
+            if (candidateSpokenEmpty && otherSpokenEmpty)
+                || (!candidateSpokenEmpty && !otherSpokenEmpty && otherSpoken == normalizedSpoken) {
                 issues.append(.duplicatePair)
                 break
             }

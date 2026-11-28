@@ -122,19 +122,25 @@ public final class VocabularySyncCoordinator: @unchecked Sendable {
                 guard (try? AmiVoiceDictionaryValidator.payload(for: entry, engine: key.engine)) != nil else {
                     continue
                 }
-                if let existing = rowsByID[entry.id],
-                   let state = existing.engineState(for: key)?.state {
-                    // `.archived` and `.ignored` are terminal states the sync
-                    // side owns (delete-all archive, manual ignore); reconcile
-                    // never resurrects them into an upload.
-                    if state == .archived || state == .ignored {
-                        continue
-                    }
-                    // Do not churn rows whose recorded engine state is already
-                    // deliberate for identical content: synced/queued rows stay,
-                    // and quarantined/held rows are not silently re-admitted.
-                    if state != .candidate, Self.dictionaryContentMatches(existing, entry) {
-                        continue
+                if let existing = rowsByID[entry.id] {
+                    // `isProtected` marks user-approved and manually edited
+                    // rows (TS-03): reconcile never overwrites, re-reads, or
+                    // demotes them — pipeline outcomes apply only to
+                    // unprotected rows and genuinely new terms.
+                    if existing.isProtected { continue }
+                    if let state = existing.engineState(for: key)?.state {
+                        // `.archived` and `.ignored` are terminal states the sync
+                        // side owns (delete-all archive, manual ignore); reconcile
+                        // never resurrects them into an upload.
+                        if state == .archived || state == .ignored {
+                            continue
+                        }
+                        // Do not churn rows whose recorded engine state is already
+                        // deliberate for identical content: synced/queued rows stay,
+                        // and quarantined/held rows are not silently re-admitted.
+                        if state != .candidate, Self.dictionaryContentMatches(existing, entry) {
+                            continue
+                        }
                     }
                 }
                 plan.readyUpserts.append(entry)
@@ -145,23 +151,28 @@ public final class VocabularySyncCoordinator: @unchecked Sendable {
                     spoken: candidate.reading.isEmpty ? nil : candidate.reading,
                     createdAt: candidate.createdAt
                 )
-                if let existing = rowsByID[entry.id],
-                   let state = existing.engineState(for: key)?.state {
-                    // Parked and quarantined rows must not be re-emitted by a
-                    // held term either.
-                    if state == .archived || state == .ignored || state == .autoDisabled {
-                        continue
-                    }
-                    if state == .pendingReview, Self.dictionaryContentMatches(existing, entry) {
-                        continue
+                if let existing = rowsByID[entry.id] {
+                    // Same `isProtected` invariant as the `.ready` branch.
+                    if existing.isProtected { continue }
+                    if let state = existing.engineState(for: key)?.state {
+                        // Parked and quarantined rows must not be re-emitted by a
+                        // held term either.
+                        if state == .archived || state == .ignored || state == .autoDisabled {
+                            continue
+                        }
+                        if state == .pendingReview, Self.dictionaryContentMatches(existing, entry) {
+                            continue
+                        }
                     }
                 }
                 plan.pendingUpserts.append(entry)
             case .excluded:
                 // `.ignored` marks the row without creating store entries for
                 // terms that were never admitted; rows already ignored for this
-                // key are not re-emitted.
+                // key are not re-emitted. Protected rows keep the same
+                // invariant: a pipeline exclusion never demotes a user's row.
                 if let row = rowsByID[term.id],
+                   !row.isProtected,
                    row.engineState(for: key)?.state != .ignored {
                     plan.ignoredIDs.append(term.id)
                 }

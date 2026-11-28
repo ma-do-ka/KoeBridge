@@ -445,6 +445,8 @@ struct KoeBridgeSelfTest {
         await run("AmiVoiceVocabularyManagementSelfTests.approveMovesToSyncableAndRejectsMoveToIgnored", { try await AmiVoiceVocabularyManagementSelfTests().approveMovesToSyncableAndRejectsMoveToIgnored() })
         await run("AmiVoiceVocabularyManagementSelfTests.deleteAllWithSyncOnSendsEmptyArrayAndOffSendsNothing", { try await AmiVoiceVocabularyManagementSelfTests().deleteAllWithSyncOnSendsEmptyArrayAndOffSendsNothing() })
         await run("AmiVoiceVocabularyManagementSelfTests.capsAndQuarantineSurfaceRecordedReasons", { try await AmiVoiceVocabularyManagementSelfTests().capsAndQuarantineSurfaceRecordedReasons() })
+        await run("AmiVoiceVocabularyManagementSelfTests.unreflectedSnapshotClearsAfterSuccessfulRetry", { try await AmiVoiceVocabularyManagementSelfTests().unreflectedSnapshotClearsAfterSuccessfulRetry() })
+        await run("AmiVoiceVocabularyManagementSelfTests.reconcilePreservesProtectedRowsWhileUnprotectedFollowPipeline", { try await AmiVoiceVocabularyManagementSelfTests().reconcilePreservesProtectedRowsWhileUnprotectedFollowPipeline() })
         await run("AmiVoiceVocabularyManagementSelfTests.consentCopyKeepsVerificationMarkersVerbatim", { try AmiVoiceVocabularyManagementSelfTests().consentCopyKeepsVerificationMarkersVerbatim() })
         await run("BenchRecordingSelfTests.itemTableIntegrityAndRoundTrip", { try BenchRecordingSelfTests().itemTableIntegrityAndRoundTrip() })
         await run("BenchRecordingSelfTests.canonicalWAVHeaderAndPayloadRoundTrip", { try BenchRecordingSelfTests().canonicalWAVHeaderAndPayloadRoundTrip() })

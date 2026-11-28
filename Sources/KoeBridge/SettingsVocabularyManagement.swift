@@ -206,7 +206,7 @@ struct AmiVoiceSyncConsentPanel: View {
 
     private func consentItem(title: String, body: String) -> some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(title)
+            Text(LocalizedStringKey(title))
                 .font(.system(size: 13, weight: .semibold))
             Text(LocalizedStringKey(body))
                 .font(.system(size: 12))
@@ -418,10 +418,15 @@ struct AmiVoiceVocabularyEntryForm: View {
         if case .edit(let entry) = mode { return entry }
         return nil
     }
+    private var initialSyncMode: AmiVoiceVocabularySaveMode {
+        existing?.engineState(for: key)?.state == .ignored ? .excluded : .sync
+    }
     private var dirty: Bool {
         written != (existing?.written ?? "")
             || spoken != (existing?.spoken ?? "")
             || className != (existing?.className ?? "")
+            || alternativeSpoken != ""
+            || syncMode != initialSyncMode
     }
 
     var body: some View {
@@ -490,9 +495,7 @@ struct AmiVoiceVocabularyEntryForm: View {
                 written = existing.written
                 spoken = existing.spoken ?? ""
                 className = existing.className ?? ""
-                if existing.engineState(for: key)?.state == .ignored {
-                    syncMode = .excluded
-                }
+                syncMode = initialSyncMode
             }
             revalidate()
         }
@@ -505,6 +508,7 @@ struct AmiVoiceVocabularyEntryForm: View {
         }
         .onChange(of: written) { _ in revalidate() }
         .onChange(of: spoken) { _ in revalidate() }
+        .onChange(of: alternativeSpoken) { _ in revalidate() }
     }
 
     private var saveButtonTitle: String {
@@ -525,12 +529,29 @@ struct AmiVoiceVocabularyEntryForm: View {
     }
 
     private func revalidate() {
-        issues = controller.amiVoiceVocabularyManagement.validateForm(
+        let management = controller.amiVoiceVocabularyManagement
+        var computed = management.validateForm(
             written: written,
             spoken: spoken,
             family: family,
             excluding: existing?.id
         )
+        // Same alternative-reading branch `saveManualEntry` validates, so a
+        // bad 別の読み surfaces inline instead of only on Save.
+        let trimmedAlt = alternativeSpoken.trimmingCharacters(in: .whitespacesAndNewlines)
+        if family == .hybrid,
+           !trimmedAlt.isEmpty,
+           LearnedTermPolicy.normalized(trimmedAlt)
+               != LearnedTermPolicy.normalized(spoken.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            computed += management.validateForm(
+                written: written,
+                spoken: trimmedAlt,
+                family: family,
+                excluding: existing?.id
+            )
+        }
+        var seen = Set<AmiVoiceVocabularyFormIssue>()
+        issues = computed.filter { seen.insert($0).inserted }
     }
 
     private func save() {
@@ -573,9 +594,11 @@ struct AmiVoiceReviewPanel: View {
     @Environment(\.dismiss) private var dismiss
     @State private var reading: String
     @State private var info: AmiVoiceVocabularyReviewInfo
+    @State private var issues: [AmiVoiceVocabularyFormIssue] = []
 
     private var key: AmiVoiceDictionaryProfileKey { controller.amiVoiceDictionaryProfileKey }
     private var copy: AmiVoiceVocabularyManagementCopy.Type { AmiVoiceVocabularyManagementCopy.self }
+    private var family: AmiVoiceDictionaryEngineFamily { AmiVoiceDictionaryEngineFamily(engine: key.engine) }
 
     init(controller: VoiceController, row: AmiVoiceVocabularyRow, onDone: @escaping (String) -> Void) {
         self.controller = controller
@@ -616,9 +639,20 @@ struct AmiVoiceReviewPanel: View {
                 TextField(copy.formReadingPlaceholder, text: $reading)
                     .textFieldStyle(.roundedBorder)
             }
+            ForEach(issues, id: \.self) { issue in
+                Label(issue.message, systemImage: issue.isBlocking ? "exclamationmark.circle.fill" : "exclamationmark.triangle")
+                    .font(.system(size: 12))
+                    .foregroundStyle(issue.isBlocking ? .red : .orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Divider()
             HStack(spacing: 12) {
                 Button(copy.reviewApproveButton) {
+                    revalidate()
+                    // The same validateForm gate as the entry form: a blocking
+                    // issue keeps the panel open with inline issues and never
+                    // fires the success toast.
+                    guard !issues.contains(where: \.isBlocking) else { return }
                     Task {
                         _ = await controller.amiVoiceVocabularyManagement.approveReviewEntry(
                             id: row.entry.id, reading: reading, for: key
@@ -646,6 +680,16 @@ struct AmiVoiceReviewPanel: View {
         }
         .padding(20)
         .frame(minWidth: 480, idealWidth: 540, maxWidth: 600)
+        .onChange(of: reading) { _ in revalidate() }
+    }
+
+    private func revalidate() {
+        issues = controller.amiVoiceVocabularyManagement.validateForm(
+            written: row.entry.written,
+            spoken: reading,
+            family: family,
+            excluding: row.entry.id
+        )
     }
 }
 
@@ -1023,7 +1067,7 @@ struct AmiVoiceVocabularyManagementSheet: View {
                 Button(copy.quarantineRestoreButton) {
                     Task {
                         _ = await management.restoreEntry(id: row.entry.id, for: key)
-                        await MainActor.run { toastMessage = copy.undoExcludedToast(surface: row.entry.written) }
+                        await MainActor.run { toastMessage = copy.quarantineRestoredToast(surface: row.entry.written) }
                     }
                 }.controlSize(.small)
                 Button(copy.quarantineEditButton) { editor = .edit(row.entry) }.controlSize(.small)

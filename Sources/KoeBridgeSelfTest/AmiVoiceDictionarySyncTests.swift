@@ -616,6 +616,117 @@ struct AmiVoiceVocabularyManagementSelfTests {
         check(info.occurrenceTimestamps == occurrences)
     }
 
+    func unreflectedSnapshotClearsAfterSuccessfulRetry() async throws {
+        let suite = "KoeBridge.AmiVoiceVocabMgmtSelfTest." + UUID().uuidString
+        let defaults = try require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let (_, transport, engine, management) = try makeManagement(suite: suite)
+
+        let aID = UUID()
+        let inserted = await engine.upsertEntry(
+            AmiVoiceDictionaryEntry(id: aID, written: "霧峰システム", spoken: "きりみねしすてむ"),
+            for: key, state: .readyToSync
+        )
+        check(inserted)
+        await engine.setAutomaticSyncEnabled(true)
+        let initial = await engine.syncNow(for: key)
+        check(initial.kind == .success)
+        let snapshotA = try require(await management.syncSnapshots(for: key).first)
+        let secondInserted = await engine.upsertEntry(
+            AmiVoiceDictionaryEntry(id: UUID(), written: "黒羽重工", spoken: "くろはねじゅうこう"),
+            for: key, state: .readyToSync
+        )
+        check(secondInserted)
+        let second = await engine.syncNow(for: key)
+        check(second.kind == .success)
+        check(management.unreflectedSnapshot(for: key) == nil)
+
+        transport.replaceHandler = { _ in throw AmiVoiceDictionaryTransportError.temporary(.network) }
+        let rollback = await management.rollback(for: key, toSnapshotID: snapshotA.id)
+        check(rollback.kind == .appliedReflectionPending)
+        check(management.unreflectedSnapshot(for: key)?.status == .failed)
+
+        // History is append-only: the stale .failed record stays, but a
+        // successful retry's newer .reflected snapshot must clear the warning.
+        transport.replaceHandler = nil
+        let retry = await management.retryPendingReflection(for: key)
+        check(retry.kind == .success)
+        check(management.unreflectedSnapshot(for: key) == nil)
+        check(management.snapshotHistory(for: key).contains { $0.status == .failed })
+    }
+
+    func reconcilePreservesProtectedRowsWhileUnprotectedFollowPipeline() async throws {
+        let suite = "KoeBridge.AmiVoiceVocabMgmtSelfTest." + UUID().uuidString
+        let defaults = try require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let (store, _, engine, management) = try makeManagement(suite: suite)
+
+        // Protected rows: one approved review entry, one manual save whose
+        // reading differs from the pipeline's (TS-03).
+        let reviewTerm = LearnedTerm(term: "霧峰システム", originalFragment: "霧峰システム株式会社")
+        let reviewInserted = await engine.upsertEntry(
+            AmiVoiceDictionaryEntry(id: reviewTerm.id, written: "霧峰システム", spoken: nil),
+            for: key, state: .pendingReview
+        )
+        check(reviewInserted)
+        await engine.setAutomaticSyncEnabled(true)
+        let approved = await management.approveReviewEntry(
+            id: reviewTerm.id, reading: "きりみねしすてむ", for: key
+        )
+        check(approved)
+        // Seeded with the LearnedTerm id so the manual edit keeps that id.
+        let manualTerm = LearnedTerm(term: "黒羽重工", originalFragment: "黒羽")
+        let manualSeeded = await engine.upsertEntry(
+            AmiVoiceDictionaryEntry(id: manualTerm.id, written: "黒羽重工", spoken: "くろはねじゅうこう"),
+            for: key, state: .readyToSync
+        )
+        check(manualSeeded)
+        let manualOutcome = await management.saveManualEntry(
+            id: manualTerm.id, written: "黒羽重工", spoken: "にせよみ",
+            className: nil, mode: .sync, for: key
+        )
+        check(manualOutcome.saved)
+        check(manualOutcome.entryID == manualTerm.id)
+
+        // An unprotected row still follows the pipeline outcome.
+        let plainTerm = LearnedTerm(term: "クロハネ", originalFragment: "黒羽")
+        let plainInserted = await engine.upsertEntry(
+            AmiVoiceDictionaryEntry(id: plainTerm.id, written: "クロハネ", spoken: "まちがい"),
+            for: key, state: .pendingReview
+        )
+        check(plainInserted)
+
+        let coordinator = VocabularySyncCoordinator()
+        let plan = coordinator.ingest(
+            terms: [reviewTerm, manualTerm, plainTerm],
+            existingEntries: store.loadEntries(),
+            for: key
+        )
+        let protectedIDs: Set<UUID> = [reviewTerm.id, manualTerm.id]
+        check(plan.readyUpserts.allSatisfy { !protectedIDs.contains($0.id) })
+        check(plan.pendingUpserts.allSatisfy { !protectedIDs.contains($0.id) })
+        check(plan.ignoredIDs.allSatisfy { !protectedIDs.contains($0) })
+        check(plan.archivedIDs.allSatisfy { !protectedIDs.contains($0) })
+        check(plan.readyUpserts.contains { $0.id == plainTerm.id })
+
+        // Apply the plan the way VoiceController.applyVocabularySyncPlan does.
+        for id in plan.ignoredIDs { _ = await engine.transitionEntry(id: id, for: key, to: .ignored) }
+        for id in plan.archivedIDs { _ = await engine.transitionEntry(id: id, for: key, to: .archived) }
+        for entry in plan.pendingUpserts { _ = await engine.upsertEntry(entry, for: key, state: .pendingReview) }
+        for entry in plan.readyUpserts { _ = await engine.upsertEntry(entry, for: key, state: .readyToSync) }
+
+        let rows = await engine.entries()
+        check(rows.first { $0.id == reviewTerm.id }?.spoken == "きりみねしすてむ")
+        check(rows.first { $0.id == reviewTerm.id }?.isProtected == true)
+        check(rows.first { $0.id == reviewTerm.id }?.engineState(for: key)?.state == .autoSynced)
+        check(rows.first { $0.id == manualTerm.id }?.spoken == "にせよみ")
+        check(rows.first { $0.id == manualTerm.id }?.isProtected == true)
+        check(rows.first { $0.id == manualTerm.id }?.engineState(for: key)?.state == .autoSynced)
+        check(rows.first { $0.id == plainTerm.id }?.spoken == "くろはね")
+        check(rows.first { $0.id == plainTerm.id }?.isProtected == false)
+        check(rows.first { $0.id == plainTerm.id }?.engineState(for: key)?.state == .readyToSync)
+    }
+
     func consentCopyKeepsVerificationMarkersVerbatim() throws {
         check(AmiVoiceVocabularyManagementCopy.consentItemDestinationBody
             .contains("[要確認：OQ-07 サーバー側プロファイルの保持期間・削除時挙動に関する確定文言を1行追記]"))

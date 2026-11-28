@@ -406,6 +406,12 @@ public enum AmiVoiceVocabularyManagementCopy {
     public static func undoExcludedToast(surface: String) -> String {
         "「\(surface)」の除外を解除しました。バックグラウンドで AmiVoice へ反映します。"
     }
+    /// Restore toast for a quarantined (.autoDisabled) row. Distinct from the
+    /// un-exclude toast so the user can tell quarantine recovery from除外解除。
+    /// 文案未定義のプレースホルダー（コピーレビュー待ち）。
+    public static func quarantineRestoredToast(surface: String) -> String {
+        "「\(surface)」を同期対象へ復帰しました。バックグラウンドで AmiVoice へ反映します。"
+    }
     public static func approveToast(surface: String) -> String {
         "「\(surface)」を承認しました。バックグラウンドで AmiVoice へ反映します。"
     }

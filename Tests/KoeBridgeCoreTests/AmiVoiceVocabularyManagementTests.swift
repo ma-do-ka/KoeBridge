@@ -29,6 +29,27 @@ struct AmiVoiceVocabularyManagementTests {
         return (defaults, store, transport, engine, monitor, management)
     }
 
+    /// Mirrors `VoiceController.applyVocabularySyncPlan`: a reconcile plan is
+    /// applied through the engine's public transitions/upserts in this order.
+    private func apply(
+        _ plan: VocabularySyncCoordinator.Plan,
+        to engine: AmiVoiceDictionarySyncEngine,
+        for key: AmiVoiceDictionaryProfileKey
+    ) async {
+        for id in plan.ignoredIDs {
+            _ = await engine.transitionEntry(id: id, for: key, to: .ignored)
+        }
+        for id in plan.archivedIDs {
+            _ = await engine.transitionEntry(id: id, for: key, to: .archived)
+        }
+        for entry in plan.pendingUpserts {
+            _ = await engine.upsertEntry(entry, for: key, state: .pendingReview)
+        }
+        for entry in plan.readyUpserts {
+            _ = await engine.upsertEntry(entry, for: key, state: .readyToSync)
+        }
+    }
+
     private let key = AmiVoiceDictionaryProfileKey(
         engine: .hybridJapaneseConversation, samplingRate: .rate16k
     )
@@ -424,6 +445,134 @@ struct AmiVoiceVocabularyManagementTests {
         #expect(counts.added == 1)
         #expect(counts.updated == 1)
         #expect(counts.removed == 1)
+    }
+
+    @Test func unreflectedSnapshotClearsAfterSuccessfulRetry() async throws {
+        let suite = "KoeBridge.AmiVoiceVocabMgmt." + UUID().uuidString
+        let (defaults, _, transport, engine, _, management) = try makeManagement(suite: suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let aID = UUID()
+        #expect(await engine.upsertEntry(
+            AmiVoiceDictionaryEntry(id: aID, written: "霧峰システム", spoken: "きりみねしすてむ"),
+            for: key, state: .readyToSync
+        ))
+        await engine.setAutomaticSyncEnabled(true)
+        #expect(await engine.syncNow(for: key).kind == .success)
+        let snapshotA = try #require(await management.syncSnapshots(for: key).first)
+
+        // Grow the set so the rollback actually archives something.
+        #expect(await engine.upsertEntry(
+            AmiVoiceDictionaryEntry(id: UUID(), written: "黒羽重工", spoken: "くろはねじゅうこう"),
+            for: key, state: .readyToSync
+        ))
+        #expect(await engine.syncNow(for: key).kind == .success)
+        #expect(management.unreflectedSnapshot(for: key) == nil)
+
+        // The rollback's send fails: the newest snapshot is `.failed`, so the
+        // pending-reflection warning and retry affordance surface.
+        transport.replaceHandler = { _ in throw AmiVoiceDictionaryTransportError.temporary(.network) }
+        let rollback = await management.rollback(for: key, toSnapshotID: snapshotA.id)
+        #expect(rollback.kind == .appliedReflectionPending)
+        #expect(management.unreflectedSnapshot(for: key)?.status == .failed)
+
+        // A successful retry appends a `.reflected` snapshot at index 0. The
+        // stale `.failed` record stays in the append-only history, but the
+        // warning must clear — only the newest snapshot decides (TS-07).
+        transport.replaceHandler = nil
+        let retry = await management.retryPendingReflection(for: key)
+        #expect(retry.kind == .success)
+        #expect(management.unreflectedSnapshot(for: key) == nil)
+        #expect(management.snapshotHistory(for: key).contains { $0.status == .failed })
+    }
+
+    @Test func reconcilePreservesApprovedAndManuallyEditedProtectedRows() async throws {
+        let suite = "KoeBridge.AmiVoiceVocabMgmt." + UUID().uuidString
+        let (defaults, store, _, engine, _, management) = try makeManagement(suite: suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        // (a) A pending-review entry approved with the user's reading through
+        // the management layer (TS-03). The entry id reuses the LearnedTerm id,
+        // so the same term re-derives a pipeline outcome on the next pass.
+        let reviewTerm = LearnedTerm(term: "霧峰システム", originalFragment: "霧峰システム株式会社")
+        #expect(await engine.upsertEntry(
+            AmiVoiceDictionaryEntry(id: reviewTerm.id, written: "霧峰システム", spoken: nil),
+            for: key, state: .pendingReview
+        ))
+        await engine.setAutomaticSyncEnabled(true)
+        #expect(await management.approveReviewEntry(
+            id: reviewTerm.id, reading: "きりみねしすてむ", for: key
+        ))
+
+        // (b) A manually edited entry whose reading differs from whatever the
+        // pipeline generates for the same term. The row is seeded with the
+        // LearnedTerm id first so the edit keeps that id (editing an unknown
+        // id would mint a fresh UUID).
+        let manualTerm = LearnedTerm(term: "黒羽重工", originalFragment: "黒羽")
+        #expect(await engine.upsertEntry(
+            AmiVoiceDictionaryEntry(id: manualTerm.id, written: "黒羽重工", spoken: "くろはねじゅうこう"),
+            for: key, state: .readyToSync
+        ))
+        let manualOutcome = await management.saveManualEntry(
+            id: manualTerm.id, written: "黒羽重工", spoken: "にせよみ",
+            className: nil, mode: .sync, for: key
+        )
+        #expect(manualOutcome.saved)
+        #expect(manualOutcome.entryID == manualTerm.id)
+
+        // Whatever outcome the pipeline re-derives for these terms, protected
+        // rows are never re-emitted, re-read, demoted, or ignored by reconcile.
+        let coordinator = VocabularySyncCoordinator()
+        let plan = coordinator.ingest(
+            terms: [reviewTerm, manualTerm],
+            existingEntries: store.loadEntries(),
+            for: key
+        )
+        let protectedIDs: Set<UUID> = [reviewTerm.id, manualTerm.id]
+        #expect(plan.readyUpserts.allSatisfy { !protectedIDs.contains($0.id) })
+        #expect(plan.pendingUpserts.allSatisfy { !protectedIDs.contains($0.id) })
+        #expect(plan.ignoredIDs.allSatisfy { !protectedIDs.contains($0) })
+        #expect(plan.archivedIDs.allSatisfy { !protectedIDs.contains($0) })
+        await apply(plan, to: engine, for: key)
+
+        let rows = await engine.entries()
+        let approved = try #require(rows.first { $0.id == reviewTerm.id })
+        #expect(approved.spoken == "きりみねしすてむ")
+        #expect(approved.isProtected)
+        #expect(approved.engineState(for: key)?.state == .autoSynced)
+        let manual = try #require(rows.first { $0.id == manualTerm.id })
+        #expect(manual.spoken == "にせよみ")
+        #expect(manual.isProtected)
+        #expect(manual.engineState(for: key)?.state == .autoSynced)
+    }
+
+    @Test func reconcileStillAppliesPipelineOutcomeToUnprotectedRows() async throws {
+        let suite = "KoeBridge.AmiVoiceVocabMgmt." + UUID().uuidString
+        let (defaults, store, _, engine, _, _) = try makeManagement(suite: suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        // (c) An unprotected row keeps following the pipeline outcome exactly
+        // as before: this ready outcome re-emits the row as .readyToSync with
+        // the generated reading (くろはね for the kana written form).
+        let term = LearnedTerm(term: "クロハネ", originalFragment: "黒羽")
+        #expect(await engine.upsertEntry(
+            AmiVoiceDictionaryEntry(id: term.id, written: "クロハネ", spoken: "まちがい"),
+            for: key, state: .pendingReview
+        ))
+        let coordinator = VocabularySyncCoordinator()
+        let plan = coordinator.ingest(
+            terms: [term],
+            existingEntries: store.loadEntries(),
+            for: key
+        )
+        let upsert = try #require(plan.readyUpserts.first { $0.id == term.id })
+        #expect(upsert.spoken == "くろはね")
+        await apply(plan, to: engine, for: key)
+
+        let row = try #require(await engine.entries().first { $0.id == term.id })
+        #expect(row.spoken == "くろはね")
+        #expect(!row.isProtected)
+        #expect(row.engineState(for: key)?.state == .readyToSync)
     }
 
     @Test func consentAndPendingCopyKeepVerificationMarkersVerbatim() {
