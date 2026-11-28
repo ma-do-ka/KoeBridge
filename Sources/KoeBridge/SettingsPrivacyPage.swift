@@ -7,10 +7,13 @@ struct SettingsPrivacyPage: View {
     @ObservedObject var controller: VoiceController
     let historyCount: Int
     @Binding var diagnosticsEnabled: Bool
+    @Binding var localDiagnosticsEnabled: Bool
     let logNotice: String
+    let counterNotice: String
     let focusRequest: SettingsFocusRequest?
     let showHistory: () -> Void
     let requestLogDeletion: () -> Void
+    let requestCounterDeletion: () -> Void
 
     var body: some View {
         SettingsPageScrollView(section: .history, focusRequest: focusRequest) {
@@ -78,9 +81,80 @@ struct SettingsPrivacyPage: View {
                 } label: {
                     Label("動作記録", systemImage: "stethoscope")
                 }
+                LocalDiagnosticsSettings(localDiagnosticsEnabled: $localDiagnosticsEnabled,
+                                         counterNotice: counterNotice,
+                                         requestCounterDeletion: requestCounterDeletion)
             }
             .padding(18)
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+/// Phase 0 minimal telemetry surface (GD-737): on-device aggregation only.
+/// The disclosure, viewing, off-switch and wipe controls share one card.
+private struct LocalDiagnosticsSettings: View {
+    @Binding var localDiagnosticsEnabled: Bool
+    let counterNotice: String
+    let requestCounterDeletion: () -> Void
+    @State private var openNotice = ""
+
+    private func openAggregateFile() {
+        LocalDiagnostics.counter.flushBlocking()
+        let url = LocalDiagnostics.fileURL
+        if FileManager.default.fileExists(atPath: url.path) {
+            _ = NSWorkspace.shared.open(url)
+            openNotice = ""
+        } else {
+            openNotice = "まだ集計ファイルがありません。"
+        }
+    }
+
+    var body: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 9) {
+                SettingsRow("処理回数をこのMacに集計する",
+                            description: "入力欄の読み取り時間（区間別）・失敗分類コード・マイク復旧・ガード発動の回数だけを、日ごとの集計としてこのMac上の1つのJSONファイルに保存します。音声・認識した文章・入力欄の本文・入力先アプリ名・個人や端末を特定する情報は一切記録せず、外部への送信もありません。オフにすると保存済みの集計も削除します。", icon: "chart.bar") {
+                    Toggle("処理回数をこのMacに集計する", isOn: Binding(
+                        get: { localDiagnosticsEnabled },
+                        set: { enabled in
+                            localDiagnosticsEnabled = enabled
+                            // Consent changes synchronously with the
+                            // control; OFF also wipes stored aggregates.
+                            LocalDiagnostics.preferenceDidChange(enabled)
+                        }
+                    ))
+                        .settingsControlFocus("local-diagnostics").settingsTarget("local-diagnostics")
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                }
+                Divider()
+                SettingsRow("集計ファイルを見る",
+                            description: "保存済みの集計をそのまま開き、記録されている内容を確認できます。", icon: "doc.text.magnifyingglass") {
+                    SettingsRowActionButton("開く") { openAggregateFile() }
+                }
+                SettingsRow("集計データを削除",
+                            description: "保存済みの集計だけを削除します。文字起こし履歴や設定は変更されません。", icon: "trash") {
+                    SettingsRowActionButton("削除", role: .destructive) { requestCounterDeletion() }
+                }
+                Text("保存先：~/Library/Application Support/KoeBridge/local-diagnostics.json")
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("30日より古い日付の集計は自動で削除されます。")
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if !openNotice.isEmpty {
+                    Text(openNotice).font(.caption).foregroundStyle(.secondary)
+                }
+                if !counterNotice.isEmpty {
+                    Text(counterNotice).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .padding(8)
+        } label: {
+            Label("ローカル診断カウンタ（送信なし）", systemImage: "chart.bar")
         }
     }
 }

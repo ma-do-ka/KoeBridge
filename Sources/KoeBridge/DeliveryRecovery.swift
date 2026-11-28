@@ -359,6 +359,7 @@ struct RecoveryAX {
                 attributesReadable: attributesReadable,
                 protectedBundleIdentifiers: protectedBundleIdentifiers
             )
+            LocalDiagnostics.record(.fieldNature(observedNature))
             let recoveredNature: InsertionReceiptPolicy.FieldNature
             if observedNature == .protected || original.receiptFieldNature == .protected {
                 recoveredNature = .protected

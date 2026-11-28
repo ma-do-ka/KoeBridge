@@ -144,6 +144,10 @@ import KoeBridgeCore
         case .partiallySubmitted: delivery = .partiallyDirect
         case .eventUnavailable: delivery = .insertionUnavailable
         }
+        switch delivery {
+        case .verifiedInserted, .attemptedUnconfirmed: break
+        default: LocalDiagnostics.record(.failure(code: report.reason))
+        }
         return Outcome(delivery: delivery,
                        detail: description(delivery, reason: report.reason),
                        report: report)

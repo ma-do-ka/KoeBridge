@@ -401,6 +401,7 @@ final class OutputVolumeGuard: @unchecked Sendable {
         }
         guard submitted, let before = verifiedValue else { return nil }
         lastWrite[key.property] = ProcessInfo.processInfo.systemUptime
+        LocalDiagnostics.record(.volumeGuardActivation)
         evidence?.enqueue("output_volume_guard device=\(reading.device) element=\(element) from=\(before) to=\(ceiling)")
         return readPending(key)
     }

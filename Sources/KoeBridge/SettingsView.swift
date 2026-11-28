@@ -24,6 +24,7 @@ struct SettingsView: View {
     @AppStorage("diagnosticsEnabled") private var diagnosticsEnabled = false
     // Hidden in every build until the Konami command is entered in this window.
     @AppStorage(DeveloperToolsUnlockStore.defaultsKey) private var developerToolsUnlocked = false
+    @AppStorage("localDiagnosticsEnabled") private var localDiagnosticsEnabled = true
     @StateObject private var presetEditor = TransformPresetEditorState()
     @StateObject private var benchRecorder: BenchRecordingCoordinator
     @State private var apiKeyDraft = ""
@@ -31,7 +32,9 @@ struct SettingsView: View {
     @State private var amiVoiceKeyDraft = ""
     @State private var amiVoiceKeyNotice = ""
     @State private var logNotice = ""
+    @State private var counterNotice = ""
     @State private var confirmDeleteLog = false
+    @State private var confirmDeleteCounters = false
     @State private var confirmDeleteKey = false
     @State private var confirmDeleteAmiVoiceKey = false
     @State private var navigation = SettingsNavigation()
@@ -99,6 +102,19 @@ struct SettingsView: View {
             Button("キャンセル", role: .cancel) {}
         } message: {
             Text("対象：KoeBridge.log と KoeBridge-mic.log、および両方の番号付き世代ファイル。履歴・利用統計・保存音声・設定は変更しません。削除は取り消せません。")
+        }
+        .alert("集計データをすべて削除しますか？", isPresented: $confirmDeleteCounters) {
+            Button("削除", role: .destructive) {
+                do {
+                    try LocalDiagnostics.deleteAll()
+                    counterNotice = "集計データを削除しました"
+                } catch {
+                    counterNotice = UserFacingErrorMessage.message(for: error, operation: "集計データの削除")
+                }
+            }
+            Button("キャンセル", role: .cancel) {}
+        } message: {
+            Text("対象：local-diagnostics.json（このMac内の回数・分類の集計のみ）。履歴・利用統計・保存音声・動作記録・設定は変更しません。削除は取り消せません。")
         }
         .alert("Gemini APIキーを削除しますか？", isPresented: $confirmDeleteKey) {
             Button("削除", role: .destructive) {
@@ -411,9 +427,11 @@ struct SettingsView: View {
         case .history:
             SettingsPrivacyPage(
                 controller: controller, historyCount: controller.savedHistoryCount, diagnosticsEnabled: $diagnosticsEnabled,
-                logNotice: logNotice, focusRequest: navigation.focusRequest,
+                localDiagnosticsEnabled: $localDiagnosticsEnabled,
+                logNotice: logNotice, counterNotice: counterNotice, focusRequest: navigation.focusRequest,
                 showHistory: { controller.onShowHistory?() },
-                requestLogDeletion: { confirmDeleteLog = true }
+                requestLogDeletion: { confirmDeleteLog = true },
+                requestCounterDeletion: { confirmDeleteCounters = true }
             )
         case .permissions:
             SettingsPermissionsPage(
